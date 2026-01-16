@@ -1,264 +1,278 @@
 package terminal
 
 import (
-    "context"
-    "fmt"
-    "os"
-    "strings"
-    "time"
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
 )
 
 // NewManager creates a terminal manager with the provided configuration.
 func NewManager(cfg ManagerConfig) *Manager {
-    cfg = cfg.applyDefaults()
-    return &Manager{
-        sessions:     make(map[string]*Session),
-        sessionOrder: make([]string, 0),
-        config:       cfg,
-    }
+	cfg = cfg.applyDefaults()
+	return &Manager{
+		sessions:     make(map[string]*Session),
+		sessionOrder: make([]string, 0),
+		config:       cfg,
+	}
 }
 
 // getDirectoryName derives a display name from a working directory path.
 func getDirectoryName(path string) string {
-    if path == "" {
-        return "home"
-    }
+	if path == "" {
+		return "home"
+	}
 
-    if homeDir, err := os.UserHomeDir(); err == nil && path == homeDir {
-        return "home"
-    }
+	if homeDir, err := os.UserHomeDir(); err == nil && path == homeDir {
+		return "home"
+	}
 
-    if path == "/" {
-        return "root"
-    }
+	if path == "/" {
+		return "root"
+	}
 
-    parts := strings.Split(strings.TrimSuffix(path, "/"), "/")
-    if len(parts) > 0 && parts[len(parts)-1] != "" {
-        return parts[len(parts)-1]
-    }
+	parts := strings.Split(strings.TrimSuffix(path, "/"), "/")
+	if len(parts) > 0 && parts[len(parts)-1] != "" {
+		return parts[len(parts)-1]
+	}
 
-    return "home"
+	return "home"
 }
 
 // CreateSession creates and starts a new PTY session.
 func (m *Manager) CreateSession(name, workingDir string, cols, rows int) (*Session, error) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
+	sessionID := generateSessionID()
 
-    sessionID := generateSessionID()
+	if name == "" {
+		name = getDirectoryName(workingDir)
+	}
 
-    if name == "" {
-        name = getDirectoryName(workingDir)
-    }
+	if workingDir == "" {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			workingDir = homeDir
+		} else {
+			workingDir = "/"
+		}
+	}
 
-    if workingDir == "" {
-        if homeDir, err := os.UserHomeDir(); err == nil {
-            workingDir = homeDir
-        } else {
-            workingDir = "/"
-        }
-    }
+	// Snapshot the current handler so early PTY output is not dropped while the
+	// session is being created.
+	m.mu.RLock()
+	initialHandler := m.eventHandler
+	m.mu.RUnlock()
 
-    ctx, cancel := context.WithCancel(context.Background())
-    sessionCfg := newSessionConfig(m.config)
+	ctx, cancel := context.WithCancel(context.Background())
+	sessionCfg := newSessionConfig(m.config)
 
-    session := &Session{
-        ID:                sessionID,
-        Name:              name,
-        WorkingDir:        workingDir,
-        CreatedAt:         time.Now(),
-        LastActive:        time.Now(),
-        isActive:          false,
-        connections:       make(map[string]*ConnectionInfo),
-        ctx:               ctx,
-        cancel:            cancel,
-        ringBuffer:        NewTerminalRingBuffer(sessionCfg.historyBufferSize),
-        currentWorkingDir: workingDir,
-        inputWindow:       sessionCfg.inputWindow,
-        eventHandler:      m.eventHandler,
-        onExit: func(sessionID string) {
-            m.deleteSessionIfExists(sessionID)
-        },
-        config: sessionCfg,
-    }
+	session := &Session{
+		ID:                sessionID,
+		Name:              name,
+		WorkingDir:        workingDir,
+		CreatedAt:         time.Now(),
+		LastActive:        time.Now(),
+		isActive:          false,
+		connections:       make(map[string]*ConnectionInfo),
+		ctx:               ctx,
+		cancel:            cancel,
+		ringBuffer:        NewTerminalRingBuffer(sessionCfg.historyBufferSize),
+		currentWorkingDir: workingDir,
+		inputWindow:       sessionCfg.inputWindow,
+		eventHandler:      initialHandler,
+		onExit: func(sessionID string) {
+			m.deleteSessionIfExists(sessionID)
+		},
+		config: sessionCfg,
+	}
 
-    if err := session.startPTY(cols, rows); err != nil {
-        cancel()
-        m.config.Logger.Error("Terminal session creation failed", "sessionID", sessionID, "error", err)
-        return nil, fmt.Errorf("failed to start PTY: %w", err)
-    }
+	if err := session.startPTY(cols, rows); err != nil {
+		cancel()
+		m.config.Logger.Error("Terminal session creation failed", "sessionID", sessionID, "error", err)
+		return nil, fmt.Errorf("failed to start PTY: %w", err)
+	}
 
-    m.sessions[sessionID] = session
-    m.sessionOrder = append(m.sessionOrder, sessionID)
+	// Insert session and update handler under the manager lock, but invoke any
+	// external callbacks after unlocking to avoid deadlocks.
+	m.mu.Lock()
+	m.sessions[sessionID] = session
+	m.sessionOrder = append(m.sessionOrder, sessionID)
+	handler := m.eventHandler
+	m.mu.Unlock()
 
-    m.config.Logger.Info("Created terminal session", "sessionID", sessionID, "name", name, "workingDir", workingDir)
+	session.mu.Lock()
+	session.eventHandler = handler
+	session.mu.Unlock()
 
-    if m.eventHandler != nil {
-        m.eventHandler.OnTerminalSessionCreated(session)
-    }
+	m.config.Logger.Info("Created terminal session", "sessionID", sessionID, "name", name, "workingDir", workingDir)
 
-    return session, nil
+	if handler != nil {
+		handler.OnTerminalSessionCreated(session)
+	}
+
+	return session, nil
 }
 
 // GetSession returns a session by ID.
 func (m *Manager) GetSession(sessionID string) (*Session, bool) {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-    session, exists := m.sessions[sessionID]
-    return session, exists
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	session, exists := m.sessions[sessionID]
+	return session, exists
 }
 
 // ListSessions returns active sessions in creation order.
 func (m *Manager) ListSessions() []*Session {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-    sessions := make([]*Session, 0, len(m.sessions))
-    for _, sessionID := range m.sessionOrder {
-        if session, exists := m.sessions[sessionID]; exists {
-            sessions = append(sessions, session)
-        }
-    }
-    return sessions
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, sessionID := range m.sessionOrder {
+		if session, exists := m.sessions[sessionID]; exists {
+			sessions = append(sessions, session)
+		}
+	}
+	return sessions
 }
 
 // DeleteSession removes and cleans up a session.
 func (m *Manager) DeleteSession(sessionID string) error {
-    session, handler, removed := m.detachSession(sessionID)
-    if !removed {
-        return fmt.Errorf("session not found: %s", sessionID)
-    }
+	session, handler, removed := m.detachSession(sessionID)
+	if !removed {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
 
-    session.cleanup()
-    if handler != nil {
-        handler.OnTerminalSessionClosed(sessionID)
-    }
+	session.cleanup()
+	if handler != nil {
+		handler.OnTerminalSessionClosed(sessionID)
+	}
 
-    m.config.Logger.Info("Deleted terminal session", "sessionID", sessionID, "remainingCount", m.countSessions())
-    return nil
+	m.config.Logger.Info("Deleted terminal session", "sessionID", sessionID, "remainingCount", m.countSessions())
+	return nil
 }
 
 func (m *Manager) detachSession(sessionID string) (*Session, TerminalEventHandler, bool) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-    session, exists := m.sessions[sessionID]
-    if !exists {
-        return nil, nil, false
-    }
+	session, exists := m.sessions[sessionID]
+	if !exists {
+		return nil, nil, false
+	}
 
-    delete(m.sessions, sessionID)
-    for i, id := range m.sessionOrder {
-        if id == sessionID {
-            m.sessionOrder = append(m.sessionOrder[:i], m.sessionOrder[i+1:]...)
-            break
-        }
-    }
+	delete(m.sessions, sessionID)
+	for i, id := range m.sessionOrder {
+		if id == sessionID {
+			m.sessionOrder = append(m.sessionOrder[:i], m.sessionOrder[i+1:]...)
+			break
+		}
+	}
 
-    return session, m.eventHandler, true
+	return session, m.eventHandler, true
 }
 
 func (m *Manager) deleteSessionIfExists(sessionID string) {
-    session, handler, removed := m.detachSession(sessionID)
-    if !removed || session == nil {
-        return
-    }
+	session, handler, removed := m.detachSession(sessionID)
+	if !removed || session == nil {
+		return
+	}
 
-    session.cleanup()
-    if handler != nil {
-        handler.OnTerminalSessionClosed(sessionID)
-    }
+	session.cleanup()
+	if handler != nil {
+		handler.OnTerminalSessionClosed(sessionID)
+	}
 
-    m.config.Logger.Info("Deleted terminal session (auto)", "sessionID", sessionID, "remainingCount", m.countSessions())
+	m.config.Logger.Info("Deleted terminal session (auto)", "sessionID", sessionID, "remainingCount", m.countSessions())
 }
 
 func (m *Manager) countSessions() int {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-    return len(m.sessions)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.sessions)
 }
 
 // RenameSession updates the session display name.
 func (m *Manager) RenameSession(sessionID, newName string) error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-    session, exists := m.sessions[sessionID]
-    if !exists {
-        return fmt.Errorf("session not found: %s", sessionID)
-    }
+	session, exists := m.sessions[sessionID]
+	if !exists {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
 
-    session.mu.Lock()
-    session.Name = newName
-    session.LastActive = time.Now()
-    session.mu.Unlock()
+	session.mu.Lock()
+	session.Name = newName
+	session.LastActive = time.Now()
+	session.mu.Unlock()
 
-    m.config.Logger.Info("Renamed terminal session", "sessionID", sessionID, "newName", newName)
-    return nil
+	m.config.Logger.Info("Renamed terminal session", "sessionID", sessionID, "newName", newName)
+	return nil
 }
 
 // ActivateSession starts a PTY for a dormant session.
 func (m *Manager) ActivateSession(sessionID string, cols, rows int) error {
-    m.mu.Lock()
-    defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-    session, exists := m.sessions[sessionID]
-    if !exists {
-        return fmt.Errorf("session not found: %s", sessionID)
-    }
+	session, exists := m.sessions[sessionID]
+	if !exists {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
 
-    session.mu.Lock()
-    defer session.mu.Unlock()
+	session.mu.Lock()
+	defer session.mu.Unlock()
 
-    if session.isActive {
-        return nil
-    }
+	if session.isActive {
+		return nil
+	}
 
-    if err := session.startPTY(cols, rows); err != nil {
-        return fmt.Errorf("failed to activate session: %w", err)
-    }
+	if err := session.startPTY(cols, rows); err != nil {
+		return fmt.Errorf("failed to activate session: %w", err)
+	}
 
-    m.config.Logger.Info("Activated dormant session", "sessionID", sessionID)
-    return nil
+	m.config.Logger.Info("Activated dormant session", "sessionID", sessionID)
+	return nil
 }
 
 // Cleanup stops and removes all sessions.
 func (m *Manager) Cleanup() {
-    m.mu.Lock()
-    defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-    m.config.Logger.Info("Cleaning up all terminal sessions", "count", len(m.sessions))
-    for sessionID, session := range m.sessions {
-        m.config.Logger.Debug("Cleaning up session", "sessionID", sessionID)
-        session.cleanup()
-    }
+	m.config.Logger.Info("Cleaning up all terminal sessions", "count", len(m.sessions))
+	for sessionID, session := range m.sessions {
+		m.config.Logger.Debug("Cleaning up session", "sessionID", sessionID)
+		session.cleanup()
+	}
 
-    m.sessions = make(map[string]*Session)
-    m.sessionOrder = make([]string, 0)
+	m.sessions = make(map[string]*Session)
+	m.sessionOrder = make([]string, 0)
 }
 
 // SetEventHandler sets a new handler for current and future sessions.
 func (m *Manager) SetEventHandler(handler TerminalEventHandler) {
-    m.mu.Lock()
-    defer m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-    m.eventHandler = handler
-    for _, session := range m.sessions {
-        session.eventHandler = handler
-    }
+	m.eventHandler = handler
+	for _, session := range m.sessions {
+		session.mu.Lock()
+		session.eventHandler = handler
+		session.mu.Unlock()
+	}
 }
 
 // ToSessionInfo converts a session to a public summary.
 func (s *Session) ToSessionInfo() TerminalSessionInfo {
-    s.mu.RLock()
-    defer s.mu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-    return TerminalSessionInfo{
-        ID:         s.ID,
-        Name:       s.Name,
-        WorkingDir: s.WorkingDir,
-        CreatedAt:  s.CreatedAt.UnixMilli(),
-        LastActive: s.LastActive.UnixMilli(),
-        IsActive:   s.isActive,
-    }
+	return TerminalSessionInfo{
+		ID:         s.ID,
+		Name:       s.Name,
+		WorkingDir: s.WorkingDir,
+		CreatedAt:  s.CreatedAt.UnixMilli(),
+		LastActive: s.LastActive.UnixMilli(),
+		IsActive:   s.isActive,
+	}
 }

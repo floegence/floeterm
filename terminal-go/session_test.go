@@ -31,15 +31,15 @@ func (h *captureHandler) OnTerminalData(sessionID string, data []byte, sequenceN
 }
 
 func (h *captureHandler) OnTerminalNameChanged(string, string, string, string) {}
-func (h *captureHandler) OnTerminalSessionCreated(*Session)                  {}
-func (h *captureHandler) OnTerminalSessionClosed(string)                    {}
-func (h *captureHandler) OnTerminalError(string, error)                     {}
+func (h *captureHandler) OnTerminalSessionCreated(*Session)                    {}
+func (h *captureHandler) OnTerminalSessionClosed(string)                       {}
+func (h *captureHandler) OnTerminalError(string, error)                        {}
 
 func TestSessionLifecycleAndOutput(t *testing.T) {
 	manager := NewManager(ManagerConfig{
-		Logger:            NopLogger{},
-		ShellResolver:     testShellResolver{shell: "/bin/sh"},
-		ShellArgsProvider: testShellArgsProvider{},
+		Logger:                        NopLogger{},
+		ShellResolver:                 testShellResolver{shell: "/bin/sh"},
+		ShellArgsProvider:             testShellArgsProvider{},
 		InitialResizeSuppressDuration: time.Millisecond,
 	})
 

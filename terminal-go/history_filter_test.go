@@ -8,7 +8,7 @@ func TestDefaultHistoryFilter_RemovesOSCAndCSI(t *testing.T) {
 	input := []TerminalDataChunk{{
 		Sequence:  1,
 		Timestamp: 1,
-		Data: []byte("hello\x1b]10;rgb:1/2/3\x07world\x1b[?1;2c"), // OSC 10 + DA response
+		Data:      []byte("hello\x1b]10;rgb:1/2/3\x07world\x1b[?1;2c"), // OSC 10 + DA response
 		Size:      0,
 	}}
 

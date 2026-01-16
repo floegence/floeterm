@@ -34,16 +34,22 @@ func (s *Session) checkWorkingDirectoryChange(output string) {
 		return
 	}
 
-	if currentDir == s.currentWorkingDir {
-		return
-	}
-
-	s.config.logger.Info("Working directory changed", "sessionID", s.ID, "from", filepath.Base(s.currentWorkingDir), "to", filepath.Base(currentDir))
-
-	s.currentWorkingDir = currentDir
 	newName := getDirectoryName(currentDir)
 
-	if newName != s.Name {
+	// Protect currentWorkingDir/Name reads and updates.
+	s.mu.Lock()
+	oldDir := s.currentWorkingDir
+	shouldRename := newName != s.Name
+	if currentDir == oldDir {
+		s.mu.Unlock()
+		return
+	}
+	s.currentWorkingDir = currentDir
+	s.mu.Unlock()
+
+	s.config.logger.Info("Working directory changed", "sessionID", s.ID, "from", filepath.Base(oldDir), "to", filepath.Base(currentDir))
+
+	if shouldRename {
 		s.onSessionNameChange(newName, currentDir)
 	}
 }

@@ -42,6 +42,39 @@ export interface TerminalEventHandlers {
   onError?: (error: Error) => void;
 }
 
+// TerminalCoreLike describes the subset of TerminalCore behaviour that the hook needs.
+// It allows injecting a lightweight implementation for tests or non-browser runtimes.
+export interface TerminalCoreLike {
+  initialize(): Promise<void>;
+  dispose(): void;
+  write(data: string | Uint8Array, callback?: () => void): void;
+  clear(): void;
+  serialize(): string;
+  getSelectionText(): string;
+  getState(): TerminalState;
+  getDimensions(): { cols: number; rows: number };
+  getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null;
+  findNext(term: string, options?: SearchOptions): boolean;
+  findPrevious(term: string, options?: SearchOptions): boolean;
+  clearSearch(): void;
+  setSearchResultsCallback(callback: ((results: { resultIndex: number; resultCount: number; matchPositions?: number[] }) => void) | null): void;
+  focus(): void;
+  setConnected(isConnected: boolean): void;
+  forceResize(): void;
+  setTheme(theme: Record<string, string>): void;
+  setFontSize(size: number): void;
+  startHistoryReplay(duration?: number): void;
+}
+
+export interface TerminalCoreConstructor {
+  new (
+    container: HTMLElement,
+    config?: TerminalConfig,
+    eventHandlers?: TerminalEventHandlers,
+    logger?: Logger
+  ): TerminalCoreLike;
+}
+
 export type TerminalID = string;
 
 export interface TerminalSessionInfo {
@@ -165,6 +198,7 @@ export interface TerminalManagerOptions {
   onResize?: (cols: number, rows: number) => void;
   onError?: (error: Error) => void;
   config?: TerminalConfig;
+  coreConstructor?: TerminalCoreConstructor;
 }
 
 export interface TerminalConnectionState {

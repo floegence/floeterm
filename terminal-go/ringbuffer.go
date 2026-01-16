@@ -26,9 +26,9 @@ type TerminalRingBuffer struct {
 	size   int
 	full   bool
 
-	totalBytes  int64
-	writeCount  int64
-	readCount   int64
+	totalBytes   int64
+	writeCount   int64
+	readCount    int64
 	nextSequence int64
 
 	mutex sync.RWMutex

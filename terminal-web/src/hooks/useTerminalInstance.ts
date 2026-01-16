@@ -6,6 +6,8 @@ import { createTerminalError } from '../utils/errors';
 import { getDefaultTerminalConfig, getThemeColors } from '../utils/config';
 import { createConsoleLogger, noopLogger } from '../utils/logger';
 import type {
+  TerminalCoreLike,
+  TerminalCoreConstructor,
   TerminalConnectionState,
   TerminalError,
   TerminalManagerActions,
@@ -47,13 +49,14 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     onResize,
     onError,
     config: customConfig,
-    logger: injectedLogger
+    logger: injectedLogger,
+    coreConstructor
   } = options;
 
   const logger = injectedLogger ?? createConsoleLogger();
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const terminalCoreRef = useRef<TerminalCore | null>(null);
+  const terminalCoreRef = useRef<TerminalCoreLike | null>(null);
   const isInitializingRef = useRef(false);
   const historyLoadedRef = useRef(false);
   const sequenceBufferRef = useRef(new SequenceBuffer());
@@ -74,6 +77,22 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
 
   const dataQueueRef = useRef<TerminalDataChunk[]>([]);
   const isProcessingRef = useRef(false);
+
+  // Reset session-scoped state when switching sessions (important for ordering + history replay).
+  useEffect(() => {
+    historyLoadedRef.current = false;
+    sequenceBufferRef.current.reset(1);
+    dataQueueRef.current = [];
+    isProcessingRef.current = false;
+
+    setConnectionState(ConnectionState.IDLE);
+    setConnectionError(null);
+    setRetryCount(0);
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+  }, [sessionId]);
 
   const updateState = useCallback((updates: Partial<TerminalManagerState>) => {
     setState(prev => ({ ...prev, ...updates }));
@@ -187,7 +206,8 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
       const configOverrides = { ...(customConfig ?? {}), ...(fontSize ? { fontSize } : {}) };
       const config = getDefaultTerminalConfig(themeName, configOverrides);
 
-      terminalCoreRef.current = new TerminalCore(
+      const CoreCtor: TerminalCoreConstructor = coreConstructor ?? TerminalCore;
+      terminalCoreRef.current = new CoreCtor(
         containerRef.current,
         config,
         {
