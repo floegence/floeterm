@@ -69,6 +69,7 @@ type TerminalManager interface {
 	GetSession(sessionID string) (*Session, bool)
 	ListSessions() []*Session
 	DeleteSession(sessionID string) error
+	ClearSessionHistory(sessionID string) error
 	RenameSession(sessionID, newName string) error
 	ActivateSession(sessionID string, cols, rows int) error
 	SetEventHandler(handler TerminalEventHandler)

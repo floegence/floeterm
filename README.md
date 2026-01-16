@@ -5,6 +5,7 @@ Reusable terminal session management for Go and a headless xterm.js core for web
 ## Packages
 - `terminal-go`: PTY-backed session manager with history buffering, filtering, and workdir parsing.
 - `terminal-web`: TypeScript library with `TerminalCore` and `useTerminalInstance` for xterm.js data flow.
+- `app/`: a runnable service that wires `terminal-go` and `terminal-web` together (`app/backend` + `app/web`).
 
 ## Install
 
@@ -60,8 +61,8 @@ export function TerminalPane() {
 ```
 
 ## Development
-- See `docs/design.md` for the extraction plan.
-- See `CONTRIBUTING.md` for workflows and test commands.
+- `make run` starts the app server (Go + web UI) on `http://localhost:8080`.
+- `make check` runs hard-gated CI checks (Go race tests, govulncheck, npm lint/test, npm audit).
 
 ## License
 MIT. See `LICENSE`.

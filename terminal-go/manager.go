@@ -255,6 +255,18 @@ func (m *Manager) Cleanup() {
 	}
 }
 
+// ClearSessionHistory clears the history ring buffer for a specific session.
+func (m *Manager) ClearSessionHistory(sessionID string) error {
+	m.mu.RLock()
+	session, exists := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	return session.ClearHistory()
+}
+
 // SetEventHandler sets a new handler for current and future sessions.
 func (m *Manager) SetEventHandler(handler TerminalEventHandler) {
 	m.mu.Lock()
