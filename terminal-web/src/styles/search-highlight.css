@@ -1,0 +1,9 @@
+.xterm .xterm-search-highlight {
+  background-color: rgba(255, 255, 0, 0.4);
+  color: inherit;
+}
+
+.xterm .xterm-search-highlight-active {
+  background-color: rgba(255, 165, 0, 0.6);
+  color: inherit;
+}
