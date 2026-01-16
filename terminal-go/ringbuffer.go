@@ -59,6 +59,16 @@ func (rb *TerminalRingBuffer) Write(data []byte) error {
 	rb.mutex.Lock()
 	defer rb.mutex.Unlock()
 
+	// When the buffer is full, the next write overwrites the oldest chunk at head.
+	// Adjust byte accounting before overwriting so TotalBytes stays correct.
+	if rb.full {
+		oldChunk := rb.chunks[rb.head]
+		if oldChunk.Data != nil {
+			atomic.AddInt64(&rb.totalBytes, -int64(oldChunk.Size))
+		}
+		rb.tail = (rb.tail + 1) % rb.size
+	}
+
 	dataCopy := make([]byte, len(data))
 	copy(dataCopy, data)
 
@@ -71,22 +81,12 @@ func (rb *TerminalRingBuffer) Write(data []byte) error {
 
 	rb.chunks[rb.head] = chunk
 
-	atomic.AddInt64(&rb.totalBytes, int64(len(data)))
+	atomic.AddInt64(&rb.totalBytes, int64(len(dataCopy)))
 	atomic.AddInt64(&rb.writeCount, 1)
 	atomic.AddInt64(&rb.nextSequence, 1)
 
 	rb.head = (rb.head + 1) % rb.size
-	if rb.full {
-		oldChunk := rb.chunks[rb.tail]
-		if oldChunk.Data != nil {
-			atomic.AddInt64(&rb.totalBytes, -int64(oldChunk.Size))
-		}
-		rb.tail = (rb.tail + 1) % rb.size
-	}
-
-	if rb.head == rb.tail {
-		rb.full = true
-	}
+	rb.full = rb.head == rb.tail
 
 	return nil
 }

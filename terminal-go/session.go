@@ -23,6 +23,15 @@ func (s *Session) startPTY(cols, rows int) error {
 		return nil
 	}
 
+	// A session that has been closed (cleanup cancels ctx) must not be restarted.
+	if s.ctx != nil {
+		select {
+		case <-s.ctx.Done():
+			return fmt.Errorf("session is closed")
+		default:
+		}
+	}
+
 	shell := s.config.shellResolver.ResolveShell(s.config.logger)
 	s.config.logger.Info("Starting terminal", "shell", filepath.Base(shell), "workingDir", filepath.Base(s.WorkingDir))
 

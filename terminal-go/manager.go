@@ -64,6 +64,9 @@ func (m *Manager) CreateSession(name, workingDir string, cols, rows int) (*Sessi
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sessionCfg := newSessionConfig(m.config)
+	createdDone := make(chan struct{})
+	// Ensure onExit never blocks forever even if CreateSession errors or panics.
+	defer close(createdDone)
 
 	session := &Session{
 		ID:                sessionID,
@@ -80,24 +83,31 @@ func (m *Manager) CreateSession(name, workingDir string, cols, rows int) (*Sessi
 		inputWindow:       sessionCfg.inputWindow,
 		eventHandler:      initialHandler,
 		onExit: func(sessionID string) {
+			<-createdDone
 			m.deleteSessionIfExists(sessionID)
 		},
 		config: sessionCfg,
 	}
 
+	// Register the session before starting the PTY so the onExit callback can
+	// reliably remove it even if the process exits immediately.
+	m.mu.Lock()
+	m.sessions[sessionID] = session
+	m.sessionOrder = append(m.sessionOrder, sessionID)
+	m.mu.Unlock()
+
 	if err := session.startPTY(cols, rows); err != nil {
 		cancel()
+		m.detachSession(sessionID)
+		session.cleanup()
 		m.config.Logger.Error("Terminal session creation failed", "sessionID", sessionID, "error", err)
 		return nil, fmt.Errorf("failed to start PTY: %w", err)
 	}
 
-	// Insert session and update handler under the manager lock, but invoke any
-	// external callbacks after unlocking to avoid deadlocks.
-	m.mu.Lock()
-	m.sessions[sessionID] = session
-	m.sessionOrder = append(m.sessionOrder, sessionID)
+	// Refresh handler after PTY start in case it changed during initialization.
+	m.mu.RLock()
 	handler := m.eventHandler
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
 	session.mu.Lock()
 	session.eventHandler = handler
@@ -211,21 +221,14 @@ func (m *Manager) RenameSession(sessionID, newName string) error {
 
 // ActivateSession starts a PTY for a dormant session.
 func (m *Manager) ActivateSession(sessionID string, cols, rows int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	m.mu.RLock()
 	session, exists := m.sessions[sessionID]
+	m.mu.RUnlock()
 	if !exists {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	session.mu.Lock()
-	defer session.mu.Unlock()
-
-	if session.isActive {
-		return nil
-	}
-
+	// startPTY is internally synchronized and will no-op when already active.
 	if err := session.startPTY(cols, rows); err != nil {
 		return fmt.Errorf("failed to activate session: %w", err)
 	}
@@ -237,16 +240,19 @@ func (m *Manager) ActivateSession(sessionID string, cols, rows int) error {
 // Cleanup stops and removes all sessions.
 func (m *Manager) Cleanup() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.config.Logger.Info("Cleaning up all terminal sessions", "count", len(m.sessions))
-	for sessionID, session := range m.sessions {
-		m.config.Logger.Debug("Cleaning up session", "sessionID", sessionID)
-		session.cleanup()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
 	}
-
 	m.sessions = make(map[string]*Session)
 	m.sessionOrder = make([]string, 0)
+	m.mu.Unlock()
+
+	m.config.Logger.Info("Cleaning up all terminal sessions", "count", len(sessions))
+	for _, session := range sessions {
+		m.config.Logger.Debug("Cleaning up session", "sessionID", session.ID)
+		session.cleanup()
+	}
 }
 
 // SetEventHandler sets a new handler for current and future sessions.

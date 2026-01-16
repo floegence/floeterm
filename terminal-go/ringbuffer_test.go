@@ -78,3 +78,18 @@ func TestRingBufferReadChunksFrom(t *testing.T) {
 		t.Fatalf("expected at least 2 chunks from cutoff, got %d", len(filtered))
 	}
 }
+
+func TestRingBufferStatsTotalBytesWithOverflow(t *testing.T) {
+	buffer := NewTerminalRingBuffer(3)
+	_ = buffer.Write([]byte("a"))   // 1
+	_ = buffer.Write([]byte("bb"))  // 2
+	_ = buffer.Write([]byte("ccc")) // 3
+	if got := buffer.GetStats().TotalBytes; got != 6 {
+		t.Fatalf("expected total bytes 6 before overflow, got %d", got)
+	}
+
+	_ = buffer.Write([]byte("dddd")) // overwrite "a" (1), new total should be 2+3+4=9
+	if got := buffer.GetStats().TotalBytes; got != 9 {
+		t.Fatalf("expected total bytes 9 after overflow, got %d", got)
+	}
+}

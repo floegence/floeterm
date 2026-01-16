@@ -211,15 +211,18 @@ func (s *Session) expandPath(path string) string {
 func (s *Session) onSessionNameChange(newName, workingDir string) {
 	s.mu.RLock()
 	oldName := s.Name
+	handler := s.eventHandler
+	sessionID := s.ID
 	s.mu.RUnlock()
 
 	s.mu.Lock()
 	s.Name = newName
 	s.mu.Unlock()
 
-	s.config.logger.Info("Updated session name", "sessionID", s.ID, "oldName", oldName, "newName", newName)
+	s.config.logger.Info("Updated session name", "sessionID", sessionID, "oldName", oldName, "newName", newName)
 
-	if s.eventHandler != nil {
-		s.eventHandler.OnTerminalNameChanged(s.ID, oldName, newName, workingDir)
+	// Never call external handlers while holding locks.
+	if handler != nil {
+		handler.OnTerminalNameChanged(sessionID, oldName, newName, workingDir)
 	}
 }
