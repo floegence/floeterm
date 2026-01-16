@@ -1,4 +1,4 @@
-module github.com/floeterm/floeterm/terminal-go
+module github.com/floegence/floeterm/terminal-go
 
 go 1.24.5
 

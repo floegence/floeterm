@@ -5,14 +5,14 @@ history filtering, workdir parsing, and resize coordination.
 
 ## Install
 ```bash
-go get github.com/floeterm/floeterm/terminal-go
+go get github.com/floegence/floeterm/terminal-go
 ```
 
 ## Usage
 ```go
 package main
 
-import "github.com/floeterm/floeterm/terminal-go"
+import "github.com/floegence/floeterm/terminal-go"
 
 func main() {
     manager := terminal.NewManager(terminal.ManagerConfig{})

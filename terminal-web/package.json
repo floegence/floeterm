@@ -4,13 +4,13 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/floeterm/floeterm.git",
+    "url": "https://github.com/floegence/floeterm.git",
     "directory": "terminal-web"
   },
   "bugs": {
-    "url": "https://github.com/floeterm/floeterm/issues"
+    "url": "https://github.com/floegence/floeterm/issues"
   },
-  "homepage": "https://github.com/floeterm/floeterm#readme",
+  "homepage": "https://github.com/floegence/floeterm#readme",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

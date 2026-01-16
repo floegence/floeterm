@@ -10,7 +10,7 @@ Reusable terminal session management for Go and a headless xterm.js core for web
 
 Go:
 ```bash
-go get github.com/floeterm/floeterm/terminal-go
+go get github.com/floegence/floeterm/terminal-go
 ```
 
 Web:
@@ -27,7 +27,7 @@ package main
 import (
     "log"
 
-    "github.com/floeterm/floeterm/terminal-go"
+    "github.com/floegence/floeterm/terminal-go"
 )
 
 func main() {
