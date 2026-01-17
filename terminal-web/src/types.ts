@@ -235,4 +235,4 @@ export interface TerminalManagerReturn {
   loadingMessage: string;
 }
 
-export type TerminalThemeName = 'dark' | 'light' | 'solarizedDark' | 'monokai';
+export type TerminalThemeName = 'dark' | 'light' | 'solarizedDark' | 'monokai' | 'tokyoNight';

@@ -1,26 +1,26 @@
 import type { TerminalConfig, TerminalThemeName } from '../types';
 
 const DARK_THEME: Record<string, string> = {
-  background: '#0a0a0a',
-  foreground: '#b0b0b0',
-  cursor: '#00ff41',
-  cursorAccent: '#0a0a0a',
-  selection: 'rgba(0, 255, 65, 0.2)',
-  black: '#0a0a0a',
-  red: '#ff3333',
-  green: '#00ff41',
-  yellow: '#ffb000',
-  blue: '#0099ff',
-  magenta: '#cc66ff',
-  cyan: '#00cccc',
-  white: '#b0b0b0',
-  brightBlack: '#666666',
-  brightRed: '#ff6666',
-  brightGreen: '#66ff66',
-  brightYellow: '#ffcc00',
-  brightBlue: '#66ccff',
-  brightMagenta: '#ff99ff',
-  brightCyan: '#66ffff',
+  background: '#0b0f14',
+  foreground: '#c9d1d9',
+  cursor: '#c9d1d9',
+  cursorAccent: '#0b0f14',
+  selectionBackground: 'rgba(124, 156, 255, 0.25)',
+  black: '#0b0f14',
+  red: '#ff5c57',
+  green: '#5af78e',
+  yellow: '#f3f99d',
+  blue: '#57c7ff',
+  magenta: '#ff6ac1',
+  cyan: '#9aedfe',
+  white: '#c9d1d9',
+  brightBlack: '#545d68',
+  brightRed: '#ff5c57',
+  brightGreen: '#5af78e',
+  brightYellow: '#f3f99d',
+  brightBlue: '#57c7ff',
+  brightMagenta: '#ff6ac1',
+  brightCyan: '#9aedfe',
   brightWhite: '#ffffff'
 };
 
@@ -74,7 +74,7 @@ const MONOKAI_THEME: Record<string, string> = {
   background: '#272822',
   foreground: '#f8f8f2',
   cursor: '#f8f8f2',
-  selection: '#49483e',
+  selectionBackground: '#49483e',
   black: '#272822',
   red: '#f92672',
   green: '#a6e22e',
@@ -93,6 +93,30 @@ const MONOKAI_THEME: Record<string, string> = {
   brightWhite: '#f9f8f5'
 };
 
+const TOKYO_NIGHT_THEME: Record<string, string> = {
+  background: '#1a1b26',
+  foreground: '#c0caf5',
+  cursor: '#c0caf5',
+  cursorAccent: '#1a1b26',
+  selectionBackground: 'rgba(122, 162, 247, 0.25)',
+  black: '#15161e',
+  red: '#f7768e',
+  green: '#9ece6a',
+  yellow: '#e0af68',
+  blue: '#7aa2f7',
+  magenta: '#bb9af7',
+  cyan: '#7dcfff',
+  white: '#a9b1d6',
+  brightBlack: '#414868',
+  brightRed: '#f7768e',
+  brightGreen: '#9ece6a',
+  brightYellow: '#e0af68',
+  brightBlue: '#7aa2f7',
+  brightMagenta: '#bb9af7',
+  brightCyan: '#7dcfff',
+  brightWhite: '#c0caf5'
+};
+
 export const getThemeColors = (theme: TerminalThemeName): Record<string, string> => {
   switch (theme) {
     case 'light':
@@ -101,6 +125,8 @@ export const getThemeColors = (theme: TerminalThemeName): Record<string, string>
       return SOLARIZED_DARK_THEME;
     case 'monokai':
       return MONOKAI_THEME;
+    case 'tokyoNight':
+      return TOKYO_NIGHT_THEME;
     case 'dark':
     default:
       return DARK_THEME;
@@ -113,9 +139,7 @@ export const getDefaultTerminalConfig = (theme: TerminalThemeName, overrides: Te
     rows: 24,
     theme: getThemeColors(theme),
     fontSize: 12,
-    fontFamily: '"JetBrains Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace',
-    fontWeight: 'normal',
-    fontWeightBold: 'bold',
+    fontFamily: '"JetBrains Mono", "Berkeley Mono", "SF Mono", Menlo, Monaco, "Cascadia Mono", "Cascadia Code", Consolas, "Roboto Mono", monospace',
     cursorBlink: true,
     scrollback: 10000,
     allowTransparency: true,

@@ -3,22 +3,20 @@
    A pure terminal aesthetic: black, green, monospace, minimal
    ═══════════════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
-
 :root {
   /* Terminal color palette */
-  --term-bg: #0a0a0a;
-  --term-bg-secondary: #111111;
-  --term-border: #1a1a1a;
-  --term-green: #00ff41;
-  --term-green-dim: #00cc33;
-  --term-green-glow: rgba(0, 255, 65, 0.15);
-  --term-amber: #ffb000;
-  --term-amber-dim: #cc8c00;
-  --term-text: #b0b0b0;
-  --term-text-dim: #666666;
-  --term-red: #ff3333;
-  --term-red-bg: rgba(255, 51, 51, 0.1);
+  --term-bg: #1a1b26;
+  --term-bg-secondary: #16161e;
+  --term-border: #2a2f41;
+  --term-green: #7aa2f7;
+  --term-green-dim: #3d59a1;
+  --term-green-glow: rgba(122, 162, 247, 0.18);
+  --term-amber: #e0af68;
+  --term-amber-dim: #b58b55;
+  --term-text: #c0caf5;
+  --term-text-dim: #565f89;
+  --term-red: #f7768e;
+  --term-red-bg: rgba(247, 118, 142, 0.12);
 
   /* Typography */
   --font-mono: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', Consolas, monospace;
@@ -28,6 +26,66 @@
   --space-sm: 8px;
   --space-md: 12px;
   --space-lg: 16px;
+}
+
+:root[data-theme='dark'] {
+  --term-bg: #0b0f14;
+  --term-bg-secondary: #0f141b;
+  --term-border: #21262d;
+  --term-green: #57c7ff;
+  --term-green-dim: #2f7a99;
+  --term-green-glow: rgba(87, 199, 255, 0.18);
+  --term-amber: #f3f99d;
+  --term-amber-dim: #c7cc7e;
+  --term-text: #c9d1d9;
+  --term-text-dim: #7d8590;
+  --term-red: #ff5c57;
+  --term-red-bg: rgba(255, 92, 87, 0.12);
+}
+
+:root[data-theme='monokai'] {
+  --term-bg: #272822;
+  --term-bg-secondary: #1f201b;
+  --term-border: #3b3a32;
+  --term-green: #a6e22e;
+  --term-green-dim: #7aa71f;
+  --term-green-glow: rgba(166, 226, 46, 0.16);
+  --term-amber: #f4bf75;
+  --term-amber-dim: #c79a5f;
+  --term-text: #f8f8f2;
+  --term-text-dim: #9a9a90;
+  --term-red: #f92672;
+  --term-red-bg: rgba(249, 38, 114, 0.12);
+}
+
+:root[data-theme='solarizedDark'] {
+  --term-bg: #002b36;
+  --term-bg-secondary: #073642;
+  --term-border: #0a3a48;
+  --term-green: #2aa198;
+  --term-green-dim: #1a7c75;
+  --term-green-glow: rgba(42, 161, 152, 0.16);
+  --term-amber: #b58900;
+  --term-amber-dim: #8a6a00;
+  --term-text: #93a1a1;
+  --term-text-dim: #657b83;
+  --term-red: #dc322f;
+  --term-red-bg: rgba(220, 50, 47, 0.12);
+}
+
+:root[data-theme='light'] {
+  --term-bg: #ffffff;
+  --term-bg-secondary: #f6f8fa;
+  --term-border: #d0d7de;
+  --term-green: #0451a5;
+  --term-green-dim: #0b3b78;
+  --term-green-glow: rgba(4, 81, 165, 0.12);
+  --term-amber: #949800;
+  --term-amber-dim: #6f7100;
+  --term-text: #24292f;
+  --term-text-dim: #57606a;
+  --term-red: #cd3131;
+  --term-red-bg: rgba(205, 49, 49, 0.1);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -144,6 +202,26 @@ body::after {
   align-items: center;
   gap: var(--space-sm);
   flex: 0 0 auto;
+}
+
+.toolbarActions select {
+  background: var(--term-bg-secondary);
+  border: 1px solid var(--term-border);
+  color: var(--term-text);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+}
+
+.toolbarActions select:focus {
+  border-color: var(--term-green);
+  box-shadow: 0 0 0 1px var(--term-green-glow);
+}
+
+.toolbarActions select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* App title with terminal prompt style */

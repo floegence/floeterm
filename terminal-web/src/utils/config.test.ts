@@ -7,6 +7,7 @@ describe('config helpers', () => {
     expect(getThemeColors('light').background).toBeDefined();
     expect(getThemeColors('solarizedDark').background).toBeDefined();
     expect(getThemeColors('monokai').background).toBeDefined();
+    expect(getThemeColors('tokyoNight').background).toBeDefined();
   });
 
   it('builds default config with overrides', () => {

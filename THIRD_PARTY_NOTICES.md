@@ -96,6 +96,7 @@ For authoritative license texts and copyright notices, refer to each upstream pr
 - @types/babel__generator@7.27.0 (License: MIT)
 - @types/babel__template@7.4.4 (License: MIT)
 - @types/babel__traverse@7.28.0 (License: MIT)
+- @fontsource/jetbrains-mono@5.2.8 (License: OFL-1.1)
 - @types/chai@5.2.3 (License: MIT)
 - @types/deep-eql@4.0.2 (License: MIT)
 - @types/estree@1.0.8 (License: MIT)

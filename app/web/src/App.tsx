@@ -1,8 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTerminalInstance } from '@floegence/floeterm-terminal-web';
+import { useTerminalInstance, type TerminalThemeName } from '@floegence/floeterm-terminal-web';
 import { createEventSource, createTransport, getOrCreateConnId } from './terminalApi';
 
 const SESSION_STORAGE_KEY = 'floeterm_session_id';
+const THEME_STORAGE_KEY = 'floeterm_theme_name';
+
+const isThemeName = (value: string): value is TerminalThemeName => {
+  return value === 'tokyoNight' || value === 'dark' || value === 'monokai' || value === 'solarizedDark' || value === 'light';
+};
 
 const useMediaQuery = (query: string): boolean => {
   const getMatch = () => (typeof window !== 'undefined' ? window.matchMedia(query).matches : false);
@@ -43,11 +48,19 @@ const TerminalPane = (props: {
 }) => {
   const isMobile = useMediaQuery('(max-width: 640px), (pointer: coarse)');
   const fontSize = isMobile ? 14 : 12;
+  const [themeName, setThemeName] = useState<TerminalThemeName>(() => {
+    if (typeof window === 'undefined') {
+      return 'tokyoNight';
+    }
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY) ?? '';
+    return isThemeName(stored) ? stored : 'tokyoNight';
+  });
   const { containerRef, actions, state, loadingMessage } = useTerminalInstance({
     sessionId: props.sessionId,
     isActive: true,
     autoFocus: !isMobile,
     fontSize,
+    themeName,
     transport: props.transport,
     eventSource: props.eventSource
   });
@@ -56,6 +69,30 @@ const TerminalPane = (props: {
   useEffect(() => {
     actionsRef.current = actions;
   }, [actions]);
+
+  const didApplyThemeRef = useRef(false);
+
+  useEffect(() => {
+    if (!didApplyThemeRef.current) {
+      didApplyThemeRef.current = true;
+      return;
+    }
+    actionsRef.current.reinitialize?.();
+  }, [themeName]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    document.documentElement.dataset.theme = themeName;
+  }, [themeName]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeName);
+  }, [themeName]);
 
   useEffect(() => {
     actionsRef.current.setFontSize(fontSize);
@@ -106,6 +143,13 @@ const TerminalPane = (props: {
           </span>
         </div>
         <div className="toolbarActions">
+          <select value={themeName} onChange={e => setThemeName(e.target.value as TerminalThemeName)} disabled={props.isBusy}>
+            <option value="tokyoNight">tokyo night</option>
+            <option value="dark">dark</option>
+            <option value="monokai">monokai</option>
+            <option value="solarizedDark">solarized dark</option>
+            <option value="light">light</option>
+          </select>
           <button onClick={props.onRestart} disabled={props.isBusy}>
             restart
           </button>

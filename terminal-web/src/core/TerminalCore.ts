@@ -412,7 +412,34 @@ export class TerminalCore {
     if (!this.terminal) {
       return;
     }
-    this.terminal.options.theme = mapThemeToGhostty(theme);
+
+    const mapped = mapThemeToGhostty(theme);
+    this.terminal.options.theme = mapped;
+
+    const terminalAny = this.terminal as unknown as {
+      renderer?: { setTheme?: (theme: Record<string, string>) => void; render?: (...args: unknown[]) => void };
+      wasmTerm?: unknown;
+      viewportY?: number;
+      scrollbarOpacity?: number;
+    };
+
+    if (terminalAny.renderer?.setTheme) {
+      terminalAny.renderer.setTheme(mapped);
+    }
+
+    if (terminalAny.renderer?.render && terminalAny.wasmTerm) {
+      try {
+        terminalAny.renderer.render(
+          terminalAny.wasmTerm,
+          true,
+          terminalAny.viewportY ?? 0,
+          terminalAny,
+          terminalAny.scrollbarOpacity
+        );
+      } catch (error) {
+        this.logger.debug('[TerminalCore] Theme render failed', { error });
+      }
+    }
   }
 
   setFontSize(size: number): void {
