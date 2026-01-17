@@ -5,12 +5,7 @@ Headless ghostty-web (xterm.js API-compatible) integration with data flow utilit
 
 ## Install
 ```bash
-# This repo does not publish npm packages.
-# Install by vendoring/cloning the repo and installing from the local path.
-git clone https://github.com/floegence/floeterm.git
-cd floeterm/terminal-web
-npm ci
-npm run build
+npm i @floegence/floeterm-terminal-web
 ```
 
 ## Usage (React)

@@ -6,9 +6,10 @@
 plus a runnable reference app (`app/`) that wires them together.
 
 Notes:
-- The web package is intentionally not published to npm. Consumers should install it from this GitHub repo (via vendoring/submodule + local path dependency).
-- `terminal-go` relies on a POSIX PTY (t
-## Installested on macOS/Linux).
+- The web package is published to npm as `@floegence/floeterm-terminal-web`.
+- `terminal-go` relies on a POSIX PTY (tested on macOS/Linux).
+
+## Install
 
 ## Packages
 - `terminal-go` (`github.com/floegence/floeterm/terminal-go`): PTY-backed session manager with history buffering, filtering, and working-directory parsing.
@@ -21,16 +22,9 @@ Go:
 go get github.com/floegence/floeterm/terminal-go
 ```
 
-Web (from GitHub, recommended):
+Web (npm):
 ```bash
-# Option A: git submodule + local path dependency
-git submodule add https://github.com/floegence/floeterm.git third_party/floeterm
-npm install ./third_party/floeterm/terminal-web
-
-# Build once (the package exports `dist/`)
-cd third_party/floeterm/terminal-web
-npm ci
-npm run build
+npm i @floegence/floeterm-terminal-web
 ```
 
 ## Quick Start

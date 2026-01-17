@@ -1,8 +1,11 @@
 {
   "name": "@floegence/floeterm-terminal-web",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.1",
+  "description": "Headless ghostty-web (xterm.js API-compatible) integration with data flow utilities. Provides TerminalCore and a React hook without UI components.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/floegence/floeterm.git",
@@ -23,6 +26,7 @@
   },
   "files": [
     "dist",
+    "LICENSE",
     "README.md"
   ],
   "sideEffects": [
@@ -31,7 +35,8 @@
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/styles', 'dist/styles', { recursive: true })\"",
     "test": "vitest run",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm test && npm run build"
   },
   "keywords": [
     "terminal",
