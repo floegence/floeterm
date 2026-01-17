@@ -37,7 +37,7 @@ enum LoadingState {
   READY = 'ready'
 }
 
-// useTerminalInstance creates and manages a single xterm instance.
+// useTerminalInstance creates and manages a single terminal instance.
 export const useTerminalInstance = (options: TerminalManagerOptions): TerminalManagerReturn => {
   const {
     sessionId,

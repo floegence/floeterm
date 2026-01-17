@@ -1,104 +1,67 @@
-import '../styles/search-highlight.css';
 import { filterXtermAutoResponses } from '../utils/xtermAutoResponseFilter';
 import { createConsoleLogger, noopLogger } from '../utils/logger';
 import { TerminalState, type Logger, type TerminalConfig, type TerminalEventHandlers } from '../types';
 
 // Dynamic imports avoid SSR issues and keep the bundle flexible.
-let TerminalCtor: typeof import('@xterm/xterm').Terminal | null = null;
-let FitAddonCtor: typeof import('@xterm/addon-fit').FitAddon | null = null;
-let SearchAddonCtor: typeof import('@xterm/addon-search').SearchAddon | null = null;
-let WebLinksAddonCtor: typeof import('@xterm/addon-web-links').WebLinksAddon | null = null;
-let Unicode11AddonCtor: typeof import('@xterm/addon-unicode11').Unicode11Addon | null = null;
-let SerializeAddonCtor: typeof import('@xterm/addon-serialize').SerializeAddon | null = null;
-let CanvasAddonCtor: typeof import('@xterm/addon-canvas').CanvasAddon | null = null;
-let ClipboardAddonCtor: typeof import('@xterm/addon-clipboard').ClipboardAddon | null = null;
-let WebglAddonCtor: typeof import('@xterm/addon-webgl').WebglAddon | null = null;
+let TerminalCtor: typeof import('ghostty-web').Terminal | null = null;
+let FitAddonCtor: typeof import('ghostty-web').FitAddon | null = null;
+let ghosttyInit: typeof import('ghostty-web').init | null = null;
+let ghosttyInitPromise: Promise<void> | null = null;
 
-const loadXtermCSS = async (logger: Logger): Promise<void> => {
+const loadGhosttyModules = async (logger: Logger): Promise<void> => {
   if (typeof window === 'undefined') {
+    throw new Error('ghostty-web 只能在浏览器环境中加载');
+  }
+
+  if (TerminalCtor && FitAddonCtor && ghosttyInit) {
     return;
   }
 
-  if (document.querySelector('style[data-xterm-css]') || document.querySelector('link[href*=\"xterm.css\"]')) {
-    logger.debug('[TerminalCore] Xterm CSS already loaded');
-    return;
-  }
-
-  try {
-    logger.debug('[TerminalCore] Loading xterm CSS');
-    await import('@xterm/xterm/css/xterm.css');
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    const marker = document.createElement('style');
-    marker.setAttribute('data-xterm-css', 'loaded');
-    document.head.appendChild(marker);
-  } catch (error) {
-    logger.warn('[TerminalCore] Failed to load xterm CSS', { error });
-  }
-};
-
-const loadXtermModules = async (logger: Logger): Promise<void> => {
-  if (typeof window === 'undefined') {
-    throw new Error('xterm can only be loaded in a browser environment');
-  }
-
-  if (TerminalCtor) {
-    return;
-  }
-
-  await loadXtermCSS(logger);
-
-  const [
-    { Terminal },
-    { FitAddon },
-    { SearchAddon },
-    { WebLinksAddon },
-    { Unicode11Addon },
-    { SerializeAddon },
-    { CanvasAddon },
-    { ClipboardAddon },
-    webglAddonModule
-  ] = await Promise.all([
-    import('@xterm/xterm'),
-    import('@xterm/addon-fit'),
-    import('@xterm/addon-search'),
-    import('@xterm/addon-web-links'),
-    import('@xterm/addon-unicode11'),
-    import('@xterm/addon-serialize'),
-    import('@xterm/addon-canvas'),
-    import('@xterm/addon-clipboard'),
-    import('@xterm/addon-webgl').catch(() => ({ WebglAddon: null }))
-  ]);
-
+  const { Terminal, FitAddon, init } = await import('ghostty-web');
   TerminalCtor = Terminal;
   FitAddonCtor = FitAddon;
-  SearchAddonCtor = SearchAddon;
-  WebLinksAddonCtor = WebLinksAddon;
-  Unicode11AddonCtor = Unicode11Addon;
-  SerializeAddonCtor = SerializeAddon;
-  CanvasAddonCtor = CanvasAddon;
-  ClipboardAddonCtor = ClipboardAddon;
-  WebglAddonCtor = webglAddonModule.WebglAddon;
+  ghosttyInit = init;
+
+  if (!ghosttyInitPromise) {
+    logger.debug('[TerminalCore] Initializing ghostty-web WASM');
+    ghosttyInitPromise = init().catch(error => {
+      ghosttyInitPromise = null;
+      throw error;
+    });
+  }
+
+  await ghosttyInitPromise;
 };
 
-// TerminalCore provides a focused wrapper around xterm and its addons.
+const mapThemeToGhostty = (theme: Record<string, unknown> | undefined): Record<string, string> => {
+  if (!theme) {
+    return {};
+  }
+
+  const mapped: Record<string, string> = {};
+  for (const [key, value] of Object.entries(theme)) {
+    if (typeof value === 'string') {
+      mapped[key] = value;
+    }
+  }
+
+  if (mapped.selection && !mapped.selectionBackground) {
+    mapped.selectionBackground = mapped.selection;
+    delete mapped.selection;
+  }
+
+  return mapped;
+};
+
+// TerminalCore provides a focused wrapper around ghostty-web (xterm.js API-compatible) and its fit addon.
 export class TerminalCore {
-  private terminal: import('@xterm/xterm').Terminal | null = null;
-  private fitAddon: import('@xterm/addon-fit').FitAddon | null = null;
-  private searchAddon: import('@xterm/addon-search').SearchAddon | null = null;
-  private serializeAddon: import('@xterm/addon-serialize').SerializeAddon | null = null;
-  private canvasAddon: import('@xterm/addon-canvas').CanvasAddon | null = null;
-  private clipboardAddon: import('@xterm/addon-clipboard').ClipboardAddon | null = null;
-  private webglAddon: import('@xterm/addon-webgl').WebglAddon | null = null;
+  private terminal: import('ghostty-web').Terminal | null = null;
+  private fitAddon: import('ghostty-web').FitAddon | null = null;
 
   private resizeObserver: ResizeObserver | null = null;
   private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private state: TerminalState = TerminalState.IDLE;
   private isDisposed = false;
-
-  private searchResultsCallback: ((results: { resultIndex: number; resultCount: number; matchPositions?: number[] }) => void) | null = null;
-  private currentSearchTerm = '';
-  private currentSearchOptions: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean } = {};
 
   private isReplayingHistory = false;
   private replayingHistoryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -116,7 +79,7 @@ export class TerminalCore {
     this.logger = logger ?? noopLogger;
   }
 
-  // initialize creates the xterm instance and binds addons.
+  // initialize creates the ghostty-web terminal instance and binds addons.
   async initialize(): Promise<void> {
     if (this.isDisposed) {
       throw new Error('Cannot initialize a disposed TerminalCore');
@@ -127,7 +90,7 @@ export class TerminalCore {
     }
 
     this.setState(TerminalState.INITIALIZING);
-    await loadXtermModules(this.logger);
+    await loadGhosttyModules(this.logger);
     await this.createTerminalInstance();
     await this.loadAddons();
     await this.openTerminal();
@@ -149,7 +112,7 @@ export class TerminalCore {
 
   private async createTerminalInstance(): Promise<void> {
     if (!TerminalCtor) {
-      throw new Error('xterm module not loaded');
+      throw new Error('ghostty-web module not loaded');
     }
 
     const defaultConfig: TerminalConfig = {
@@ -159,39 +122,34 @@ export class TerminalCore {
         background: '#1a1a1a',
         foreground: '#ffffff',
         cursor: '#ffffff',
-        selection: '#ffffff40'
+        selectionBackground: '#ffffff40'
       },
       fontSize: 12,
       fontFamily: '\"SF Mono\", Monaco, \"Cascadia Code\", \"Roboto Mono\", Consolas, \"Courier New\", monospace',
-      fontWeight: 'normal',
-      fontWeightBold: 'bold',
       cursorBlink: true,
       scrollback: 1000,
       allowTransparency: false,
       convertEol: true,
-      allowProposedApi: true,
-      disableStdin: false,
-      screenReaderMode: false,
-      windowsMode: false,
-      macOptionIsMeta: true,
       cursorStyle: 'block',
-      cursorWidth: 1,
-      logLevel: 'warn',
-      tabStopWidth: 8,
-      minimumContrastRatio: 1,
-      smoothScrolling: false,
-      rescaleOverlappingGlyphs: true,
-      ignoreBracketedPasteMode: false,
-      overviewRulerWidth: 0,
-      letterSpacing: 0,
-      lineHeight: 1.0,
-      linkHandler: null,
-      rightClickSelectsWord: false,
-      devicePixelRatio: typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1
+      disableStdin: false,
+      smoothScrollDuration: 80
     };
 
     const finalConfig = { ...defaultConfig, ...this.config };
-    this.terminal = new TerminalCtor(finalConfig as import('@xterm/xterm').ITerminalOptions);
+    this.terminal = new TerminalCtor({
+      cols: typeof finalConfig.cols === 'number' ? finalConfig.cols : undefined,
+      rows: typeof finalConfig.rows === 'number' ? finalConfig.rows : undefined,
+      cursorBlink: typeof finalConfig.cursorBlink === 'boolean' ? finalConfig.cursorBlink : undefined,
+      cursorStyle: typeof (finalConfig as any).cursorStyle === 'string' ? ((finalConfig as any).cursorStyle as any) : undefined,
+      theme: mapThemeToGhostty(finalConfig.theme),
+      scrollback: typeof finalConfig.scrollback === 'number' ? finalConfig.scrollback : undefined,
+      fontSize: typeof finalConfig.fontSize === 'number' ? finalConfig.fontSize : undefined,
+      fontFamily: typeof finalConfig.fontFamily === 'string' ? finalConfig.fontFamily : undefined,
+      allowTransparency: typeof finalConfig.allowTransparency === 'boolean' ? finalConfig.allowTransparency : undefined,
+      convertEol: typeof finalConfig.convertEol === 'boolean' ? finalConfig.convertEol : undefined,
+      disableStdin: typeof (finalConfig as any).disableStdin === 'boolean' ? ((finalConfig as any).disableStdin as boolean) : undefined,
+      smoothScrollDuration: typeof (finalConfig as any).smoothScrollDuration === 'number' ? ((finalConfig as any).smoothScrollDuration as number) : undefined
+    });
   }
 
   private async loadAddons(): Promise<void> {
@@ -199,53 +157,12 @@ export class TerminalCore {
       throw new Error('Terminal instance not created');
     }
 
-    if (!FitAddonCtor || !SearchAddonCtor || !WebLinksAddonCtor || !Unicode11AddonCtor || !SerializeAddonCtor || !CanvasAddonCtor || !ClipboardAddonCtor) {
-      throw new Error('Required xterm addons not loaded');
+    if (!FitAddonCtor) {
+      throw new Error('Required ghostty-web addons not loaded');
     }
 
     this.fitAddon = new FitAddonCtor();
     this.terminal.loadAddon(this.fitAddon);
-
-    this.searchAddon = new SearchAddonCtor();
-    this.terminal.loadAddon(this.searchAddon);
-    this.searchAddon.onDidChangeResults((results: { resultIndex: number; resultCount: number }) => {
-      if (!this.searchResultsCallback) {
-        return;
-      }
-      const matchPositions = this.currentSearchTerm ? this.getSearchMatchPositions(this.currentSearchTerm, this.currentSearchOptions) : [];
-      this.searchResultsCallback({ ...results, matchPositions });
-    });
-
-    const webLinksAddon = new WebLinksAddonCtor((_event, uri: string) => {
-      if (uri.startsWith('http://') || uri.startsWith('https://')) {
-        window.open(uri, '_blank', 'noopener,noreferrer');
-      }
-    });
-    this.terminal.loadAddon(webLinksAddon);
-
-    const unicodeAddon = new Unicode11AddonCtor();
-    this.terminal.loadAddon(unicodeAddon);
-    this.terminal.unicode.activeVersion = '11';
-
-    this.serializeAddon = new SerializeAddonCtor();
-    this.terminal.loadAddon(this.serializeAddon);
-
-    if (WebglAddonCtor && this.config.rendererType === 'webgl') {
-      try {
-        this.webglAddon = new WebglAddonCtor();
-        this.terminal.loadAddon(this.webglAddon);
-      } catch (error) {
-        this.logger.warn('[TerminalCore] WebGL addon failed, falling back to Canvas', { error });
-        this.canvasAddon = new CanvasAddonCtor();
-        this.terminal.loadAddon(this.canvasAddon);
-      }
-    } else {
-      this.canvasAddon = new CanvasAddonCtor();
-      this.terminal.loadAddon(this.canvasAddon);
-    }
-
-    this.clipboardAddon = new ClipboardAddonCtor();
-    this.terminal.loadAddon(this.clipboardAddon);
   }
 
   private async openTerminal(): Promise<void> {
@@ -428,10 +345,7 @@ export class TerminalCore {
   }
 
   serialize(): string {
-    if (!this.serializeAddon) {
-      return '';
-    }
-    return this.serializeAddon.serialize();
+    return '';
   }
 
   getSelectionText(): string {
@@ -464,30 +378,22 @@ export class TerminalCore {
   }
 
   findNext(term: string, options?: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean }): boolean {
-    if (!this.searchAddon) {
-      return false;
-    }
-    this.currentSearchTerm = term;
-    this.currentSearchOptions = options ?? {};
-    return this.searchAddon.findNext(term, options);
+    void term;
+    void options;
+    return false;
   }
 
   findPrevious(term: string, options?: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean }): boolean {
-    if (!this.searchAddon) {
-      return false;
-    }
-    this.currentSearchTerm = term;
-    this.currentSearchOptions = options ?? {};
-    return this.searchAddon.findPrevious(term, options);
+    void term;
+    void options;
+    return false;
   }
 
   clearSearch(): void {
-    this.currentSearchTerm = '';
-    this.searchAddon?.clearDecorations();
   }
 
   setSearchResultsCallback(callback: ((results: { resultIndex: number; resultCount: number; matchPositions?: number[] }) => void) | null): void {
-    this.searchResultsCallback = callback;
+    void callback;
   }
 
   focus(): void {
@@ -506,14 +412,7 @@ export class TerminalCore {
     if (!this.terminal) {
       return;
     }
-    this.terminal.options.theme = theme;
-    if (typeof this.terminal.clearTextureAtlas === 'function') {
-      this.terminal.clearTextureAtlas();
-    }
-    if (typeof this.terminal.refresh === 'function') {
-      const rows = this.terminal.rows ?? 0;
-      this.terminal.refresh(0, Math.max(0, rows - 1));
-    }
+    this.terminal.options.theme = mapThemeToGhostty(theme);
   }
 
   setFontSize(size: number): void {
@@ -521,9 +420,7 @@ export class TerminalCore {
       return;
     }
     this.terminal.options.fontSize = size;
-    if (typeof this.terminal.clearTextureAtlas === 'function') {
-      this.terminal.clearTextureAtlas();
-    }
+    this.fitAddon?.fit();
   }
 
   dispose(): void {
@@ -541,31 +438,5 @@ export class TerminalCore {
     this.terminal?.dispose();
     this.terminal = null;
     this.setState(TerminalState.DISPOSED);
-  }
-
-  private getSearchMatchPositions(term: string, options: { caseSensitive?: boolean; wholeWord?: boolean; regex?: boolean }): number[] {
-    if (!this.searchAddon || !term) {
-      return [];
-    }
-
-    const positions: number[] = [];
-    const searchRegex = options.regex
-      ? new RegExp(term, options.caseSensitive ? 'g' : 'gi')
-      : new RegExp(term.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), options.caseSensitive ? 'g' : 'gi');
-
-    const lines = this.terminal?.buffer.active.length ?? 0;
-    for (let i = 0; i < lines; i += 1) {
-      const line = this.terminal?.buffer.active.getLine(i)?.translateToString() ?? '';
-      if (options.wholeWord) {
-        const words = line.split(/\\b/);
-        if (words.some(word => word === term)) {
-          positions.push(i);
-        }
-      } else if (searchRegex.test(line)) {
-        positions.push(i);
-      }
-    }
-
-    return positions;
   }
 }

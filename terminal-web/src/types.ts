@@ -1,6 +1,6 @@
 import type React from 'react';
 
-// TerminalState tracks the lifecycle of the xterm instance.
+// TerminalState tracks the lifecycle of the terminal instance.
 export enum TerminalState {
   IDLE = 'idle',
   INITIALIZING = 'initializing',
@@ -10,7 +10,7 @@ export enum TerminalState {
   DISPOSED = 'disposed'
 }
 
-// TerminalConfig mirrors the xterm options that consumers commonly customize.
+// TerminalConfig mirrors the terminal options that consumers commonly customize.
 export interface TerminalConfig {
   cols?: number;
   rows?: number;
@@ -34,7 +34,7 @@ export interface Logger {
   error: (message: string, meta?: Record<string, unknown>) => void;
 }
 
-// TerminalEventHandlers connects xterm callbacks to the hook layer.
+// TerminalEventHandlers connects terminal callbacks to the hook layer.
 export interface TerminalEventHandlers {
   onData?: (data: string) => void;
   onResize?: (size: { cols: number; rows: number }) => void;

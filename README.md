@@ -2,7 +2,7 @@
 
 `floeterm` is a small monorepo that provides:
 - a Go PTY-backed terminal session manager (`terminal-go`), and
-- a headless xterm.js wrapper + React hook for web clients (`terminal-web`),
+- a headless ghostty-web (xterm.js API-compatible) wrapper + React hook for web clients (`terminal-web`),
 plus a runnable reference app (`app/`) that wires them together.
 
 Notes:

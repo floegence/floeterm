@@ -1,6 +1,6 @@
 # terminal-web
 
-Headless xterm.js integration with data flow utilities. Provides `TerminalCore` and
+Headless ghostty-web (xterm.js API-compatible) integration with data flow utilities. Provides `TerminalCore` and
 `useTerminalInstance` without UI components.
 
 ## Install
@@ -31,4 +31,4 @@ export function TerminalPane() {
 
 ## Notes
 - You must provide a `TerminalTransport` and `TerminalEventSource`.
-- The package expects your bundler to handle CSS imports (search highlight styles).
+- `ghostty-web` needs a one-time `init()` (handled internally by `TerminalCore`).
