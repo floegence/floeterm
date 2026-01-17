@@ -83,7 +83,9 @@ func (s *Session) UpdateConnectionSize(connectionID string, cols, rows int) {
 	s.mu.Unlock()
 
 	if !exists {
-		s.config.logger.Warn("Connection not found for size update", "sessionID", s.ID, "connectionID", connectionID)
+		// This can happen if a resize arrives before the corresponding attach completes
+		// or if the client disconnects/reconnects quickly (e.g. during dev reloads).
+		s.config.logger.Debug("Connection not found for size update", "sessionID", s.ID, "connectionID", connectionID)
 		return
 	}
 

@@ -16,7 +16,17 @@ export default defineConfig({
       '/api': 'http://localhost:8080',
       '/ws': {
         target: 'ws://localhost:8080',
-        ws: true
+        ws: true,
+        configure: (proxy: unknown) => {
+          const emitter = proxy as { removeAllListeners?: (event: string) => void; on?: (event: string, handler: (err: unknown) => void) => void };
+          emitter.removeAllListeners?.('error');
+          emitter.on?.('error', (err: unknown) => {
+            const code = err && typeof err === 'object' && 'code' in err ? String((err as { code?: unknown }).code) : '';
+            if (code === 'EPIPE' || code === 'ECONNRESET') {
+              return;
+            }
+          });
+        }
       }
     }
   }
