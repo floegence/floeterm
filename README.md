@@ -64,5 +64,8 @@ export function TerminalPane() {
 - `make run` starts the app server (Go + web UI) on `http://localhost:8080`.
 - `make check` runs hard-gated CI checks (Go race tests, govulncheck, npm lint/test, npm audit).
 
+## Third Party Notices
+See `THIRD_PARTY_NOTICES.md`.
+
 ## License
 MIT. See `LICENSE`.
