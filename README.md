@@ -16,7 +16,7 @@ go get github.com/floegence/floeterm/terminal-go
 
 Web:
 ```bash
-npm install @floeterm/terminal-web
+npm install @floegence/floeterm-terminal-web
 ```
 
 ## Quick Start
@@ -46,7 +46,7 @@ func main() {
 
 Web (React):
 ```tsx
-import { useTerminalInstance } from '@floeterm/terminal-web';
+import { useTerminalInstance } from '@floegence/floeterm-terminal-web';
 
 export function TerminalPane() {
   const { containerRef } = useTerminalInstance({

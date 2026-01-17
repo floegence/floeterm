@@ -5,7 +5,7 @@ import type {
   TerminalID,
   TerminalSessionInfo,
   TerminalTransport
-} from '@floeterm/terminal-web';
+} from '@floegence/floeterm-terminal-web';
 
 type ApiSessionInfo = TerminalSessionInfo;
 

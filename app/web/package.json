@@ -1,5 +1,5 @@
 {
-  "name": "@floeterm/app-web",
+  "name": "@floegence/floeterm-app-web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@floeterm/terminal-web": "file:../../terminal-web",
+    "@floegence/floeterm-terminal-web": "file:../../terminal-web",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

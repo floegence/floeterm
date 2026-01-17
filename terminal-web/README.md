@@ -5,12 +5,12 @@ Headless xterm.js integration with data flow utilities. Provides `TerminalCore` 
 
 ## Install
 ```bash
-npm install @floeterm/terminal-web
+npm install @floegence/floeterm-terminal-web
 ```
 
 ## Usage (React)
 ```tsx
-import { useTerminalInstance } from '@floeterm/terminal-web';
+import { useTerminalInstance } from '@floegence/floeterm-terminal-web';
 
 export function TerminalPane() {
   const { containerRef } = useTerminalInstance({

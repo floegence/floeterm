@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTerminalInstance } from '@floeterm/terminal-web';
+import { useTerminalInstance } from '@floegence/floeterm-terminal-web';
 import { createEventSource, createTransport, getOrCreateConnId } from './terminalApi';
 
 const SESSION_STORAGE_KEY = 'floeterm_session_id';
