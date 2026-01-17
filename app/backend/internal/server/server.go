@@ -32,6 +32,7 @@ type Server struct {
 
 	wsMu        sync.RWMutex
 	wsBySession map[string]map[*wsClient]struct{}
+	wsConnRefs  map[string]map[string]int
 }
 
 func New(cfg Config) *Server {
@@ -45,6 +46,7 @@ func New(cfg Config) *Server {
 		staticDir:   cfg.StaticDir,
 		logger:      logger,
 		wsBySession: make(map[string]map[*wsClient]struct{}),
+		wsConnRefs:  make(map[string]map[string]int),
 	}
 	s.manager.SetEventHandler(s)
 	return s
@@ -69,6 +71,7 @@ func (s *Server) Close() {
 	s.wsMu.Lock()
 	clients := s.wsBySession
 	s.wsBySession = make(map[string]map[*wsClient]struct{})
+	s.wsConnRefs = make(map[string]map[string]int)
 	s.wsMu.Unlock()
 
 	for _, set := range clients {

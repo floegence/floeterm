@@ -37,7 +37,7 @@ type TerminalRingBuffer struct {
 // NewTerminalRingBuffer creates a ring buffer with the provided capacity.
 func NewTerminalRingBuffer(size int) *TerminalRingBuffer {
 	if size <= 0 {
-		size = 100000
+		size = 2048
 	}
 
 	return &TerminalRingBuffer{
@@ -56,6 +56,16 @@ func (rb *TerminalRingBuffer) Write(data []byte) error {
 		return nil
 	}
 
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+	return rb.writeOwned(dataCopy)
+}
+
+func (rb *TerminalRingBuffer) writeOwned(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
 	rb.mutex.Lock()
 	defer rb.mutex.Unlock()
 
@@ -63,25 +73,20 @@ func (rb *TerminalRingBuffer) Write(data []byte) error {
 	// Adjust byte accounting before overwriting so TotalBytes stays correct.
 	if rb.full {
 		oldChunk := rb.chunks[rb.head]
-		if oldChunk.Data != nil {
-			atomic.AddInt64(&rb.totalBytes, -int64(oldChunk.Size))
-		}
+		atomic.AddInt64(&rb.totalBytes, -int64(oldChunk.Size))
 		rb.tail = (rb.tail + 1) % rb.size
 	}
 
-	dataCopy := make([]byte, len(data))
-	copy(dataCopy, data)
-
 	chunk := TerminalDataChunk{
 		Sequence:  atomic.LoadInt64(&rb.nextSequence),
-		Data:      dataCopy,
+		Data:      data,
 		Timestamp: time.Now().UnixMilli(),
-		Size:      len(dataCopy),
+		Size:      len(data),
 	}
 
 	rb.chunks[rb.head] = chunk
 
-	atomic.AddInt64(&rb.totalBytes, int64(len(dataCopy)))
+	atomic.AddInt64(&rb.totalBytes, int64(len(data)))
 	atomic.AddInt64(&rb.writeCount, 1)
 	atomic.AddInt64(&rb.nextSequence, 1)
 

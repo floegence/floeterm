@@ -64,7 +64,7 @@ func (cfg ManagerConfig) applyDefaults() ManagerConfig {
 		cfg.HistoryFilter = DefaultHistoryFilter{}
 	}
 	if cfg.HistoryBufferSize <= 0 {
-		cfg.HistoryBufferSize = 100000
+		cfg.HistoryBufferSize = 2048
 	}
 	if cfg.InputWindow <= 0 {
 		cfg.InputWindow = 10 * time.Millisecond

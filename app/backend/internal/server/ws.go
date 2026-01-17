@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/coder/websocket"
 )
@@ -10,6 +11,7 @@ import (
 type wsClient struct {
 	conn      *websocket.Conn
 	sessionID string
+	connID    string
 	send      chan []byte
 }
 
@@ -32,6 +34,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing sessionId", http.StatusBadRequest)
 		return
 	}
+	connID := r.URL.Query().Get("connId")
 
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -42,6 +45,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	client := &wsClient{
 		conn:      conn,
 		sessionID: sessionID,
+		connID:    connID,
 		send:      make(chan []byte, 64),
 	}
 
@@ -80,6 +84,15 @@ func (s *Server) registerWS(client *wsClient) {
 	s.wsMu.Lock()
 	defer s.wsMu.Unlock()
 
+	if client.connID != "" {
+		sessionRefs := s.wsConnRefs[client.sessionID]
+		if sessionRefs == nil {
+			sessionRefs = make(map[string]int)
+			s.wsConnRefs[client.sessionID] = sessionRefs
+		}
+		sessionRefs[client.connID]++
+	}
+
 	set := s.wsBySession[client.sessionID]
 	if set == nil {
 		set = make(map[*wsClient]struct{})
@@ -89,16 +102,40 @@ func (s *Server) registerWS(client *wsClient) {
 }
 
 func (s *Server) unregisterWS(client *wsClient) {
+	var shouldRemoveConn bool
+
 	s.wsMu.Lock()
-	defer s.wsMu.Unlock()
+	if client.connID != "" {
+		sessionRefs := s.wsConnRefs[client.sessionID]
+		if sessionRefs != nil {
+			if sessionRefs[client.connID] <= 1 {
+				delete(sessionRefs, client.connID)
+				shouldRemoveConn = true
+			} else {
+				sessionRefs[client.connID]--
+			}
+			if len(sessionRefs) == 0 {
+				delete(s.wsConnRefs, client.sessionID)
+			}
+		}
+	}
 
 	set := s.wsBySession[client.sessionID]
 	if set == nil {
+		s.wsMu.Unlock()
+		if shouldRemoveConn {
+			s.removeTerminalConnection(client.sessionID, client.connID)
+		}
 		return
 	}
 	delete(set, client)
 	if len(set) == 0 {
 		delete(s.wsBySession, client.sessionID)
+	}
+	s.wsMu.Unlock()
+
+	if shouldRemoveConn {
+		s.removeTerminalConnection(client.sessionID, client.connID)
 	}
 }
 
@@ -124,4 +161,15 @@ func (s *Server) broadcast(sessionID string, payload []byte) {
 			_ = client.conn.Close(websocket.StatusPolicyViolation, "slow consumer")
 		}
 	}
+}
+
+func (s *Server) removeTerminalConnection(sessionID, connID string) {
+	if strings.TrimSpace(connID) == "" {
+		return
+	}
+	session, ok := s.manager.GetSession(sessionID)
+	if !ok {
+		return
+	}
+	session.RemoveConnection(connID)
 }

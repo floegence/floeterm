@@ -9,25 +9,26 @@ import (
 
 // AddConnection registers a client connection with the session.
 func (s *Session) AddConnection(connectionID string, cols, rows int) {
-	s.config.logger.Info("Adding connection", "sessionID", s.ID, "connectionID", connectionID, "cols", cols, "rows", rows)
-
 	if connectionID == "" {
 		s.config.logger.Error("Cannot add connection with empty ID", "sessionID", s.ID)
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.config.logger.Debug("Adding connection", "sessionID", s.ID, "connectionID", connectionID, "cols", cols, "rows", rows)
 
-	if existing, exists := s.connections[connectionID]; exists {
-		s.config.logger.Info("Replacing existing connection", "sessionID", s.ID, "connectionID", connectionID, "oldJoinedAt", existing.JoinedAt)
-	}
+	s.mu.Lock()
+	existing := s.connections[connectionID]
 
 	s.connections[connectionID] = &ConnectionInfo{
 		ConnID:   connectionID,
 		JoinedAt: time.Now(),
 		Cols:     cols,
 		Rows:     rows,
+	}
+	s.mu.Unlock()
+
+	if existing != nil {
+		s.config.logger.Debug("Replacing existing connection", "sessionID", s.ID, "connectionID", connectionID, "oldJoinedAt", existing.JoinedAt)
 	}
 
 	go func() {
@@ -39,37 +40,58 @@ func (s *Session) AddConnection(connectionID string, cols, rows int) {
 
 // RemoveConnection unregisters a client connection.
 func (s *Session) RemoveConnection(connectionID string) {
-	s.config.logger.Info("Removing connection", "sessionID", s.ID, "connectionID", connectionID)
+	if connectionID == "" {
+		return
+	}
+
+	s.config.logger.Debug("Removing connection", "sessionID", s.ID, "connectionID", connectionID)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if conn, exists := s.connections[connectionID]; exists {
+	conn, exists := s.connections[connectionID]
+	if exists {
 		delete(s.connections, connectionID)
-		s.config.logger.Info("Removed connection", "sessionID", s.ID, "connectionID", connectionID, "joinedAt", conn.JoinedAt)
 	}
+	s.mu.Unlock()
+
+	if !exists {
+		return
+	}
+
+	s.config.logger.Debug("Removed connection", "sessionID", s.ID, "connectionID", connectionID, "joinedAt", conn.JoinedAt)
+
+	go func() {
+		if err := s.resizePTYToMinimumSize(); err != nil {
+			s.config.logger.Warn("Failed to resize after removing connection", "sessionID", s.ID, "error", err)
+		}
+	}()
 }
 
 // UpdateConnectionSize updates a connection's terminal size.
 func (s *Session) UpdateConnectionSize(connectionID string, cols, rows int) {
-	s.config.logger.Info("Updating connection size", "sessionID", s.ID, "connectionID", connectionID, "cols", cols, "rows", rows)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if conn, exists := s.connections[connectionID]; exists {
-		conn.Cols = cols
-		conn.Rows = rows
-
-		go func() {
-			if err := s.resizePTYToMinimumSize(); err != nil {
-				s.config.logger.Warn("Failed to resize after update", "sessionID", s.ID, "error", err)
-			}
-		}()
+	if connectionID == "" {
 		return
 	}
 
-	s.config.logger.Warn("Connection not found for size update", "sessionID", s.ID, "connectionID", connectionID)
+	s.config.logger.Debug("Updating connection size", "sessionID", s.ID, "connectionID", connectionID, "cols", cols, "rows", rows)
+
+	s.mu.Lock()
+	conn, exists := s.connections[connectionID]
+	if exists {
+		conn.Cols = cols
+		conn.Rows = rows
+	}
+	s.mu.Unlock()
+
+	if !exists {
+		s.config.logger.Warn("Connection not found for size update", "sessionID", s.ID, "connectionID", connectionID)
+		return
+	}
+
+	go func() {
+		if err := s.resizePTYToMinimumSize(); err != nil {
+			s.config.logger.Warn("Failed to resize after update", "sessionID", s.ID, "error", err)
+		}
+	}()
 }
 
 func (s *Session) getMinimumTerminalSize() (int, int) {
@@ -115,7 +137,7 @@ func (s *Session) resizePTYToMinimumSize() error {
 		return fmt.Errorf("failed to resize PTY: %w", err)
 	}
 
-	s.config.logger.Info("PTY resized to minimum size", "sessionID", s.ID, "cols", minCols, "rows", minRows)
+	s.config.logger.Debug("PTY resized to minimum size", "sessionID", s.ID, "cols", minCols, "rows", minRows)
 	return nil
 }
 

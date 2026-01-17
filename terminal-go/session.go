@@ -345,7 +345,7 @@ func (s *Session) processRawPTYData(data []byte) {
 	if shouldSkip {
 		s.config.logger.Debug("Skipping ring buffer write during resize", "sessionID", s.ID, "dataLength", len(data))
 	} else if s.ringBuffer != nil {
-		if err := s.ringBuffer.Write(data); err != nil {
+		if err := s.ringBuffer.writeOwned(data); err != nil {
 			s.config.logger.Error("Failed to write to ring buffer", "sessionID", s.ID, "error", err)
 		}
 	}
