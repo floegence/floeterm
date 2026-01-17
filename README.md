@@ -14,9 +14,14 @@ Go:
 go get github.com/floegence/floeterm/terminal-go
 ```
 
-Web:
+Web (from GitHub):
 ```bash
-npm install @floegence/floeterm-terminal-web
+# This repo does not publish npm packages.
+# Install by vendoring/cloning the repo and installing from the local path.
+git clone https://github.com/floegence/floeterm.git
+cd floeterm/terminal-web
+npm ci
+npm run build
 ```
 
 ## Quick Start
