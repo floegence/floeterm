@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { SequenceBuffer } from './SequenceBuffer';
 
-const makeChunk = (sequence: number, payload: string) => ({
-  sequence,
-  data: new TextEncoder().encode(payload),
-  timestampMs: Date.now()
-});
-
 describe('SequenceBuffer', () => {
+  const makeChunk = (sequence: number, payload: string) => ({
+    sequence,
+    data: new TextEncoder().encode(payload),
+    timestampMs: Date.now()
+  });
+
   it('returns chunks in order when sequences are contiguous', () => {
     const buffer = new SequenceBuffer();
     buffer.reset(1);
@@ -45,5 +45,13 @@ describe('SequenceBuffer', () => {
     const buffer = new SequenceBuffer();
     const ready = buffer.push(makeChunk(0, 'x'));
     expect(ready.map(chunk => chunk.sequence)).toEqual([0]);
+  });
+
+  it('flushes stalled gaps to avoid blocking forever', () => {
+    const buffer = new SequenceBuffer({ maxStallMs: 10 });
+    buffer.reset(1);
+
+    expect(buffer.push(makeChunk(2, 'b'), 0)).toEqual([]);
+    expect(buffer.push(makeChunk(3, 'c'), 11).map(chunk => chunk.sequence)).toEqual([2, 3]);
   });
 });

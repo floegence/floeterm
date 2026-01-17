@@ -78,9 +78,11 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
 
   const dataQueueRef = useRef<TerminalDataChunk[]>([]);
   const isProcessingRef = useRef(false);
+  const queueGenerationRef = useRef(0);
 
   // Reset session-scoped state when switching sessions (important for ordering + history replay).
   useEffect(() => {
+    queueGenerationRef.current += 1;
     historyLoadedRef.current = false;
     sequenceBufferRef.current.reset(1);
     dataQueueRef.current = [];
@@ -209,6 +211,82 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     }
   }, [transport, waitForTerminalReady, logger, scheduleFocus]);
 
+  const cleanupTerminal = useCallback(() => {
+    if (terminalCoreRef.current) {
+      terminalCoreRef.current.dispose();
+      terminalCoreRef.current = null;
+    }
+    dataQueueRef.current = [];
+    isProcessingRef.current = false;
+  }, []);
+
+  const processDataQueue = useCallback(async () => {
+    const generation = queueGenerationRef.current;
+    if (isProcessingRef.current || !terminalCoreRef.current || dataQueueRef.current.length === 0) {
+      return;
+    }
+
+    const terminalState = terminalCoreRef.current.getState();
+    if (terminalState !== TerminalState.READY && terminalState !== TerminalState.CONNECTED) {
+      setTimeout(() => {
+        if (queueGenerationRef.current !== generation) {
+          return;
+        }
+        processDataQueue();
+      }, 100);
+      return;
+    }
+
+    isProcessingRef.current = true;
+
+    try {
+      const batch = dataQueueRef.current.splice(0, 10);
+      for (const chunk of batch) {
+        if (queueGenerationRef.current !== generation) {
+          return;
+        }
+        terminalCoreRef.current.write(chunk.data);
+      }
+
+      if (dataQueueRef.current.length > 0) {
+        requestAnimationFrame(() => {
+          if (queueGenerationRef.current !== generation) {
+            return;
+          }
+          processDataQueue();
+        });
+      }
+    } finally {
+      isProcessingRef.current = false;
+      if (dataQueueRef.current.length > 0) {
+        requestAnimationFrame(() => {
+          if (queueGenerationRef.current !== generation) {
+            return;
+          }
+          processDataQueue();
+        });
+      }
+    }
+  }, []);
+
+  const addChunkToQueue = useCallback((chunk: TerminalDataChunk) => {
+    const ready = sequenceBufferRef.current.push(chunk);
+    if (ready.length === 0) {
+      return;
+    }
+
+    dataQueueRef.current.push(...ready);
+    if (!isProcessingRef.current) {
+      const generation = queueGenerationRef.current;
+      requestAnimationFrame(() => {
+        if (queueGenerationRef.current !== generation) {
+          return;
+        }
+        processDataQueue();
+      });
+    }
+  }, [processDataQueue]);
+
   const initializeTerminal = useCallback(async () => {
     if (!containerRef.current || isInitializingRef.current || terminalCoreRef.current) {
       return;
@@ -242,6 +320,8 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
         await transport.resize(sessionId, dimensions.cols, dimensions.rows);
       }
 
+      processDataQueue();
+
       setLoadingState(LoadingState.READY);
       setLoadingMessage('');
     } catch (error) {
@@ -251,58 +331,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     } finally {
       isInitializingRef.current = false;
     }
-  }, [customConfig, fontSize, themeName, handleUserInput, handleResize, handleStateChange, handleError, transport, sessionId, logger]);
-
-  const cleanupTerminal = useCallback(() => {
-    if (terminalCoreRef.current) {
-      terminalCoreRef.current.dispose();
-      terminalCoreRef.current = null;
-    }
-    dataQueueRef.current = [];
-    isProcessingRef.current = false;
-  }, []);
-
-  const processDataQueue = useCallback(async () => {
-    if (isProcessingRef.current || !terminalCoreRef.current || dataQueueRef.current.length === 0) {
-      return;
-    }
-
-    const terminalState = terminalCoreRef.current.getState();
-    if (terminalState !== TerminalState.READY && terminalState !== TerminalState.CONNECTED) {
-      setTimeout(() => processDataQueue(), 100);
-      return;
-    }
-
-    isProcessingRef.current = true;
-
-    try {
-      const batch = dataQueueRef.current.splice(0, 10);
-      for (const chunk of batch) {
-        terminalCoreRef.current.write(chunk.data);
-      }
-
-      if (dataQueueRef.current.length > 0) {
-        requestAnimationFrame(() => processDataQueue());
-      }
-    } finally {
-      isProcessingRef.current = false;
-      if (dataQueueRef.current.length > 0) {
-        requestAnimationFrame(() => processDataQueue());
-      }
-    }
-  }, []);
-
-  const addChunkToQueue = useCallback((chunk: TerminalDataChunk) => {
-    const ready = sequenceBufferRef.current.push(chunk);
-    if (ready.length === 0) {
-      return;
-    }
-
-    dataQueueRef.current.push(...ready);
-    if (!isProcessingRef.current) {
-      requestAnimationFrame(() => processDataQueue());
-    }
-  }, [processDataQueue]);
+  }, [customConfig, fontSize, themeName, handleUserInput, handleResize, handleStateChange, handleError, transport, sessionId, logger, processDataQueue]);
 
   const connectToSession = useCallback(async () => {
     if (!sessionId) {
