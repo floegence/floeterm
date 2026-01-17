@@ -15,6 +15,7 @@ const TerminalPane = (props: {
   const { containerRef, actions, state, loadingMessage } = useTerminalInstance({
     sessionId: props.sessionId,
     isActive: true,
+    autoFocus: true,
     transport: props.transport,
     eventSource: props.eventSource
   });

@@ -46,6 +46,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     eventSource,
     themeName = 'dark',
     fontSize,
+    autoFocus = false,
     onResize,
     onError,
     config: customConfig,
@@ -142,6 +143,18 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     }
   }, []);
 
+  const scheduleFocus = useCallback(() => {
+    if (!autoFocus) {
+      return;
+    }
+    // Defer focus until after the terminal is visible/opened and React has flushed updates.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        terminalCoreRef.current?.focus();
+      });
+    });
+  }, [autoFocus]);
+
   const loadHistoryAfterReady = useCallback(async (currentSessionId: string, retry = 0) => {
     const maxRetries = 2;
     const retryDelay = 1000;
@@ -155,6 +168,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
       if (history.length === 0) {
         setLoadingState(LoadingState.READY);
         setLoadingMessage('');
+        scheduleFocus();
         return;
       }
 
@@ -174,6 +188,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
             if (container) {
               container.style.visibility = 'visible';
             }
+            scheduleFocus();
           });
         });
       });
@@ -189,9 +204,10 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
       } else {
         setLoadingState(LoadingState.READY);
         setLoadingMessage('');
+        scheduleFocus();
       }
     }
-  }, [transport, waitForTerminalReady, logger]);
+  }, [transport, waitForTerminalReady, logger, scheduleFocus]);
 
   const initializeTerminal = useCallback(async () => {
     if (!containerRef.current || isInitializingRef.current || terminalCoreRef.current) {

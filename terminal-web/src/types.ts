@@ -194,6 +194,9 @@ export interface TerminalManagerOptions {
   eventSource: TerminalEventSource;
   themeName?: TerminalThemeName;
   fontSize?: number;
+  // When true, automatically focus the terminal after it finishes initializing
+  // and any initial history replay is completed.
+  autoFocus?: boolean;
   logger?: Logger;
   onResize?: (cols: number, rows: number) => void;
   onError?: (error: Error) => void;
