@@ -75,7 +75,9 @@ export function TerminalPane() {
 ```
 
 ## Development
-- `make run` starts the app server (Go + web UI) on `http://localhost:8080`.
+- `make run` starts the app server (Go + web UI) on `http://localhost:8080` (also reachable from other devices on your LAN via `http://<your-ip>:8080`).
+- `make dev` starts the Go backend on `0.0.0.0:8080` plus the Vite dev server on `0.0.0.0:5173` for cross-device debugging + HMR.
+- Server logs are colorized by level when running in a TTY (disable via `NO_COLOR=1` or `FLOETERM_LOG_COLOR=0`).
 - `make check` runs hard-gated CI checks (Go race tests, govulncheck, npm lint/test, npm audit).
 
 ## Third Party Notices

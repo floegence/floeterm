@@ -41,13 +41,15 @@ func (NopLogger) Error(string, ...any) {}
 type StdLogger struct {
 	logger   *log.Logger
 	minLevel LogLevel
+	useColor bool
 }
 
 // NewStdLogger returns a logger that prints to stdout with timestamps.
 func NewStdLogger(minLevel LogLevel) *StdLogger {
 	return &StdLogger{
-		logger:   log.New(os.Stdout, "", log.LstdFlags),
+		logger:   log.New(os.Stdout, "", 0),
 		minLevel: minLevel,
+		useColor: shouldUseColor(os.Stdout),
 	}
 }
 
@@ -70,7 +72,64 @@ func (l *StdLogger) log(level LogLevel, label string, msg string, kv ...any) {
 		payload = fmt.Sprintf("%s %s", msg, formatKV(kv...))
 	}
 
-	l.logger.Printf("%s [%s] %s", timestamp, label, payload)
+	labelOut := label
+	payloadOut := payload
+	if l.useColor {
+		color := colorForLabel(label)
+		if color != "" {
+			labelOut = color + label + ansiReset
+			payloadOut = color + payload + ansiReset
+		}
+	}
+
+	l.logger.Printf("%s [%s] %s", timestamp, labelOut, payloadOut)
+}
+
+const (
+	ansiReset  = "\x1b[0m"
+	ansiRed    = "\x1b[31m"
+	ansiYellow = "\x1b[33m"
+	ansiWhite  = "\x1b[97m"
+	ansiGray   = "\x1b[90m"
+)
+
+func colorForLabel(label string) string {
+	switch label {
+	case "DEBUG":
+		return ansiGray
+	case "INFO":
+		return ansiWhite
+	case "WARN":
+		return ansiYellow
+	case "ERROR":
+		return ansiRed
+	default:
+		return ""
+	}
+}
+
+func shouldUseColor(out *os.File) bool {
+	// Respect NO_COLOR: https://no-color.org/
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FLOETERM_LOG_COLOR"))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+
+	if strings.ToLower(strings.TrimSpace(os.Getenv("TERM"))) == "dumb" {
+		return false
+	}
+
+	info, err := out.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 func formatKV(kv ...any) string {

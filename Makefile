@@ -57,4 +57,13 @@ app-web-build:
 .PHONY: run
 run: app-web-prepare
 	@set -euo pipefail; \
-	(cd app/backend && go run ./cmd/floeterm -addr :8080 -static ../web/dist -log-level debug)
+	(cd app/backend && go run ./cmd/floeterm -addr 0.0.0.0:8080 -static ../web/dist -log-level debug)
+
+.PHONY: dev
+dev:
+	@set -euo pipefail; \
+	echo "==> backend (0.0.0.0:8080)"; \
+	(cd app/backend && go run ./cmd/floeterm -addr 0.0.0.0:8080 -log-level debug) & BACK_PID="$$!"; \
+	trap 'kill $$BACK_PID 2>/dev/null || true' EXIT INT TERM; \
+	echo "==> web dev server (0.0.0.0:5173)"; \
+	(cd app/web && npm ci && npm run dev -- --host 0.0.0.0)

@@ -24,3 +24,4 @@ func main() {
 ## Notes
 - Implement `TerminalEventHandler` to receive output and lifecycle events.
 - Configure defaults via `ManagerConfig` (history buffer size, env, filters, and timing).
+- `NewStdLogger` colorizes output by level when writing to a TTY (disable via `NO_COLOR=1` or `FLOETERM_LOG_COLOR=0`).
