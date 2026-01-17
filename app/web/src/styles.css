@@ -10,60 +10,7 @@ body {
 }
 
 .app {
-  display: grid;
-  grid-template-columns: 260px 1fr;
   height: 100%;
-}
-
-.sidebar {
-  border-right: 1px solid #e5e7eb;
-  padding: 12px;
-  box-sizing: border-box;
-  background: #fafafa;
-}
-
-.sidebar h1 {
-  font-size: 16px;
-  margin: 0 0 12px 0;
-}
-
-.sidebar button {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #ffffff;
-  cursor: pointer;
-}
-
-.sessionList {
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.sessionItem {
-  padding: 8px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #ffffff;
-  cursor: pointer;
-}
-
-.sessionItemActive {
-  border-color: #2563eb;
-}
-
-.sessionTitle {
-  font-weight: 600;
-  font-size: 13px;
-  margin-bottom: 4px;
-}
-
-.sessionMeta {
-  font-size: 12px;
-  color: #6b7280;
 }
 
 .main {
@@ -92,6 +39,21 @@ body {
   cursor: pointer;
 }
 
+.appTitle {
+  font-weight: 600;
+  font-size: 13px;
+  color: #111827;
+}
+
+.error {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #b91c1c;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff1f2;
+  white-space: pre-wrap;
+}
+
 .terminalContainer {
   flex: 1;
   min-height: 0;
@@ -111,4 +73,3 @@ body {
   font-size: 12px;
   color: #6b7280;
 }
-

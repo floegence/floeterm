@@ -74,7 +74,14 @@ const requestNoContent = async (path: string, init?: RequestInit): Promise<void>
   }
 };
 
-export const createTransport = (connId: string): TerminalTransport => {
+export type AppTerminalTransport = Omit<TerminalTransport, 'listSessions' | 'createSession' | 'deleteSession' | 'renameSession'> & {
+  listSessions: NonNullable<TerminalTransport['listSessions']>;
+  createSession: NonNullable<TerminalTransport['createSession']>;
+  deleteSession: NonNullable<TerminalTransport['deleteSession']>;
+  renameSession: NonNullable<TerminalTransport['renameSession']>;
+};
+
+export const createTransport = (connId: string): AppTerminalTransport => {
   return {
     attach: async (sessionId, cols, rows) => {
       await requestNoContent(`/api/sessions/${encodeURIComponent(sessionId)}/attach`, {

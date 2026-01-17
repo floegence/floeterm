@@ -1,11 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTerminalInstance, type TerminalSessionInfo } from '@floeterm/terminal-web';
+import { useTerminalInstance } from '@floeterm/terminal-web';
 import { createEventSource, createTransport, getOrCreateConnId } from './terminalApi';
+
+const SESSION_STORAGE_KEY = 'floeterm_session_id';
 
 const TerminalPane = (props: {
   sessionId: string;
   transport: ReturnType<typeof createTransport>;
   eventSource: ReturnType<typeof createEventSource>;
+  isBusy: boolean;
+  error: string;
+  onRestart: () => void;
 }) => {
   const { containerRef, actions, state, loadingMessage } = useTerminalInstance({
     sessionId: props.sessionId,
@@ -17,13 +22,20 @@ const TerminalPane = (props: {
   return (
     <div className="main">
       <div className="toolbar">
+        <span className="appTitle">floeterm</span>
         <span className="status">
           State: {state.state}
           {loadingMessage ? ` · ${loadingMessage}` : ''}
         </span>
         <span className="spacer" />
-        <button onClick={() => actions.clear()}>Clear</button>
+        <button onClick={props.onRestart} disabled={props.isBusy}>
+          Restart Session
+        </button>
+        <button onClick={() => actions.clear()} disabled={props.isBusy}>
+          Clear
+        </button>
       </div>
+      {props.error ? <div className="error">{props.error}</div> : null}
       <div className="terminalContainer">
         <div className="terminalPane" ref={containerRef} />
       </div>
@@ -36,110 +48,92 @@ export const App = () => {
   const transport = useMemo(() => createTransport(connId), [connId]);
   const eventSource = useMemo(() => createEventSource(connId), [connId]);
 
-  const [sessions, setSessions] = useState<TerminalSessionInfo[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string>('');
+  const [sessionId, setSessionId] = useState<string>('');
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string>('');
-  const didAutoCreateRef = useRef(false);
+  const didInitRef = useRef(false);
 
-  const refreshSessions = useCallback(async () => {
-    if (!transport.listSessions) {
+  const ensureSingleSession = useCallback(async () => {
+    if (didInitRef.current) {
       return;
     }
-    const list = await transport.listSessions();
-    setSessions(list);
-    if (!selectedSessionId && list.length > 0) {
-      setSelectedSessionId(list[0].id);
-    }
-  }, [transport, selectedSessionId]);
+    didInitRef.current = true;
 
-  const createSession = useCallback(async () => {
-    if (!transport.createSession) {
-      return;
-    }
     setIsBusy(true);
     setError('');
+
     try {
+      const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY) ?? '';
+      const list = await transport.listSessions();
+
+      let chosen = '';
+      if (stored && list.some(item => item.id === stored)) {
+        chosen = stored;
+      } else if (list.length > 0) {
+        chosen = list[0].id;
+      } else {
+        const created = await transport.createSession('', '', 80, 24);
+        chosen = created.id;
+      }
+
+      // Best-effort cleanup to enforce "single session" semantics in the app.
+      await Promise.all(
+        list
+          .filter(item => item.id !== chosen)
+          .map(item => transport.deleteSession(item.id).catch(() => {}))
+      );
+
+      window.sessionStorage.setItem(SESSION_STORAGE_KEY, chosen);
+      setSessionId(chosen);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsBusy(false);
+    }
+  }, [transport]);
+
+  const restartSession = useCallback(async () => {
+    setIsBusy(true);
+    setError('');
+
+    try {
+      const current = sessionId;
+      if (current) {
+        await transport.deleteSession(current).catch(() => {});
+      }
       const created = await transport.createSession('', '', 80, 24);
-      await refreshSessions();
-      setSelectedSessionId(created.id);
+      window.sessionStorage.setItem(SESSION_STORAGE_KEY, created.id);
+      setSessionId(created.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setIsBusy(false);
     }
-  }, [transport, refreshSessions]);
-
-  const deleteSelected = useCallback(async () => {
-    if (!transport.deleteSession || !selectedSessionId) {
-      return;
-    }
-    setIsBusy(true);
-    setError('');
-    try {
-      await transport.deleteSession(selectedSessionId);
-      setSelectedSessionId('');
-      await refreshSessions();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setIsBusy(false);
-    }
-  }, [transport, selectedSessionId, refreshSessions]);
+  }, [transport, sessionId]);
 
   useEffect(() => {
-    refreshSessions().catch(e => setError(e instanceof Error ? e.message : String(e)));
-  }, [refreshSessions]);
-
-  useEffect(() => {
-    if (didAutoCreateRef.current) {
-      return;
-    }
-
-    if (sessions.length === 0 && transport.createSession && !isBusy) {
-      didAutoCreateRef.current = true;
-      createSession().catch(() => {});
-    }
-  }, [sessions.length, transport.createSession, createSession, isBusy]);
+    ensureSingleSession().catch(e => setError(e instanceof Error ? e.message : String(e)));
+  }, [ensureSingleSession]);
 
   return (
     <div className="app">
-      <div className="sidebar">
-        <h1>floeterm</h1>
-        <button onClick={() => createSession()} disabled={isBusy}>
-          New Session
-        </button>
-        <div className="sessionList">
-          {sessions.map(session => (
-            <div
-              key={session.id}
-              className={`sessionItem ${session.id === selectedSessionId ? 'sessionItemActive' : ''}`}
-              onClick={() => setSelectedSessionId(session.id)}
-              role="button"
-              tabIndex={0}
-            >
-              <div className="sessionTitle">{session.name || session.id}</div>
-              <div className="sessionMeta">{session.workingDir}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{ marginTop: 12 }}>
-          <button onClick={() => deleteSelected()} disabled={isBusy || !selectedSessionId}>
-            Delete Selected
-          </button>
-        </div>
-        {error ? (
-          <div style={{ marginTop: 12, fontSize: 12, color: '#b91c1c', whiteSpace: 'pre-wrap' }}>{error}</div>
-        ) : null}
-      </div>
-
-      {selectedSessionId ? (
-        <TerminalPane sessionId={selectedSessionId} transport={transport} eventSource={eventSource} />
+      {sessionId ? (
+        <TerminalPane
+          key={sessionId}
+          sessionId={sessionId}
+          transport={transport}
+          eventSource={eventSource}
+          isBusy={isBusy}
+          error={error}
+          onRestart={restartSession}
+        />
       ) : (
         <div className="main">
           <div className="toolbar">
-            <span className="status">No session selected</span>
+            <span className="appTitle">floeterm</span>
+            <span className="status">{isBusy ? 'Starting...' : 'Idle'}</span>
           </div>
+          {error ? <div className="error">{error}</div> : null}
         </div>
       )}
     </div>
