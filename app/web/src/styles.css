@@ -3,6 +3,14 @@ body {
   height: 100%;
   margin: 0;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 #root {
@@ -21,14 +29,12 @@ body {
 
 .toolbar {
   padding: 8px 12px;
+  padding-top: calc(8px + env(safe-area-inset-top));
   border-bottom: 1px solid #e5e7eb;
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.toolbar .spacer {
-  flex: 1;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .toolbar button {
@@ -37,6 +43,26 @@ body {
   border-radius: 6px;
   background: #ffffff;
   cursor: pointer;
+  touch-action: manipulation;
+}
+
+.toolbar button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.toolbarPrimary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .appTitle {
@@ -58,6 +84,7 @@ body {
   flex: 1;
   min-height: 0;
   padding: 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 
@@ -69,7 +96,66 @@ body {
   overflow: hidden;
 }
 
+.terminalPane .xterm {
+  height: 100%;
+  width: 100%;
+}
+
+.terminalPane .xterm-helper-textarea {
+  font-size: 16px !important;
+}
+
+.terminalPane .xterm-viewport {
+  height: 100%;
+  width: 100%;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+.terminalPane .xterm-screen {
+  width: 100%;
+}
+
 .status {
   font-size: 12px;
   color: #6b7280;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .toolbarPrimary {
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .toolbarActions {
+    width: 100%;
+  }
+
+  .toolbarActions button {
+    flex: 1 1 0;
+    padding: 10px 12px;
+  }
+
+  .terminalContainer {
+    padding: 8px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+
+  .terminalPane {
+    border-radius: 6px;
+  }
+
+  .appTitle {
+    font-size: 14px;
+  }
 }

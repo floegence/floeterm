@@ -4,6 +4,35 @@ import { createEventSource, createTransport, getOrCreateConnId } from './termina
 
 const SESSION_STORAGE_KEY = 'floeterm_session_id';
 
+const useMediaQuery = (query: string): boolean => {
+  const getMatch = () => (typeof window !== 'undefined' ? window.matchMedia(query).matches : false);
+  const [matches, setMatches] = useState(getMatch);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+
+    onChange();
+    const legacyMql = mql as MediaQueryList & {
+      addListener?: (listener: (this: MediaQueryList, ev: MediaQueryListEvent) => void) => void;
+      removeListener?: (listener: (this: MediaQueryList, ev: MediaQueryListEvent) => void) => void;
+    };
+
+    if (typeof legacyMql.addEventListener === 'function') {
+      legacyMql.addEventListener('change', onChange);
+      return () => legacyMql.removeEventListener('change', onChange);
+    }
+
+    legacyMql.addListener?.(onChange);
+    return () => legacyMql.removeListener?.(onChange);
+  }, [query]);
+
+  return matches;
+};
+
 const TerminalPane = (props: {
   sessionId: string;
   transport: ReturnType<typeof createTransport>;
@@ -12,29 +41,78 @@ const TerminalPane = (props: {
   error: string;
   onRestart: () => void;
 }) => {
+  const isMobile = useMediaQuery('(max-width: 640px), (pointer: coarse)');
+  const fontSize = isMobile ? 14 : 12;
   const { containerRef, actions, state, loadingMessage } = useTerminalInstance({
     sessionId: props.sessionId,
     isActive: true,
-    autoFocus: true,
+    autoFocus: !isMobile,
+    fontSize,
     transport: props.transport,
     eventSource: props.eventSource
   });
 
+  const actionsRef = useRef(actions);
+  useEffect(() => {
+    actionsRef.current = actions;
+  }, [actions]);
+
+  useEffect(() => {
+    actionsRef.current.setFontSize(fontSize);
+    actionsRef.current.forceResize();
+  }, [fontSize]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const scheduleResize = () => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          actionsRef.current.forceResize();
+        });
+      });
+    };
+
+    scheduleResize();
+    const postLayoutTimer = setTimeout(scheduleResize, 200);
+
+    const onResize = () => scheduleResize();
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', onResize);
+    vv?.addEventListener('scroll', onResize);
+
+    return () => {
+      clearTimeout(postLayoutTimer);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+      vv?.removeEventListener('resize', onResize);
+      vv?.removeEventListener('scroll', onResize);
+    };
+  }, []);
+
   return (
     <div className="main">
       <div className="toolbar">
-        <span className="appTitle">floeterm</span>
-        <span className="status">
-          State: {state.state}
-          {loadingMessage ? ` · ${loadingMessage}` : ''}
-        </span>
-        <span className="spacer" />
-        <button onClick={props.onRestart} disabled={props.isBusy}>
-          Restart Session
-        </button>
-        <button onClick={() => actions.clear()} disabled={props.isBusy}>
-          Clear
-        </button>
+        <div className="toolbarPrimary">
+          <span className="appTitle">floeterm</span>
+          <span className="status">
+            State: {state.state}
+            {loadingMessage ? ` · ${loadingMessage}` : ''}
+          </span>
+        </div>
+        <div className="toolbarActions">
+          <button onClick={props.onRestart} disabled={props.isBusy}>
+            Restart Session
+          </button>
+          <button onClick={() => actions.clear()} disabled={props.isBusy}>
+            Clear
+          </button>
+        </div>
       </div>
       {props.error ? <div className="error">{props.error}</div> : null}
       <div className="terminalContainer">
@@ -131,8 +209,10 @@ export const App = () => {
       ) : (
         <div className="main">
           <div className="toolbar">
-            <span className="appTitle">floeterm</span>
-            <span className="status">{isBusy ? 'Starting...' : 'Idle'}</span>
+            <div className="toolbarPrimary">
+              <span className="appTitle">floeterm</span>
+              <span className="status">{isBusy ? 'Starting...' : 'Idle'}</span>
+            </div>
           </div>
           {error ? <div className="error">{error}</div> : null}
         </div>
