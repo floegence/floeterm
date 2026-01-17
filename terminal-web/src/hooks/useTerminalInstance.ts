@@ -455,7 +455,14 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
       terminalCoreRef.current?.clear();
       dataQueueRef.current = [];
       if (sessionId) {
-        transport.clear(sessionId).catch(error => logger.warn('[useTerminalInstance] Clear failed', { error }));
+        // Use a best-effort sequence:
+        // 1) clear server-side history so future reconnects don't replay old output
+        // 2) send an "empty Enter" to the PTY so the shell redraws the prompt immediately
+        transport.clear(sessionId)
+          .catch(error => logger.warn('[useTerminalInstance] Clear history failed', { error }))
+          .finally(() => {
+            transport.sendInput(sessionId, '\r').catch(error => logger.warn('[useTerminalInstance] Clear redraw failed', { error }));
+          });
       }
     },
     findNext: (term, options) => terminalCoreRef.current?.findNext(term, options) ?? false,

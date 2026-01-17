@@ -170,4 +170,109 @@ describe('useTerminalInstance', () => {
 
     expect(writes).toEqual(['B1', 'B2']);
   });
+
+  it('clears history and redraws prompt on clear', async () => {
+    vi.useFakeTimers();
+
+    class FakeTerminalCore implements TerminalCoreLike {
+      private state: TerminalState = TerminalState.IDLE;
+      constructor(
+        _container: HTMLElement,
+        _config = {},
+        private handlers: Record<string, unknown> = {}
+      ) {}
+
+      async initialize(): Promise<void> {
+        this.state = TerminalState.READY;
+        (this.handlers as any).onStateChange?.(TerminalState.READY);
+      }
+
+      dispose(): void {
+        this.state = TerminalState.DISPOSED;
+        (this.handlers as any).onStateChange?.(TerminalState.DISPOSED);
+      }
+
+      write(_data: string | Uint8Array, callback?: () => void): void {
+        callback?.();
+      }
+
+      clear(): void {}
+      serialize(): string {
+        return '';
+      }
+      getSelectionText(): string {
+        return '';
+      }
+      getState(): TerminalState {
+        return this.state;
+      }
+      getDimensions(): { cols: number; rows: number } {
+        return { cols: 80, rows: 24 };
+      }
+      getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null {
+        return null;
+      }
+      findNext(): boolean {
+        return false;
+      }
+      findPrevious(): boolean {
+        return false;
+      }
+      clearSearch(): void {}
+      setSearchResultsCallback(): void {}
+      focus(): void {}
+      setConnected(): void {}
+      forceResize(): void {}
+      setTheme(): void {}
+      setFontSize(): void {}
+      startHistoryReplay(): void {}
+    }
+
+    const eventSource: TerminalEventSource = {
+      onTerminalData: () => () => {}
+    };
+
+    const transport: TerminalTransport = {
+      attach: vi.fn().mockResolvedValue(undefined),
+      resize: vi.fn().mockResolvedValue(undefined),
+      sendInput: vi.fn().mockResolvedValue(undefined),
+      history: vi.fn().mockResolvedValue([]),
+      clear: vi.fn().mockResolvedValue(undefined)
+    };
+
+    let latestActions: any = null;
+    const Harness = () => {
+      const { containerRef, actions } = useTerminalInstance({
+        sessionId: 'A',
+        isActive: true,
+        transport,
+        eventSource,
+        coreConstructor: FakeTerminalCore as any
+      });
+
+      latestActions = actions;
+      return React.createElement('div', { ref: containerRef });
+    };
+
+    TestRenderer.create(React.createElement(Harness), {
+      createNodeMock: () => ({})
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await flushPromises();
+      vi.runOnlyPendingTimers();
+      await flushPromises();
+    });
+
+    expect(latestActions).toBeTruthy();
+
+    await act(async () => {
+      latestActions.clear();
+      await flushPromises();
+    });
+
+    expect(transport.clear).toHaveBeenCalledWith('A');
+    expect(transport.sendInput).toHaveBeenCalledWith('A', '\r');
+  });
 });

@@ -57,6 +57,7 @@ const mapThemeToGhostty = (theme: Record<string, unknown> | undefined): Record<s
 export class TerminalCore {
   private terminal: import('ghostty-web').Terminal | null = null;
   private fitAddon: import('ghostty-web').FitAddon | null = null;
+  private needsFullRenderOnNextWrite = false;
 
   private resizeObserver: ResizeObserver | null = null;
   private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -325,11 +326,20 @@ export class TerminalCore {
     }
 
     try {
-      if (callback) {
-        this.terminal.write(data as string | Uint8Array, callback);
-      } else {
-        this.terminal.write(data as string | Uint8Array);
+      const shouldForce = this.needsFullRenderOnNextWrite;
+
+      if (callback || shouldForce) {
+        this.terminal.write(data as string | Uint8Array, () => {
+          if (shouldForce) {
+            this.needsFullRenderOnNextWrite = false;
+            this.forceFullRender();
+          }
+          callback?.();
+        });
+        return;
       }
+
+      this.terminal.write(data as string | Uint8Array);
     } catch (error) {
       this.logger.error('[TerminalCore] Write failed', { error });
       callback?.();
@@ -342,6 +352,8 @@ export class TerminalCore {
     }
 
     this.terminal.clear();
+    this.needsFullRenderOnNextWrite = true;
+    this.forceFullRender();
   }
 
   serialize(): string {
@@ -406,6 +418,7 @@ export class TerminalCore {
 
   forceResize(): void {
     this.performResize();
+    this.forceFullRender();
   }
 
   setTheme(theme: Record<string, string>): void {
@@ -465,5 +478,34 @@ export class TerminalCore {
     this.terminal?.dispose();
     this.terminal = null;
     this.setState(TerminalState.DISPOSED);
+  }
+
+  private forceFullRender(): void {
+    if (!this.terminal || !this.isReady()) {
+      return;
+    }
+
+    const terminalAny = this.terminal as unknown as {
+      renderer?: { render?: (...args: unknown[]) => void };
+      wasmTerm?: unknown;
+      viewportY?: number;
+      scrollbarOpacity?: number;
+    };
+
+    if (!terminalAny.renderer?.render || !terminalAny.wasmTerm) {
+      return;
+    }
+
+    try {
+      terminalAny.renderer.render(
+        terminalAny.wasmTerm,
+        true,
+        terminalAny.viewportY ?? 0,
+        terminalAny,
+        terminalAny.scrollbarOpacity
+      );
+    } catch (error) {
+      this.logger.debug('[TerminalCore] Force render failed', { error });
+    }
   }
 }
