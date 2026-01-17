@@ -101,16 +101,16 @@ const TerminalPane = (props: {
         <div className="toolbarPrimary">
           <span className="appTitle">floeterm</span>
           <span className="status">
-            State: {state.state}
-            {loadingMessage ? ` · ${loadingMessage}` : ''}
+            {state.state}
+            {loadingMessage ? ` :: ${loadingMessage}` : ''}
           </span>
         </div>
         <div className="toolbarActions">
           <button onClick={props.onRestart} disabled={props.isBusy}>
-            Restart Session
+            restart
           </button>
           <button onClick={() => actions.clear()} disabled={props.isBusy}>
-            Clear
+            clear
           </button>
         </div>
       </div>
@@ -211,10 +211,15 @@ export const App = () => {
           <div className="toolbar">
             <div className="toolbarPrimary">
               <span className="appTitle">floeterm</span>
-              <span className="status">{isBusy ? 'Starting...' : 'Idle'}</span>
+              <span className="status">{isBusy ? 'initializing...' : 'idle'}</span>
             </div>
           </div>
           {error ? <div className="error">{error}</div> : null}
+          <div className="terminalContainer">
+            <div className="terminalPane">
+              <div className="loading">{isBusy ? 'connecting' : 'waiting'}</div>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -86,7 +86,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req createSessionRequest
 		if r.Body != nil {
-			if err := readJSON(r, &req); err != nil && !errors.Is(err, io.EOF) {
+			if err := readJSON(w, r, &req, maxJSONBodyBytesDefault); err != nil && !errors.Is(err, io.EOF) {
+				var httpErr *httpError
+				if errors.As(err, &httpErr) {
+					http.Error(w, httpErr.message, httpErr.status)
+					return
+				}
 				http.Error(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
@@ -99,6 +104,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		if rows <= 0 {
 			rows = 24
+		}
+		if !validateDims(cols, rows) {
+			http.Error(w, "invalid cols/rows", http.StatusBadRequest)
+			return
 		}
 
 		session, err := s.manager.CreateSession(req.Name, req.WorkingDir, cols, rows)
@@ -150,7 +159,16 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req renameSessionRequest
-		if err := readJSON(r, &req); err != nil || strings.TrimSpace(req.NewName) == "" {
+		if err := readJSON(w, r, &req, maxJSONBodyBytesDefault); err != nil {
+			var httpErr *httpError
+			if errors.As(err, &httpErr) {
+				http.Error(w, httpErr.message, httpErr.status)
+				return
+			}
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.NewName) == "" {
 			http.Error(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
@@ -167,7 +185,12 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req attachRequest
-		if err := readJSON(r, &req); err != nil {
+		if err := readJSON(w, r, &req, maxJSONBodyBytesDefault); err != nil {
+			var httpErr *httpError
+			if errors.As(err, &httpErr) {
+				http.Error(w, httpErr.message, httpErr.status)
+				return
+			}
 			http.Error(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
@@ -181,6 +204,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 		if rows <= 0 {
 			rows = 24
+		}
+		if !validateDims(cols, rows) {
+			http.Error(w, "invalid cols/rows", http.StatusBadRequest)
+			return
 		}
 
 		session, ok := s.manager.GetSession(sessionID)
@@ -205,11 +232,16 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req attachRequest
-		if err := readJSON(r, &req); err != nil {
+		if err := readJSON(w, r, &req, maxJSONBodyBytesDefault); err != nil {
+			var httpErr *httpError
+			if errors.As(err, &httpErr) {
+				http.Error(w, httpErr.message, httpErr.status)
+				return
+			}
 			http.Error(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
-		if req.Cols <= 0 || req.Rows <= 0 {
+		if req.Cols <= 0 || req.Rows <= 0 || !validateDims(req.Cols, req.Rows) {
 			http.Error(w, "invalid cols/rows", http.StatusBadRequest)
 			return
 		}
@@ -247,9 +279,22 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		s.logger.Debug("API input request begin", "sessionID", sessionID, "remoteAddr", r.RemoteAddr, "contentLength", r.ContentLength)
 
 		var req inputRequest
-		if err := readJSON(r, &req); err != nil {
+		if err := readJSON(w, r, &req, maxJSONBodyBytesDefault); err != nil {
+			var httpErr *httpError
+			if errors.As(err, &httpErr) {
+				http.Error(w, httpErr.message, httpErr.status)
+				return
+			}
 			s.logger.Warn("API input request invalid payload", "sessionID", sessionID, "remoteAddr", r.RemoteAddr, "error", err)
 			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		if len(req.Input) > maxInputBytes {
+			http.Error(w, "input too large", http.StatusBadRequest)
+			return
+		}
+		if !s.inputLimiter.Allow(clientKey(r, sessionID, req.ConnID), len(req.Input), time.Now()) {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}
 

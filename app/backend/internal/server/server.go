@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -33,6 +34,8 @@ type Server struct {
 	wsMu        sync.RWMutex
 	wsBySession map[string]map[*wsClient]struct{}
 	wsConnRefs  map[string]map[string]int
+
+	inputLimiter *byteRateLimiter
 }
 
 func New(cfg Config) *Server {
@@ -47,6 +50,9 @@ func New(cfg Config) *Server {
 		logger:      logger,
 		wsBySession: make(map[string]map[*wsClient]struct{}),
 		wsConnRefs:  make(map[string]map[string]int),
+		// Input limiting is a safety rail for the reference server; it helps avoid accidental
+		// resource exhaustion from oversized pastes or tight input loops.
+		inputLimiter: newByteRateLimiter(64*1024 /* bytes/s */, 128*1024 /* burst bytes */),
 	}
 	s.manager.SetEventHandler(s)
 	return s
@@ -148,10 +154,22 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func readJSON(r *http.Request, dst any) error {
+func readJSON(w http.ResponseWriter, r *http.Request, dst any, maxBytes int64) error {
+	if maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	return dec.Decode(dst)
+	err := dec.Decode(dst)
+	if err == nil {
+		return nil
+	}
+
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return &httpError{status: http.StatusRequestEntityTooLarge, message: "payload too large"}
+	}
+	return err
 }
 
 func parseIntQuery(q map[string][]string, key string, def int64) (int64, error) {
@@ -167,4 +185,16 @@ func parseIntQuery(q map[string][]string, key string, def int64) (int64, error) 
 		return 0, fmt.Errorf("invalid %s", key)
 	}
 	return n, nil
+}
+
+type httpError struct {
+	status  int
+	message string
+}
+
+func (e *httpError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
 }

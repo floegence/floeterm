@@ -1,10 +1,56 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   FLOETERM - Terminal-Style Interface
+   A pure terminal aesthetic: black, green, monospace, minimal
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root {
+  /* Terminal color palette */
+  --term-bg: #0a0a0a;
+  --term-bg-secondary: #111111;
+  --term-border: #1a1a1a;
+  --term-green: #00ff41;
+  --term-green-dim: #00cc33;
+  --term-green-glow: rgba(0, 255, 65, 0.15);
+  --term-amber: #ffb000;
+  --term-amber-dim: #cc8c00;
+  --term-text: #b0b0b0;
+  --term-text-dim: #666666;
+  --term-red: #ff3333;
+  --term-red-bg: rgba(255, 51, 51, 0.1);
+
+  /* Typography */
+  --font-mono: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', Consolas, monospace;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Base Reset & CRT Effects
+   ───────────────────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 html,
 body {
   height: 100%;
   margin: 0;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--term-bg);
+  color: var(--term-text);
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
@@ -13,12 +59,55 @@ body {
   overflow: hidden;
 }
 
+/* Scanline effect overlay */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+}
+
+/* Subtle vignette effect */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 9998;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 0%,
+    transparent 60%,
+    rgba(0, 0, 0, 0.3) 100%
+  );
+}
+
 #root {
   height: 100%;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Layout Structure
+   ───────────────────────────────────────────────────────────────────────────── */
+
 .app {
   height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .main {
@@ -27,73 +116,171 @@ body {
   height: 100%;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Terminal Header / Toolbar
+   ───────────────────────────────────────────────────────────────────────────── */
+
 .toolbar {
-  padding: 8px 12px;
-  padding-top: calc(8px + env(safe-area-inset-top));
-  border-bottom: 1px solid #e5e7eb;
+  padding: var(--space-sm) var(--space-md);
+  padding-top: calc(var(--space-sm) + env(safe-area-inset-top));
+  background: var(--term-bg);
+  border-bottom: 1px solid var(--term-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-}
-
-.toolbar button {
-  padding: 6px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #ffffff;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-.toolbar button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+  gap: var(--space-md);
+  flex-shrink: 0;
 }
 
 .toolbarPrimary {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: var(--space-md);
   min-width: 0;
 }
 
 .toolbarActions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-sm);
   flex: 0 0 auto;
 }
 
+/* App title with terminal prompt style */
 .appTitle {
-  font-weight: 600;
+  font-weight: 700;
   font-size: 13px;
-  color: #111827;
+  color: var(--term-green);
+  text-shadow: 0 0 10px var(--term-green-glow);
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.error {
-  padding: 8px 12px;
-  font-size: 12px;
-  color: #b91c1c;
-  border-bottom: 1px solid #e5e7eb;
-  background: #fff1f2;
-  white-space: pre-wrap;
+.appTitle::before {
+  content: '>';
+  color: var(--term-green-dim);
+  animation: blink 1s step-end infinite;
 }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Status display - terminal output style */
+.status {
+  font-size: 12px;
+  color: var(--term-text-dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+.status::before {
+  content: '// ';
+  color: var(--term-text-dim);
+  opacity: 0.5;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Terminal Buttons - Character-based style
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.toolbar button {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: var(--space-xs) var(--space-sm);
+  background: transparent;
+  color: var(--term-text);
+  border: 1px solid var(--term-border);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: all 0.15s ease;
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+}
+
+.toolbar button::before {
+  content: '[ ';
+  color: var(--term-text-dim);
+}
+
+.toolbar button::after {
+  content: ' ]';
+  color: var(--term-text-dim);
+}
+
+.toolbar button:hover:not(:disabled) {
+  color: var(--term-green);
+  border-color: var(--term-green-dim);
+  text-shadow: 0 0 8px var(--term-green-glow);
+}
+
+.toolbar button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.toolbar button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Error Display - Terminal error style
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.error {
+  padding: var(--space-sm) var(--space-md);
+  font-size: 12px;
+  color: var(--term-red);
+  background: var(--term-red-bg);
+  border-bottom: 1px solid rgba(255, 51, 51, 0.2);
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+.error::before {
+  content: 'ERROR: ';
+  font-weight: 700;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Terminal Container
+   ───────────────────────────────────────────────────────────────────────────── */
 
 .terminalContainer {
   flex: 1;
   min-height: 0;
-  padding: 12px;
-  padding-bottom: calc(12px + env(safe-area-inset-bottom));
-  box-sizing: border-box;
+  padding: var(--space-md);
+  padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
+  background: var(--term-bg);
 }
 
 .terminalPane {
   height: 100%;
   width: 100%;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  background: var(--term-bg-secondary);
+  border: 1px solid var(--term-border);
   overflow: hidden;
+  position: relative;
+}
+
+/* Terminal inner glow effect */
+.terminalPane::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 1;
+  box-shadow: inset 0 0 60px rgba(0, 255, 65, 0.02);
 }
 
 .terminalPane .xterm {
@@ -110,52 +297,100 @@ body {
   width: 100%;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
+  background: transparent !important;
 }
 
 .terminalPane .xterm-screen {
   width: 100%;
 }
 
-.status {
-  font-size: 12px;
-  color: #6b7280;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* Custom scrollbar - terminal style */
+.terminalPane .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+  background: var(--term-bg);
 }
+
+.terminalPane .xterm-viewport::-webkit-scrollbar-track {
+  background: var(--term-bg);
+}
+
+.terminalPane .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--term-border);
+  border: 2px solid var(--term-bg);
+}
+
+.terminalPane .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--term-text-dim);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Loading State
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--term-text-dim);
+  font-size: 12px;
+}
+
+.loading::after {
+  content: '_';
+  animation: blink 1s step-end infinite;
+  margin-left: 2px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Mobile Responsive
+   ───────────────────────────────────────────────────────────────────────────── */
 
 @media (max-width: 640px) {
   .toolbar {
-    align-items: stretch;
     flex-direction: column;
-    gap: 10px;
+    align-items: stretch;
+    gap: var(--space-sm);
   }
 
   .toolbarPrimary {
     justify-content: space-between;
-    gap: 8px;
+    gap: var(--space-sm);
   }
 
   .toolbarActions {
     width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-sm);
   }
 
   .toolbarActions button {
-    flex: 1 1 0;
-    padding: 10px 12px;
+    padding: var(--space-sm) var(--space-md);
+    justify-content: center;
+    display: flex;
   }
 
   .terminalContainer {
-    padding: 8px;
-    padding-bottom: calc(8px + env(safe-area-inset-bottom));
-  }
-
-  .terminalPane {
-    border-radius: 6px;
+    padding: var(--space-sm);
+    padding-bottom: calc(var(--space-sm) + env(safe-area-inset-bottom));
   }
 
   .appTitle {
     font-size: 14px;
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Selection Style
+   ───────────────────────────────────────────────────────────────────────────── */
+
+::selection {
+  background: var(--term-green);
+  color: var(--term-bg);
+}
+
+::-moz-selection {
+  background: var(--term-green);
+  color: var(--term-bg);
 }

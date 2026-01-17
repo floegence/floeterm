@@ -112,12 +112,7 @@ func (s *Session) getMinimumTerminalSize() (int, int) {
 		}
 	}
 
-	if minCols < 20 {
-		minCols = 20
-	}
-	if minRows < 5 {
-		minRows = 5
-	}
+	minCols, minRows = clampTerminalSize(minCols, minRows)
 
 	return minCols, minRows
 }
@@ -150,6 +145,10 @@ func (s *Session) ResizePTY(cols, rows int) error {
 
 	if s.PTY == nil {
 		return fmt.Errorf("PTY not available")
+	}
+
+	if err := validateTerminalSize(cols, rows); err != nil {
+		return err
 	}
 
 	s.isResizing = true

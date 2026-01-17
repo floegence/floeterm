@@ -292,3 +292,138 @@ func TestServer_WebsocketDisconnectRefCount(t *testing.T) {
 	}
 	t.Fatalf("expected connection to be removed after last websocket disconnect")
 }
+
+func TestServer_ResizeRejectsOversizedDims(t *testing.T) {
+	srv := New(Config{
+		ManagerConfig: terminal.ManagerConfig{
+			Logger:                        terminal.NopLogger{},
+			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
+			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
+			InitialResizeSuppressDuration: time.Millisecond,
+			ResizeSuppressDuration:        time.Millisecond,
+		},
+	})
+	t.Cleanup(srv.Close)
+
+	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
+	if err != nil {
+		t.Fatalf("create session request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected create status: %d", resp.StatusCode)
+	}
+
+	var created apiSessionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response failed: %v", err)
+	}
+
+	resizeBody := bytes.NewBufferString(`{"connId":"c1","cols":10000,"rows":24}`)
+	resizeResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/resize", "application/json", resizeBody)
+	if err != nil {
+		t.Fatalf("resize failed: %v", err)
+	}
+	resizeResp.Body.Close()
+	if resizeResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized resize, got: %d", resizeResp.StatusCode)
+	}
+}
+
+func TestServer_InputRejectsOversizedPayload(t *testing.T) {
+	srv := New(Config{
+		ManagerConfig: terminal.ManagerConfig{
+			Logger:                        terminal.NopLogger{},
+			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
+			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
+			InitialResizeSuppressDuration: time.Millisecond,
+			ResizeSuppressDuration:        time.Millisecond,
+		},
+	})
+	t.Cleanup(srv.Close)
+
+	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
+	if err != nil {
+		t.Fatalf("create session request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected create status: %d", resp.StatusCode)
+	}
+
+	var created apiSessionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response failed: %v", err)
+	}
+
+	attachBody := bytes.NewBufferString(`{"connId":"c1","cols":80,"rows":24}`)
+	attachResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/attach", "application/json", attachBody)
+	if err != nil {
+		t.Fatalf("attach failed: %v", err)
+	}
+	attachResp.Body.Close()
+	if attachResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected attach status: %d", attachResp.StatusCode)
+	}
+
+	oversized := bytes.Repeat([]byte("a"), maxInputBytes+1)
+	inputBody := bytes.NewBufferString(`{"connId":"c1","input":"` + string(oversized) + `"}`)
+	inputResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/input", "application/json", inputBody)
+	if err != nil {
+		t.Fatalf("send input failed: %v", err)
+	}
+	inputResp.Body.Close()
+	if inputResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized input, got: %d", inputResp.StatusCode)
+	}
+}
+
+func TestServer_JSONBodyLimitReturns413(t *testing.T) {
+	srv := New(Config{
+		ManagerConfig: terminal.ManagerConfig{
+			Logger:                        terminal.NopLogger{},
+			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
+			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
+			InitialResizeSuppressDuration: time.Millisecond,
+			ResizeSuppressDuration:        time.Millisecond,
+		},
+	})
+	t.Cleanup(srv.Close)
+
+	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
+	if err != nil {
+		t.Fatalf("create session request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected create status: %d", resp.StatusCode)
+	}
+
+	var created apiSessionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response failed: %v", err)
+	}
+
+	hugeName := bytes.Repeat([]byte("x"), int(maxJSONBodyBytesDefault)+1024)
+	renameBody := bytes.NewBufferString(`{"newName":"` + string(hugeName) + `"}`)
+	renameResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/rename", "application/json", renameBody)
+	if err != nil {
+		t.Fatalf("rename failed: %v", err)
+	}
+	renameResp.Body.Close()
+	if renameResp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized json body, got: %d", renameResp.StatusCode)
+	}
+}

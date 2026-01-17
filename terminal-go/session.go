@@ -18,6 +18,10 @@ func (s *Session) startPTY(cols, rows int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := validateTerminalSize(cols, rows); err != nil {
+		return err
+	}
+
 	if s.isActive {
 		s.config.logger.Warn("Attempted to start PTY for active session", "sessionID", s.ID)
 		return nil
