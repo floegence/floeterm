@@ -28,15 +28,22 @@ type Server struct {
 	manager *terminal.Manager
 
 	staticDir string
+	logger    terminal.Logger
 
 	wsMu        sync.RWMutex
 	wsBySession map[string]map[*wsClient]struct{}
 }
 
 func New(cfg Config) *Server {
+	logger := cfg.ManagerConfig.Logger
+	if logger == nil {
+		logger = terminal.NopLogger{}
+	}
+
 	s := &Server{
 		manager:     terminal.NewManager(cfg.ManagerConfig),
 		staticDir:   cfg.StaticDir,
+		logger:      logger,
 		wsBySession: make(map[string]map[*wsClient]struct{}),
 	}
 	s.manager.SetEventHandler(s)

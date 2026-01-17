@@ -3,10 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/floegence/floeterm/app/backend/internal/server"
@@ -16,17 +16,37 @@ import (
 func main() {
 	var addr string
 	var staticDir string
+	var logLevel string
 	flag.StringVar(&addr, "addr", ":8080", "HTTP listen address")
 	flag.StringVar(&staticDir, "static", "", "path to app/web dist directory")
+	flag.StringVar(&logLevel, "log-level", "info", "log level: debug|info|warn|error")
 	flag.Parse()
 
 	if staticDir == "" {
 		staticDir = resolveDefaultStaticDir()
 	}
 
+	level := terminal.LogInfo
+	switch strings.ToLower(strings.TrimSpace(logLevel)) {
+	case "debug":
+		level = terminal.LogDebug
+	case "info", "":
+		level = terminal.LogInfo
+	case "warn", "warning":
+		level = terminal.LogWarn
+	case "error":
+		level = terminal.LogError
+	default:
+		fmt.Fprintf(os.Stderr, "warning: unknown -log-level=%q, falling back to info\n", logLevel)
+		level = terminal.LogInfo
+	}
+
+	logger := terminal.NewStdLogger(level)
+
 	srv := server.New(server.Config{
 		StaticDir: staticDir,
 		ManagerConfig: terminal.ManagerConfig{
+			Logger: logger,
 			// Keep UI responsiveness high.
 			InitialResizeSuppressDuration: 200 * time.Millisecond,
 			ResizeSuppressDuration:        150 * time.Millisecond,
@@ -34,15 +54,16 @@ func main() {
 	})
 	defer srv.Close()
 
-	log.Printf("floeterm server listening on http://localhost%s", addr)
+	logger.Info("floeterm server listening", "addr", addr)
 	if staticDir != "" {
-		log.Printf("serving web from %s", staticDir)
+		logger.Info("serving web", "staticDir", staticDir)
 	} else {
-		log.Printf("no static dir configured; API only")
+		logger.Info("no static dir configured; API only")
 	}
 
 	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
-		log.Fatal(err)
+		logger.Error("http server exited", "error", err)
+		os.Exit(1)
 	}
 }
 

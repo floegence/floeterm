@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	terminal "github.com/floegence/floeterm/terminal-go"
 )
@@ -46,6 +48,17 @@ type historyChunk struct {
 	Sequence    int64  `json:"sequence"`
 	DataBase64  string `json:"data"`
 	TimestampMs int64  `json:"timestampMs"`
+}
+
+func previewForLog(input string, maxRunes int) (preview string, truncated bool) {
+	if maxRunes <= 0 {
+		return strconv.QuoteToASCII(""), len(input) > 0
+	}
+	runes := []rune(input)
+	if len(runes) <= maxRunes {
+		return strconv.QuoteToASCII(input), false
+	}
+	return strconv.QuoteToASCII(string(runes[:maxRunes])), true
 }
 
 func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
@@ -225,21 +238,43 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		start := time.Now()
+		slowTimer := time.AfterFunc(2*time.Second, func() {
+			s.logger.Warn("API input request is taking long", "sessionID", sessionID, "remoteAddr", r.RemoteAddr, "contentLength", r.ContentLength)
+		})
+		defer slowTimer.Stop()
+
+		s.logger.Debug("API input request begin", "sessionID", sessionID, "remoteAddr", r.RemoteAddr, "contentLength", r.ContentLength)
+
 		var req inputRequest
 		if err := readJSON(r, &req); err != nil {
+			s.logger.Warn("API input request invalid payload", "sessionID", sessionID, "remoteAddr", r.RemoteAddr, "error", err)
 			http.Error(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
 
+		preview, truncated := previewForLog(req.Input, 120)
+		s.logger.Debug(
+			"API input request parsed",
+			"sessionID", sessionID,
+			"connId", req.ConnID,
+			"inputLength", len(req.Input),
+			"inputPreview", preview,
+			"previewTruncated", truncated,
+		)
+
 		session, ok := s.manager.GetSession(sessionID)
 		if !ok {
+			s.logger.Warn("API input session not found", "sessionID", sessionID, "connId", req.ConnID)
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
 		if err := session.WriteDataWithSource([]byte(req.Input), req.ConnID); err != nil {
+			s.logger.Error("API input write failed", "sessionID", sessionID, "connId", req.ConnID, "inputLength", len(req.Input), "error", err, "durationMs", time.Since(start).Milliseconds())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.logger.Debug("API input request ok", "sessionID", sessionID, "connId", req.ConnID, "durationMs", time.Since(start).Milliseconds())
 		w.WriteHeader(http.StatusNoContent)
 		return
 
