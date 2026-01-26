@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  npm-publish-terminal-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          cache-dependency-path: terminal-web/package-lock.json
+
+      - name: Verify Tag Matches Package Version
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./terminal-web/package.json').version")"
+          echo "tag=$TAG_VERSION pkg=$PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match terminal-web package version ($PKG_VERSION)" >&2
+            exit 1
+          fi
+
+      - name: Install
+        working-directory: terminal-web
+        run: npm ci
+
+      - name: Lint / Test / Build
+        working-directory: terminal-web
+        run: npm run lint && npm test && npm run build
+
+      - name: Publish
+        working-directory: terminal-web
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
