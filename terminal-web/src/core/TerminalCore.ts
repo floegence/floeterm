@@ -422,19 +422,27 @@ export class TerminalCore {
   }
 
   setTheme(theme: Record<string, string>): void {
+    const mapped = mapThemeToGhostty(theme);
+    // Persist latest theme so a future re-initialization can reuse it.
+    this.config = { ...this.config, theme: mapped };
+
     if (!this.terminal) {
       return;
     }
 
-    const mapped = mapThemeToGhostty(theme);
-    this.terminal.options.theme = mapped;
-
     const terminalAny = this.terminal as unknown as {
+      isOpen?: boolean;
       renderer?: { setTheme?: (theme: Record<string, string>) => void; render?: (...args: unknown[]) => void };
       wasmTerm?: unknown;
       viewportY?: number;
       scrollbarOpacity?: number;
     };
+
+    // ghostty-web emits a warning when mutating options.theme after open().
+    // Apply theme directly to the renderer to avoid noisy console output.
+    if (!terminalAny.isOpen) {
+      this.terminal.options.theme = mapped;
+    }
 
     if (terminalAny.renderer?.setTheme) {
       terminalAny.renderer.setTheme(mapped);
