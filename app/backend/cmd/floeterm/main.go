@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,6 +58,9 @@ func main() {
 	logger.Info("floeterm server listening", "addr", addr)
 	if staticDir != "" {
 		logger.Info("serving web", "staticDir", staticDir)
+		if url := displayLocalAccessURL(addr); url != "" {
+			logger.Info("open in browser", "url", url)
+		}
 	} else {
 		logger.Info("no static dir configured; API only")
 	}
@@ -65,6 +69,22 @@ func main() {
 		logger.Error("http server exited", "error", err)
 		os.Exit(1)
 	}
+}
+
+func displayLocalAccessURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+
+	// We usually listen on 0.0.0.0 / :: for LAN access, but "localhost" is the
+	// most helpful address to show in logs for local browsing.
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "localhost"
+	}
+
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func resolveDefaultStaticDir() string {
