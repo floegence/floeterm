@@ -57,7 +57,7 @@ app-web-build:
 .PHONY: run
 run: app-web-prepare
 	@set -euo pipefail; \
-	(cd app/backend && go run ./cmd/floeterm -addr 0.0.0.0:8080 -static ../web/dist -log-level debug)
+	(cd app/backend && go run ./cmd/floeterm -addr 0.0.0.0:8280 -static ../web/dist -log-level debug)
 
 .PHONY: dev
 dev:
