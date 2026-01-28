@@ -50,6 +50,14 @@ type historyChunk struct {
 	TimestampMs int64  `json:"timestampMs"`
 }
 
+type sessionStatsResponse struct {
+	History historyStats `json:"history"`
+}
+
+type historyStats struct {
+	TotalBytes int64 `json:"totalBytes"`
+}
+
 func previewForLog(input string, maxRunes int) (preview string, truncated bool) {
 	if maxRunes <= 0 {
 		return strconv.QuoteToASCII(""), len(input) > 0
@@ -364,6 +372,31 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSON(w, http.StatusOK, out)
+		return
+
+	case "stats":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		session, ok := s.manager.GetSession(sessionID)
+		if !ok {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+
+		stats, err := session.GetHistoryStats()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, sessionStatsResponse{
+			History: historyStats{
+				TotalBytes: stats.TotalBytes,
+			},
+		})
 		return
 
 	case "clear":
