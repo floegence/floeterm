@@ -9,6 +9,12 @@ import type {
 
 type ApiSessionInfo = TerminalSessionInfo;
 
+type ApiSessionStats = {
+  history: {
+    totalBytes: number;
+  };
+};
+
 type ApiHistoryChunk = {
   sequence: number;
   data: string; // base64
@@ -79,6 +85,7 @@ export type AppTerminalTransport = Omit<TerminalTransport, 'listSessions' | 'cre
   createSession: NonNullable<TerminalTransport['createSession']>;
   deleteSession: NonNullable<TerminalTransport['deleteSession']>;
   renameSession: NonNullable<TerminalTransport['renameSession']>;
+  getSessionStats: (sessionId: TerminalID) => Promise<ApiSessionStats>;
 };
 
 export const createTransport = (connId: string): AppTerminalTransport => {
@@ -141,6 +148,9 @@ export const createTransport = (connId: string): AppTerminalTransport => {
         method: 'POST',
         body: JSON.stringify({ newName })
       });
+    },
+    getSessionStats: async sessionId => {
+      return await requestJson<ApiSessionStats>(`/api/sessions/${encodeURIComponent(sessionId)}/stats`, { method: 'GET' });
     }
   };
 };

@@ -4,6 +4,24 @@ import { createEventSource, createTransport, getOrCreateConnId } from './termina
 
 const SESSION_STORAGE_KEY = 'floeterm_session_id';
 const THEME_STORAGE_KEY = 'floeterm_theme_name';
+const HISTORY_STATS_POLL_MS = 2000;
+
+const formatBytes = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const rounded = unitIndex === 0 ? Math.round(value) : Math.round(value * 10) / 10;
+  return `${rounded} ${units[unitIndex]}`;
+};
 
 const isThemeName = (value: string): value is TerminalThemeName => {
   return value === 'tokyoNight' || value === 'dark' || value === 'monokai' || value === 'solarizedDark' || value === 'light';
@@ -64,6 +82,33 @@ const TerminalPane = (props: {
     transport: props.transport,
     eventSource: props.eventSource
   });
+
+  const [historyBytes, setHistoryBytes] = useState<number | null>(null);
+  const isMountedRef = useRef(true);
+  const clearStatsRefreshTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (typeof window !== 'undefined' && clearStatsRefreshTimerRef.current !== null) {
+        window.clearTimeout(clearStatsRefreshTimerRef.current);
+        clearStatsRefreshTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const refreshHistoryBytes = useCallback(async () => {
+    try {
+      const stats = await props.transport.getSessionStats(props.sessionId);
+      if (!isMountedRef.current) {
+        return;
+      }
+      setHistoryBytes(stats.history.totalBytes);
+    } catch {
+      // Best-effort: stats are purely informational and should not impact terminal usability.
+    }
+  }, [props.transport, props.sessionId]);
 
   const actionsRef = useRef(actions);
   useEffect(() => {
@@ -132,6 +177,51 @@ const TerminalPane = (props: {
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+
+    let intervalId: number | null = null;
+
+    const stop = () => {
+      if (intervalId === null) {
+        return;
+      }
+      window.clearInterval(intervalId);
+      intervalId = null;
+    };
+
+    const start = () => {
+      if (HISTORY_STATS_POLL_MS <= 0) {
+        return;
+      }
+      if (intervalId !== null) {
+        return;
+      }
+      intervalId = window.setInterval(() => {
+        refreshHistoryBytes();
+      }, HISTORY_STATS_POLL_MS);
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshHistoryBytes();
+        start();
+        return;
+      }
+      stop();
+    };
+
+    onVisibilityChange();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [refreshHistoryBytes]);
+
   return (
     <div className="main">
       <div className="toolbar">
@@ -140,6 +230,7 @@ const TerminalPane = (props: {
           <span className="status">
             {state.state}
             {loadingMessage ? ` :: ${loadingMessage}` : ''}
+            {historyBytes !== null ? ` :: history ${formatBytes(historyBytes)}` : ''}
           </span>
         </div>
         <div className="toolbarActions">
@@ -153,7 +244,20 @@ const TerminalPane = (props: {
           <button onClick={props.onRestart} disabled={props.isBusy}>
             restart
           </button>
-          <button onClick={() => actions.clear()} disabled={props.isBusy}>
+          <button
+            onClick={() => {
+              actions.clear();
+              // transport.clear() is best-effort and async; refresh shortly after to reflect new stats.
+              if (clearStatsRefreshTimerRef.current !== null) {
+                window.clearTimeout(clearStatsRefreshTimerRef.current);
+              }
+              clearStatsRefreshTimerRef.current = window.setTimeout(() => {
+                clearStatsRefreshTimerRef.current = null;
+                refreshHistoryBytes();
+              }, 150);
+            }}
+            disabled={props.isBusy}
+          >
             clear
           </button>
         </div>
