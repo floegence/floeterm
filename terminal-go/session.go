@@ -254,6 +254,19 @@ func (s *Session) GetHistoryFromSequence(fromSeq int64) ([]TerminalDataChunk, er
 	return filtered, nil
 }
 
+// GetHistoryStats returns a lightweight snapshot of the history buffer without copying stored data.
+func (s *Session) GetHistoryStats() (RingBufferStats, error) {
+	s.mu.RLock()
+	ringBuffer := s.ringBuffer
+	s.mu.RUnlock()
+
+	if ringBuffer == nil {
+		return RingBufferStats{}, fmt.Errorf("ring buffer not initialized")
+	}
+
+	return ringBuffer.GetStats(), nil
+}
+
 // ClearHistory removes stored PTY output from the ring buffer.
 func (s *Session) ClearHistory() error {
 	s.mu.Lock()
