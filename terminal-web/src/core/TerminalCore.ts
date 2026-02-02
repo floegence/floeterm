@@ -771,6 +771,8 @@ export class TerminalCore {
       sm.selectionEnd = { col: endCol, absoluteRow: match.row };
       sm.markCurrentSelectionDirty?.();
       sm.selectionChangedEmitter?.fire?.();
+      // ghostty-web 不会因为 selection change 自动触发 render；主动刷新以保证 UI（按钮/快捷键）操作立即可见。
+      this.forceFullRender();
       return;
     }
 
@@ -778,6 +780,8 @@ export class TerminalCore {
     const viewportRow = Math.max(0, Math.min(rows - 1, Math.floor(rows / 2)));
     if (typeof t.select === 'function') {
       t.select(startCol, viewportRow, Math.max(1, match.len));
+      // 同上：确保当前匹配的 selection 颜色立即显示。
+      this.forceFullRender();
     }
   }
 
@@ -793,6 +797,8 @@ export class TerminalCore {
       } catch {
       }
     }
+    // ghostty-web 不会因为 clearSelection 自动触发 render；主动刷新以清除残留高亮。
+    this.forceFullRender();
   }
 
   private patchSearchSelectionManager(sm: any): void {
