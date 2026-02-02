@@ -10,6 +10,29 @@ export enum TerminalState {
   DISPOSED = 'disposed'
 }
 
+export interface TerminalResponsiveConfig {
+  /**
+   * When true, perform a fit() after the terminal receives focus/pointer interaction.
+   * This helps keep the terminal responsive when switching between multiple panes/tabs.
+   */
+  fitOnFocus?: boolean;
+
+  /**
+   * When true, emit a resize notification when the terminal receives focus, even if the
+   * measured cols/rows did not change since the last notification.
+   *
+   * This is useful for "remote PTY sync" scenarios where another view might have resized
+   * the remote session while this view was inactive.
+   */
+  emitResizeOnFocus?: boolean;
+
+  /**
+   * When true, suppress resize notifications unless the terminal is focused.
+   * This avoids inactive/hidden terminals overriding remote cols/rows.
+   */
+  notifyResizeOnlyWhenFocused?: boolean;
+}
+
 // TerminalConfig mirrors the terminal options that consumers commonly customize.
 export interface TerminalConfig {
   cols?: number;
@@ -23,6 +46,7 @@ export interface TerminalConfig {
   allowTransparency?: boolean;
   convertEol?: boolean;
   allowProposedApi?: boolean;
+  responsive?: TerminalResponsiveConfig;
   [key: string]: unknown;
 }
 

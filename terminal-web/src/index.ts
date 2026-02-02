@@ -4,6 +4,7 @@ export { useTerminalInstance } from './hooks/useTerminalInstance';
 export type {
   Logger,
   TerminalConfig,
+  TerminalResponsiveConfig,
   TerminalEventHandlers,
   TerminalState,
   TerminalID,
