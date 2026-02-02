@@ -643,7 +643,8 @@ export class TerminalCore {
 
     const caseSensitive = Boolean(options?.caseSensitive);
     const query = caseSensitive ? term : term.toLowerCase();
-    const tokens = query.split(/\\s+/).filter(Boolean);
+    // 模糊搜索：按空白切分为多个 token（例如 "git status" -> ["git", "status"]）
+    const tokens = query.split(/\s+/).filter(Boolean);
 
     let regex: RegExp | null = null;
     if (options?.regex) {
