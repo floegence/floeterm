@@ -1,6 +1,6 @@
 {
   "name": "@floegence/floeterm-terminal-web",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Headless ghostty-web (xterm.js API-compatible) integration with data flow utilities. Provides TerminalCore and a React hook without UI components.",
   "license": "MIT",
   "publishConfig": {
