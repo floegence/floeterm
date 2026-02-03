@@ -1,5 +1,7 @@
 export { TerminalCore } from './core/TerminalCore';
 export { useTerminalInstance } from './hooks/useTerminalInstance';
+export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator';
+export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator';
 
 export type {
   Logger,
