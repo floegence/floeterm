@@ -37,7 +37,7 @@ func DefaultTerminalEnv() TerminalEnv {
 		Lang:               "en_US.UTF-8",
 		LcAll:              "en_US.UTF-8",
 		TermProgram:        "floeterm",
-		TermProgramVersion: "0.3.2",
+		TermProgramVersion: "0.4.0",
 		Terminfo:           "/usr/share/terminfo",
 		TermFeatures:       "256color:altscreen:mouse",
 	}
