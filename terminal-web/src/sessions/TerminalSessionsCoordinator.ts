@@ -204,6 +204,42 @@ export class TerminalSessionsCoordinator {
     return { ...session, id };
   }
 
+  updateSessionMeta(
+    sessionId: string,
+    patch: {
+      name?: string;
+      workingDir?: string;
+      lastActiveAtMs?: number;
+      isActive?: boolean;
+    }
+  ): void {
+    const id = String(sessionId ?? '').trim();
+    if (!id) return;
+    if (this.pendingDeletions.has(id)) return;
+    if (this.sessions.length === 0) return;
+
+    const next = this.sessions.map((s) => {
+      if (s.id !== id) return s;
+
+      const name = typeof patch?.name === 'string' && patch.name.trim() ? patch.name : s.name;
+      const workingDir = typeof patch?.workingDir === 'string' && patch.workingDir.trim() ? patch.workingDir : s.workingDir;
+      const lastActiveAtMs = typeof patch?.lastActiveAtMs === 'number' && patch.lastActiveAtMs > 0
+        ? patch.lastActiveAtMs
+        : s.lastActiveAtMs;
+      const isActive = typeof patch?.isActive === 'boolean' ? patch.isActive : s.isActive;
+
+      return {
+        ...s,
+        name,
+        workingDir,
+        lastActiveAtMs,
+        isActive,
+      };
+    });
+
+    this.setSessions(next);
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     if (!this.transport.deleteSession) {
       throw new Error('Terminal transport does not support deleteSession()');

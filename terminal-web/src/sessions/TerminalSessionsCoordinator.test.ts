@@ -36,6 +36,21 @@ const deferred = <T = void>() => {
 };
 
 describe('TerminalSessionsCoordinator', () => {
+  it('updates session metadata in-place without a refresh', async () => {
+    const s1 = makeSession('s1', { createdAtMs: 1, name: 'Old', workingDir: '/old' });
+
+    const transport = makeTransport({
+      listSessions: vi.fn().mockResolvedValue([s1])
+    });
+
+    const coordinator = new TerminalSessionsCoordinator({ transport, pollMs: 0 });
+    await coordinator.refresh();
+
+    coordinator.updateSessionMeta('s1', { name: 'New Name', workingDir: '/new' });
+    expect(coordinator.getSnapshot().find((s) => s.id === 's1')?.name).toBe('New Name');
+    expect(coordinator.getSnapshot().find((s) => s.id === 's1')?.workingDir).toBe('/new');
+  });
+
   it('filters pending deletions during refresh to avoid session reappearing', async () => {
     const s1 = makeSession('s1', { createdAtMs: 1 });
     const s2 = makeSession('s2', { createdAtMs: 2 });
