@@ -22,3 +22,4 @@ venv/
 .vscode/
 
 /\.*\.md
+!/.develop.md
