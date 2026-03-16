@@ -1,6 +1,7 @@
 import { filterXtermAutoResponses } from '../utils/xtermAutoResponseFilter';
 import { createConsoleLogger, noopLogger } from '../utils/logger';
 import { TerminalState, type Logger, type TerminalConfig, type TerminalEventHandlers, type TerminalResponsiveConfig } from '../types';
+import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
 
 type terminal_search_match = {
   row: number;
@@ -115,6 +116,7 @@ export class TerminalCore {
 
   // Temporary theme override while search is active.
   private searchThemeRestore: Record<string, string> | null = null;
+  private inputBridge: TerminalInputBridge | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -220,6 +222,26 @@ export class TerminalCore {
     await this.waitForDOMAndFonts();
     await this.ensureContainerReady();
     this.terminal.open(this.container);
+    this.setupInputBridge();
+  }
+
+  private setupInputBridge(): void {
+    this.disposeInputBridge();
+
+    const input = resolveTerminalInputElement(this.container);
+    if (!input) {
+      this.logger.debug('[TerminalCore] No terminal input host found for input bridge');
+      return;
+    }
+
+    this.inputBridge = new TerminalInputBridge(
+      this.container,
+      input,
+      (data: string) => {
+        this.eventHandlers.onData?.(data);
+      },
+      this.logger,
+    );
   }
 
   private async waitForDOMAndFonts(): Promise<void> {
@@ -1024,6 +1046,10 @@ export class TerminalCore {
 
   focus(): void {
     this.terminal?.focus();
+
+    if (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0) {
+      this.inputBridge?.focus();
+    }
   }
 
   setConnected(isConnected: boolean): void {
@@ -1089,10 +1115,16 @@ export class TerminalCore {
       clearTimeout(this.replayingHistoryTimer);
       this.replayingHistoryTimer = null;
     }
+    this.disposeInputBridge();
     this.disposeSearchOverlay();
     this.terminal?.dispose();
     this.terminal = null;
     this.setState(TerminalState.DISPOSED);
+  }
+
+  private disposeInputBridge(): void {
+    this.inputBridge?.dispose();
+    this.inputBridge = null;
   }
 
   private static normalizeResponsiveConfig(value: unknown): Required<TerminalResponsiveConfig> {

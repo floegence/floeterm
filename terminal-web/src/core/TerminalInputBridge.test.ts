@@ -1,0 +1,122 @@
+// @vitest-environment jsdom
+
+import { describe, expect, it, vi } from 'vitest';
+import { TerminalInputBridge } from './TerminalInputBridge';
+
+const createInputEvent = (
+  type: string,
+  init: { data?: string | null; inputType?: string; isComposing?: boolean } = {},
+): InputEvent => {
+  const event = new Event(type, { bubbles: true, cancelable: true }) as InputEvent;
+  Object.defineProperty(event, 'data', { value: init.data ?? null });
+  Object.defineProperty(event, 'inputType', { value: init.inputType ?? '' });
+  Object.defineProperty(event, 'isComposing', { value: Boolean(init.isComposing) });
+  return event;
+};
+
+describe('TerminalInputBridge', () => {
+  const setup = () => {
+    const container = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    container.appendChild(textarea);
+    document.body.appendChild(container);
+    const onData = vi.fn();
+    const bridge = new TerminalInputBridge(container, textarea, onData);
+    return { bridge, container, textarea, onData };
+  };
+
+  it('sends plain text from beforeinput without waiting for keydown', () => {
+    const { textarea, onData } = setup();
+
+    textarea.dispatchEvent(createInputEvent('beforeinput', {
+      data: 'a',
+      inputType: 'insertText',
+    }));
+
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenLastCalledWith('a');
+  });
+
+  it('falls back to input value when beforeinput is unavailable', () => {
+    const { textarea, onData } = setup();
+
+    textarea.value = 'hello';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenLastCalledWith('hello');
+    expect(textarea.value).toBe('');
+  });
+
+  it('forwards special keys to the terminal container and suppresses duplicated beforeinput', () => {
+    const { container, textarea, onData } = setup();
+
+    container.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        onData('\r');
+        event.preventDefault();
+      }
+    });
+
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    }));
+    textarea.dispatchEvent(createInputEvent('beforeinput', {
+      data: null,
+      inputType: 'insertLineBreak',
+    }));
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenLastCalledWith('\r');
+  });
+
+  it('emits plain text once when keydown is followed by beforeinput and input', () => {
+    const { textarea, onData } = setup();
+
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'A',
+      code: 'KeyA',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+    textarea.dispatchEvent(createInputEvent('beforeinput', {
+      data: 'A',
+      inputType: 'insertText',
+    }));
+    textarea.value = 'A';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenLastCalledWith('A');
+    expect(textarea.value).toBe('');
+  });
+
+  it('emits IME text once on compositionend', () => {
+    const { textarea, onData } = setup();
+
+    textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    textarea.value = '你';
+    textarea.dispatchEvent(new CompositionEvent('compositionend', {
+      bubbles: true,
+      data: '你',
+    }));
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenLastCalledWith('你');
+    expect(textarea.value).toBe('');
+  });
+
+  it('focuses the hidden textarea when requested', () => {
+    const { bridge, textarea } = setup();
+
+    bridge.focus();
+
+    expect(document.activeElement).toBe(textarea);
+  });
+});
