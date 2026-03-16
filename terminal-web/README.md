@@ -27,6 +27,7 @@ export function TerminalPane() {
 ## Notes
 - You must provide a `TerminalTransport` and `TerminalEventSource`.
 - `ghostty-web` needs a one-time `init()` (handled internally by `TerminalCore`).
+- `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and IME input continue to work on touch devices.
 
 ## Responsive resize (multi-pane / multi-view)
 When the same remote terminal session can be displayed in multiple views (e.g. a Deck widget and a dedicated Terminal page),
