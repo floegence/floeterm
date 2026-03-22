@@ -15,13 +15,13 @@ const createInputEvent = (
 };
 
 describe('TerminalInputBridge', () => {
-  const setup = () => {
+  const setup = (selectionText = '') => {
     const container = document.createElement('div');
     const textarea = document.createElement('textarea');
     container.appendChild(textarea);
     document.body.appendChild(container);
     const onData = vi.fn();
-    const bridge = new TerminalInputBridge(container, textarea, onData);
+    const bridge = new TerminalInputBridge(container, textarea, onData, undefined, () => selectionText);
     return { bridge, container, textarea, onData };
   };
 
@@ -118,5 +118,38 @@ describe('TerminalInputBridge', () => {
     bridge.focus();
 
     expect(document.activeElement).toBe(textarea);
+  });
+
+  it('copies the exact terminal selection through the standard copy event', () => {
+    const selection = '  echo hi\n';
+    const { textarea } = setup(selection);
+    const setData = vi.fn();
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', {
+      value: { setData },
+    });
+
+    textarea.dispatchEvent(event);
+
+    expect(setData).toHaveBeenCalledTimes(1);
+    expect(setData).toHaveBeenCalledWith('text/plain', selection);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('does not hijack copy events from non-terminal editable targets inside the container', () => {
+    const { container } = setup('terminal selection');
+    const extraInput = document.createElement('input');
+    container.appendChild(extraInput);
+
+    const setData = vi.fn();
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', {
+      value: { setData },
+    });
+
+    extraInput.dispatchEvent(event);
+
+    expect(setData).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
   });
 });

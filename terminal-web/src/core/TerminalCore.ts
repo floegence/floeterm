@@ -1,6 +1,13 @@
 import { filterXtermAutoResponses } from '../utils/xtermAutoResponseFilter';
 import { createConsoleLogger, noopLogger } from '../utils/logger';
-import { TerminalState, type Logger, type TerminalConfig, type TerminalEventHandlers, type TerminalResponsiveConfig } from '../types';
+import {
+  TerminalState,
+  type Logger,
+  type TerminalClipboardConfig,
+  type TerminalConfig,
+  type TerminalEventHandlers,
+  type TerminalResponsiveConfig,
+} from '../types';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
 
 type terminal_search_match = {
@@ -16,6 +23,10 @@ type terminal_search_overlay = {
   cssWidth: number;
   cssHeight: number;
   termCanvas: HTMLCanvasElement;
+};
+
+type terminal_selection_manager = {
+  copyToClipboard?: ((text: string) => Promise<void> | void) | null;
 };
 
 const TERMINAL_SEARCH_MAX_RESULTS = 5000;
@@ -93,6 +104,7 @@ export class TerminalCore {
 
   private logger: Logger;
   private eventHandlers: TerminalEventHandlers;
+  private clipboard: Required<TerminalClipboardConfig>;
   private responsive: Required<TerminalResponsiveConfig>;
 
   private hasFocus = false;
@@ -125,6 +137,7 @@ export class TerminalCore {
     logger: Logger = createConsoleLogger()
   ) {
     this.eventHandlers = eventHandlers;
+    this.clipboard = TerminalCore.normalizeClipboardConfig(config?.clipboard);
     this.logger = logger ?? noopLogger;
     this.responsive = TerminalCore.normalizeResponsiveConfig(config?.responsive);
   }
@@ -222,7 +235,25 @@ export class TerminalCore {
     await this.waitForDOMAndFonts();
     await this.ensureContainerReady();
     this.terminal.open(this.container);
+    this.patchSelectionManagerClipboardBehavior();
     this.setupInputBridge();
+  }
+
+  private patchSelectionManagerClipboardBehavior(): void {
+    if (this.clipboard.copyOnSelect) {
+      return;
+    }
+
+    const selectionManager = ((this.terminal as unknown as { selectionManager?: terminal_selection_manager | null } | null)
+      ?.selectionManager) ?? null;
+    if (!selectionManager || typeof selectionManager.copyToClipboard !== 'function') {
+      return;
+    }
+
+    selectionManager.copyToClipboard = async () => {
+      // Disable the upstream copy-on-select side effect while keeping
+      // the selection lifecycle intact for explicit copy commands.
+    };
   }
 
   private setupInputBridge(): void {
@@ -241,6 +272,7 @@ export class TerminalCore {
         this.eventHandlers.onData?.(data);
       },
       this.logger,
+      () => this.getSelectionText(),
     );
   }
 
@@ -1133,6 +1165,13 @@ export class TerminalCore {
       fitOnFocus: Boolean(raw.fitOnFocus),
       emitResizeOnFocus: Boolean(raw.emitResizeOnFocus),
       notifyResizeOnlyWhenFocused: Boolean(raw.notifyResizeOnlyWhenFocused),
+    };
+  }
+
+  private static normalizeClipboardConfig(value: unknown): Required<TerminalClipboardConfig> {
+    const raw = (typeof value === 'object' && value) ? (value as Partial<TerminalClipboardConfig>) : {};
+    return {
+      copyOnSelect: raw.copyOnSelect !== false,
     };
   }
 

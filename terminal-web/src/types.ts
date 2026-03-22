@@ -33,11 +33,21 @@ export interface TerminalResponsiveConfig {
   notifyResizeOnlyWhenFocused?: boolean;
 }
 
+export interface TerminalClipboardConfig {
+  /**
+   * When true, mouse selection follows the upstream terminal default and copies
+   * the selected text immediately. Consumers that want standard explicit copy
+   * commands only should set this to false.
+   */
+  copyOnSelect?: boolean;
+}
+
 // TerminalConfig mirrors the terminal options that consumers commonly customize.
 export interface TerminalConfig {
   cols?: number;
   rows?: number;
   theme?: Record<string, unknown>;
+  clipboard?: TerminalClipboardConfig;
   fontSize?: number;
   fontFamily?: string;
   cursorBlink?: boolean;

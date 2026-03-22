@@ -5,6 +5,7 @@ export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSess
 
 export type {
   Logger,
+  TerminalClipboardConfig,
   TerminalConfig,
   TerminalResponsiveConfig,
   TerminalEventHandlers,
