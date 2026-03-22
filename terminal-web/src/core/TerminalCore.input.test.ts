@@ -12,12 +12,22 @@ vi.mock('ghostty-web', () => {
     buffer: any;
     element: HTMLElement | null = null;
     textarea: HTMLTextAreaElement | null = null;
+    selectionManager: {
+      copySpy: ReturnType<typeof vi.fn>;
+      copyToClipboard: (text: string) => Promise<void>;
+    };
+    selectionText = '';
 
     constructor(opts: any) {
       this.cols = typeof opts?.cols === 'number' ? opts.cols : 80;
       this.rows = typeof opts?.rows === 'number' ? opts.rows : 24;
       this.options = { theme: opts?.theme ?? {}, fontSize: opts?.fontSize, fontFamily: opts?.fontFamily };
       this.buffer = { active: { length: 0 } };
+      const copySpy = vi.fn().mockResolvedValue(undefined);
+      this.selectionManager = {
+        copySpy,
+        copyToClipboard: (text: string) => copySpy(text),
+      };
     }
 
     loadAddon(addon: any) {
@@ -49,7 +59,7 @@ vi.mock('ghostty-web', () => {
 
     clear() {}
     getSelection() {
-      return '';
+      return this.selectionText;
     }
     focus() {
       this.element?.focus();
@@ -151,6 +161,93 @@ describe('TerminalCore mobile input integration', () => {
     core.focus();
 
     expect(document.activeElement).toBe(textarea);
+
+    core.dispose();
+  });
+
+  it('copies the active terminal selection through the standard copy event', async () => {
+    const container = document.createElement('div');
+    container.tabIndex = 0;
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const core = new TerminalCore(container, {}, {});
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    const terminal = (core as unknown as { terminal?: { selectionText: string } | null }).terminal;
+    expect(terminal).toBeTruthy();
+    terminal!.selectionText = '  pnpm test\n';
+
+    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    const setData = vi.fn();
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', {
+      value: { setData },
+    });
+
+    textarea!.dispatchEvent(event);
+
+    expect(setData).toHaveBeenCalledWith('text/plain', '  pnpm test\n');
+
+    core.dispose();
+  });
+
+  it('disables copy-on-select side effects when configured', async () => {
+    const container = document.createElement('div');
+    container.tabIndex = 0;
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const core = new TerminalCore(container, {
+      clipboard: {
+        copyOnSelect: false,
+      },
+    }, {});
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    const terminal = (core as unknown as {
+      terminal?: { selectionManager?: { copySpy: ReturnType<typeof vi.fn>; copyToClipboard: (text: string) => Promise<void> } } | null;
+    }).terminal;
+    expect(terminal?.selectionManager).toBeTruthy();
+
+    await terminal!.selectionManager!.copyToClipboard('selected text');
+
+    expect(terminal!.selectionManager!.copySpy).not.toHaveBeenCalled();
+
+    core.dispose();
+  });
+
+  it('keeps copy-on-select behavior enabled by default', async () => {
+    const container = document.createElement('div');
+    container.tabIndex = 0;
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const core = new TerminalCore(container, {}, {});
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    const terminal = (core as unknown as {
+      terminal?: { selectionManager?: { copySpy: ReturnType<typeof vi.fn>; copyToClipboard: (text: string) => Promise<void> } } | null;
+    }).terminal;
+    expect(terminal?.selectionManager).toBeTruthy();
+
+    await terminal!.selectionManager!.copyToClipboard('selected text');
+
+    expect(terminal!.selectionManager!.copySpy).toHaveBeenCalledWith('selected text');
 
     core.dispose();
   });

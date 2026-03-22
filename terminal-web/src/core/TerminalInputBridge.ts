@@ -73,6 +73,14 @@ const cloneKeyboardEventInit = (event: KeyboardEvent): KeyboardEventInit => ({
   composed: true,
 });
 
+const isEditableTarget = (target: EventTarget | null): target is HTMLElement => {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return target.matches('input, select, textarea, [contenteditable], [contenteditable="true"]');
+};
+
 export const resolveTerminalInputElement = (container: HTMLElement): HTMLTextAreaElement | null => {
   const direct = container.querySelector(TERMINAL_INPUT_SELECTOR);
   if (direct instanceof HTMLTextAreaElement) {
@@ -109,6 +117,10 @@ export class TerminalInputBridge {
     this.handleCompositionEnd(event);
   };
 
+  private readonly copyListener = (event: ClipboardEvent) => {
+    this.handleCopy(event);
+  };
+
   private readonly focusListener = () => {
     this.clearInputValue();
   };
@@ -118,6 +130,7 @@ export class TerminalInputBridge {
     private readonly input: HTMLTextAreaElement,
     private readonly onData: (data: string) => void,
     private readonly logger: Logger = noopLogger,
+    private readonly getSelectionText: () => string = () => '',
   ) {
     this.input.setAttribute('inputmode', 'text');
     this.input.setAttribute('enterkeyhint', 'enter');
@@ -136,6 +149,7 @@ export class TerminalInputBridge {
     this.input.removeEventListener('compositionstart', this.compositionStartListener);
     this.input.removeEventListener('compositionend', this.compositionEndListener as EventListener);
     this.input.removeEventListener('focus', this.focusListener);
+    this.container.removeEventListener('copy', this.copyListener, true);
   }
 
   private attach(): void {
@@ -145,6 +159,7 @@ export class TerminalInputBridge {
     this.input.addEventListener('compositionstart', this.compositionStartListener);
     this.input.addEventListener('compositionend', this.compositionEndListener as EventListener);
     this.input.addEventListener('focus', this.focusListener);
+    this.container.addEventListener('copy', this.copyListener, true);
   }
 
   private handleKeydown(event: KeyboardEvent): void {
@@ -242,6 +257,66 @@ export class TerminalInputBridge {
     this.ignoreNextInput = true;
     this.scheduleEphemeralStateReset();
     this.clearInputValue();
+  }
+
+  private handleCopy(event: ClipboardEvent): void {
+    if (event.defaultPrevented) {
+      return;
+    }
+
+    const target = event.target;
+    if (isEditableTarget(target) && target !== this.input) {
+      return;
+    }
+
+    const selection = this.getSelectionText();
+    if (selection.length === 0) {
+      return;
+    }
+
+    const clipboard = event.clipboardData;
+    if (clipboard && typeof clipboard.setData === 'function') {
+      clipboard.setData('text/plain', selection);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    this.prepareInputForDefaultCopy(selection);
+  }
+
+  private prepareInputForDefaultCopy(selection: string): void {
+    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousValue = this.input.value;
+    const previousSelectionStart = this.input.selectionStart ?? 0;
+    const previousSelectionEnd = this.input.selectionEnd ?? 0;
+    const previousSelectionDirection = this.input.selectionDirection ?? 'none';
+    const restoreInputSelection = previousActiveElement === this.input;
+
+    this.input.value = selection;
+    this.input.focus();
+    this.input.select();
+
+    try {
+      this.input.setSelectionRange(0, selection.length);
+    } catch {
+      this.logger.debug('[TerminalInputBridge] Failed to prepare selection for default copy');
+    }
+
+    setTimeout(() => {
+      this.input.value = previousValue;
+
+      if (!restoreInputSelection) {
+        previousActiveElement?.focus();
+        return;
+      }
+
+      try {
+        this.input.setSelectionRange(previousSelectionStart, previousSelectionEnd, previousSelectionDirection);
+      } catch {
+        this.logger.debug('[TerminalInputBridge] Failed to restore input selection after copy');
+      }
+    }, 0);
   }
 
   private clearInputValue(): void {
