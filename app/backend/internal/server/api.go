@@ -25,8 +25,6 @@ type apiSessionInfo struct {
 type createSessionRequest struct {
 	Name       string `json:"name"`
 	WorkingDir string `json:"workingDir"`
-	Cols       int    `json:"cols"`
-	Rows       int    `json:"rows"`
 }
 
 type renameSessionRequest struct {
@@ -105,20 +103,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		cols := req.Cols
-		rows := req.Rows
-		if cols <= 0 {
-			cols = 80
-		}
-		if rows <= 0 {
-			rows = 24
-		}
-		if !validateDims(cols, rows) {
-			http.Error(w, "invalid cols/rows", http.StatusBadRequest)
-			return
-		}
-
-		session, err := s.manager.CreateSession(req.Name, req.WorkingDir, cols, rows)
+		session, err := s.manager.CreateSession(req.Name, req.WorkingDir)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -224,10 +209,14 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !session.IsActive() {
+			session.AddConnection(req.ConnID, cols, rows)
 			if err := s.manager.ActivateSession(sessionID, cols, rows); err != nil {
+				session.RemoveConnection(req.ConnID)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
 
 		session.AddConnection(req.ConnID, cols, rows)

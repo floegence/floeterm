@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 type testShellResolver struct{ shell string }
@@ -46,11 +48,15 @@ func TestSessionLifecycleAndOutput(t *testing.T) {
 	handler := &captureHandler{dataCh: make(chan []byte, 16)}
 	manager.SetEventHandler(handler)
 
-	session, err := manager.CreateSession("test", "", 80, 24)
+	session, err := manager.CreateSession("test", "")
 	if err != nil {
 		t.Fatalf("failed to create session: %v", err)
 	}
 	defer session.Close()
+
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatalf("failed to activate session: %v", err)
+	}
 
 	waitForOutput(t, handler.dataCh, "ready", 2*time.Second)
 	time.Sleep(20 * time.Millisecond)
@@ -70,6 +76,42 @@ func TestSessionLifecycleAndOutput(t *testing.T) {
 	}
 }
 
+func TestActivateSessionRespectsConnectionSizesBeforeAndAfterActivation(t *testing.T) {
+	manager := NewManager(ManagerConfig{
+		Logger:                        NopLogger{},
+		ShellResolver:                 testShellResolver{shell: "/bin/sh"},
+		ShellArgsProvider:             testShellArgsProvider{},
+		InitialResizeSuppressDuration: time.Millisecond,
+		ResizeSuppressDuration:        time.Millisecond,
+	})
+
+	session, err := manager.CreateSession("test", "")
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	defer session.Close()
+
+	session.AddConnection("c1", 120, 40)
+	session.AddConnection("c2", 90, 30)
+	session.UpdateConnectionSize("c1", 100, 35)
+
+	if session.IsActive() {
+		t.Fatalf("expected session to remain dormant before activation")
+	}
+
+	if err := manager.ActivateSession(session.ID, 100, 35); err != nil {
+		t.Fatalf("failed to activate session: %v", err)
+	}
+
+	waitForPTYSize(t, session, 90, 30, 2*time.Second)
+
+	session.UpdateConnectionSize("c2", 110, 32)
+	waitForPTYSize(t, session, 100, 32, 2*time.Second)
+
+	session.RemoveConnection("c1")
+	waitForPTYSize(t, session, 110, 32, 2*time.Second)
+}
+
 func waitForOutput(t *testing.T, ch <-chan []byte, expected string, timeout time.Duration) {
 	t.Helper()
 
@@ -87,4 +129,24 @@ func waitForOutput(t *testing.T, ch <-chan []byte, expected string, timeout time
 			t.Fatalf("timeout waiting for output %q, got %q", expected, buf.String())
 		}
 	}
+}
+
+func waitForPTYSize(t *testing.T, session *Session, expectedCols, expectedRows int, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		session.mu.RLock()
+		ptyFile := session.PTY
+		session.mu.RUnlock()
+		if ptyFile != nil {
+			rows, cols, err := pty.Getsize(ptyFile)
+			if err == nil && cols == expectedCols && rows == expectedRows {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timeout waiting for PTY size %dx%d", expectedCols, expectedRows)
 }

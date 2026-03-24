@@ -1,8 +1,6 @@
 package terminal
 
 import (
-	"context"
-	"os"
 	"testing"
 	"time"
 )
@@ -15,41 +13,14 @@ func TestManagerActivateSessionDoesNotDeadlock(t *testing.T) {
 		InitialResizeSuppressDuration: time.Millisecond,
 	})
 
-	workingDir, err := os.UserHomeDir()
-	if err != nil || workingDir == "" {
-		workingDir = "/"
+	session, err := manager.CreateSession("test", "")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	sessionCfg := newSessionConfig(manager.config)
-	sessionID := generateSessionID()
-
-	session := &Session{
-		ID:                sessionID,
-		Name:              "test",
-		WorkingDir:        workingDir,
-		CreatedAt:         time.Now(),
-		LastActive:        time.Now(),
-		isActive:          false,
-		connections:       make(map[string]*ConnectionInfo),
-		ctx:               ctx,
-		cancel:            cancel,
-		ringBuffer:        NewTerminalRingBuffer(sessionCfg.historyBufferSize),
-		currentWorkingDir: workingDir,
-		inputWindow:       sessionCfg.inputWindow,
-		eventHandler:      nil,
-		onExit:            nil,
-		config:            sessionCfg,
-	}
-
-	manager.mu.Lock()
-	manager.sessions[sessionID] = session
-	manager.sessionOrder = append(manager.sessionOrder, sessionID)
-	manager.mu.Unlock()
 
 	done := make(chan error, 1)
 	go func() {
-		done <- manager.ActivateSession(sessionID, 80, 24)
+		done <- manager.ActivateSession(session.ID, 80, 24)
 	}()
 
 	select {
@@ -68,7 +39,7 @@ func TestManagerActivateSessionDoesNotDeadlock(t *testing.T) {
 		t.Fatalf("expected PTY/Cmd to be initialized")
 	}
 
-	if err := manager.DeleteSession(sessionID); err != nil {
+	if err := manager.DeleteSession(session.ID); err != nil {
 		t.Fatalf("DeleteSession failed: %v", err)
 	}
 }

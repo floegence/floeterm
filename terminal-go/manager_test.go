@@ -9,9 +9,15 @@ func TestManagerListRenameDelete(t *testing.T) {
 		ShellArgsProvider: testShellArgsProvider{},
 	})
 
-	session, err := manager.CreateSession("", "", 80, 24)
+	session, err := manager.CreateSession("", "")
 	if err != nil {
 		t.Fatalf("create session failed: %v", err)
+	}
+	if session.IsActive() {
+		t.Fatalf("expected session to start dormant")
+	}
+	if session.PTY != nil || session.Cmd != nil {
+		t.Fatalf("expected PTY and command to remain nil before activation")
 	}
 
 	sessions := manager.ListSessions()

@@ -41,8 +41,12 @@ import (
 
 func main() {
     manager := terminal.NewManager(terminal.ManagerConfig{})
-    session, err := manager.CreateSession("", "", 80, 24)
+    session, err := manager.CreateSession("", "")
     if err != nil {
+        log.Fatal(err)
+    }
+
+    if err := manager.ActivateSession(session.ID, 120, 40); err != nil {
         log.Fatal(err)
     }
 
@@ -67,6 +71,10 @@ export function TerminalPane() {
   return <div ref={containerRef} style={{ height: 400 }} />;
 }
 ```
+
+Lifecycle note:
+- `CreateSession` now creates a dormant logical session.
+- The first attach (or an explicit `ActivateSession`) should provide the real terminal viewport size that should start the PTY.
 
 ## Development
 - `make run` starts the app server (Go + web UI) on `http://localhost:8280` (also reachable from other devices on your LAN via `http://<your-ip>:8280`).
