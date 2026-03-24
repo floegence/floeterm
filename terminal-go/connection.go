@@ -25,10 +25,15 @@ func (s *Session) AddConnection(connectionID string, cols, rows int) {
 		Cols:     cols,
 		Rows:     rows,
 	}
+	isActive := s.isActive
 	s.mu.Unlock()
 
 	if existing != nil {
 		s.config.logger.Debug("Replacing existing connection", "sessionID", s.ID, "connectionID", connectionID, "oldJoinedAt", existing.JoinedAt)
+	}
+
+	if !isActive {
+		return
 	}
 
 	go func() {
@@ -51,6 +56,7 @@ func (s *Session) RemoveConnection(connectionID string) {
 	if exists {
 		delete(s.connections, connectionID)
 	}
+	isActive := s.isActive
 	s.mu.Unlock()
 
 	if !exists {
@@ -58,6 +64,10 @@ func (s *Session) RemoveConnection(connectionID string) {
 	}
 
 	s.config.logger.Debug("Removed connection", "sessionID", s.ID, "connectionID", connectionID, "joinedAt", conn.JoinedAt)
+
+	if !isActive {
+		return
+	}
 
 	go func() {
 		if err := s.resizePTYToMinimumSize(); err != nil {
@@ -80,6 +90,7 @@ func (s *Session) UpdateConnectionSize(connectionID string, cols, rows int) {
 		conn.Cols = cols
 		conn.Rows = rows
 	}
+	isActive := s.isActive
 	s.mu.Unlock()
 
 	if !exists {
@@ -89,11 +100,21 @@ func (s *Session) UpdateConnectionSize(connectionID string, cols, rows int) {
 		return
 	}
 
+	if !isActive {
+		return
+	}
+
 	go func() {
 		if err := s.resizePTYToMinimumSize(); err != nil {
 			s.config.logger.Warn("Failed to resize after update", "sessionID", s.ID, "error", err)
 		}
 	}()
+}
+
+func (s *Session) hasConnections() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.connections) > 0
 }
 
 func (s *Session) getMinimumTerminalSize() (int, int) {

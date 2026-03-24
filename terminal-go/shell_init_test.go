@@ -19,13 +19,17 @@ func TestShellArgsProviderEmptySliceSkipsLoginFallback(t *testing.T) {
 		InitialResizeSuppressDuration: time.Millisecond,
 	})
 
-	session, err := manager.CreateSession("test", "", 80, 24)
+	session, err := manager.CreateSession("test", "")
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = manager.DeleteSession(session.ID)
 	})
+
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatalf("ActivateSession failed: %v", err)
+	}
 
 	if session.Cmd == nil {
 		t.Fatalf("expected cmd to be set")

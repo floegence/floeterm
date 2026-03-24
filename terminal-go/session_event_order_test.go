@@ -12,16 +12,20 @@ func (quickExitShellArgsProvider) GetShellArgs(string, string) ([]string, []stri
 }
 
 type eventOrderHandler struct {
-	events chan string
+	manager *Manager
+	events  chan string
 }
 
 func (h *eventOrderHandler) OnTerminalData(string, []byte, int64, bool, string) {}
 func (h *eventOrderHandler) OnTerminalNameChanged(string, string, string, string) {
 }
 
-func (h *eventOrderHandler) OnTerminalSessionCreated(*Session) {
-	// Make CreateSession slow so the child process can exit before CreateSession returns.
-	// Without a "created" barrier, OnTerminalSessionClosed could fire first.
+func (h *eventOrderHandler) OnTerminalSessionCreated(session *Session) {
+	// Activate from the create hook so a fast-exit shell can terminate before
+	// CreateSession returns. Without a "created" barrier, "closed" could arrive first.
+	go func() {
+		_ = h.manager.ActivateSession(session.ID, 80, 24)
+	}()
 	time.Sleep(200 * time.Millisecond)
 	h.events <- "created"
 }
@@ -41,9 +45,9 @@ func TestCreateSessionEmitsCreatedBeforeClosedEvenOnFastExit(t *testing.T) {
 	})
 
 	events := make(chan string, 2)
-	manager.SetEventHandler(&eventOrderHandler{events: events})
+	manager.SetEventHandler(&eventOrderHandler{manager: manager, events: events})
 
-	_, err := manager.CreateSession("fast-exit", "", 80, 24)
+	_, err := manager.CreateSession("fast-exit", "")
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}

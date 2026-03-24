@@ -85,7 +85,7 @@ func TestServer_EndToEndWebsocketEcho(t *testing.T) {
 	t.Cleanup(httpSrv.Close)
 
 	// Create session.
-	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	createReqBody := bytes.NewBufferString(`{}`)
 	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
 	if err != nil {
 		t.Fatalf("create session request failed: %v", err)
@@ -101,6 +101,9 @@ func TestServer_EndToEndWebsocketEcho(t *testing.T) {
 	}
 	if created.ID == "" {
 		t.Fatalf("expected non-empty session id")
+	}
+	if created.IsActive {
+		t.Fatalf("expected created session to remain dormant until attach")
 	}
 
 	// Subscribe websocket for output events.
@@ -176,7 +179,7 @@ func TestServer_WebsocketDisconnectRemovesConnection(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 
-	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	createReqBody := bytes.NewBufferString(`{}`)
 	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
 	if err != nil {
 		t.Fatalf("create session request failed: %v", err)
@@ -237,7 +240,7 @@ func TestServer_WebsocketDisconnectRefCount(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 
-	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	createReqBody := bytes.NewBufferString(`{}`)
 	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
 	if err != nil {
 		t.Fatalf("create session request failed: %v", err)
@@ -308,7 +311,7 @@ func TestServer_ResizeRejectsOversizedDims(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 
-	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	createReqBody := bytes.NewBufferString(`{}`)
 	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
 	if err != nil {
 		t.Fatalf("create session request failed: %v", err)
@@ -349,7 +352,7 @@ func TestServer_InputRejectsOversizedPayload(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 
-	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	createReqBody := bytes.NewBufferString(`{}`)
 	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
 	if err != nil {
 		t.Fatalf("create session request failed: %v", err)
@@ -401,7 +404,7 @@ func TestServer_JSONBodyLimitReturns413(t *testing.T) {
 	httpSrv := httptest.NewServer(srv.Handler())
 	t.Cleanup(httpSrv.Close)
 
-	createReqBody := bytes.NewBufferString(`{"cols":80,"rows":24}`)
+	createReqBody := bytes.NewBufferString(`{}`)
 	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
 	if err != nil {
 		t.Fatalf("create session request failed: %v", err)

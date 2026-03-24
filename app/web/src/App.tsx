@@ -299,7 +299,7 @@ export const App = () => {
       } else if (list.length > 0) {
         chosen = list[0].id;
       } else {
-        const created = await transport.createSession('', '', 80, 24);
+        const created = await transport.createSession('', '');
         chosen = created.id;
       }
 
@@ -328,7 +328,7 @@ export const App = () => {
       if (current) {
         await transport.deleteSession(current).catch(() => {});
       }
-      const created = await transport.createSession('', '', 80, 24);
+      const created = await transport.createSession('', '');
       window.sessionStorage.setItem(SESSION_STORAGE_KEY, created.id);
       setSessionId(created.id);
     } catch (e) {

@@ -40,7 +40,7 @@ func TestCreateSessionHandlerDoesNotDeadlock(t *testing.T) {
 	var session *Session
 	var err error
 	go func() {
-		session, err = manager.CreateSession("test", "", 80, 24)
+		session, err = manager.CreateSession("test", "")
 		close(done)
 	}()
 
@@ -108,7 +108,7 @@ func TestOnTerminalDataHandlerMayWriteWithoutDeadlock(t *testing.T) {
 	handler := &dataReentrantHandler{done: make(chan struct{})}
 	manager.SetEventHandler(handler)
 
-	session, err := manager.CreateSession("test", "", 80, 24)
+	session, err := manager.CreateSession("test", "")
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
@@ -116,6 +116,10 @@ func TestOnTerminalDataHandlerMayWriteWithoutDeadlock(t *testing.T) {
 	t.Cleanup(func() {
 		_ = manager.DeleteSession(session.ID)
 	})
+
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatalf("ActivateSession failed: %v", err)
+	}
 
 	// Trigger a broadcast that runs the handler.
 	session.processRawPTYData([]byte("trigger"))

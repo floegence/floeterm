@@ -43,7 +43,8 @@ type TerminalEventHandler interface {
 	OnTerminalError(sessionID string, err error)
 }
 
-// TerminalSession defines the operations for a running PTY-backed session.
+// TerminalSession defines the operations for a persistent terminal session.
+// A session may remain dormant until it is activated by an attach flow.
 type TerminalSession interface {
 	GetID() string
 	GetName() string
@@ -65,7 +66,7 @@ type TerminalSession interface {
 
 // TerminalManager manages multiple terminal sessions in memory.
 type TerminalManager interface {
-	CreateSession(name, workingDir string, cols, rows int) (*Session, error)
+	CreateSession(name, workingDir string) (*Session, error)
 	GetSession(sessionID string) (*Session, bool)
 	ListSessions() []*Session
 	DeleteSession(sessionID string) error

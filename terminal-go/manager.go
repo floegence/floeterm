@@ -40,8 +40,8 @@ func getDirectoryName(path string) string {
 	return "home"
 }
 
-// CreateSession creates and starts a new PTY session.
-func (m *Manager) CreateSession(name, workingDir string, cols, rows int) (*Session, error) {
+// CreateSession creates a dormant logical terminal session.
+func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	sessionID := generateSessionID()
 
 	if name == "" {
@@ -96,15 +96,7 @@ func (m *Manager) CreateSession(name, workingDir string, cols, rows int) (*Sessi
 	m.sessionOrder = append(m.sessionOrder, sessionID)
 	m.mu.Unlock()
 
-	if err := session.startPTY(cols, rows); err != nil {
-		cancel()
-		m.detachSession(sessionID)
-		session.cleanup()
-		m.config.Logger.Error("Terminal session creation failed", "sessionID", sessionID, "error", err)
-		return nil, fmt.Errorf("failed to start PTY: %w", err)
-	}
-
-	// Refresh handler after PTY start in case it changed during initialization.
+	// Refresh the session handler after registration in case it changed during initialization.
 	m.mu.RLock()
 	handler := m.eventHandler
 	m.mu.RUnlock()
@@ -113,7 +105,7 @@ func (m *Manager) CreateSession(name, workingDir string, cols, rows int) (*Sessi
 	session.eventHandler = handler
 	session.mu.Unlock()
 
-	m.config.Logger.Info("Created terminal session", "sessionID", sessionID, "name", name, "workingDir", workingDir)
+	m.config.Logger.Info("Created dormant terminal session", "sessionID", sessionID, "name", name, "workingDir", workingDir)
 
 	if handler != nil {
 		handler.OnTerminalSessionCreated(session)
@@ -233,7 +225,13 @@ func (m *Manager) ActivateSession(sessionID string, cols, rows int) error {
 		return fmt.Errorf("failed to activate session: %w", err)
 	}
 
-	m.config.Logger.Info("Activated dormant session", "sessionID", sessionID)
+	if session.hasConnections() {
+		if err := session.resizePTYToMinimumSize(); err != nil {
+			return fmt.Errorf("failed to reconcile PTY size after activation: %w", err)
+		}
+	}
+
+	m.config.Logger.Info("Activated dormant session", "sessionID", sessionID, "cols", cols, "rows", rows)
 	return nil
 }
 

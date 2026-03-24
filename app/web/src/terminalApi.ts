@@ -134,10 +134,10 @@ export const createTransport = (connId: string): AppTerminalTransport => {
     listSessions: async () => {
       return await requestJson<ApiSessionInfo[]>(`/api/sessions`, { method: 'GET' });
     },
-    createSession: async (name, workingDir, cols = 80, rows = 24) => {
+    createSession: async (name, workingDir) => {
       return await requestJson<ApiSessionInfo>(`/api/sessions`, {
         method: 'POST',
-        body: JSON.stringify({ name, workingDir, cols, rows })
+        body: JSON.stringify({ name, workingDir })
       });
     },
     deleteSession: async sessionId => {
