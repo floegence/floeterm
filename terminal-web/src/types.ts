@@ -42,6 +42,29 @@ export interface TerminalClipboardConfig {
   copyOnSelect?: boolean;
 }
 
+export interface TerminalBufferCellPosition {
+  x: number;
+  y: number;
+}
+
+export interface TerminalBufferRange {
+  start: TerminalBufferCellPosition;
+  end: TerminalBufferCellPosition;
+}
+
+export interface TerminalLink {
+  text: string;
+  range: TerminalBufferRange;
+  activate: (event: MouseEvent) => void;
+  hover?: (isHovered: boolean) => void;
+  dispose?: () => void;
+}
+
+export interface TerminalLinkProvider {
+  provideLinks: (y: number, callback: (links: TerminalLink[] | undefined) => void) => void;
+  dispose?: () => void;
+}
+
 // TerminalConfig mirrors the terminal options that consumers commonly customize.
 export interface TerminalConfig {
   cols?: number;
@@ -72,6 +95,8 @@ export interface Logger {
 export interface TerminalEventHandlers {
   onData?: (data: string) => void;
   onResize?: (size: { cols: number; rows: number }) => void;
+  onBell?: () => void;
+  onTitleChange?: (title: string) => void;
   onStateChange?: (state: TerminalState) => void;
   onError?: (error: Error) => void;
 }
@@ -97,6 +122,8 @@ export interface TerminalCoreLike {
   forceResize(): void;
   setTheme(theme: Record<string, string>): void;
   setFontSize(size: number): void;
+  setFontFamily?(family: string): void;
+  registerLinkProvider?(provider: TerminalLinkProvider): void;
   startHistoryReplay(duration?: number): void;
 }
 

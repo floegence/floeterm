@@ -5,6 +5,8 @@ export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSess
 
 export type {
   Logger,
+  TerminalBufferCellPosition,
+  TerminalBufferRange,
   TerminalClipboardConfig,
   TerminalConfig,
   TerminalResponsiveConfig,
@@ -22,6 +24,8 @@ export type {
   TerminalManagerActions,
   TerminalManagerState,
   TerminalError,
+  TerminalLink,
+  TerminalLinkProvider,
   TerminalThemeName
 } from './types';
 

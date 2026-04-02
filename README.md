@@ -45,7 +45,7 @@
 
 - `Product-first`: ship your own terminal experience while floeterm handles PTY lifecycle, history replay, resize coordination, and browser-facing terminal plumbing.
 - `Composable`: use [`terminal-go`](./terminal-go) as the backend engine, [`terminal-web`](./terminal-web) as the headless browser layer, or start from the end-to-end reference app in [`app/`](./app).
-- `User-ready`: mobile-friendly input bridging, IME support, reconnect-friendly history replay, and configurable clipboard behavior are already in the stack.
+- `User-ready`: mobile-friendly input bridging, IME support, reconnect-friendly history replay, configurable clipboard behavior, and first-class shell bell/title plus link-provider hooks are already in the stack.
 - `Operationally sane`: one `make check` path matches CI for Go race tests, `govulncheck`, web lint/test/build, and `npm audit`.
 
 Typical use cases:
@@ -64,6 +64,7 @@ Typical use cases:
 | `📚 HISTORY REPLAY` | Scrollback is buffered, filtered, and replayed safely after reconnects or remounts. |
 | `⌨️ IME READY` | The web layer bridges the hidden textarea used by `ghostty-web`, keeping soft keyboard and composition input usable on touch devices. |
 | `📐 MULTI-VIEW` | Responsive resize controls help keep one remote session usable across panes, tabs, and focused terminal views. |
+| `🔗 ACTIONABLE OUTPUT` | Custom link providers and bell/title forwarding let products turn terminal output into file navigation, alerts, and richer UX without patching internals. |
 | `🧪 REFERENCE APP` | A runnable HTTP + WebSocket app shows the full integration path end to end. |
 
 ## 📦 Packages
@@ -89,6 +90,7 @@ npm i @floegence/floeterm-terminal-web
 | Restore terminal output after reconnect or remount | History chunks, replay windows, and filtering that removes problematic terminal auto-responses |
 | Support touch devices and IME input | A browser input bridge that keeps composition and soft keyboard flows working with `ghostty-web` |
 | Reuse one session across multiple surfaces | Per-connection sizing on the backend plus focus-aware responsive resize options in the web layer |
+| Turn terminal output into product interactions | Custom link providers, bell events, and title updates surfaced through `TerminalCore` |
 | Evaluate quickly before integrating | A reference app you can run locally in minutes |
 
 ## 🚀 Quick Start
@@ -158,6 +160,7 @@ export function TerminalPane() {
 | Lifecycle | `CreateSession` creates a dormant logical session. The first attach or an explicit `ActivateSession` should provide the real terminal viewport size. |
 | UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
 | Input model | `TerminalCore` handles one-time `ghostty-web` initialization internally and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
+| Extension hooks | `TerminalCore` exposes link providers, shell bell/title callbacks, and explicit runtime font updates so downstream apps do not need `any`-based terminal mutations. |
 | Reference transport | The sample app uses HTTP APIs for control operations and WebSocket streaming for terminal output. |
 
 ## 🛠 Development
