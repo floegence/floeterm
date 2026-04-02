@@ -6,6 +6,7 @@ import {
   type TerminalClipboardConfig,
   type TerminalConfig,
   type TerminalEventHandlers,
+  type TerminalLinkProvider,
   type TerminalResponsiveConfig,
 } from '../types';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
@@ -27,6 +28,16 @@ type terminal_search_overlay = {
 
 type terminal_selection_manager = {
   copyToClipboard?: ((text: string) => Promise<void> | void) | null;
+};
+
+type ghostty_disposable = {
+  dispose?: () => void;
+};
+
+type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
+  onBell?: (handler: () => void) => ghostty_disposable;
+  onTitleChange?: (handler: (title: string) => void) => ghostty_disposable;
+  registerLinkProvider?: (provider: TerminalLinkProvider) => void;
 };
 
 const TERMINAL_SEARCH_MAX_RESULTS = 5000;
@@ -58,7 +69,7 @@ const loadGhosttyModules = async (logger: Logger): Promise<void> => {
 
   if (!ghosttyInitPromise) {
     logger.debug('[TerminalCore] Initializing ghostty-web WASM');
-    ghosttyInitPromise = init().catch(error => {
+    ghosttyInitPromise = init().catch((error: unknown) => {
       ghosttyInitPromise = null;
       throw error;
     });
@@ -89,7 +100,7 @@ const mapThemeToGhostty = (theme: Record<string, unknown> | undefined): Record<s
 
 // TerminalCore provides a focused wrapper around ghostty-web (xterm.js API-compatible) and its fit addon.
 export class TerminalCore {
-  private terminal: import('ghostty-web').Terminal | null = null;
+  private terminal: ghostty_runtime_terminal | null = null;
   private fitAddon: import('ghostty-web').FitAddon | null = null;
   private needsFullRenderOnNextWrite = false;
 
@@ -129,6 +140,9 @@ export class TerminalCore {
   // Temporary theme override while search is active.
   private searchThemeRestore: Record<string, string> | null = null;
   private inputBridge: TerminalInputBridge | null = null;
+  private terminalEventDisposables: Array<() => void> = [];
+  private readonly registeredLinkProviders = new Set<TerminalLinkProvider>();
+  private readonly appliedLinkProviders = new Set<TerminalLinkProvider>();
 
   constructor(
     private container: HTMLElement,
@@ -211,7 +225,7 @@ export class TerminalCore {
       convertEol: typeof finalConfig.convertEol === 'boolean' ? finalConfig.convertEol : undefined,
       disableStdin: typeof (finalConfig as any).disableStdin === 'boolean' ? ((finalConfig as any).disableStdin as boolean) : undefined,
       smoothScrollDuration: typeof (finalConfig as any).smoothScrollDuration === 'number' ? ((finalConfig as any).smoothScrollDuration as number) : undefined
-    });
+    }) as ghostty_runtime_terminal;
   }
 
   private async loadAddons(): Promise<void> {
@@ -237,6 +251,7 @@ export class TerminalCore {
     this.terminal.open(this.container);
     this.patchSelectionManagerClipboardBehavior();
     this.setupInputBridge();
+    this.applyRegisteredLinkProviders();
   }
 
   private patchSelectionManagerClipboardBehavior(): void {
@@ -334,8 +349,10 @@ export class TerminalCore {
       return;
     }
 
+    this.disposeTerminalEventListeners();
+
     if (this.eventHandlers.onData) {
-      this.terminal.onData((data: string) => {
+      const disposable = this.terminal.onData((data: string) => {
         let filtered = data;
         if (this.isReplayingHistory) {
           filtered = filterXtermAutoResponses(data);
@@ -345,12 +362,28 @@ export class TerminalCore {
         }
         this.eventHandlers.onData?.(filtered);
       });
+      this.trackTerminalEventDisposable(disposable);
     }
 
     if (this.eventHandlers.onResize) {
-      this.terminal.onResize((size: { cols: number; rows: number }) => {
+      const disposable = this.terminal.onResize((size: { cols: number; rows: number }) => {
         this.emitResize(size, { source: 'terminal' });
       });
+      this.trackTerminalEventDisposable(disposable);
+    }
+
+    if (this.eventHandlers.onBell && typeof this.terminal.onBell === 'function') {
+      const disposable = this.terminal.onBell(() => {
+        this.eventHandlers.onBell?.();
+      });
+      this.trackTerminalEventDisposable(disposable);
+    }
+
+    if (this.eventHandlers.onTitleChange && typeof this.terminal.onTitleChange === 'function') {
+      const disposable = this.terminal.onTitleChange((title: string) => {
+        this.eventHandlers.onTitleChange?.(title);
+      });
+      this.trackTerminalEventDisposable(disposable);
     }
   }
 
@@ -1122,11 +1155,37 @@ export class TerminalCore {
   }
 
   setFontSize(size: number): void {
+    this.config = { ...this.config, fontSize: size };
     if (!this.terminal) {
       return;
     }
     this.terminal.options.fontSize = size;
     this.fitAddon?.fit();
+  }
+
+  setFontFamily(family: string): void {
+    const nextFamily = String(family ?? '').trim();
+    if (!nextFamily) {
+      return;
+    }
+
+    this.config = { ...this.config, fontFamily: nextFamily };
+    if (!this.terminal) {
+      return;
+    }
+
+    this.terminal.options.fontFamily = nextFamily;
+    this.fitAddon?.fit();
+    this.forceFullRender();
+  }
+
+  registerLinkProvider(provider: TerminalLinkProvider): void {
+    if (!provider || this.registeredLinkProviders.has(provider)) {
+      return;
+    }
+
+    this.registeredLinkProviders.add(provider);
+    this.applyRegisteredLinkProviders();
   }
 
   dispose(): void {
@@ -1148,15 +1207,52 @@ export class TerminalCore {
       this.replayingHistoryTimer = null;
     }
     this.disposeInputBridge();
+    this.disposeTerminalEventListeners();
     this.disposeSearchOverlay();
     this.terminal?.dispose();
     this.terminal = null;
+    this.registeredLinkProviders.clear();
+    this.appliedLinkProviders.clear();
     this.setState(TerminalState.DISPOSED);
   }
 
   private disposeInputBridge(): void {
     this.inputBridge?.dispose();
     this.inputBridge = null;
+  }
+
+  private disposeTerminalEventListeners(): void {
+    for (const dispose of this.terminalEventDisposables) {
+      dispose();
+    }
+    this.terminalEventDisposables = [];
+  }
+
+  private trackTerminalEventDisposable(disposable: ghostty_disposable | null | undefined): void {
+    if (!disposable?.dispose) {
+      return;
+    }
+
+    this.terminalEventDisposables.push(() => disposable.dispose?.());
+  }
+
+  private applyRegisteredLinkProviders(): void {
+    if (!this.terminal || typeof this.terminal.registerLinkProvider !== 'function') {
+      return;
+    }
+
+    for (const provider of this.registeredLinkProviders) {
+      if (this.appliedLinkProviders.has(provider)) {
+        continue;
+      }
+
+      try {
+        this.terminal.registerLinkProvider(provider);
+        this.appliedLinkProviders.add(provider);
+      } catch (error) {
+        this.logger.warn('[TerminalCore] Failed to register link provider', { error });
+      }
+    }
   }
 
   private static normalizeResponsiveConfig(value: unknown): Required<TerminalResponsiveConfig> {
