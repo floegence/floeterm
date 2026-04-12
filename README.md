@@ -71,7 +71,7 @@ Typical use cases:
 
 | Package | Best for | What you get |
 | --- | --- | --- |
-| [`terminal-go`](./terminal-go) | Go backends that need PTY sessions | Session lifecycle, history buffering/filtering, workdir parsing, resize coordination, and event hooks |
+| [`terminal-go`](./terminal-go) | Go backends that need PTY sessions | Session lifecycle, history buffering/filtering, explicit workdir signal parsing, resize coordination, and event hooks |
 | [`terminal-web`](./terminal-web) | React and web clients that want terminal plumbing without UI lock-in | `TerminalCore`, `useTerminalInstance`, `TerminalSessionsCoordinator`, config helpers, and a headless `ghostty-web` wrapper |
 | [`app/`](./app) | Teams that want a working reference before integrating | HTTP APIs, WebSocket streaming, and a React demo UI that wires the stack together |
 
@@ -158,6 +158,7 @@ export function TerminalPane() {
 | --- | --- |
 | Platform | `terminal-go` relies on a POSIX PTY and is tested on macOS/Linux. |
 | Lifecycle | `CreateSession` creates a dormant logical session. The first attach or an explicit `ActivateSession` should provide the real terminal viewport size. |
+| Working directory tracking | `terminal-go` follows explicit cwd OSC markers (`633;P;Cwd`, `1337;CurrentDir`, `OSC 7`) and buffers incomplete frames across PTY reads instead of guessing from generic terminal title changes. |
 | UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
 | Input model | `TerminalCore` handles one-time `ghostty-web` initialization internally and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
 | Extension hooks | `TerminalCore` exposes link providers, shell bell/title callbacks, and explicit runtime font updates so downstream apps do not need `any`-based terminal mutations. |

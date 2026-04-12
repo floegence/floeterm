@@ -25,11 +25,6 @@ func TestParseWorkingDirectorySequences(t *testing.T) {
 	if got := session.parseWorkingDirectory(osc7); got != tmp {
 		t.Fatalf("OSC7 sequence parse failed: %q", got)
 	}
-
-	title := "\x1b]0;user@host:" + tmp + "\a"
-	if got := session.parseWorkingDirectory(title); got != tmp {
-		t.Fatalf("OSC title parse failed: %q", got)
-	}
 }
 
 func TestShouldCheckDirectoryChange(t *testing.T) {
@@ -43,8 +38,8 @@ func TestShouldCheckDirectoryChange(t *testing.T) {
 		{name: "vscode", input: "\x1b]633;P;Cwd=/tmp\a", expect: true},
 		{name: "iterm2", input: "\x1b]1337;CurrentDir=/tmp\a", expect: true},
 		{name: "osc7", input: "\x1b]7;file://localhost/tmp\x1b\\", expect: true},
-		{name: "title0", input: "\x1b]0;user@host:/tmp\a", expect: true},
-		{name: "title2", input: "\x1b]2;user@host:/tmp\a", expect: true},
+		{name: "title0", input: "\x1b]0;user@host:/tmp\a", expect: false},
+		{name: "title2", input: "\x1b]2;user@host:/tmp\a", expect: false},
 		{name: "other", input: "hello world", expect: false},
 	}
 
@@ -86,11 +81,9 @@ func TestParseWorkingDirectoryMalformedSequences(t *testing.T) {
 	session := &Session{config: sessionConfig{logger: NopLogger{}}}
 
 	cases := []string{
-		"\x1b]633;P;Cwd=" + tmp,          // missing BEL
-		"\x1b]1337;CurrentDir=" + tmp,    // missing BEL
-		"\x1b]7;file://localhost" + tmp,  // missing ST
-		"\x1b]0;user@host:" + tmp,        // missing terminator
-		"\x1b]2;user@host:" + tmp + "\r", // wrong terminator
+		"\x1b]633;P;Cwd=" + tmp,         // missing BEL
+		"\x1b]1337;CurrentDir=" + tmp,   // missing BEL
+		"\x1b]7;file://localhost" + tmp, // missing ST
 	}
 
 	for _, input := range cases {
@@ -100,7 +93,7 @@ func TestParseWorkingDirectoryMalformedSequences(t *testing.T) {
 	}
 }
 
-func TestParseOSC7Unescape(t *testing.T) {
+func TestParseOSC7DecodesEncodedPaths(t *testing.T) {
 	base := t.TempDir()
 	rawName := "hello world"
 	path := filepath.Join(base, rawName)
@@ -116,32 +109,8 @@ func TestParseOSC7Unescape(t *testing.T) {
 	}
 }
 
-func TestExtractPathFromTitleVariants(t *testing.T) {
-	base := t.TempDir()
-	target := filepath.Join(base, "target")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("mkdir failed: %v", err)
-	}
-
-	session := &Session{config: sessionConfig{logger: NopLogger{}}}
-
-	cases := []string{
-		"user@host:" + target,
-		"ssh: user@host:" + target, // last colon wins
-		"cmd - " + target,
-		"cmd - " + target + " (running)",
-	}
-	for _, title := range cases {
-		out := "\x1b]0;" + title + "\a"
-		if got := session.parseWorkingDirectory(out); got != target {
-			t.Fatalf("expected title path %q for %q, got %q", target, title, got)
-		}
-	}
-}
-
-func TestExpandPath(t *testing.T) {
+func TestNormalizeExplicitWorkingDirectory(t *testing.T) {
 	tmp := t.TempDir()
-	session := &Session{config: sessionConfig{logger: NopLogger{}}}
 
 	homeDir := filepath.Join(tmp, "home")
 	t.Setenv("HOME", homeDir)
@@ -154,15 +123,114 @@ func TestExpandPath(t *testing.T) {
 		t.Fatalf("failed to create test dir: %v", err)
 	}
 
-	if got := session.expandPath("~/floeterm-test"); got != expected {
+	if got := normalizeExplicitWorkingDirectory("~/floeterm-test"); got != expected {
 		t.Fatalf("expected expanded path %q, got %q", expected, got)
 	}
 
-	if got := session.expandPath(tmp); got != tmp {
+	if got := normalizeExplicitWorkingDirectory(tmp); got != tmp {
 		t.Fatalf("expected path to be valid: %q", got)
 	}
 
-	if got := session.expandPath(filepath.Join(tmp, "does-not-exist")); got != "" {
-		t.Fatalf("expected non-existent path to be rejected, got %q", got)
+	if got := normalizeExplicitWorkingDirectory("relative/path"); got != "" {
+		t.Fatalf("expected relative path to be rejected, got %q", got)
+	}
+}
+
+type workdirNameChangeHandler struct {
+	changes []cwdSignal
+}
+
+func (h *workdirNameChangeHandler) OnTerminalData(string, []byte, int64, bool, string) {}
+
+func (h *workdirNameChangeHandler) OnTerminalNameChanged(_ string, _ string, newName string, workingDir string) {
+	h.changes = append(h.changes, cwdSignal{path: workingDir, source: newName})
+}
+
+func (h *workdirNameChangeHandler) OnTerminalSessionCreated(*Session) {}
+func (h *workdirNameChangeHandler) OnTerminalSessionClosed(string)    {}
+func (h *workdirNameChangeHandler) OnTerminalError(string, error)     {}
+
+func TestCheckWorkingDirectoryChangeBuffersFragmentedSignals(t *testing.T) {
+	handler := &workdirNameChangeHandler{}
+	session := &Session{
+		ID:                "session-1",
+		Name:              "workspace",
+		currentWorkingDir: "/workspace",
+		eventHandler:      handler,
+		config:            sessionConfig{logger: NopLogger{}},
+	}
+
+	session.checkWorkingDirectoryChange([]byte("\x1b]633;P;Cwd=/workspace/re"))
+
+	if session.currentWorkingDir != "/workspace" {
+		t.Fatalf("currentWorkingDir changed too early: %q", session.currentWorkingDir)
+	}
+	if len(handler.changes) != 0 {
+		t.Fatalf("expected no name updates for incomplete signal, got %d", len(handler.changes))
+	}
+
+	session.checkWorkingDirectoryChange([]byte("po\a"))
+
+	if session.currentWorkingDir != "/workspace/repo" {
+		t.Fatalf("currentWorkingDir = %q, want %q", session.currentWorkingDir, "/workspace/repo")
+	}
+	if session.WorkingDir != "/workspace/repo" {
+		t.Fatalf("WorkingDir = %q, want %q", session.WorkingDir, "/workspace/repo")
+	}
+	if len(handler.changes) != 1 {
+		t.Fatalf("expected one name update, got %d", len(handler.changes))
+	}
+	if handler.changes[0].path != "/workspace/repo" {
+		t.Fatalf("workingDir = %q, want %q", handler.changes[0].path, "/workspace/repo")
+	}
+	if handler.changes[0].source != "repo" {
+		t.Fatalf("newName = %q, want %q", handler.changes[0].source, "repo")
+	}
+}
+
+func TestParseWorkingDirectorySignalsIgnoresGenericTitles(t *testing.T) {
+	signals, malformedSources, pending := parseWorkingDirectorySignals([]byte("\x1b]0;user@host:/workspace/repo\a"))
+	if len(signals) != 0 {
+		t.Fatalf("expected no cwd signals, got %d", len(signals))
+	}
+	if len(malformedSources) != 0 {
+		t.Fatalf("expected no malformed sources, got %v", malformedSources)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending bytes, got %d", len(pending))
+	}
+}
+
+func TestParseWorkingDirectorySignalsHandlesMultipleProtocolsInOrder(t *testing.T) {
+	signals, malformedSources, pending := parseWorkingDirectorySignals([]byte(
+		"\x1b]633;P;Cwd=/workspace/one\a" +
+			"\x1b]1337;CurrentDir=/workspace/two\a" +
+			"\x1b]7;file://localhost/workspace/three\x1b\\",
+	))
+
+	if len(malformedSources) != 0 {
+		t.Fatalf("expected no malformed sources, got %v", malformedSources)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending bytes, got %d", len(pending))
+	}
+	if len(signals) != 3 {
+		t.Fatalf("expected 3 cwd signals, got %d", len(signals))
+	}
+	if signals[0].path != "/workspace/one" || signals[1].path != "/workspace/two" || signals[2].path != "/workspace/three" {
+		t.Fatalf("unexpected signals: %#v", signals)
+	}
+}
+
+func TestParseWorkingDirectorySignalsTracksMalformedExplicitSignals(t *testing.T) {
+	signals, malformedSources, pending := parseWorkingDirectorySignals([]byte("\x1b]633;P;Cwd=relative/path\a"))
+	if len(signals) != 0 {
+		t.Fatalf("expected no valid signals, got %d", len(signals))
+	}
+	if len(malformedSources) != 1 || malformedSources[0] != "osc_633" {
+		t.Fatalf("expected malformed osc_633, got %v", malformedSources)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no pending bytes, got %d", len(pending))
 	}
 }

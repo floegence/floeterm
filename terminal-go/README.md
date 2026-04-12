@@ -26,4 +26,6 @@ func main() {
 - Implement `TerminalEventHandler` to receive output and lifecycle events.
 - `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession`.
 - Configure defaults via `ManagerConfig` (history buffer size, env, filters, and timing).
+- Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and `OSC 7 file://...`) and ignores generic title-only OSC updates.
+- Cwd parsing is stream-safe across PTY read chunks, so fragmented fullscreen/TUI control sequences do not trigger false working-directory parse failures.
 - `NewStdLogger` colorizes output by level when writing to a TTY (disable via `NO_COLOR=1` or `FLOETERM_LOG_COLOR=0`).

@@ -371,10 +371,7 @@ func (s *Session) processRawPTYData(data []byte) {
 
 	s.broadcastData(data)
 
-	dataStr := string(data)
-	if s.shouldCheckDirectoryChange(dataStr) {
-		s.checkWorkingDirectoryChange(dataStr)
-	}
+	s.checkWorkingDirectoryChange(data)
 }
 
 // WriteDataWithSource writes input to the PTY with basic deduplication.

@@ -104,6 +104,7 @@ type Session struct {
 	sequenceNumber int64
 
 	currentWorkingDir string
+	workdirPending    []byte
 
 	isResizing    bool
 	resizeEndTime time.Time
