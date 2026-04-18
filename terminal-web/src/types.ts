@@ -42,6 +42,25 @@ export interface TerminalClipboardConfig {
   copyOnSelect?: boolean;
 }
 
+export type TerminalCopySelectionSource = 'shortcut' | 'command' | 'copy_event';
+
+export interface TerminalSelectionSnapshot {
+  text: string;
+  hasSelection: boolean;
+}
+
+export type TerminalCopySelectionResult =
+  | {
+    copied: true;
+    textLength: number;
+    source: TerminalCopySelectionSource;
+  }
+  | {
+    copied: false;
+    reason: 'empty_selection' | 'clipboard_unavailable';
+    source: TerminalCopySelectionSource;
+  };
+
 export interface TerminalBufferCellPosition {
   x: number;
   y: number;
@@ -110,6 +129,8 @@ export interface TerminalCoreLike {
   clear(): void;
   serialize(): string;
   getSelectionText(): string;
+  hasSelection(): boolean;
+  copySelection(source?: TerminalCopySelectionSource): Promise<TerminalCopySelectionResult>;
   getState(): TerminalState;
   getDimensions(): { cols: number; rows: number };
   getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null;
@@ -231,6 +252,8 @@ export interface TerminalManagerActions {
   clearSearch: () => void;
   serialize: () => string;
   getSelectionText: () => string;
+  hasSelection: () => boolean;
+  copySelection: (source?: TerminalCopySelectionSource) => Promise<TerminalCopySelectionResult>;
   setConnected: (connected: boolean) => void;
   forceResize: () => void;
   setSearchResultsCallback: (callback: ((results: { resultIndex: number; resultCount: number; matchPositions?: number[] }) => void) | null) => void;

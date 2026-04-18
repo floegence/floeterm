@@ -5,9 +5,12 @@ import {
   type Logger,
   type TerminalClipboardConfig,
   type TerminalConfig,
+  type TerminalCopySelectionResult,
+  type TerminalCopySelectionSource,
   type TerminalEventHandlers,
   type TerminalLinkProvider,
   type TerminalResponsiveConfig,
+  type TerminalSelectionSnapshot,
 } from '../types';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
 
@@ -287,7 +290,8 @@ export class TerminalCore {
         this.eventHandlers.onData?.(data);
       },
       this.logger,
-      () => this.getSelectionText(),
+      () => this.hasSelection(),
+      (source, clipboardData) => this.performSelectionCopy(source, clipboardData),
     );
   }
 
@@ -609,8 +613,157 @@ export class TerminalCore {
     return this.terminal.getSelection();
   }
 
+  hasSelection(): boolean {
+    return this.getSelectionSnapshot().hasSelection;
+  }
+
+  async copySelection(source: TerminalCopySelectionSource = 'command'): Promise<TerminalCopySelectionResult> {
+    return this.performSelectionCopy(source);
+  }
+
   getState(): TerminalState {
     return this.state;
+  }
+
+  private getSelectionSnapshot(): TerminalSelectionSnapshot {
+    const text = this.getSelectionText();
+    return {
+      text,
+      hasSelection: text.length > 0,
+    };
+  }
+
+  private async performSelectionCopy(
+    source: TerminalCopySelectionSource,
+    clipboardData: DataTransfer | null = null,
+  ): Promise<TerminalCopySelectionResult> {
+    const selection = this.getSelectionSnapshot();
+    if (!selection.hasSelection) {
+      return {
+        copied: false,
+        reason: 'empty_selection',
+        source,
+      };
+    }
+
+    if (clipboardData && typeof clipboardData.setData === 'function') {
+      clipboardData.setData('text/plain', selection.text);
+      return {
+        copied: true,
+        textLength: selection.text.length,
+        source,
+      };
+    }
+
+    if (await this.copyTextWithNavigatorClipboard(selection.text, source)) {
+      return {
+        copied: true,
+        textLength: selection.text.length,
+        source,
+      };
+    }
+
+    if (this.copyTextWithExecCommand(selection.text)) {
+      return {
+        copied: true,
+        textLength: selection.text.length,
+        source,
+      };
+    }
+
+    this.logger.warn('[TerminalCore] Clipboard copy unavailable', {
+      source,
+      textLength: selection.text.length,
+    });
+    return {
+      copied: false,
+      reason: 'clipboard_unavailable',
+      source,
+    };
+  }
+
+  private async copyTextWithNavigatorClipboard(
+    text: string,
+    source: TerminalCopySelectionSource,
+  ): Promise<boolean> {
+    const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+    if (!clipboard || typeof clipboard.writeText !== 'function') {
+      return false;
+    }
+
+    try {
+      await clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      this.logger.debug('[TerminalCore] navigator.clipboard.writeText failed', {
+        error,
+        source,
+      });
+      return false;
+    }
+  }
+
+  private copyTextWithExecCommand(text: string): boolean {
+    if (typeof document === 'undefined' || typeof document.execCommand !== 'function') {
+      return false;
+    }
+
+    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const restorableSelection = (
+      previousActiveElement instanceof HTMLInputElement ||
+      previousActiveElement instanceof HTMLTextAreaElement
+    )
+      ? {
+        element: previousActiveElement,
+        start: previousActiveElement.selectionStart ?? 0,
+        end: previousActiveElement.selectionEnd ?? 0,
+        direction: previousActiveElement.selectionDirection ?? 'none',
+      }
+      : null;
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.setAttribute('aria-hidden', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '0';
+    textarea.style.left = '-9999px';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    try {
+      textarea.setSelectionRange(0, text.length);
+    } catch {
+      this.logger.debug('[TerminalCore] Failed to prepare textarea selection for clipboard fallback');
+    }
+
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (error) {
+      this.logger.debug('[TerminalCore] document.execCommand("copy") failed', { error });
+    }
+
+    textarea.remove();
+    previousActiveElement?.focus();
+
+    if (restorableSelection) {
+      try {
+        restorableSelection.element.setSelectionRange(
+          restorableSelection.start,
+          restorableSelection.end,
+          restorableSelection.direction,
+        );
+      } catch {
+        this.logger.debug('[TerminalCore] Failed to restore previous selection after clipboard fallback');
+      }
+    }
+
+    return copied;
   }
 
   getDimensions(): { cols: number; rows: number } {

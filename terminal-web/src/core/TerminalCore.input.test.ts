@@ -111,6 +111,7 @@ describe('TerminalCore mobile input integration', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    Object.defineProperty(globalThis.navigator, 'clipboard', { value: undefined, configurable: true });
   });
 
   it('bridges hidden textarea beforeinput to onData', async () => {
@@ -194,6 +195,94 @@ describe('TerminalCore mobile input integration', () => {
     textarea!.dispatchEvent(event);
 
     expect(setData).toHaveBeenCalledWith('text/plain', '  pnpm test\n');
+
+    core.dispose();
+  });
+
+  it('exposes semantic selection helpers for explicit copy commands', async () => {
+    const container = document.createElement('div');
+    container.tabIndex = 0;
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    const core = new TerminalCore(container, {}, {});
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    const terminal = (core as unknown as { terminal?: { selectionText: string } | null }).terminal;
+    expect(terminal).toBeTruthy();
+
+    terminal!.selectionText = '';
+    expect(core.hasSelection()).toBe(false);
+    await expect(core.copySelection()).resolves.toEqual({
+      copied: false,
+      reason: 'empty_selection',
+      source: 'command',
+    });
+
+    terminal!.selectionText = 'npm run lint';
+    expect(core.hasSelection()).toBe(true);
+    await expect(core.copySelection()).resolves.toEqual({
+      copied: true,
+      textLength: 'npm run lint'.length,
+      source: 'command',
+    });
+    expect(writeText).toHaveBeenCalledWith('npm run lint');
+
+    core.dispose();
+  });
+
+  it('copies the active terminal selection through the Cmd/Ctrl+C shortcut path', async () => {
+    const container = document.createElement('div');
+    container.tabIndex = 0;
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    const core = new TerminalCore(container, {
+      clipboard: {
+        copyOnSelect: false,
+      },
+    }, {});
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    const terminal = (core as unknown as { terminal?: { selectionText: string } | null }).terminal;
+    expect(terminal).toBeTruthy();
+    terminal!.selectionText = 'pnpm test';
+
+    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    textarea!.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith('pnpm test');
+    expect(event.defaultPrevented).toBe(true);
 
     core.dispose();
   });

@@ -1,4 +1,8 @@
-import type { Logger } from '../types';
+import type {
+  Logger,
+  TerminalCopySelectionResult,
+  TerminalCopySelectionSource,
+} from '../types';
 import { noopLogger } from '../utils/logger';
 
 type input_suppression_token =
@@ -26,6 +30,18 @@ const isPlainPrintableKey = (event: KeyboardEvent): boolean => {
   }
 
   return event.key.length === 1;
+};
+
+const isPrimaryCopyShortcut = (event: KeyboardEvent): boolean => {
+  if (event.altKey || event.shiftKey) {
+    return false;
+  }
+
+  const usesPrimaryModifier =
+    (event.metaKey && !event.ctrlKey) ||
+    (event.ctrlKey && !event.metaKey);
+
+  return usesPrimaryModifier && event.key.toLowerCase() === 'c';
 };
 
 const createSuppressionTokenFromKeydown = (event: KeyboardEvent): input_suppression_token | null => {
@@ -130,7 +146,15 @@ export class TerminalInputBridge {
     private readonly input: HTMLTextAreaElement,
     private readonly onData: (data: string) => void,
     private readonly logger: Logger = noopLogger,
-    private readonly getSelectionText: () => string = () => '',
+    private readonly hasSelection: () => boolean = () => false,
+    private readonly copySelection: (
+      source: TerminalCopySelectionSource,
+      clipboardData?: DataTransfer | null,
+    ) => Promise<TerminalCopySelectionResult> | TerminalCopySelectionResult = async (source) => ({
+      copied: false,
+      reason: 'empty_selection',
+      source,
+    }),
   ) {
     this.input.setAttribute('inputmode', 'text');
     this.input.setAttribute('enterkeyhint', 'enter');
@@ -164,6 +188,13 @@ export class TerminalInputBridge {
 
   private handleKeydown(event: KeyboardEvent): void {
     if (this.isComposing || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+
+    if (isPrimaryCopyShortcut(event) && this.hasSelection()) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.requestSelectionCopy('shortcut');
       return;
     }
 
@@ -269,54 +300,19 @@ export class TerminalInputBridge {
       return;
     }
 
-    const selection = this.getSelectionText();
-    if (selection.length === 0) {
+    if (!this.hasSelection()) {
       return;
     }
 
-    const clipboard = event.clipboardData;
-    if (clipboard && typeof clipboard.setData === 'function') {
-      clipboard.setData('text/plain', selection);
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-
-    this.prepareInputForDefaultCopy(selection);
+    event.preventDefault();
+    event.stopPropagation();
+    this.requestSelectionCopy('copy_event', event.clipboardData ?? null);
   }
 
-  private prepareInputForDefaultCopy(selection: string): void {
-    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const previousValue = this.input.value;
-    const previousSelectionStart = this.input.selectionStart ?? 0;
-    const previousSelectionEnd = this.input.selectionEnd ?? 0;
-    const previousSelectionDirection = this.input.selectionDirection ?? 'none';
-    const restoreInputSelection = previousActiveElement === this.input;
-
-    this.input.value = selection;
-    this.input.focus();
-    this.input.select();
-
-    try {
-      this.input.setSelectionRange(0, selection.length);
-    } catch {
-      this.logger.debug('[TerminalInputBridge] Failed to prepare selection for default copy');
-    }
-
-    setTimeout(() => {
-      this.input.value = previousValue;
-
-      if (!restoreInputSelection) {
-        previousActiveElement?.focus();
-        return;
-      }
-
-      try {
-        this.input.setSelectionRange(previousSelectionStart, previousSelectionEnd, previousSelectionDirection);
-      } catch {
-        this.logger.debug('[TerminalInputBridge] Failed to restore input selection after copy');
-      }
-    }, 0);
+  private requestSelectionCopy(source: TerminalCopySelectionSource, clipboardData: DataTransfer | null = null): void {
+    Promise.resolve(this.copySelection(source, clipboardData)).catch(error => {
+      this.logger.warn('[TerminalInputBridge] Selection copy failed', { error, source });
+    });
   }
 
   private clearInputValue(): void {
