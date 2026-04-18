@@ -268,8 +268,7 @@ describe('TerminalCore mobile input integration', () => {
     expect(terminal).toBeTruthy();
     terminal!.selectionText = 'pnpm test';
 
-    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
-    expect(textarea).toBeTruthy();
+    container.dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
 
     const event = new KeyboardEvent('keydown', {
       key: 'c',
@@ -278,7 +277,7 @@ describe('TerminalCore mobile input integration', () => {
       cancelable: true,
     });
 
-    textarea!.dispatchEvent(event);
+    document.dispatchEvent(event);
     await Promise.resolve();
 
     expect(writeText).toHaveBeenCalledWith('pnpm test');

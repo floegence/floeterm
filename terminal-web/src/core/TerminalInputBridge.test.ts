@@ -15,6 +15,10 @@ const createInputEvent = (
 };
 
 describe('TerminalInputBridge', () => {
+  const activateTerminal = (target: HTMLElement) => {
+    target.dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
+  };
+
   const setup = (selectionText = '') => {
     const container = document.createElement('div');
     const textarea = document.createElement('textarea');
@@ -133,7 +137,8 @@ describe('TerminalInputBridge', () => {
   });
 
   it('routes Cmd/Ctrl+C through the shared copy path when the terminal has a selection', async () => {
-    const { textarea, copySelection } = setup('echo hi');
+    const { container, copySelection } = setup('echo hi');
+    activateTerminal(container);
 
     const event = new KeyboardEvent('keydown', {
       key: 'c',
@@ -142,7 +147,7 @@ describe('TerminalInputBridge', () => {
       cancelable: true,
     });
 
-    textarea.dispatchEvent(event);
+    document.dispatchEvent(event);
     await Promise.resolve();
 
     expect(copySelection).toHaveBeenCalledTimes(1);
@@ -155,6 +160,7 @@ describe('TerminalInputBridge', () => {
     const forwarded = vi.fn((event: KeyboardEvent) => event.target === container);
     container.addEventListener('keydown', forwarded);
 
+    activateTerminal(container);
     const event = new KeyboardEvent('keydown', {
       key: 'c',
       metaKey: true,
@@ -170,16 +176,59 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it('clears the active terminal copy scope after interacting outside the container', async () => {
+    const { container, copySelection } = setup('echo hi');
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+
+    activateTerminal(container);
+    outside.dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    document.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('does not hijack Cmd/Ctrl+C from non-terminal editable targets inside the container', async () => {
+    const { container, copySelection } = setup('terminal selection');
+    const extraInput = document.createElement('input');
+    container.appendChild(extraInput);
+    activateTerminal(extraInput);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    extraInput.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it('routes the standard copy event through the shared copy path', async () => {
     const selection = '  echo hi\n';
-    const { textarea, copySelection } = setup(selection);
+    const { container, copySelection } = setup(selection);
+    activateTerminal(container);
     const setData = vi.fn();
     const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
     Object.defineProperty(event, 'clipboardData', {
       value: { setData },
     });
 
-    textarea.dispatchEvent(event);
+    document.dispatchEvent(event);
     await Promise.resolve();
 
     expect(copySelection).toHaveBeenCalledTimes(1);

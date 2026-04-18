@@ -97,6 +97,17 @@ const isEditableTarget = (target: EventTarget | null): target is HTMLElement => 
   return target.matches('input, select, textarea, [contenteditable], [contenteditable="true"]');
 };
 
+type terminal_document_shortcut_coordinator = {
+  activeBridge: TerminalInputBridge | null;
+  bridges: Set<TerminalInputBridge>;
+  pointerDownListener: (event: Event) => void;
+  focusInListener: (event: FocusEvent) => void;
+  keydownListener: (event: KeyboardEvent) => void;
+  copyListener: (event: ClipboardEvent) => void;
+};
+
+const documentShortcutCoordinators = new WeakMap<Document, terminal_document_shortcut_coordinator>();
+
 export const resolveTerminalInputElement = (container: HTMLElement): HTMLTextAreaElement | null => {
   const direct = container.querySelector(TERMINAL_INPUT_SELECTOR);
   if (direct instanceof HTMLTextAreaElement) {
@@ -112,6 +123,7 @@ export class TerminalInputBridge {
   private ignoreNextInput = false;
   private suppressionToken: input_suppression_token | null = null;
   private ephemeralStateResetTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly unregisterDocumentShortcutBridge: () => void;
 
   private readonly keydownListener = (event: KeyboardEvent) => {
     this.handleKeydown(event);
@@ -131,10 +143,6 @@ export class TerminalInputBridge {
 
   private readonly compositionEndListener = (event: CompositionEvent) => {
     this.handleCompositionEnd(event);
-  };
-
-  private readonly copyListener = (event: ClipboardEvent) => {
-    this.handleCopy(event);
   };
 
   private readonly focusListener = () => {
@@ -158,6 +166,7 @@ export class TerminalInputBridge {
   ) {
     this.input.setAttribute('inputmode', 'text');
     this.input.setAttribute('enterkeyhint', 'enter');
+    this.unregisterDocumentShortcutBridge = registerDocumentShortcutBridge(this.container.ownerDocument, this);
     this.attach();
   }
 
@@ -167,13 +176,13 @@ export class TerminalInputBridge {
 
   dispose(): void {
     this.clearEphemeralStateResetTimer();
+    this.unregisterDocumentShortcutBridge();
     this.input.removeEventListener('keydown', this.keydownListener);
     this.input.removeEventListener('beforeinput', this.beforeInputListener as EventListener);
     this.input.removeEventListener('input', this.inputListener);
     this.input.removeEventListener('compositionstart', this.compositionStartListener);
     this.input.removeEventListener('compositionend', this.compositionEndListener as EventListener);
     this.input.removeEventListener('focus', this.focusListener);
-    this.container.removeEventListener('copy', this.copyListener, true);
   }
 
   private attach(): void {
@@ -183,18 +192,10 @@ export class TerminalInputBridge {
     this.input.addEventListener('compositionstart', this.compositionStartListener);
     this.input.addEventListener('compositionend', this.compositionEndListener as EventListener);
     this.input.addEventListener('focus', this.focusListener);
-    this.container.addEventListener('copy', this.copyListener, true);
   }
 
   private handleKeydown(event: KeyboardEvent): void {
     if (this.isComposing || event.isComposing || event.keyCode === 229) {
-      return;
-    }
-
-    if (isPrimaryCopyShortcut(event) && this.hasSelection()) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.requestSelectionCopy('shortcut');
       return;
     }
 
@@ -290,23 +291,54 @@ export class TerminalInputBridge {
     this.clearInputValue();
   }
 
-  private handleCopy(event: ClipboardEvent): void {
-    if (event.defaultPrevented) {
-      return;
+  containsTarget(target: Node): boolean {
+    return this.container.contains(target);
+  }
+
+  tryHandleDocumentCopyShortcut(event: KeyboardEvent): boolean {
+    if (this.isComposing || event.isComposing || event.keyCode === 229) {
+      return false;
     }
 
-    const target = event.target;
-    if (isEditableTarget(target) && target !== this.input) {
-      return;
+    if (!isPrimaryCopyShortcut(event)) {
+      return false;
+    }
+
+    if (this.shouldBypassClipboardInterception(event.target)) {
+      return false;
     }
 
     if (!this.hasSelection()) {
-      return;
+      return false;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.requestSelectionCopy('shortcut');
+    return true;
+  }
+
+  tryHandleDocumentCopyEvent(event: ClipboardEvent): boolean {
+    if (event.defaultPrevented) {
+      return false;
+    }
+
+    if (this.shouldBypassClipboardInterception(event.target)) {
+      return false;
+    }
+
+    if (!this.hasSelection()) {
+      return false;
     }
 
     event.preventDefault();
     event.stopPropagation();
     this.requestSelectionCopy('copy_event', event.clipboardData ?? null);
+    return true;
+  }
+
+  private shouldBypassClipboardInterception(target: EventTarget | null): boolean {
+    return isEditableTarget(target) && target !== this.input;
   }
 
   private requestSelectionCopy(source: TerminalCopySelectionSource, clipboardData: DataTransfer | null = null): void {
@@ -353,4 +385,90 @@ export class TerminalInputBridge {
     clearTimeout(this.ephemeralStateResetTimer);
     this.ephemeralStateResetTimer = null;
   }
+}
+
+const resolveBridgeForTarget = (
+  bridges: Set<TerminalInputBridge>,
+  target: EventTarget | null,
+): TerminalInputBridge | null => {
+  if (!(target instanceof Node)) {
+    return null;
+  }
+
+  for (const bridge of bridges) {
+    if (bridge.containsTarget(target)) {
+      return bridge;
+    }
+  }
+
+  return null;
+};
+
+const getDocumentShortcutCoordinator = (document: Document): terminal_document_shortcut_coordinator => {
+  const existing = documentShortcutCoordinators.get(document);
+  if (existing) {
+    return existing;
+  }
+
+  const coordinator: terminal_document_shortcut_coordinator = {
+    activeBridge: null,
+    bridges: new Set<TerminalInputBridge>(),
+    pointerDownListener: (event) => {
+      coordinator.activeBridge = resolveBridgeForTarget(coordinator.bridges, event.target);
+    },
+    focusInListener: (event) => {
+      coordinator.activeBridge = resolveBridgeForTarget(coordinator.bridges, event.target);
+    },
+    keydownListener: (event) => {
+      if (event.defaultPrevented || !isPrimaryCopyShortcut(event)) {
+        return;
+      }
+
+      const bridge = resolveBridgeForTarget(coordinator.bridges, event.target) ?? coordinator.activeBridge;
+      bridge?.tryHandleDocumentCopyShortcut(event);
+    },
+    copyListener: (event) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      const bridge = resolveBridgeForTarget(coordinator.bridges, event.target) ?? coordinator.activeBridge;
+      bridge?.tryHandleDocumentCopyEvent(event);
+    },
+  };
+
+  document.addEventListener('pointerdown', coordinator.pointerDownListener, true);
+  document.addEventListener('focusin', coordinator.focusInListener, true);
+  document.addEventListener('keydown', coordinator.keydownListener, true);
+  document.addEventListener('copy', coordinator.copyListener, true);
+
+  documentShortcutCoordinators.set(document, coordinator);
+  return coordinator;
+};
+
+function registerDocumentShortcutBridge(document: Document, bridge: TerminalInputBridge): () => void {
+  const coordinator = getDocumentShortcutCoordinator(document);
+  coordinator.bridges.add(bridge);
+
+  return () => {
+    const current = documentShortcutCoordinators.get(document);
+    if (!current) {
+      return;
+    }
+
+    current.bridges.delete(bridge);
+    if (current.activeBridge === bridge) {
+      current.activeBridge = null;
+    }
+
+    if (current.bridges.size > 0) {
+      return;
+    }
+
+    document.removeEventListener('pointerdown', current.pointerDownListener, true);
+    document.removeEventListener('focusin', current.focusInListener, true);
+    document.removeEventListener('keydown', current.keydownListener, true);
+    document.removeEventListener('copy', current.copyListener, true);
+    documentShortcutCoordinators.delete(document);
+  };
 }
