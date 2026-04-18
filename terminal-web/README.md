@@ -28,7 +28,7 @@ export function TerminalPane() {
 - You must provide a `TerminalTransport` and `TerminalEventSource`.
 - `ghostty-web` needs a one-time `init()` (handled internally by `TerminalCore`).
 - `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and IME input continue to work on touch devices.
-- Explicit terminal copy is handled through the standard `copy` command path, so keyboard shortcuts and native app menus can reuse the same selection logic.
+- Explicit terminal copy is handled through shared selection-copy APIs, so keyboard shortcuts, native app menus, and product context menus can reuse the same selection logic.
 - `TerminalCore` now exposes first-class APIs for runtime font updates, shell bell/title events, and custom terminal link providers without reaching into implementation internals.
 
 ## Responsive resize (multi-pane / multi-view)
@@ -60,6 +60,14 @@ const core = new TerminalCore(container, {
   },
 });
 ```
+
+With `copyOnSelect: false`, `TerminalCore` keeps selection explicit:
+
+- `core.hasSelection()` reports whether the terminal currently owns a copyable selection.
+- `core.copySelection()` writes the current terminal selection to the clipboard.
+- `Cmd+C` / `Ctrl+C` only claims the shortcut when the terminal currently has a selection. Otherwise the shortcut falls through unchanged.
+
+If you use the React hook, the same helpers are available on `actions.hasSelection()` and `actions.copySelection()`.
 
 ## Link providers and shell events
 `TerminalCore` forwards shell lifecycle events and lets consumers register custom links over rendered terminal rows:

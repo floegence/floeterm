@@ -9,6 +9,8 @@ export type {
   TerminalBufferRange,
   TerminalClipboardConfig,
   TerminalConfig,
+  TerminalCopySelectionResult,
+  TerminalCopySelectionSource,
   TerminalResponsiveConfig,
   TerminalEventHandlers,
   TerminalState,
@@ -26,6 +28,7 @@ export type {
   TerminalError,
   TerminalLink,
   TerminalLinkProvider,
+  TerminalSelectionSnapshot,
   TerminalThemeName
 } from './types';
 

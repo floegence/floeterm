@@ -470,6 +470,12 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     clearSearch: () => terminalCoreRef.current?.clearSearch(),
     serialize: () => terminalCoreRef.current?.serialize() ?? '',
     getSelectionText: () => terminalCoreRef.current?.getSelectionText() ?? '',
+    hasSelection: () => terminalCoreRef.current?.hasSelection() ?? false,
+    copySelection: source => terminalCoreRef.current?.copySelection(source) ?? Promise.resolve({
+      copied: false,
+      reason: 'empty_selection',
+      source: source ?? 'command'
+    }),
     setConnected: connected => terminalCoreRef.current?.setConnected(connected),
     forceResize: () => terminalCoreRef.current?.forceResize(),
     setSearchResultsCallback: callback => terminalCoreRef.current?.setSearchResultsCallback(callback),

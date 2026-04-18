@@ -62,6 +62,12 @@ describe('useTerminalInstance', () => {
       getSelectionText(): string {
         return '';
       }
+      hasSelection(): boolean {
+        return false;
+      }
+      async copySelection() {
+        return { copied: false as const, reason: 'empty_selection' as const, source: 'command' as const };
+      }
       getState(): TerminalState {
         return this.state;
       }
@@ -202,6 +208,12 @@ describe('useTerminalInstance', () => {
       }
       getSelectionText(): string {
         return '';
+      }
+      hasSelection(): boolean {
+        return false;
+      }
+      async copySelection() {
+        return { copied: false as const, reason: 'empty_selection' as const, source: 'command' as const };
       }
       getState(): TerminalState {
         return this.state;

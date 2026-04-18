@@ -21,8 +21,20 @@ describe('TerminalInputBridge', () => {
     container.appendChild(textarea);
     document.body.appendChild(container);
     const onData = vi.fn();
-    const bridge = new TerminalInputBridge(container, textarea, onData, undefined, () => selectionText);
-    return { bridge, container, textarea, onData };
+    const copySelection = vi.fn().mockResolvedValue({
+      copied: selectionText.length > 0,
+      textLength: selectionText.length,
+      source: 'command',
+    });
+    const bridge = new TerminalInputBridge(
+      container,
+      textarea,
+      onData,
+      undefined,
+      () => selectionText.length > 0,
+      copySelection,
+    );
+    return { bridge, container, textarea, onData, copySelection };
   };
 
   it('sends plain text from beforeinput without waiting for keydown', () => {
@@ -120,9 +132,47 @@ describe('TerminalInputBridge', () => {
     expect(document.activeElement).toBe(textarea);
   });
 
-  it('copies the exact terminal selection through the standard copy event', () => {
+  it('routes Cmd/Ctrl+C through the shared copy path when the terminal has a selection', async () => {
+    const { textarea, copySelection } = setup('echo hi');
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    textarea.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).toHaveBeenCalledTimes(1);
+    expect(copySelection).toHaveBeenCalledWith('shortcut', null);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('does not hijack Cmd/Ctrl+C when the terminal has no selection', async () => {
+    const { container, textarea, copySelection } = setup('');
+    const forwarded = vi.fn((event: KeyboardEvent) => event.target === container);
+    container.addEventListener('keydown', forwarded);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    textarea.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(forwarded.mock.calls.filter(([forwardedEvent]) => forwardedEvent.target === container)).toHaveLength(1);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('routes the standard copy event through the shared copy path', async () => {
     const selection = '  echo hi\n';
-    const { textarea } = setup(selection);
+    const { textarea, copySelection } = setup(selection);
     const setData = vi.fn();
     const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
     Object.defineProperty(event, 'clipboardData', {
@@ -130,9 +180,10 @@ describe('TerminalInputBridge', () => {
     });
 
     textarea.dispatchEvent(event);
+    await Promise.resolve();
 
-    expect(setData).toHaveBeenCalledTimes(1);
-    expect(setData).toHaveBeenCalledWith('text/plain', selection);
+    expect(copySelection).toHaveBeenCalledTimes(1);
+    expect(copySelection).toHaveBeenCalledWith('copy_event', expect.objectContaining({ setData }));
     expect(event.defaultPrevented).toBe(true);
   });
 
