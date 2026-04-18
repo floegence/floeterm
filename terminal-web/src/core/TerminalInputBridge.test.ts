@@ -218,6 +218,26 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it('treats a contenteditable terminal host as terminal-owned for Cmd/Ctrl+C copy', async () => {
+    const { container, copySelection } = setup('terminal selection');
+    container.setAttribute('contenteditable', 'true');
+    activateTerminal(container);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    container.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).toHaveBeenCalledTimes(1);
+    expect(copySelection).toHaveBeenCalledWith('shortcut', null);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('routes the standard copy event through the shared copy path', async () => {
     const selection = '  echo hi\n';
     const { container, copySelection } = setup(selection);

@@ -338,7 +338,15 @@ export class TerminalInputBridge {
   }
 
   private shouldBypassClipboardInterception(target: EventTarget | null): boolean {
-    return isEditableTarget(target) && target !== this.input;
+    if (!isEditableTarget(target)) {
+      return false;
+    }
+
+    // ghostty-web marks the terminal host as contenteditable. Treat that host
+    // as terminal-owned input so Cmd/Ctrl+C can still route through the shared
+    // terminal selection copy path instead of falling through like an embedded
+    // user input control.
+    return target !== this.input && target !== this.container;
   }
 
   private requestSelectionCopy(source: TerminalCopySelectionSource, clipboardData: DataTransfer | null = null): void {
