@@ -106,10 +106,13 @@ export class TerminalCore {
   private terminal: ghostty_runtime_terminal | null = null;
   private fitAddon: import('ghostty-web').FitAddon | null = null;
   private needsFullRenderOnNextWrite = false;
+  private viewportHost: HTMLDivElement | null = null;
+  private renderHost: HTMLDivElement | null = null;
 
   private resizeObserver: ResizeObserver | null = null;
   private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private focusResizeRaf: number | null = null;
+  private presentationScaleRaf: number | null = null;
   private state: TerminalState = TerminalState.IDLE;
   private isDisposed = false;
 
@@ -120,6 +123,11 @@ export class TerminalCore {
   private eventHandlers: TerminalEventHandlers;
   private clipboard: Required<TerminalClipboardConfig>;
   private responsive: Required<TerminalResponsiveConfig>;
+  private logicalFontSize = 12;
+  private presentationScale = 1;
+  private pendingPresentationScale: number | null = null;
+  private suppressResizeNotifications = false;
+  private clearResizeSuppressionRaf: number | null = null;
 
   private hasFocus = false;
   private resizeNotifySeq = 0;
@@ -157,6 +165,8 @@ export class TerminalCore {
     this.clipboard = TerminalCore.normalizeClipboardConfig(config?.clipboard);
     this.logger = logger ?? noopLogger;
     this.responsive = TerminalCore.normalizeResponsiveConfig(config?.responsive);
+    this.logicalFontSize = TerminalCore.normalizeFontSize(config?.fontSize);
+    this.presentationScale = TerminalCore.normalizePresentationScale(config?.presentationScale);
   }
 
   // initialize creates the ghostty-web terminal instance and binds addons.
@@ -215,6 +225,8 @@ export class TerminalCore {
     };
 
     const finalConfig = { ...defaultConfig, ...this.config };
+    this.logicalFontSize = TerminalCore.normalizeFontSize(finalConfig.fontSize);
+    this.presentationScale = TerminalCore.normalizePresentationScale(finalConfig.presentationScale);
     this.terminal = new TerminalCtor({
       cols: typeof finalConfig.cols === 'number' ? finalConfig.cols : undefined,
       rows: typeof finalConfig.rows === 'number' ? finalConfig.rows : undefined,
@@ -222,7 +234,7 @@ export class TerminalCore {
       cursorStyle: typeof (finalConfig as any).cursorStyle === 'string' ? ((finalConfig as any).cursorStyle as any) : undefined,
       theme: mapThemeToGhostty(finalConfig.theme),
       scrollback: typeof finalConfig.scrollback === 'number' ? finalConfig.scrollback : undefined,
-      fontSize: typeof finalConfig.fontSize === 'number' ? finalConfig.fontSize : undefined,
+      fontSize: this.resolveEffectiveFontSize(),
       fontFamily: typeof finalConfig.fontFamily === 'string' ? finalConfig.fontFamily : undefined,
       allowTransparency: typeof finalConfig.allowTransparency === 'boolean' ? finalConfig.allowTransparency : undefined,
       convertEol: typeof finalConfig.convertEol === 'boolean' ? finalConfig.convertEol : undefined,
@@ -251,10 +263,55 @@ export class TerminalCore {
 
     await this.waitForDOMAndFonts();
     await this.ensureContainerReady();
-    this.terminal.open(this.container);
+    this.ensurePresentationHosts();
+    this.applyPresentationScaleStyles();
+    this.terminal.open(this.renderHost ?? this.container);
     this.patchSelectionManagerClipboardBehavior();
     this.setupInputBridge();
     this.applyRegisteredLinkProviders();
+  }
+
+  private ensurePresentationHosts(): void {
+    if (this.viewportHost && this.renderHost) {
+      return;
+    }
+
+    const viewportHost = document.createElement('div');
+    viewportHost.style.position = 'relative';
+    viewportHost.style.width = '100%';
+    viewportHost.style.height = '100%';
+    viewportHost.style.overflow = 'hidden';
+
+    const renderHost = document.createElement('div');
+    renderHost.style.position = 'absolute';
+    renderHost.style.inset = '0';
+    renderHost.style.overflow = 'hidden';
+    renderHost.style.transformOrigin = 'top left';
+    renderHost.style.willChange = 'transform';
+
+    viewportHost.appendChild(renderHost);
+    this.container.replaceChildren(viewportHost);
+    this.viewportHost = viewportHost;
+    this.renderHost = renderHost;
+  }
+
+  private applyPresentationScaleStyles(): void {
+    const renderHost = this.renderHost;
+    if (!renderHost) {
+      return;
+    }
+
+    const scale = this.pendingPresentationScale ?? this.presentationScale;
+    if (scale <= 1.001) {
+      renderHost.style.width = '100%';
+      renderHost.style.height = '100%';
+      renderHost.style.transform = 'none';
+      return;
+    }
+
+    renderHost.style.width = `${scale * 100}%`;
+    renderHost.style.height = `${scale * 100}%`;
+    renderHost.style.transform = `scale(${1 / scale})`;
   }
 
   private patchSelectionManagerClipboardBehavior(): void {
@@ -502,6 +559,9 @@ export class TerminalCore {
 
   private emitResize(size: { cols: number; rows: number }, opts: { source: 'terminal' | 'core'; force?: boolean }): void {
     if (!this.eventHandlers.onResize) {
+      return;
+    }
+    if (this.suppressResizeNotifications) {
       return;
     }
     if (this.responsive.notifyResizeOnlyWhenFocused && !this.hasFocus) {
@@ -1275,6 +1335,7 @@ export class TerminalCore {
   }
 
   forceResize(): void {
+    this.flushPendingPresentationScale();
     this.performResize('force');
     this.forceFullRender();
   }
@@ -1308,12 +1369,35 @@ export class TerminalCore {
   }
 
   setFontSize(size: number): void {
-    this.config = { ...this.config, fontSize: size };
+    this.logicalFontSize = TerminalCore.normalizeFontSize(size);
+    this.config = { ...this.config, fontSize: this.logicalFontSize };
     if (!this.terminal) {
       return;
     }
-    this.terminal.options.fontSize = size;
+    this.terminal.options.fontSize = this.resolveEffectiveFontSize();
     this.fitAddon?.fit();
+  }
+
+  setPresentationScale(scale: number): void {
+    const nextScale = TerminalCore.normalizePresentationScale(scale);
+    this.pendingPresentationScale = nextScale;
+    this.config = { ...this.config, presentationScale: nextScale };
+    this.applyPresentationScaleStyles();
+
+    if (typeof window === 'undefined') {
+      this.commitPresentationScale(nextScale);
+      return;
+    }
+    if (this.presentationScaleRaf !== null) {
+      return;
+    }
+
+    this.presentationScaleRaf = window.requestAnimationFrame(() => {
+      this.presentationScaleRaf = null;
+      const targetScale = this.pendingPresentationScale ?? this.presentationScale;
+      this.pendingPresentationScale = null;
+      this.commitPresentationScale(targetScale);
+    });
   }
 
   setFontFamily(family: string): void {
@@ -1347,6 +1431,14 @@ export class TerminalCore {
       cancelAnimationFrame(this.focusResizeRaf);
       this.focusResizeRaf = null;
     }
+    if (this.presentationScaleRaf !== null) {
+      cancelAnimationFrame(this.presentationScaleRaf);
+      this.presentationScaleRaf = null;
+    }
+    if (this.clearResizeSuppressionRaf !== null) {
+      cancelAnimationFrame(this.clearResizeSuppressionRaf);
+      this.clearResizeSuppressionRaf = null;
+    }
     this.unbindResponsiveListeners?.();
     this.unbindResponsiveListeners = null;
     this.resizeObserver?.disconnect();
@@ -1364,6 +1456,8 @@ export class TerminalCore {
     this.disposeSearchOverlay();
     this.terminal?.dispose();
     this.terminal = null;
+    this.viewportHost = null;
+    this.renderHost = null;
     this.registeredLinkProviders.clear();
     this.appliedLinkProviders.clear();
     this.setState(TerminalState.DISPOSED);
@@ -1422,6 +1516,62 @@ export class TerminalCore {
     return {
       copyOnSelect: raw.copyOnSelect !== false,
     };
+  }
+
+  private static normalizeFontSize(value: unknown): number {
+    const size = Number(value);
+    if (!Number.isFinite(size) || size <= 0) {
+      return 12;
+    }
+    return size;
+  }
+
+  private static normalizePresentationScale(value: unknown): number {
+    const scale = Number(value);
+    if (!Number.isFinite(scale) || scale <= 1.001) {
+      return 1;
+    }
+    return Math.min(scale, 4);
+  }
+
+  private resolveEffectiveFontSize(scale = this.pendingPresentationScale ?? this.presentationScale): number {
+    return Math.max(1, this.logicalFontSize * scale);
+  }
+
+  private flushPendingPresentationScale(): void {
+    if (this.pendingPresentationScale === null) {
+      return;
+    }
+    const targetScale = this.pendingPresentationScale;
+    this.pendingPresentationScale = null;
+    if (this.presentationScaleRaf !== null) {
+      cancelAnimationFrame(this.presentationScaleRaf);
+      this.presentationScaleRaf = null;
+    }
+    this.commitPresentationScale(targetScale);
+  }
+
+  private commitPresentationScale(scale: number): void {
+    const nextScale = TerminalCore.normalizePresentationScale(scale);
+    this.presentationScale = nextScale;
+    this.applyPresentationScaleStyles();
+    if (!this.terminal) {
+      return;
+    }
+
+    this.suppressResizeNotifications = true;
+    if (this.clearResizeSuppressionRaf !== null) {
+      cancelAnimationFrame(this.clearResizeSuppressionRaf);
+    }
+    this.clearResizeSuppressionRaf = requestAnimationFrame(() => {
+      this.clearResizeSuppressionRaf = null;
+      this.suppressResizeNotifications = false;
+    });
+
+    this.terminal.options.fontSize = this.resolveEffectiveFontSize(nextScale);
+    this.fitAddon?.fit();
+    this.forceFullRender();
+    this.scheduleRenderSearchOverlay();
   }
 
   private forceFullRender(): void {

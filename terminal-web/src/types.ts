@@ -92,6 +92,7 @@ export interface TerminalConfig {
   clipboard?: TerminalClipboardConfig;
   fontSize?: number;
   fontFamily?: string;
+  presentationScale?: number;
   cursorBlink?: boolean;
   scrollback?: number;
   rendererType?: 'canvas' | 'webgl' | 'dom';
@@ -143,6 +144,7 @@ export interface TerminalCoreLike {
   forceResize(): void;
   setTheme(theme: Record<string, string>): void;
   setFontSize(size: number): void;
+  setPresentationScale(scale: number): void;
   setFontFamily?(family: string): void;
   registerLinkProvider?(provider: TerminalLinkProvider): void;
   startHistoryReplay(duration?: number): void;
@@ -262,6 +264,7 @@ export interface TerminalManagerActions {
   sendInput: (data: string) => void;
   setTheme: (theme: TerminalThemeName) => void;
   setFontSize: (size: number) => void;
+  setPresentationScale: (scale: number) => void;
   reinitialize?: () => Promise<void> | void;
 }
 
@@ -278,6 +281,7 @@ export interface TerminalManagerOptions {
   eventSource: TerminalEventSource;
   themeName?: TerminalThemeName;
   fontSize?: number;
+  presentationScale?: number;
   // When true, automatically focus the terminal after it finishes initializing
   // and any initial history replay is completed.
   autoFocus?: boolean;

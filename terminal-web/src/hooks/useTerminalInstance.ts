@@ -46,6 +46,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     eventSource,
     themeName = 'dark',
     fontSize,
+    presentationScale,
     autoFocus = false,
     onResize,
     onError,
@@ -297,7 +298,11 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     setLoadingMessage('Initializing terminal...');
 
     try {
-      const configOverrides = { ...(customConfig ?? {}), ...(fontSize ? { fontSize } : {}) };
+      const configOverrides = {
+        ...(customConfig ?? {}),
+        ...(fontSize ? { fontSize } : {}),
+        ...(presentationScale ? { presentationScale } : {}),
+      };
       const config = getDefaultTerminalConfig(themeName, configOverrides);
 
       const CoreCtor: TerminalCoreConstructor = coreConstructor ?? TerminalCore;
@@ -331,7 +336,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     } finally {
       isInitializingRef.current = false;
     }
-  }, [customConfig, fontSize, themeName, handleUserInput, handleResize, handleStateChange, handleError, transport, sessionId, logger, processDataQueue]);
+  }, [customConfig, fontSize, presentationScale, themeName, handleUserInput, handleResize, handleStateChange, handleError, transport, sessionId, logger, processDataQueue]);
 
   const connectToSession = useCallback(async () => {
     if (!sessionId) {
@@ -442,6 +447,10 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     }
   }, [connectionState]);
 
+  useEffect(() => {
+    terminalCoreRef.current?.setPresentationScale(presentationScale ?? 1);
+  }, [presentationScale]);
+
   const actions: TerminalManagerActions = {
     write: data => {
       const chunk: TerminalDataChunk = {
@@ -487,6 +496,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
       terminalCoreRef.current?.setTheme(colors);
     },
     setFontSize: size => terminalCoreRef.current?.setFontSize(size),
+    setPresentationScale: scale => terminalCoreRef.current?.setPresentationScale(scale),
     reinitialize: async () => {
       cleanupTerminal();
       historyLoadedRef.current = false;

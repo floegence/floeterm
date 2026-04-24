@@ -90,6 +90,7 @@ describe('useTerminalInstance', () => {
       forceResize(): void {}
       setTheme(): void {}
       setFontSize(): void {}
+      setPresentationScale(): void {}
       startHistoryReplay(): void {}
     }
 
@@ -237,6 +238,7 @@ describe('useTerminalInstance', () => {
       forceResize(): void {}
       setTheme(): void {}
       setFontSize(): void {}
+      setPresentationScale(): void {}
       startHistoryReplay(): void {}
     }
 
