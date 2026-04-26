@@ -142,6 +142,76 @@ describe('TerminalCore mobile input integration', () => {
     core.dispose();
   });
 
+  it('bridges Enter keydown to terminal carriage return without beforeinput duplication', async () => {
+    const container = document.createElement('div');
+    container.tabIndex = 0;
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const handlers: TerminalEventHandlers = { onData: vi.fn() };
+    const core = new TerminalCore(container, {}, handlers);
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    const keydown = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea!.dispatchEvent(keydown);
+    textarea!.dispatchEvent(createInputEvent('beforeinput', {
+      inputType: 'insertLineBreak',
+    }));
+
+    expect(keydown.defaultPrevented).toBe(true);
+    expect(handlers.onData).toHaveBeenCalledTimes(1);
+    expect(handlers.onData).toHaveBeenLastCalledWith('\r');
+
+    core.dispose();
+  });
+
+  it('bridges Backspace keydown to terminal delete without beforeinput duplication', async () => {
+    const container = document.createElement('div');
+    container.tabIndex = 0;
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const handlers: TerminalEventHandlers = { onData: vi.fn() };
+    const core = new TerminalCore(container, {}, handlers);
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    const keydown = new KeyboardEvent('keydown', {
+      key: 'Backspace',
+      code: 'Backspace',
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea!.dispatchEvent(keydown);
+    textarea!.dispatchEvent(createInputEvent('beforeinput', {
+      inputType: 'deleteContentBackward',
+    }));
+
+    expect(keydown.defaultPrevented).toBe(true);
+    expect(handlers.onData).toHaveBeenCalledTimes(1);
+    expect(handlers.onData).toHaveBeenLastCalledWith('\x7f');
+
+    core.dispose();
+  });
+
   it('focuses the hidden textarea on touch-capable devices', async () => {
     const container = document.createElement('div');
     container.tabIndex = 0;

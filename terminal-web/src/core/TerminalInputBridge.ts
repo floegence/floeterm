@@ -50,6 +50,12 @@ const createSuppressionTokenFromKeydown = (event: KeyboardEvent): input_suppress
   return null;
 };
 
+const mapKeydownToTerminalData = (event: KeyboardEvent): string | null => {
+  if (event.key === 'Enter') return '\r';
+  if (event.key === 'Backspace') return '\x7f';
+  return null;
+};
+
 const matchesBeforeInputSuppression = (token: input_suppression_token, event: InputEvent): boolean => {
   if (token.kind === 'linebreak') {
     return event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph';
@@ -209,8 +215,13 @@ export class TerminalInputBridge {
 
     const forwarded = new KeyboardEvent('keydown', cloneKeyboardEventInit(event));
     const notCancelled = this.container.dispatchEvent(forwarded);
+    const keydownData = mapKeydownToTerminalData(event);
     this.suppressionToken = createSuppressionTokenFromKeydown(event);
     this.scheduleEphemeralStateReset();
+
+    if (keydownData && notCancelled) {
+      this.emitData(keydownData);
+    }
 
     if (!notCancelled || this.suppressionToken) {
       event.preventDefault();
