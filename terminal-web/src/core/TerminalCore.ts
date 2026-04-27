@@ -40,6 +40,8 @@ type ghostty_disposable = {
 type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
   onBell?: (handler: () => void) => ghostty_disposable;
   onTitleChange?: (handler: (title: string) => void) => ghostty_disposable;
+  onScroll?: (handler: () => void) => ghostty_disposable;
+  onSelectionChange?: (handler: () => void) => ghostty_disposable;
   registerLinkProvider?: (provider: TerminalLinkProvider) => void;
 };
 
@@ -106,6 +108,8 @@ export class TerminalCore {
   private terminal: ghostty_runtime_terminal | null = null;
   private fitAddon: import('ghostty-web').FitAddon | null = null;
   private needsFullRenderOnNextWrite = false;
+  private demandRenderRaf: number | null = null;
+  private demandRenderForceAll = false;
   private viewportHost: HTMLDivElement | null = null;
   private renderHost: HTMLDivElement | null = null;
 
@@ -265,10 +269,93 @@ export class TerminalCore {
     await this.ensureContainerReady();
     this.ensurePresentationHosts();
     this.applyPresentationScaleStyles();
+    this.installDemandRenderPatchBeforeOpen();
     this.terminal.open(this.renderHost ?? this.container);
+    this.stopGhosttyRenderLoop();
+    this.patchDemandRenderTriggersAfterOpen();
     this.patchSelectionManagerClipboardBehavior();
     this.setupInputBridge();
     this.applyRegisteredLinkProviders();
+  }
+
+  private installDemandRenderPatchBeforeOpen(): void {
+    const terminalAny = this.terminal as unknown as {
+      __floetermDemandRenderLoopPatched?: boolean;
+      startRenderLoop?: () => void;
+    } | null;
+
+    if (!terminalAny || terminalAny.__floetermDemandRenderLoopPatched) {
+      return;
+    }
+
+    terminalAny.__floetermDemandRenderLoopPatched = true;
+    // ghostty-web currently starts a perpetual RAF loop from open(). TerminalCore
+    // already knows every meaningful invalidation point, so keep rendering
+    // demand-driven while preserving the upstream terminal surface.
+    terminalAny.startRenderLoop = () => {
+      this.requestDemandRender(false);
+    };
+  }
+
+  private patchDemandRenderTriggersAfterOpen(): void {
+    const terminalAny = this.terminal as unknown as {
+      __floetermDemandRenderTriggersPatched?: boolean;
+      animateScroll?: (...args: unknown[]) => unknown;
+      renderer?: {
+        __floetermDemandRenderPatched?: boolean;
+        setHoveredHyperlinkId?: (...args: unknown[]) => unknown;
+        setHoveredLinkRange?: (...args: unknown[]) => unknown;
+        setCursorStyle?: (...args: unknown[]) => unknown;
+        setCursorBlink?: (...args: unknown[]) => unknown;
+        setTheme?: (...args: unknown[]) => unknown;
+        setFontSize?: (...args: unknown[]) => unknown;
+        setFontFamily?: (...args: unknown[]) => unknown;
+        clear?: (...args: unknown[]) => unknown;
+      };
+    } | null;
+
+    if (!terminalAny || terminalAny.__floetermDemandRenderTriggersPatched) {
+      return;
+    }
+
+    terminalAny.__floetermDemandRenderTriggersPatched = true;
+
+    if (typeof terminalAny.animateScroll === 'function') {
+      const originalAnimateScroll = terminalAny.animateScroll.bind(terminalAny);
+      terminalAny.animateScroll = (...args: unknown[]) => {
+        const result = originalAnimateScroll(...args);
+        this.requestDemandRender(false);
+        return result;
+      };
+    }
+
+    const renderer = terminalAny.renderer;
+    if (!renderer || renderer.__floetermDemandRenderPatched) {
+      return;
+    }
+
+    renderer.__floetermDemandRenderPatched = true;
+    const wrapRendererInvalidation = <T extends keyof typeof renderer>(method: T): void => {
+      const original = renderer[method];
+      if (typeof original !== 'function') {
+        return;
+      }
+
+      renderer[method] = ((...args: unknown[]) => {
+        const result = original.apply(renderer, args);
+        this.requestDemandRender(false);
+        return result;
+      }) as typeof renderer[T];
+    };
+
+    wrapRendererInvalidation('setHoveredHyperlinkId');
+    wrapRendererInvalidation('setHoveredLinkRange');
+    wrapRendererInvalidation('setCursorStyle');
+    wrapRendererInvalidation('setCursorBlink');
+    wrapRendererInvalidation('setTheme');
+    wrapRendererInvalidation('setFontSize');
+    wrapRendererInvalidation('setFontFamily');
+    wrapRendererInvalidation('clear');
   }
 
   private ensurePresentationHosts(): void {
@@ -443,6 +530,20 @@ export class TerminalCore {
     if (this.eventHandlers.onTitleChange && typeof this.terminal.onTitleChange === 'function') {
       const disposable = this.terminal.onTitleChange((title: string) => {
         this.eventHandlers.onTitleChange?.(title);
+      });
+      this.trackTerminalEventDisposable(disposable);
+    }
+
+    if (typeof this.terminal.onScroll === 'function') {
+      const disposable = this.terminal.onScroll(() => {
+        this.requestDemandRender(false);
+      });
+      this.trackTerminalEventDisposable(disposable);
+    }
+
+    if (typeof this.terminal.onSelectionChange === 'function') {
+      const disposable = this.terminal.onSelectionChange(() => {
+        this.requestDemandRender(false);
       });
       this.trackTerminalEventDisposable(disposable);
     }
@@ -638,14 +739,15 @@ export class TerminalCore {
         this.terminal.write(data as string | Uint8Array, () => {
           if (shouldForce) {
             this.needsFullRenderOnNextWrite = false;
-            this.forceFullRender();
           }
+          this.requestDemandRender(shouldForce);
           callback?.();
         });
         return;
       }
 
       this.terminal.write(data as string | Uint8Array);
+      this.requestDemandRender(false);
     } catch (error) {
       this.logger.error('[TerminalCore] Write failed', { error });
       callback?.();
@@ -1439,6 +1541,7 @@ export class TerminalCore {
       cancelAnimationFrame(this.clearResizeSuppressionRaf);
       this.clearResizeSuppressionRaf = null;
     }
+    this.cancelDemandRender();
     this.unbindResponsiveListeners?.();
     this.unbindResponsiveListeners = null;
     this.resizeObserver?.disconnect();
@@ -1579,25 +1682,81 @@ export class TerminalCore {
       return;
     }
 
+    this.renderDemandFrame(true);
+  }
+
+  private requestDemandRender(forceAll: boolean): void {
+    if (!this.terminal || this.isDisposed) {
+      return;
+    }
+
+    this.demandRenderForceAll = this.demandRenderForceAll || forceAll;
+    if (this.demandRenderRaf !== null) {
+      return;
+    }
+
+    this.demandRenderRaf = requestAnimationFrame(() => {
+      this.demandRenderRaf = null;
+      const shouldForce = this.demandRenderForceAll;
+      this.demandRenderForceAll = false;
+      this.renderDemandFrame(shouldForce);
+    });
+  }
+
+  private cancelDemandRender(): void {
+    if (this.demandRenderRaf !== null) {
+      cancelAnimationFrame(this.demandRenderRaf);
+      this.demandRenderRaf = null;
+    }
+    this.demandRenderForceAll = false;
+    this.stopGhosttyRenderLoop();
+  }
+
+  private stopGhosttyRenderLoop(): void {
+    const terminalAny = this.terminal as unknown as { animationFrameId?: number } | null;
+    if (!terminalAny || typeof terminalAny.animationFrameId !== 'number') {
+      return;
+    }
+
+    cancelAnimationFrame(terminalAny.animationFrameId);
+    terminalAny.animationFrameId = undefined;
+  }
+
+  private renderDemandFrame(forceAll: boolean): void {
+    if (!this.terminal || this.isDisposed) {
+      return;
+    }
+
     const terminalAny = this.terminal as unknown as {
+      isDisposed?: boolean;
+      isOpen?: boolean;
       renderer?: { render?: (...args: unknown[]) => void };
-      wasmTerm?: unknown;
+      wasmTerm?: {
+        getCursor?: () => { y?: number };
+      };
       viewportY?: number;
       scrollbarOpacity?: number;
+      lastCursorY?: number;
+      cursorMoveEmitter?: { fire?: () => void };
     };
 
-    if (!terminalAny.renderer?.render || !terminalAny.wasmTerm) {
+    if (terminalAny.isDisposed || terminalAny.isOpen === false || !terminalAny.renderer?.render || !terminalAny.wasmTerm) {
       return;
     }
 
     try {
       terminalAny.renderer.render(
         terminalAny.wasmTerm,
-        true,
+        forceAll,
         terminalAny.viewportY ?? 0,
         terminalAny,
         terminalAny.scrollbarOpacity
       );
+      const cursor = terminalAny.wasmTerm.getCursor?.();
+      if (cursor && typeof cursor.y === 'number' && cursor.y !== terminalAny.lastCursorY) {
+        terminalAny.lastCursorY = cursor.y;
+        terminalAny.cursorMoveEmitter?.fire?.();
+      }
     } catch (error) {
       this.logger.debug('[TerminalCore] Force render failed', { error });
     }
