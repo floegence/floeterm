@@ -60,23 +60,12 @@ type ghostty_renderer_with_row_cache = {
   hoveredHyperlinkId?: number;
   hoveredLinkRange?: unknown;
   lastCursorPosition?: { y?: number };
-  metrics?: {
-    baseline: number;
-    height: number;
-    width: number;
-  };
   render?: (...args: unknown[]) => unknown;
   renderLine?: (cells: ghostty_cell_like[], row: number, cols: number) => unknown;
-  renderCellText?: (cell: ghostty_cell_like, col: number, row: number) => unknown;
-  rgbToCSS?: (red: number, green: number, blue: number) => string;
-  theme?: {
-    background?: string;
-  };
 };
 
 const TERMINAL_SEARCH_MAX_RESULTS = 5000;
 
-const GHOSTTY_CELL_FLAG_INVERSE = 16;
 const PRESENTATION_SCALE_EPSILON = 0.0001;
 
 // Search highlighting: all matches use yellow background; active match uses yellow + red text.
@@ -177,7 +166,7 @@ function canSkipCachedRowRender(renderer: ghostty_renderer_with_row_cache, row: 
   if (renderer.__floetermRowRenderCacheForceAll) {
     return false;
   }
-  if (renderer.currentSelectionCoords || (renderer.hoveredHyperlinkId ?? 0) > 0 || renderer.hoveredLinkRange) {
+  if (hasTransientRendererState(renderer)) {
     renderer.__floetermRowRenderCache?.clear();
     return false;
   }
@@ -196,109 +185,12 @@ function samePresentationScale(left: number, right: number): boolean {
   return Math.abs(left - right) <= PRESENTATION_SCALE_EPSILON;
 }
 
-function canUseOptimizedBackgroundRunRenderer(renderer: ghostty_renderer_with_row_cache): boolean {
+function hasTransientRendererState(renderer: ghostty_renderer_with_row_cache): boolean {
   return Boolean(
-    renderer.ctx
-    && renderer.metrics
-    && renderer.theme
-    && typeof renderer.renderCellText === 'function'
-    && typeof renderer.rgbToCSS === 'function',
+    renderer.currentSelectionCoords
+    || (renderer.hoveredHyperlinkId ?? 0) > 0
+    || renderer.hoveredLinkRange,
   );
-}
-
-function cellBackgroundStyle(renderer: ghostty_renderer_with_row_cache, cell: ghostty_cell_like): string | null {
-  let red = cell.bg_r ?? 0;
-  let green = cell.bg_g ?? 0;
-  let blue = cell.bg_b ?? 0;
-  if ((cell.flags ?? 0) & GHOSTTY_CELL_FLAG_INVERSE) {
-    red = cell.fg_r ?? 0;
-    green = cell.fg_g ?? 0;
-    blue = cell.fg_b ?? 0;
-  }
-  if (red === 0 && green === 0 && blue === 0) {
-    return null;
-  }
-  return renderer.rgbToCSS!(red, green, blue);
-}
-
-function renderCellBackgroundRuns(
-  renderer: ghostty_renderer_with_row_cache,
-  cells: readonly ghostty_cell_like[],
-  row: number,
-): void {
-  const ctx = renderer.ctx!;
-  const metrics = renderer.metrics!;
-  let runStartCol = 0;
-  let runWidthCells = 0;
-  let runStyle: string | null = null;
-
-  const flushRun = () => {
-    if (!runStyle || runWidthCells <= 0) return;
-    ctx.fillStyle = runStyle;
-    ctx.fillRect(
-      runStartCol * metrics.width,
-      row * metrics.height,
-      runWidthCells * metrics.width,
-      metrics.height,
-    );
-    runStyle = null;
-    runWidthCells = 0;
-  };
-
-  for (let col = 0; col < cells.length; col += 1) {
-    const cell = cells[col];
-    if (!cell || cell.width === 0) continue;
-
-    const style = cellBackgroundStyle(renderer, cell);
-    const width = Math.max(1, cell.width ?? 1);
-    if (!style) {
-      flushRun();
-      continue;
-    }
-
-    if (runStyle === style && runStartCol + runWidthCells === col) {
-      runWidthCells += width;
-      continue;
-    }
-
-    flushRun();
-    runStartCol = col;
-    runWidthCells = width;
-    runStyle = style;
-  }
-  flushRun();
-}
-
-function renderLineWithOptimizedBackgroundRuns(
-  renderer: ghostty_renderer_with_row_cache,
-  originalRenderLine: (cells: ghostty_cell_like[], row: number, cols: number) => unknown,
-  cells: ghostty_cell_like[],
-  row: number,
-  cols: number,
-): unknown {
-  if (!canUseOptimizedBackgroundRunRenderer(renderer)) {
-    return originalRenderLine(cells, row, cols);
-  }
-  if (renderer.currentSelectionCoords || (renderer.hoveredHyperlinkId ?? 0) > 0 || renderer.hoveredLinkRange) {
-    return originalRenderLine(cells, row, cols);
-  }
-
-  const ctx = renderer.ctx!;
-  const metrics = renderer.metrics!;
-  const y = row * metrics.height;
-  const lineWidth = cols * metrics.width;
-
-  ctx.clearRect(0, y, lineWidth, metrics.height);
-  ctx.fillStyle = renderer.theme?.background ?? '#000000';
-  ctx.fillRect(0, y, lineWidth, metrics.height);
-  renderCellBackgroundRuns(renderer, cells, row);
-
-  for (let col = 0; col < cells.length; col += 1) {
-    const cell = cells[col];
-    if (!cell || cell.width === 0) continue;
-    renderer.renderCellText!(cell, col, row);
-  }
-  return undefined;
 }
 
 // TerminalCore provides a focused wrapper around ghostty-web (xterm.js API-compatible) and its fit addon.
@@ -585,7 +477,11 @@ export class TerminalCore {
         return undefined;
       }
 
-      const result = renderLineWithOptimizedBackgroundRuns(renderer, originalRenderLine, cells, row, cols);
+      const result = originalRenderLine(cells, row, cols);
+      if (hasTransientRendererState(renderer)) {
+        cache.delete(row);
+        return result;
+      }
       cache.set(row, signature);
       return result;
     };

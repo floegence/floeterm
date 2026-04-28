@@ -267,24 +267,12 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
-  it('coalesces same-style cell backgrounds while preserving cell-positioned text rendering', async () => {
+  it('delegates changed rows to ghostty-web native line rendering', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
     terminal.cursorY = 99;
     terminal.renderer.lastCursorPosition = { y: 99 };
 
-    const ctx = {
-      clearRect: vi.fn(),
-      fillRect: vi.fn(),
-      fillText: vi.fn(),
-      fillStyle: '',
-      font: '',
-    };
-    terminal.renderer.ctx = ctx;
-    terminal.renderer.metrics = { width: 10, height: 20, baseline: 15 };
-    terminal.renderer.theme = { background: '#000000' };
-    terminal.renderer.rgbToCSS = vi.fn(() => '#ffffff');
-    terminal.renderer.renderCellText = vi.fn();
     terminal.renderLineSpy.mockClear();
 
     terminal.lines[0] = [
@@ -294,13 +282,36 @@ describe('TerminalCore demand rendering', () => {
     terminal.dirtyRows = new Set([0]);
     terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
 
-    expect(ctx.fillText).not.toHaveBeenCalled();
-    expect(ctx.fillRect).toHaveBeenCalledTimes(2);
-    expect(ctx.fillRect).toHaveBeenNthCalledWith(1, 0, 0, 20, 20);
-    expect(ctx.fillRect).toHaveBeenNthCalledWith(2, 0, 0, 20, 20);
-    expect(terminal.renderer.renderCellText).toHaveBeenCalledTimes(2);
-    expect(terminal.renderer.renderCellText).toHaveBeenNthCalledWith(1, terminal.lines[0][0], 0, 0);
-    expect(terminal.renderer.renderCellText).toHaveBeenNthCalledWith(2, terminal.lines[0][1], 1, 0);
+    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderLineSpy).toHaveBeenNthCalledWith(1, terminal.lines[0], 0, 2);
+
+    core.dispose();
+  });
+
+  it('does not cache rows rendered under transient selection state', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.cursorY = 99;
+    terminal.renderer.lastCursorPosition = { y: 99 };
+
+    terminal.renderLineSpy.mockClear();
+    terminal.renderer.currentSelectionCoords = { startRow: 0, endRow: 0 };
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
+
+    terminal.renderLineSpy.mockClear();
+    terminal.renderer.currentSelectionCoords = null;
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
+
+    terminal.renderLineSpy.mockClear();
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
     expect(terminal.renderLineSpy).not.toHaveBeenCalled();
 
     core.dispose();
