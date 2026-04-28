@@ -60,6 +60,17 @@ core.setFixedDimensions(null);
 core.forceResize();
 ```
 
+Hosts with overlay scrollbars can remove the default ghostty-web scrollbar reserve so the computed grid fills the
+terminal surface:
+
+```ts
+const core = new TerminalCore(container, {
+  fit: {
+    scrollbarReservePx: 0,
+  },
+});
+```
+
 ## Clipboard behavior
 By default, upstream mouse selection keeps the `ghostty-web` behavior and copies immediately on selection.
 Consumers that want explicit copy commands only can disable that side effect:

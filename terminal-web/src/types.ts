@@ -38,6 +38,15 @@ export type TerminalDimensions = {
   rows: number;
 };
 
+export interface TerminalFitConfig {
+  /**
+   * Extra horizontal space reserved before computing terminal columns.
+   * ghostty-web reserves 15px for a scrollbar by default; hosts with overlay
+   * scrollbars can set this to 0 so the terminal grid matches its surface.
+   */
+  scrollbarReservePx?: number;
+}
+
 export interface TerminalClipboardConfig {
   /**
    * When true, mouse selection follows the upstream terminal default and copies
@@ -103,6 +112,7 @@ export interface TerminalConfig {
   clipboard?: TerminalClipboardConfig;
   fontSize?: number;
   fontFamily?: string;
+  fit?: TerminalFitConfig;
   presentationScale?: number;
   cursorBlink?: boolean;
   scrollback?: number;

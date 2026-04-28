@@ -9,6 +9,7 @@ import {
   type TerminalCopySelectionSource,
   type TerminalDimensions,
   type TerminalEventHandlers,
+  type TerminalFitConfig,
   type TerminalLinkProvider,
   type TerminalResponsiveConfig,
   type TerminalSelectionSnapshot,
@@ -72,12 +73,21 @@ type ghostty_renderer_with_row_cache = {
   lastCursorPosition?: { y?: number };
   render?: (...args: unknown[]) => unknown;
   renderLine?: (cells: ghostty_cell_like[], row: number, cols: number) => unknown;
+  remeasureFont?: () => unknown;
   setCursorBlink?: (enabled: boolean) => unknown;
+};
+
+type ghostty_fit_addon_with_geometry_patch = import('ghostty-web').FitAddon & {
+  __floetermGeometryPatchApplied?: boolean;
+  proposeDimensions?: () => { cols: number; rows: number } | undefined;
 };
 
 const TERMINAL_SEARCH_MAX_RESULTS = 5000;
 
 const PRESENTATION_SCALE_EPSILON = 0.0001;
+const GHOSTTY_DEFAULT_SCROLLBAR_RESERVE_PX = 15;
+const MIN_TERMINAL_COLS = 2;
+const MIN_TERMINAL_ROWS = 1;
 
 // Search highlighting: all matches use yellow background; active match uses yellow + red text.
 const TERMINAL_SEARCH_MATCH_BACKGROUND = 'rgba(255, 234, 0, 0.38)';
@@ -277,6 +287,18 @@ function sameTerminalDimensions(left: TerminalDimensions | null, right: Terminal
   return Boolean(left && right && left.cols === right.cols && left.rows === right.rows);
 }
 
+function normalizeNonNegativePixels(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function hasUsableClientSize(element: HTMLElement | null | undefined): element is HTMLElement {
+  return Boolean(element && element.clientWidth > 0 && element.clientHeight > 0);
+}
+
 function hasTransientRendererState(renderer: ghostty_renderer_with_row_cache): boolean {
   return Boolean(
     renderer.currentSelectionCoords
@@ -309,10 +331,12 @@ export class TerminalCore {
   private logger: Logger;
   private eventHandlers: TerminalEventHandlers;
   private clipboard: Required<TerminalClipboardConfig>;
+  private fit: Required<TerminalFitConfig>;
   private responsive: Required<TerminalResponsiveConfig>;
   private logicalFontSize = 12;
   private presentationScale = 1;
   private fixedDimensions: TerminalDimensions | null = null;
+  private fontMetricSeq = 0;
   private pendingPresentationScale: number | null = null;
   private suppressResizeNotifications = false;
   private clearResizeSuppressionRaf: number | null = null;
@@ -351,6 +375,7 @@ export class TerminalCore {
   ) {
     this.eventHandlers = eventHandlers;
     this.clipboard = TerminalCore.normalizeClipboardConfig(config?.clipboard);
+    this.fit = TerminalCore.normalizeFitConfig(config?.fit);
     this.logger = logger ?? noopLogger;
     this.responsive = TerminalCore.normalizeResponsiveConfig(config?.responsive);
     this.logicalFontSize = TerminalCore.normalizeFontSize(config?.fontSize);
@@ -417,6 +442,11 @@ export class TerminalCore {
     const finalConfig = { ...defaultConfig, ...this.config };
     this.logicalFontSize = TerminalCore.normalizeFontSize(finalConfig.fontSize);
     this.presentationScale = TerminalCore.normalizePresentationScale(finalConfig.presentationScale);
+    await this.waitForTerminalFontReady(
+      typeof finalConfig.fontFamily === 'string' ? finalConfig.fontFamily : undefined,
+      this.resolveEffectiveFontSize(),
+      'initial',
+    );
     const initialDimensions = this.fixedDimensions;
     this.terminal = new TerminalCtor({
       cols: initialDimensions?.cols ?? (typeof finalConfig.cols === 'number' ? finalConfig.cols : undefined),
@@ -445,6 +475,7 @@ export class TerminalCore {
 
     this.fitAddon = new FitAddonCtor();
     this.terminal.loadAddon(this.fitAddon);
+    this.installFitAddonGeometryPatch();
   }
 
   private async openTerminal(): Promise<void> {
@@ -464,6 +495,67 @@ export class TerminalCore {
     this.patchSelectionManagerRenderingBehavior();
     this.setupInputBridge();
     this.applyRegisteredLinkProviders();
+    void this.refreshFontMetricsAfterLoad('open');
+  }
+
+  private installFitAddonGeometryPatch(): void {
+    const fitAddon = this.fitAddon as ghostty_fit_addon_with_geometry_patch | null;
+    if (!fitAddon || fitAddon.__floetermGeometryPatchApplied) {
+      return;
+    }
+
+    fitAddon.__floetermGeometryPatchApplied = true;
+    fitAddon.proposeDimensions = () => this.proposeFitDimensions();
+  }
+
+  private proposeFitDimensions(): TerminalDimensions | undefined {
+    const terminalAny = this.terminal as unknown as {
+      element?: HTMLElement | null;
+      renderer?: {
+        getMetrics?: () => { width?: number; height?: number } | null | undefined;
+      } | null;
+    } | null;
+    const renderer = terminalAny?.renderer;
+    const metrics = typeof renderer?.getMetrics === 'function' ? renderer.getMetrics() : null;
+    const cellWidth = Number(metrics?.width);
+    const cellHeight = Number(metrics?.height);
+    if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || cellWidth <= 0 || cellHeight <= 0) {
+      return undefined;
+    }
+
+    const element = this.resolveFitElement(terminalAny?.element);
+    if (!element || typeof element.clientWidth === 'undefined') {
+      return undefined;
+    }
+
+    const width = element.clientWidth;
+    const height = element.clientHeight;
+    if (width === 0 || height === 0) {
+      return undefined;
+    }
+
+    const style = getComputedStyle(element);
+    const paddingTop = Number.parseInt(style.getPropertyValue('padding-top')) || 0;
+    const paddingBottom = Number.parseInt(style.getPropertyValue('padding-bottom')) || 0;
+    const paddingLeft = Number.parseInt(style.getPropertyValue('padding-left')) || 0;
+    const paddingRight = Number.parseInt(style.getPropertyValue('padding-right')) || 0;
+
+    const availableWidth = Math.max(0, width - paddingLeft - paddingRight - this.fit.scrollbarReservePx);
+    const availableHeight = Math.max(0, height - paddingTop - paddingBottom);
+    return {
+      cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availableWidth / cellWidth)),
+      rows: Math.max(MIN_TERMINAL_ROWS, Math.floor(availableHeight / cellHeight)),
+    };
+  }
+
+  private resolveFitElement(terminalElement: HTMLElement | null | undefined): HTMLElement | null {
+    const candidates = [
+      terminalElement,
+      this.renderHost,
+      this.viewportHost,
+      this.container,
+    ];
+    return candidates.find(hasUsableClientSize) ?? terminalElement ?? this.renderHost ?? this.container;
   }
 
   private installDemandRenderPatchBeforeOpen(): void {
@@ -738,6 +830,59 @@ export class TerminalCore {
     }
   }
 
+  private async waitForTerminalFontReady(fontFamily: string | undefined, fontSize: number, reason: string): Promise<void> {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    await this.waitForDOMAndFonts();
+
+    const fonts = document.fonts;
+    if (!fontFamily || typeof fonts === 'undefined' || typeof fonts.load !== 'function') {
+      return;
+    }
+
+    const cssFont = `${Math.max(1, fontSize)}px ${fontFamily}`;
+    try {
+      await fonts.load(cssFont, 'MMMMMMMMMM');
+      if (fonts.ready) {
+        await fonts.ready;
+      }
+    } catch (error) {
+      this.logger.warn('[TerminalCore] Terminal font loading failed, continuing', { error, reason, fontFamily });
+    }
+  }
+
+  private async refreshFontMetricsAfterLoad(reason: string): Promise<void> {
+    if (!this.terminal) {
+      return;
+    }
+
+    const terminalAny = this.terminal as unknown as {
+      options?: { fontFamily?: string; fontSize?: number };
+      renderer?: ghostty_renderer_with_row_cache;
+    };
+    const fontFamily = terminalAny.options?.fontFamily ?? this.config.fontFamily;
+    const fontSize = Number(terminalAny.options?.fontSize ?? this.resolveEffectiveFontSize());
+    const seq = ++this.fontMetricSeq;
+
+    await this.waitForTerminalFontReady(typeof fontFamily === 'string' ? fontFamily : undefined, fontSize, reason);
+
+    if (this.isDisposed || seq !== this.fontMetricSeq || !this.terminal) {
+      return;
+    }
+
+    try {
+      terminalAny.renderer?.remeasureFont?.();
+    } catch (error) {
+      this.logger.debug('[TerminalCore] Terminal font remeasure failed', { error, reason });
+    }
+
+    this.performResize('font');
+    this.forceFullRender();
+    this.scheduleRenderSearchOverlay();
+  }
+
   private async ensureContainerReady(): Promise<void> {
     const maxRetries = 15;
     const retryDelay = 50;
@@ -908,7 +1053,7 @@ export class TerminalCore {
     }, 80);
   }
 
-  private performResize(reason: 'observer' | 'focus' | 'force' | 'post_init'): void {
+  private performResize(reason: 'observer' | 'focus' | 'force' | 'post_init' | 'font'): void {
     if (!this.isReady() || !this.fitAddon || !this.terminal) {
       return;
     }
@@ -947,7 +1092,7 @@ export class TerminalCore {
     this.emitResize(dims, { source: 'core' });
   }
 
-  private applyFixedDimensions(reason: 'observer' | 'focus' | 'force' | 'post_init'): void {
+  private applyFixedDimensions(reason: 'observer' | 'focus' | 'force' | 'post_init' | 'font'): void {
     if (!this.terminal || !this.fixedDimensions) {
       return;
     }
@@ -1829,6 +1974,7 @@ export class TerminalCore {
     }
     this.terminal.options.fontSize = this.resolveEffectiveFontSize();
     this.fitAddon?.fit();
+    void this.refreshFontMetricsAfterLoad('font_size');
   }
 
   setPresentationScale(scale: number): void {
@@ -1872,6 +2018,7 @@ export class TerminalCore {
     this.terminal.options.fontFamily = nextFamily;
     this.fitAddon?.fit();
     this.forceFullRender();
+    void this.refreshFontMetricsAfterLoad('font_family');
   }
 
   registerLinkProvider(provider: TerminalLinkProvider): void {
@@ -1978,6 +2125,13 @@ export class TerminalCore {
     const raw = (typeof value === 'object' && value) ? (value as Partial<TerminalClipboardConfig>) : {};
     return {
       copyOnSelect: raw.copyOnSelect !== false,
+    };
+  }
+
+  private static normalizeFitConfig(value: unknown): Required<TerminalFitConfig> {
+    const raw = (typeof value === 'object' && value) ? (value as Partial<TerminalFitConfig>) : {};
+    return {
+      scrollbarReservePx: normalizeNonNegativePixels(raw.scrollbarReservePx, GHOSTTY_DEFAULT_SCROLLBAR_RESERVE_PX),
     };
   }
 
