@@ -148,6 +148,7 @@ export interface TerminalCoreLike {
   setFontFamily?(family: string): void;
   registerLinkProvider?(provider: TerminalLinkProvider): void;
   startHistoryReplay(duration?: number): void;
+  endHistoryReplay?(): void;
 }
 
 export interface TerminalCoreConstructor {
@@ -178,11 +179,16 @@ export interface TerminalDataChunk {
 
 export interface TerminalDataEvent {
   sessionId: TerminalID;
+  type?: 'data' | 'replay-complete';
   data: Uint8Array;
   sequence?: number;
   timestampMs?: number;
   echoOfInput?: boolean;
   originalSource?: string;
+}
+
+export interface TerminalDataSubscriptionOptions {
+  lastSeq?: number;
 }
 
 export interface TerminalNameUpdateEvent {
@@ -206,7 +212,11 @@ export interface TerminalTransport {
 
 // TerminalEventSource exposes streaming event subscriptions.
 export interface TerminalEventSource {
-  onTerminalData(sessionId: TerminalID, handler: (event: TerminalDataEvent) => void): () => void;
+  onTerminalData(
+    sessionId: TerminalID,
+    handler: (event: TerminalDataEvent) => void,
+    options?: TerminalDataSubscriptionOptions
+  ): () => void;
   onTerminalNameUpdate?(sessionId: TerminalID, handler: (event: TerminalNameUpdateEvent) => void): () => void;
   onSessionDeleted?(sessionId: TerminalID, handler: () => void): () => void;
 }

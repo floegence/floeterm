@@ -158,6 +158,23 @@ body::after {
   height: 100%;
 }
 
+.perfProbe {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 10000;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(122, 162, 247, 0.45);
+  background: rgba(22, 22, 30, 0.92);
+  color: #c0caf5;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+  pointer-events: none;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    Layout Structure
    ───────────────────────────────────────────────────────────────────────────── */

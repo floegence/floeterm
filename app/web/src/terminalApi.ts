@@ -32,6 +32,12 @@ type WsEvent =
       originalSource?: string;
     }
   | {
+      type: 'replay-complete';
+      sessionId: TerminalID;
+      sequence?: number;
+      timestampMs?: number;
+    }
+  | {
       type: 'name';
       sessionId: TerminalID;
       newName: string;
@@ -157,11 +163,15 @@ export const createTransport = (connId: string): AppTerminalTransport => {
 
 export const createEventSource = (connId: string): TerminalEventSource => {
   return {
-    onTerminalData: (sessionId, handler) => {
+    onTerminalData: (sessionId, handler, options) => {
       const url = new URL('/ws', window.location.href);
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       url.searchParams.set('sessionId', sessionId);
       url.searchParams.set('connId', connId);
+      const lastSeq = options?.lastSeq;
+      if (typeof lastSeq === 'number' && Number.isFinite(lastSeq) && lastSeq > 0) {
+        url.searchParams.set('lastSeq', String(Math.floor(lastSeq)));
+      }
 
       const ws = new WebSocket(url);
       ws.onmessage = evt => {
@@ -172,12 +182,29 @@ export const createEventSource = (connId: string): TerminalEventSource => {
           return;
         }
 
-        if (!parsed || parsed.type !== 'data' || parsed.sessionId !== sessionId) {
+        if (!parsed || parsed.sessionId !== sessionId) {
+          return;
+        }
+
+        if (parsed.type === 'replay-complete') {
+          const payload: TerminalDataEvent = {
+            sessionId,
+            type: 'replay-complete',
+            data: new Uint8Array(0),
+            sequence: parsed.sequence,
+            timestampMs: parsed.timestampMs
+          };
+          handler(payload);
+          return;
+        }
+
+        if (parsed.type !== 'data') {
           return;
         }
 
         const payload: TerminalDataEvent = {
           sessionId,
+          type: 'data',
           data: decodeBase64(parsed.data),
           sequence: parsed.sequence,
           timestampMs: parsed.timestampMs,

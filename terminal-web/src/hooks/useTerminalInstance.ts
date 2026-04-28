@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { TerminalCore } from '../core/TerminalCore';
 import { SequenceBuffer } from '../internal/SequenceBuffer';
-import { concatChunks } from '../utils/history';
 import { createTerminalError } from '../utils/errors';
 import { getDefaultTerminalConfig, getThemeColors } from '../utils/config';
 import { createConsoleLogger, noopLogger } from '../utils/logger';
+import { concatChunks } from '../utils/history';
 import type {
   TerminalCoreLike,
   TerminalCoreConstructor,
@@ -28,6 +28,9 @@ enum ConnectionState {
   FAILED = 'failed',
   ABORTED = 'aborted'
 }
+
+const MAX_WRITE_BATCH_CHUNKS = 64;
+const MAX_WRITE_BATCH_BYTES = 256 * 1024;
 
 enum LoadingState {
   IDLE = 'idle',
@@ -60,11 +63,16 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalCoreRef = useRef<TerminalCoreLike | null>(null);
   const isInitializingRef = useRef(false);
-  const historyLoadedRef = useRef(false);
+  const terminalDataUnsubscribeRef = useRef<(() => void) | null>(null);
   const sequenceBufferRef = useRef(new SequenceBuffer());
+  const replayCompleteReceivedRef = useRef(false);
+  const isReplayActiveRef = useRef(false);
+  const lastAppliedSequenceRef = useRef(0);
 
   const [loadingState, setLoadingState] = useState(LoadingState.IDLE);
   const [loadingMessage, setLoadingMessage] = useState('');
+  const [replaySubscriptionKey, setReplaySubscriptionKey] = useState(0);
+  const [terminalReadyKey, setTerminalReadyKey] = useState(0);
 
   const [connectionState, setConnectionState] = useState(ConnectionState.IDLE);
   const [connectionError, setConnectionError] = useState<TerminalError | null>(null);
@@ -76,18 +84,27 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     error: undefined,
     dimensions: { cols: 80, rows: 24 }
   });
+  const dimensionsRef = useRef({ cols: 80, rows: 24 });
 
   const dataQueueRef = useRef<TerminalDataChunk[]>([]);
   const isProcessingRef = useRef(false);
   const queueGenerationRef = useRef(0);
+  const flushRafRef = useRef<number | null>(null);
+  const processDataQueueRef = useRef<() => void>(() => {});
 
   // Reset session-scoped state when switching sessions (important for ordering + history replay).
   useEffect(() => {
     queueGenerationRef.current += 1;
-    historyLoadedRef.current = false;
     sequenceBufferRef.current.reset(1);
+    replayCompleteReceivedRef.current = false;
+    isReplayActiveRef.current = false;
+    lastAppliedSequenceRef.current = 0;
     dataQueueRef.current = [];
     isProcessingRef.current = false;
+    if (flushRafRef.current !== null) {
+      cancelAnimationFrame(flushRafRef.current);
+      flushRafRef.current = null;
+    }
 
     setConnectionState(ConnectionState.IDLE);
     setConnectionError(null);
@@ -107,6 +124,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
   }, [updateState]);
 
   const handleResize = useCallback(async (size: { cols: number; rows: number }) => {
+    dimensionsRef.current = size;
     updateState({ dimensions: size });
     onResize?.(size.cols, size.rows);
 
@@ -136,16 +154,6 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     });
   }, [transport, sessionId, logger]);
 
-  const waitForTerminalReady = useCallback(async (): Promise<void> => {
-    while (terminalCoreRef.current) {
-      const terminalState = terminalCoreRef.current.getState();
-      if (terminalState === TerminalState.READY || terminalState === TerminalState.CONNECTED) {
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-  }, []);
-
   const scheduleFocus = useCallback(() => {
     if (!autoFocus) {
       return;
@@ -158,60 +166,6 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     });
   }, [autoFocus]);
 
-  const loadHistoryAfterReady = useCallback(async (currentSessionId: string, retry = 0) => {
-    const maxRetries = 2;
-    const retryDelay = 1000;
-
-    try {
-      setLoadingState(LoadingState.PROCESSING_HISTORY);
-      setLoadingMessage('Loading terminal history...');
-      await waitForTerminalReady();
-
-      const history = await transport.history(currentSessionId, 0, -1);
-      if (history.length === 0) {
-        setLoadingState(LoadingState.READY);
-        setLoadingMessage('');
-        scheduleFocus();
-        return;
-      }
-
-      const sorted = [...history].sort((a, b) => a.sequence - b.sequence);
-      const decodedChunks = sorted.map(chunk => chunk.data);
-      const merged = concatChunks(decodedChunks);
-
-      const container = containerRef.current;
-      if (container) {
-        container.style.visibility = 'hidden';
-      }
-
-      terminalCoreRef.current?.startHistoryReplay(5000);
-      terminalCoreRef.current?.write(merged, () => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            if (container) {
-              container.style.visibility = 'visible';
-            }
-            scheduleFocus();
-          });
-        });
-      });
-
-      setLoadingState(LoadingState.READY);
-      setLoadingMessage('');
-    } catch (error) {
-      logger.warn('[useTerminalInstance] History load failed', { error, retry });
-      if (retry < maxRetries) {
-        setTimeout(() => {
-          loadHistoryAfterReady(currentSessionId, retry + 1);
-        }, retryDelay * Math.pow(2, retry));
-      } else {
-        setLoadingState(LoadingState.READY);
-        setLoadingMessage('');
-        scheduleFocus();
-      }
-    }
-  }, [transport, waitForTerminalReady, logger, scheduleFocus]);
-
   const cleanupTerminal = useCallback(() => {
     if (terminalCoreRef.current) {
       terminalCoreRef.current.dispose();
@@ -219,6 +173,34 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     }
     dataQueueRef.current = [];
     isProcessingRef.current = false;
+  }, []);
+
+  const finishReplayIfIdle = useCallback(() => {
+    if (!replayCompleteReceivedRef.current || dataQueueRef.current.length > 0 || isProcessingRef.current) {
+      return;
+    }
+    if (isReplayActiveRef.current) {
+      terminalCoreRef.current?.endHistoryReplay?.();
+      isReplayActiveRef.current = false;
+    }
+    setLoadingState(LoadingState.READY);
+    setLoadingMessage('');
+    scheduleFocus();
+  }, [scheduleFocus]);
+
+  const scheduleDataQueueFlush = useCallback(() => {
+    if (flushRafRef.current !== null) {
+      return;
+    }
+
+    const generation = queueGenerationRef.current;
+    flushRafRef.current = requestAnimationFrame(() => {
+      flushRafRef.current = null;
+      if (queueGenerationRef.current !== generation) {
+        return;
+      }
+      processDataQueueRef.current();
+    });
   }, []);
 
   const processDataQueue = useCallback(async () => {
@@ -241,36 +223,53 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     isProcessingRef.current = true;
 
     try {
-      const batch = dataQueueRef.current.splice(0, 10);
+      let batchLength = 0;
+      let batchBytes = 0;
+      for (const chunk of dataQueueRef.current) {
+        if (batchLength >= MAX_WRITE_BATCH_CHUNKS) {
+          break;
+        }
+        if (batchLength > 0 && batchBytes + chunk.data.byteLength > MAX_WRITE_BATCH_BYTES) {
+          break;
+        }
+        batchLength += 1;
+        batchBytes += chunk.data.byteLength;
+      }
+
+      const batch = dataQueueRef.current.splice(0, Math.max(1, batchLength));
+      if (queueGenerationRef.current !== generation) {
+        return;
+      }
+      const payload = batch.length === 1 ? batch[0].data : concatChunks(batch.map(chunk => chunk.data));
+      terminalCoreRef.current.write(payload);
       for (const chunk of batch) {
         if (queueGenerationRef.current !== generation) {
           return;
         }
-        terminalCoreRef.current.write(chunk.data);
+        if (chunk.sequence > lastAppliedSequenceRef.current) {
+          lastAppliedSequenceRef.current = chunk.sequence;
+        }
       }
 
-      if (dataQueueRef.current.length > 0) {
-        requestAnimationFrame(() => {
-          if (queueGenerationRef.current !== generation) {
-            return;
-          }
-          processDataQueue();
-        });
-      }
     } finally {
       isProcessingRef.current = false;
       if (dataQueueRef.current.length > 0) {
-        requestAnimationFrame(() => {
-          if (queueGenerationRef.current !== generation) {
-            return;
-          }
-          processDataQueue();
-        });
+        scheduleDataQueueFlush();
+      } else {
+        finishReplayIfIdle();
       }
     }
-  }, []);
+  }, [finishReplayIfIdle, scheduleDataQueueFlush]);
+
+  useEffect(() => {
+    processDataQueueRef.current = processDataQueue;
+  }, [processDataQueue]);
 
   const addChunkToQueue = useCallback((chunk: TerminalDataChunk) => {
+    if (chunk.sequence > 0 && chunk.sequence <= lastAppliedSequenceRef.current) {
+      return;
+    }
+
     const ready = sequenceBufferRef.current.push(chunk);
     if (ready.length === 0) {
       return;
@@ -278,15 +277,9 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
 
     dataQueueRef.current.push(...ready);
     if (!isProcessingRef.current) {
-      const generation = queueGenerationRef.current;
-      requestAnimationFrame(() => {
-        if (queueGenerationRef.current !== generation) {
-          return;
-        }
-        processDataQueue();
-      });
+      scheduleDataQueueFlush();
     }
-  }, [processDataQueue]);
+  }, [scheduleDataQueueFlush]);
 
   const initializeTerminal = useCallback(async () => {
     if (!containerRef.current || isInitializingRef.current || terminalCoreRef.current) {
@@ -319,6 +312,10 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
       );
 
       await terminalCoreRef.current.initialize();
+      setTerminalReadyKey(prev => prev + 1);
+      if (isReplayActiveRef.current) {
+        terminalCoreRef.current.startHistoryReplay(30000);
+      }
 
       if (sessionId) {
         const dimensions = terminalCoreRef.current.getDimensions();
@@ -327,8 +324,13 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
 
       processDataQueue();
 
-      setLoadingState(LoadingState.READY);
-      setLoadingMessage('');
+      if (!isReplayActiveRef.current || replayCompleteReceivedRef.current) {
+        setLoadingState(LoadingState.READY);
+        setLoadingMessage('');
+      } else {
+        setLoadingState(LoadingState.PROCESSING_HISTORY);
+        setLoadingMessage('Restoring terminal...');
+      }
     } catch (error) {
       handleError(error instanceof Error ? error : new Error(String(error)));
       setLoadingState(LoadingState.READY);
@@ -349,12 +351,17 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     setLoadingMessage('Attaching to session...');
 
     try {
-      const dims = state.dimensions || { cols: 80, rows: 24 };
+      const dims = terminalCoreRef.current?.getDimensions() ?? dimensionsRef.current;
       await transport.attach(sessionId, dims.cols, dims.rows);
       setConnectionState(ConnectionState.CONNECTED);
       setRetryCount(0);
-      setLoadingState(LoadingState.READY);
-      setLoadingMessage('');
+      if (!isReplayActiveRef.current || replayCompleteReceivedRef.current) {
+        setLoadingState(LoadingState.READY);
+        setLoadingMessage('');
+      } else {
+        setLoadingState(LoadingState.PROCESSING_HISTORY);
+        setLoadingMessage('Restoring terminal...');
+      }
     } catch (error) {
       const terminalError = createTerminalError('transport', error);
       setConnectionState(ConnectionState.FAILED);
@@ -362,7 +369,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
       setLoadingState(LoadingState.READY);
       setLoadingMessage('');
     }
-  }, [sessionId, transport, state.dimensions]);
+  }, [sessionId, transport]);
 
   useEffect(() => {
     if (!isActive) {
@@ -383,19 +390,49 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
       return;
     }
 
+    isReplayActiveRef.current = true;
+    replayCompleteReceivedRef.current = false;
+    terminalCoreRef.current?.startHistoryReplay(30000);
+    setLoadingState(LoadingState.PROCESSING_HISTORY);
+    setLoadingMessage('Restoring terminal...');
+
+    const lastSeq = terminalCoreRef.current ? lastAppliedSequenceRef.current : 0;
     const unsubscribe = eventSource.onTerminalData(sessionId, (payload: TerminalDataEvent) => {
+      if (payload.type === 'replay-complete') {
+        replayCompleteReceivedRef.current = true;
+        const ready = sequenceBufferRef.current.flushPending();
+        if (ready.length > 0) {
+          dataQueueRef.current.push(...ready);
+          scheduleDataQueueFlush();
+        } else if (
+          typeof payload.sequence === 'number' &&
+          payload.sequence > lastAppliedSequenceRef.current &&
+          dataQueueRef.current.length === 0 &&
+          !isProcessingRef.current
+        ) {
+          lastAppliedSequenceRef.current = payload.sequence;
+          sequenceBufferRef.current.reset(payload.sequence + 1);
+        }
+        finishReplayIfIdle();
+        return;
+      }
+
       const chunk: TerminalDataChunk = {
         data: payload.data,
         sequence: payload.sequence ?? 0,
         timestampMs: payload.timestampMs ?? Date.now()
       };
       addChunkToQueue(chunk);
-    });
+    }, { lastSeq });
+    terminalDataUnsubscribeRef.current = unsubscribe;
 
     return () => {
+      if (terminalDataUnsubscribeRef.current === unsubscribe) {
+        terminalDataUnsubscribeRef.current = null;
+      }
       unsubscribe();
     };
-  }, [eventSource, sessionId, addChunkToQueue]);
+  }, [eventSource, sessionId, replaySubscriptionKey, addChunkToQueue, finishReplayIfIdle, scheduleDataQueueFlush]);
 
   useEffect(() => {
     if (!isActive || !terminalCoreRef.current || !sessionId) {
@@ -403,18 +440,7 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     }
 
     connectToSession();
-  }, [isActive, sessionId, connectToSession]);
-
-  useEffect(() => {
-    if (!terminalCoreRef.current || !sessionId || historyLoadedRef.current) {
-      return;
-    }
-
-    if (state.state === TerminalState.READY) {
-      historyLoadedRef.current = true;
-      loadHistoryAfterReady(sessionId);
-    }
-  }, [state.state, sessionId, loadHistoryAfterReady]);
+  }, [isActive, sessionId, terminalReadyKey, connectToSession]);
 
   useEffect(() => {
     return () => {
@@ -498,9 +524,27 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     setFontSize: size => terminalCoreRef.current?.setFontSize(size),
     setPresentationScale: scale => terminalCoreRef.current?.setPresentationScale(scale),
     reinitialize: async () => {
+      terminalDataUnsubscribeRef.current?.();
+      terminalDataUnsubscribeRef.current = null;
+      queueGenerationRef.current += 1;
+      sequenceBufferRef.current.reset(1);
+      replayCompleteReceivedRef.current = false;
+      isReplayActiveRef.current = true;
+      lastAppliedSequenceRef.current = 0;
+      dataQueueRef.current = [];
+      isProcessingRef.current = false;
+      if (flushRafRef.current !== null) {
+        cancelAnimationFrame(flushRafRef.current);
+        flushRafRef.current = null;
+      }
+      setLoadingState(LoadingState.PROCESSING_HISTORY);
+      setLoadingMessage('Restoring terminal...');
       cleanupTerminal();
-      historyLoadedRef.current = false;
+      setReplaySubscriptionKey(prev => prev + 1);
       await initializeTerminal();
+      if (isActive && sessionId) {
+        await connectToSession();
+      }
     }
   };
 

@@ -33,6 +33,11 @@ type terminal_selection_manager = {
   copyToClipboard?: ((text: string) => Promise<void> | void) | null;
 };
 
+type floeterm_perf_probe = {
+  onTerminalWrite?: (bytes: number) => void;
+  onTerminalRender?: (durationMs: number) => void;
+};
+
 type ghostty_disposable = {
   dispose?: () => void;
 };
@@ -72,6 +77,13 @@ const PRESENTATION_SCALE_EPSILON = 0.0001;
 const TERMINAL_SEARCH_MATCH_BACKGROUND = 'rgba(255, 234, 0, 0.38)';
 const TERMINAL_SEARCH_ACTIVE_BACKGROUND = 'rgba(255, 234, 0, 0.72)';
 const TERMINAL_SEARCH_ACTIVE_FOREGROUND = '#dc2626';
+
+const getPerfProbe = (): floeterm_perf_probe | undefined => {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+  return (window as Window & { __floetermPerfProbe?: floeterm_perf_probe }).__floetermPerfProbe;
+};
 
 // Dynamic imports avoid SSR issues and keep the bundle flexible.
 let TerminalCtor: typeof import('ghostty-web').Terminal | null = null;
@@ -862,6 +874,7 @@ export class TerminalCore {
     }
 
     try {
+      getPerfProbe()?.onTerminalWrite?.(typeof data === 'string' ? data.length : data.byteLength);
       const shouldForce = this.needsFullRenderOnNextWrite;
 
       if (callback || shouldForce) {
@@ -1884,6 +1897,7 @@ export class TerminalCore {
     }
 
     try {
+      const startedAt = performance.now();
       terminalAny.renderer.render(
         terminalAny.wasmTerm,
         forceAll,
@@ -1896,6 +1910,7 @@ export class TerminalCore {
         terminalAny.lastCursorY = cursor.y;
         terminalAny.cursorMoveEmitter?.fire?.();
       }
+      getPerfProbe()?.onTerminalRender?.(performance.now() - startedAt);
     } catch (error) {
       this.logger.debug('[TerminalCore] Force render failed', { error });
     }

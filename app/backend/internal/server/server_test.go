@@ -163,6 +163,146 @@ func TestServer_EndToEndWebsocketEcho(t *testing.T) {
 	}
 }
 
+func TestServer_WebsocketReplaysHistoryBeforeReplayComplete(t *testing.T) {
+	srv := New(Config{
+		ManagerConfig: terminal.ManagerConfig{
+			Logger:                        terminal.NopLogger{},
+			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
+			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
+			InitialResizeSuppressDuration: time.Millisecond,
+			ResizeSuppressDuration:        time.Millisecond,
+		},
+	})
+	t.Cleanup(srv.Close)
+
+	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	createReqBody := bytes.NewBufferString(`{}`)
+	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
+	if err != nil {
+		t.Fatalf("create session request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected create status: %d", resp.StatusCode)
+	}
+
+	var created apiSessionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response failed: %v", err)
+	}
+
+	attachBody := bytes.NewBufferString(`{"connId":"c1","cols":80,"rows":24}`)
+	attachResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/attach", "application/json", attachBody)
+	if err != nil {
+		t.Fatalf("attach failed: %v", err)
+	}
+	attachResp.Body.Close()
+	if attachResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected attach status: %d", attachResp.StatusCode)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	inputBody := bytes.NewBufferString(`{"connId":"c1","input":"replay-line\\n"}`)
+	inputResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/input", "application/json", inputBody)
+	if err != nil {
+		t.Fatalf("send input failed: %v", err)
+	}
+	inputResp.Body.Close()
+	if inputResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected input status: %d", inputResp.StatusCode)
+	}
+
+	waitForHistoryContaining(t, httpSrv.URL, created.ID, []byte("replay-line"), 2*time.Second)
+
+	wsURL := "ws" + httpSrv.URL[len("http"):] + "/ws?sessionId=" + created.ID
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsConn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	defer wsConn.Close(websocket.StatusNormalClosure, "done")
+
+	var sawReplayData bool
+	var maxReplaySeq int64
+	for {
+		_, msg, err := wsConn.Read(ctx)
+		if err != nil {
+			t.Fatalf("websocket read failed: %v", err)
+		}
+
+		var evt wsEvent
+		if err := json.Unmarshal(msg, &evt); err != nil {
+			t.Fatalf("invalid websocket json: %v", err)
+		}
+
+		switch evt.Type {
+		case "data":
+			data, err := base64.StdEncoding.DecodeString(evt.DataBase64)
+			if err != nil {
+				t.Fatalf("decode data failed: %v", err)
+			}
+			if bytes.Contains(data, []byte("replay-line")) {
+				sawReplayData = true
+			}
+			if evt.Sequence > maxReplaySeq {
+				maxReplaySeq = evt.Sequence
+			}
+		case "replay-complete":
+			if !sawReplayData {
+				t.Fatal("replay-complete arrived before replayed history data")
+			}
+			if evt.Sequence < maxReplaySeq {
+				t.Fatalf("replay-complete sequence %d is behind replayed data %d", evt.Sequence, maxReplaySeq)
+			}
+			return
+		}
+	}
+}
+
+func waitForHistoryContaining(t *testing.T, baseURL, sessionID string, expected []byte, timeout time.Duration) []historyChunk {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var lastChunks []historyChunk
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "/api/sessions/" + sessionID + "/history?startSeq=1&endSeq=-1")
+		if err != nil {
+			t.Fatalf("history request failed: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			t.Fatalf("unexpected history status: %d", resp.StatusCode)
+		}
+
+		var chunks []historyChunk
+		if err := json.NewDecoder(resp.Body).Decode(&chunks); err != nil {
+			resp.Body.Close()
+			t.Fatalf("decode history failed: %v", err)
+		}
+		resp.Body.Close()
+
+		lastChunks = chunks
+		for _, chunk := range chunks {
+			data, err := base64.StdEncoding.DecodeString(chunk.DataBase64)
+			if err != nil {
+				t.Fatalf("decode history chunk failed: %v", err)
+			}
+			if bytes.Contains(data, expected) {
+				return chunks
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timeout waiting for history containing %q; last chunk count %d", string(expected), len(lastChunks))
+	return nil
+}
+
 func TestServer_WebsocketDisconnectRemovesConnection(t *testing.T) {
 	logger := &recordingLogger{}
 	srv := New(Config{

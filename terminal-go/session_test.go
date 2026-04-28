@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,59 @@ func (h *captureHandler) OnTerminalNameChanged(string, string, string, string) {
 func (h *captureHandler) OnTerminalSessionCreated(*Session)                    {}
 func (h *captureHandler) OnTerminalSessionClosed(string)                       {}
 func (h *captureHandler) OnTerminalError(string, error)                        {}
+
+type sequenceCaptureHandler struct {
+	sequenceCh chan int64
+}
+
+func (h *sequenceCaptureHandler) OnTerminalData(sessionID string, data []byte, sequenceNumber int64, isEcho bool, originalSource string) {
+	h.sequenceCh <- sequenceNumber
+}
+func (h *sequenceCaptureHandler) OnTerminalNameChanged(string, string, string, string) {}
+func (h *sequenceCaptureHandler) OnTerminalSessionCreated(*Session)                    {}
+func (h *sequenceCaptureHandler) OnTerminalSessionClosed(string)                       {}
+func (h *sequenceCaptureHandler) OnTerminalError(string, error)                        {}
+
+func TestSessionHistoryAndLiveOutputShareSequence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	handler := &sequenceCaptureHandler{sequenceCh: make(chan int64, 1)}
+	session := &Session{
+		ID:                "session-seq",
+		Name:              "seq",
+		WorkingDir:        "/",
+		CreatedAt:         time.Now(),
+		LastActive:        time.Now(),
+		ctx:               ctx,
+		cancel:            cancel,
+		connections:       make(map[string]*ConnectionInfo),
+		ringBuffer:        NewTerminalRingBuffer(8),
+		currentWorkingDir: "/",
+		eventHandler:      handler,
+		config:            newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	session.processRawPTYData([]byte("hello"))
+
+	var liveSeq int64
+	select {
+	case liveSeq = <-handler.sequenceCh:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for live sequence")
+	}
+
+	history, err := session.GetHistoryFromSequence(1)
+	if err != nil {
+		t.Fatalf("failed to read history: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected one history chunk, got %d", len(history))
+	}
+	if history[0].Sequence != liveSeq {
+		t.Fatalf("history sequence %d does not match live sequence %d", history[0].Sequence, liveSeq)
+	}
+}
 
 func TestSessionLifecycleAndOutput(t *testing.T) {
 	manager := NewManager(ManagerConfig{

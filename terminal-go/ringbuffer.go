@@ -62,12 +62,20 @@ func (rb *TerminalRingBuffer) Write(data []byte) error {
 }
 
 func (rb *TerminalRingBuffer) writeOwned(data []byte) error {
+	return rb.writeOwnedWithSequence(data, 0, time.Now().UnixMilli(), true)
+}
+
+func (rb *TerminalRingBuffer) writeOwnedWithSequence(data []byte, sequence int64, timestamp int64, advanceSequence bool) error {
 	if len(data) == 0 {
 		return nil
 	}
 
 	rb.mutex.Lock()
 	defer rb.mutex.Unlock()
+
+	if advanceSequence {
+		sequence = atomic.LoadInt64(&rb.nextSequence)
+	}
 
 	// When the buffer is full, the next write overwrites the oldest chunk at head.
 	// Adjust byte accounting before overwriting so TotalBytes stays correct.
@@ -78,9 +86,9 @@ func (rb *TerminalRingBuffer) writeOwned(data []byte) error {
 	}
 
 	chunk := TerminalDataChunk{
-		Sequence:  atomic.LoadInt64(&rb.nextSequence),
+		Sequence:  sequence,
 		Data:      data,
-		Timestamp: time.Now().UnixMilli(),
+		Timestamp: timestamp,
 		Size:      len(data),
 	}
 
@@ -88,7 +96,9 @@ func (rb *TerminalRingBuffer) writeOwned(data []byte) error {
 
 	atomic.AddInt64(&rb.totalBytes, int64(len(data)))
 	atomic.AddInt64(&rb.writeCount, 1)
-	atomic.AddInt64(&rb.nextSequence, 1)
+	if advanceSequence {
+		atomic.AddInt64(&rb.nextSequence, 1)
+	}
 
 	rb.head = (rb.head + 1) % rb.size
 	rb.full = rb.head == rb.tail

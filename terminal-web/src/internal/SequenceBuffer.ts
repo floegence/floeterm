@@ -37,6 +37,28 @@ export class SequenceBuffer {
     this.lastCleanupMs = Date.now();
   }
 
+  flushPending(): TerminalDataChunk[] {
+    if (this.pending.size === 0) {
+      return [];
+    }
+
+    const ready: TerminalDataChunk[] = [];
+    const sequences = Array.from(this.pending.keys()).sort((a, b) => a - b);
+    for (const sequence of sequences) {
+      const chunk = this.pending.get(sequence);
+      this.pending.delete(sequence);
+      this.pendingInsertedAt.delete(sequence);
+      if (!chunk || sequence < this.expectedSequence) {
+        continue;
+      }
+
+      ready.push(chunk);
+      this.expectedSequence = sequence + 1;
+    }
+
+    return ready;
+  }
+
   push(chunk: TerminalDataChunk, now = Date.now()): TerminalDataChunk[] {
     const sequence = chunk.sequence;
     const ready: TerminalDataChunk[] = [];

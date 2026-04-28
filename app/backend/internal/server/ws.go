@@ -2,8 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -13,6 +18,7 @@ type wsClient struct {
 	sessionID string
 	connID    string
 	send      chan []byte
+	sendMu    sync.Mutex
 }
 
 type wsEvent struct {
@@ -28,6 +34,8 @@ type wsEvent struct {
 	Error          string `json:"error,omitempty"`
 }
 
+const wsConnectionRemovalGrace = 100 * time.Millisecond
+
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("sessionId")
 	if sessionID == "" {
@@ -35,6 +43,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	connID := r.URL.Query().Get("connId")
+	lastSeq := parseLastSeq(r.URL.Query().Get("lastSeq"))
 
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -46,14 +55,17 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		conn:      conn,
 		sessionID: sessionID,
 		connID:    connID,
-		send:      make(chan []byte, 64),
+		send:      make(chan []byte, 4096),
 	}
 
+	client.sendMu.Lock()
 	s.registerWS(client)
 	defer s.unregisterWS(client)
 
 	ctx := r.Context()
 	go client.writeLoop(ctx)
+	s.replayHistoryToWSClient(client, lastSeq)
+	client.sendMu.Unlock()
 
 	// We don't expect client -> server messages; just read to detect close.
 	for {
@@ -62,6 +74,17 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func parseLastSeq(raw string) int64 {
+	if strings.TrimSpace(raw) == "" {
+		return 0
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
 }
 
 func (c *wsClient) writeLoop(ctx context.Context) {
@@ -77,6 +100,98 @@ func (c *wsClient) writeLoop(ctx context.Context) {
 				return
 			}
 		}
+	}
+}
+
+func (c *wsClient) enqueue(payload []byte) bool {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	select {
+	case c.send <- payload:
+		return true
+	default:
+		_ = c.conn.Close(websocket.StatusPolicyViolation, "slow consumer")
+		return false
+	}
+}
+
+func (s *Server) replayHistoryToWSClient(client *wsClient, lastSeq int64) {
+	session, ok := s.manager.GetSession(client.sessionID)
+	if !ok {
+		payload, err := json.Marshal(wsEvent{
+			Type:        "error",
+			SessionID:   client.sessionID,
+			Error:       "session not found",
+			TimestampMs: time.Now().UnixMilli(),
+		})
+		if err == nil {
+			select {
+			case client.send <- payload:
+			default:
+			}
+		}
+		return
+	}
+
+	chunks, err := session.GetHistoryFromSequence(lastSeq + 1)
+	if err != nil {
+		payload, marshalErr := json.Marshal(wsEvent{
+			Type:        "error",
+			SessionID:   client.sessionID,
+			Error:       err.Error(),
+			TimestampMs: time.Now().UnixMilli(),
+		})
+		if marshalErr == nil {
+			select {
+			case client.send <- payload:
+			default:
+			}
+		}
+		return
+	}
+
+	replaySeq := lastSeq
+	for _, chunk := range chunks {
+		if chunk.Sequence <= lastSeq {
+			continue
+		}
+		payload, err := json.Marshal(wsEvent{
+			Type:        "data",
+			SessionID:   client.sessionID,
+			DataBase64:  base64.StdEncoding.EncodeToString(chunk.Data),
+			Sequence:    chunk.Sequence,
+			TimestampMs: chunk.Timestamp,
+		})
+		if err != nil {
+			continue
+		}
+		if !client.enqueueReplayLocked(payload) {
+			return
+		}
+		if chunk.Sequence > replaySeq {
+			replaySeq = chunk.Sequence
+		}
+	}
+
+	payload, err := json.Marshal(wsEvent{
+		Type:        "replay-complete",
+		SessionID:   client.sessionID,
+		Sequence:    replaySeq,
+		TimestampMs: time.Now().UnixMilli(),
+	})
+	if err == nil {
+		_ = client.enqueueReplayLocked(payload)
+	}
+}
+
+func (c *wsClient) enqueueReplayLocked(payload []byte) bool {
+	select {
+	case c.send <- payload:
+		return true
+	default:
+		_ = c.conn.Close(websocket.StatusPolicyViolation, "slow consumer")
+		return false
 	}
 }
 
@@ -124,7 +239,7 @@ func (s *Server) unregisterWS(client *wsClient) {
 	if set == nil {
 		s.wsMu.Unlock()
 		if shouldRemoveConn {
-			s.removeTerminalConnection(client.sessionID, client.connID)
+			s.removeTerminalConnectionAfterGrace(client.sessionID, client.connID)
 		}
 		return
 	}
@@ -135,7 +250,7 @@ func (s *Server) unregisterWS(client *wsClient) {
 	s.wsMu.Unlock()
 
 	if shouldRemoveConn {
-		s.removeTerminalConnection(client.sessionID, client.connID)
+		s.removeTerminalConnectionAfterGrace(client.sessionID, client.connID)
 	}
 }
 
@@ -154,12 +269,7 @@ func (s *Server) broadcast(sessionID string, payload []byte) {
 	s.wsMu.RUnlock()
 
 	for _, client := range clients {
-		select {
-		case client.send <- payload:
-		default:
-			// Slow consumer: best-effort close. The read loop will exit and cleanup will unregister.
-			_ = client.conn.Close(websocket.StatusPolicyViolation, "slow consumer")
-		}
+		client.enqueue(payload)
 	}
 }
 
@@ -172,4 +282,22 @@ func (s *Server) removeTerminalConnection(sessionID, connID string) {
 		return
 	}
 	session.RemoveConnection(connID)
+}
+
+func (s *Server) removeTerminalConnectionAfterGrace(sessionID, connID string) {
+	if strings.TrimSpace(connID) == "" {
+		return
+	}
+
+	time.AfterFunc(wsConnectionRemovalGrace, func() {
+		s.wsMu.RLock()
+		sessionRefs := s.wsConnRefs[sessionID]
+		stillReferenced := sessionRefs != nil && sessionRefs[connID] > 0
+		s.wsMu.RUnlock()
+
+		if stillReferenced {
+			return
+		}
+		s.removeTerminalConnection(sessionID, connID)
+	})
 }

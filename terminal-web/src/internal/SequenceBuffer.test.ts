@@ -54,4 +54,15 @@ describe('SequenceBuffer', () => {
     expect(buffer.push(makeChunk(2, 'b'), 0)).toEqual([]);
     expect(buffer.push(makeChunk(3, 'c'), 11).map(chunk => chunk.sequence)).toEqual([2, 3]);
   });
+
+  it('flushes pending chunks across gaps when replay is complete', () => {
+    const buffer = new SequenceBuffer();
+    buffer.reset(1);
+
+    expect(buffer.push(makeChunk(2, 'b'))).toEqual([]);
+    expect(buffer.push(makeChunk(4, 'd'))).toEqual([]);
+
+    expect(buffer.flushPending().map(chunk => chunk.sequence)).toEqual([2, 4]);
+    expect(buffer.push(makeChunk(5, 'e')).map(chunk => chunk.sequence)).toEqual([5]);
+  });
 });

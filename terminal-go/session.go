@@ -281,9 +281,7 @@ func (s *Session) ClearHistory() error {
 }
 
 // broadcastData sends output to the event handler with metadata.
-func (s *Session) broadcastData(data []byte) {
-	seqNum := atomic.AddInt64(&s.sequenceNumber, 1)
-
+func (s *Session) broadcastData(data []byte, seqNum int64) {
 	// Never call external handlers while holding session locks. Handlers may
 	// synchronously call back into this Session/Manager and would deadlock.
 	s.mu.RLock()
@@ -355,6 +353,9 @@ func (s *Session) shouldSkipRingBufferWrite() bool {
 }
 
 func (s *Session) processRawPTYData(data []byte) {
+	seqNum := atomic.AddInt64(&s.sequenceNumber, 1)
+	timestamp := time.Now().UnixMilli()
+
 	s.mu.Lock()
 	s.LastActive = time.Now()
 
@@ -362,14 +363,14 @@ func (s *Session) processRawPTYData(data []byte) {
 	if shouldSkip {
 		s.config.logger.Debug("Skipping ring buffer write during resize", "sessionID", s.ID, "dataLength", len(data))
 	} else if s.ringBuffer != nil {
-		if err := s.ringBuffer.writeOwned(data); err != nil {
+		if err := s.ringBuffer.writeOwnedWithSequence(data, seqNum, timestamp, false); err != nil {
 			s.config.logger.Error("Failed to write to ring buffer", "sessionID", s.ID, "error", err)
 		}
 	}
 
 	s.mu.Unlock()
 
-	s.broadcastData(data)
+	s.broadcastData(data, seqNum)
 
 	s.checkWorkingDirectoryChange(data)
 }
