@@ -127,4 +127,27 @@ describe('TerminalCore presentation scale', () => {
 
     core.dispose();
   });
+
+  it('does not refit or redraw when presentation scale is unchanged', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const core = new TerminalCore(container, {});
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    core.setPresentationScale(2);
+    await vi.runAllTimersAsync();
+    fitSpy.mockReset();
+
+    core.setPresentationScale(2);
+    await vi.runAllTimersAsync();
+
+    expect(fitSpy).not.toHaveBeenCalled();
+
+    core.dispose();
+  });
 });

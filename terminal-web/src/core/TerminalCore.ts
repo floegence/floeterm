@@ -45,7 +45,39 @@ type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
   registerLinkProvider?: (provider: TerminalLinkProvider) => void;
 };
 
+type ghostty_cell_like = Partial<import('ghostty-web').GhosttyCell>;
+
+type ghostty_renderer_with_row_cache = {
+  __floetermRowRenderCachePatched?: boolean;
+  __floetermRowRenderCacheForceAll?: boolean;
+  __floetermRowRenderCache?: Map<number, string>;
+  ctx?: CanvasRenderingContext2D;
+  currentBuffer?: {
+    getCursor?: () => { y?: number };
+    getGraphemeString?: (row: number, col: number) => string;
+  } | null;
+  currentSelectionCoords?: unknown;
+  hoveredHyperlinkId?: number;
+  hoveredLinkRange?: unknown;
+  lastCursorPosition?: { y?: number };
+  metrics?: {
+    baseline: number;
+    height: number;
+    width: number;
+  };
+  render?: (...args: unknown[]) => unknown;
+  renderLine?: (cells: ghostty_cell_like[], row: number, cols: number) => unknown;
+  renderCellText?: (cell: ghostty_cell_like, col: number, row: number) => unknown;
+  rgbToCSS?: (red: number, green: number, blue: number) => string;
+  theme?: {
+    background?: string;
+  };
+};
+
 const TERMINAL_SEARCH_MAX_RESULTS = 5000;
+
+const GHOSTTY_CELL_FLAG_INVERSE = 16;
+const PRESENTATION_SCALE_EPSILON = 0.0001;
 
 // Search highlighting: all matches use yellow background; active match uses yellow + red text.
 const TERMINAL_SEARCH_MATCH_BACKGROUND = 'rgba(255, 234, 0, 0.38)';
@@ -102,6 +134,172 @@ const mapThemeToGhostty = (theme: Record<string, unknown> | undefined): Record<s
 
   return mapped;
 };
+
+function buildCellSignature(
+  renderer: ghostty_renderer_with_row_cache,
+  cell: ghostty_cell_like,
+  row: number,
+  col: number,
+): string {
+  const grapheme = (cell.grapheme_len ?? 0) > 0
+    ? String(renderer.currentBuffer?.getGraphemeString?.(row, col) ?? '')
+    : '';
+  return [
+    cell.codepoint ?? 0,
+    cell.fg_r ?? 0,
+    cell.fg_g ?? 0,
+    cell.fg_b ?? 0,
+    cell.bg_r ?? 0,
+    cell.bg_g ?? 0,
+    cell.bg_b ?? 0,
+    cell.flags ?? 0,
+    cell.width ?? 0,
+    cell.hyperlink_id ?? 0,
+    cell.grapheme_len ?? 0,
+    grapheme,
+  ].join(',');
+}
+
+function buildRowSignature(
+  renderer: ghostty_renderer_with_row_cache,
+  cells: readonly ghostty_cell_like[],
+  row: number,
+  cols: number,
+): string {
+  const parts = [`cols:${cols}`, `len:${cells.length}`];
+  for (let col = 0; col < cells.length; col += 1) {
+    parts.push(buildCellSignature(renderer, cells[col] ?? {}, row, col));
+  }
+  return parts.join(';');
+}
+
+function canSkipCachedRowRender(renderer: ghostty_renderer_with_row_cache, row: number): boolean {
+  if (renderer.__floetermRowRenderCacheForceAll) {
+    return false;
+  }
+  if (renderer.currentSelectionCoords || (renderer.hoveredHyperlinkId ?? 0) > 0 || renderer.hoveredLinkRange) {
+    renderer.__floetermRowRenderCache?.clear();
+    return false;
+  }
+  const cursorY = renderer.currentBuffer?.getCursor?.()?.y;
+  if (typeof cursorY === 'number' && cursorY === row) {
+    return false;
+  }
+  const previousCursorY = renderer.lastCursorPosition?.y;
+  if (typeof previousCursorY === 'number' && previousCursorY === row) {
+    return false;
+  }
+  return true;
+}
+
+function samePresentationScale(left: number, right: number): boolean {
+  return Math.abs(left - right) <= PRESENTATION_SCALE_EPSILON;
+}
+
+function canUseOptimizedBackgroundRunRenderer(renderer: ghostty_renderer_with_row_cache): boolean {
+  return Boolean(
+    renderer.ctx
+    && renderer.metrics
+    && renderer.theme
+    && typeof renderer.renderCellText === 'function'
+    && typeof renderer.rgbToCSS === 'function',
+  );
+}
+
+function cellBackgroundStyle(renderer: ghostty_renderer_with_row_cache, cell: ghostty_cell_like): string | null {
+  let red = cell.bg_r ?? 0;
+  let green = cell.bg_g ?? 0;
+  let blue = cell.bg_b ?? 0;
+  if ((cell.flags ?? 0) & GHOSTTY_CELL_FLAG_INVERSE) {
+    red = cell.fg_r ?? 0;
+    green = cell.fg_g ?? 0;
+    blue = cell.fg_b ?? 0;
+  }
+  if (red === 0 && green === 0 && blue === 0) {
+    return null;
+  }
+  return renderer.rgbToCSS!(red, green, blue);
+}
+
+function renderCellBackgroundRuns(
+  renderer: ghostty_renderer_with_row_cache,
+  cells: readonly ghostty_cell_like[],
+  row: number,
+): void {
+  const ctx = renderer.ctx!;
+  const metrics = renderer.metrics!;
+  let runStartCol = 0;
+  let runWidthCells = 0;
+  let runStyle: string | null = null;
+
+  const flushRun = () => {
+    if (!runStyle || runWidthCells <= 0) return;
+    ctx.fillStyle = runStyle;
+    ctx.fillRect(
+      runStartCol * metrics.width,
+      row * metrics.height,
+      runWidthCells * metrics.width,
+      metrics.height,
+    );
+    runStyle = null;
+    runWidthCells = 0;
+  };
+
+  for (let col = 0; col < cells.length; col += 1) {
+    const cell = cells[col];
+    if (!cell || cell.width === 0) continue;
+
+    const style = cellBackgroundStyle(renderer, cell);
+    const width = Math.max(1, cell.width ?? 1);
+    if (!style) {
+      flushRun();
+      continue;
+    }
+
+    if (runStyle === style && runStartCol + runWidthCells === col) {
+      runWidthCells += width;
+      continue;
+    }
+
+    flushRun();
+    runStartCol = col;
+    runWidthCells = width;
+    runStyle = style;
+  }
+  flushRun();
+}
+
+function renderLineWithOptimizedBackgroundRuns(
+  renderer: ghostty_renderer_with_row_cache,
+  originalRenderLine: (cells: ghostty_cell_like[], row: number, cols: number) => unknown,
+  cells: ghostty_cell_like[],
+  row: number,
+  cols: number,
+): unknown {
+  if (!canUseOptimizedBackgroundRunRenderer(renderer)) {
+    return originalRenderLine(cells, row, cols);
+  }
+  if (renderer.currentSelectionCoords || (renderer.hoveredHyperlinkId ?? 0) > 0 || renderer.hoveredLinkRange) {
+    return originalRenderLine(cells, row, cols);
+  }
+
+  const ctx = renderer.ctx!;
+  const metrics = renderer.metrics!;
+  const y = row * metrics.height;
+  const lineWidth = cols * metrics.width;
+
+  ctx.clearRect(0, y, lineWidth, metrics.height);
+  ctx.fillStyle = renderer.theme?.background ?? '#000000';
+  ctx.fillRect(0, y, lineWidth, metrics.height);
+  renderCellBackgroundRuns(renderer, cells, row);
+
+  for (let col = 0; col < cells.length; col += 1) {
+    const cell = cells[col];
+    if (!cell || cell.width === 0) continue;
+    renderer.renderCellText!(cell, col, row);
+  }
+  return undefined;
+}
 
 // TerminalCore provides a focused wrapper around ghostty-web (xterm.js API-compatible) and its fit addon.
 export class TerminalCore {
@@ -301,7 +499,7 @@ export class TerminalCore {
     const terminalAny = this.terminal as unknown as {
       __floetermDemandRenderTriggersPatched?: boolean;
       animateScroll?: (...args: unknown[]) => unknown;
-      renderer?: {
+      renderer?: ghostty_renderer_with_row_cache & {
         __floetermDemandRenderPatched?: boolean;
         setHoveredHyperlinkId?: (...args: unknown[]) => unknown;
         setHoveredLinkRange?: (...args: unknown[]) => unknown;
@@ -330,6 +528,7 @@ export class TerminalCore {
     }
 
     const renderer = terminalAny.renderer;
+    this.installRendererRowCachePatch(renderer);
     if (!renderer || renderer.__floetermDemandRenderPatched) {
       return;
     }
@@ -356,6 +555,40 @@ export class TerminalCore {
     wrapRendererInvalidation('setFontSize');
     wrapRendererInvalidation('setFontFamily');
     wrapRendererInvalidation('clear');
+  }
+
+  private installRendererRowCachePatch(renderer: ghostty_renderer_with_row_cache | null | undefined): void {
+    if (!renderer || renderer.__floetermRowRenderCachePatched) {
+      return;
+    }
+    if (typeof renderer.render !== 'function' || typeof renderer.renderLine !== 'function') {
+      return;
+    }
+
+    const originalRender = renderer.render.bind(renderer);
+    const originalRenderLine = renderer.renderLine.bind(renderer);
+    const cache = new Map<number, string>();
+
+    renderer.__floetermRowRenderCachePatched = true;
+    renderer.__floetermRowRenderCache = cache;
+    renderer.render = (...args: unknown[]) => {
+      renderer.__floetermRowRenderCacheForceAll = Boolean(args[1]);
+      try {
+        return originalRender(...args);
+      } finally {
+        renderer.__floetermRowRenderCacheForceAll = false;
+      }
+    };
+    renderer.renderLine = (cells: ghostty_cell_like[], row: number, cols: number) => {
+      const signature = buildRowSignature(renderer, cells, row, cols);
+      if (canSkipCachedRowRender(renderer, row) && cache.get(row) === signature) {
+        return undefined;
+      }
+
+      const result = renderLineWithOptimizedBackgroundRuns(renderer, originalRenderLine, cells, row, cols);
+      cache.set(row, signature);
+      return result;
+    };
   }
 
   private ensurePresentationHosts(): void {
@@ -1482,6 +1715,11 @@ export class TerminalCore {
 
   setPresentationScale(scale: number): void {
     const nextScale = TerminalCore.normalizePresentationScale(scale);
+    const currentTargetScale = this.pendingPresentationScale ?? this.presentationScale;
+    if (samePresentationScale(nextScale, currentTargetScale)) {
+      return;
+    }
+
     this.pendingPresentationScale = nextScale;
     this.config = { ...this.config, presentationScale: nextScale };
     this.applyPresentationScaleStyles();
@@ -1656,6 +1894,11 @@ export class TerminalCore {
 
   private commitPresentationScale(scale: number): void {
     const nextScale = TerminalCore.normalizePresentationScale(scale);
+    if (samePresentationScale(nextScale, this.presentationScale)) {
+      this.applyPresentationScaleStyles();
+      return;
+    }
+
     this.presentationScale = nextScale;
     this.applyPresentationScaleStyles();
     if (!this.terminal) {

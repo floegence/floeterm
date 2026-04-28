@@ -29,6 +29,20 @@ const mockState = vi.hoisted(() => ({
 }));
 
 vi.mock('ghostty-web', () => {
+  const cell = (codepoint: number) => ({
+    codepoint,
+    fg_r: 255,
+    fg_g: 255,
+    fg_b: 255,
+    bg_r: 0,
+    bg_g: 0,
+    bg_b: 0,
+    flags: 0,
+    width: 1,
+    hyperlink_id: 0,
+    grapheme_len: 0,
+  });
+
   class MockTerminal {
     cols: number;
     rows: number;
@@ -51,20 +65,47 @@ vi.mock('ghostty-web', () => {
     onResize = this.resizeEmitter.event;
     onScroll = this.scrollEmitter.event;
     onSelectionChange = this.selectionChangeEmitter.event;
-    renderer = {
-      render: vi.fn(),
-      setHoveredHyperlinkId: vi.fn(),
-      setHoveredLinkRange: vi.fn(),
-    };
-    wasmTerm = {
-      getCursor: () => ({ y: this.cursorY }),
-    };
+    renderer: any;
+    renderSpy = vi.fn();
+    renderLineSpy = vi.fn();
+    lines = [
+      [cell(65), cell(66)],
+      [cell(67), cell(68)],
+    ];
+    dirtyRows = new Set([0, 1]);
+    wasmTerm: any;
 
     constructor(opts: any) {
       this.cols = typeof opts?.cols === 'number' ? opts.cols : 80;
       this.rows = typeof opts?.rows === 'number' ? opts.rows : 24;
       this.options = { theme: opts?.theme ?? {}, fontSize: opts?.fontSize, fontFamily: opts?.fontFamily };
       this.buffer = { active: { length: 0 } };
+      this.wasmTerm = {
+        getCursor: () => ({ y: this.cursorY }),
+        getDimensions: () => ({ cols: 2, rows: 2 }),
+        getLine: (row: number) => this.lines[row] ?? null,
+        isRowDirty: (row: number) => this.dirtyRows.has(row),
+        clearDirty: () => {
+          this.dirtyRows.clear();
+        },
+      };
+      this.renderSpy = vi.fn(function (this: any, buffer: any, forceAll = false) {
+        this.currentBuffer = buffer;
+        const dimensions = buffer.getDimensions();
+        for (let row = 0; row < dimensions.rows; row += 1) {
+          if (forceAll || buffer.isRowDirty(row)) {
+            this.renderLine(buffer.getLine(row), row, dimensions.cols);
+          }
+        }
+        buffer.clearDirty();
+      });
+      this.renderLineSpy = vi.fn();
+      this.renderer = {
+        render: this.renderSpy,
+        renderLine: this.renderLineSpy,
+        setHoveredHyperlinkId: vi.fn(),
+        setHoveredLinkRange: vi.fn(),
+      };
       mockState.lastTerminal = this;
     }
 
@@ -172,11 +213,11 @@ describe('TerminalCore demand rendering', () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
 
-    const renderCountAfterInit = terminal.renderer.render.mock.calls.length;
+    const renderCountAfterInit = terminal.renderSpy.mock.calls.length;
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(terminal.animationFrameId).toBeUndefined();
-    expect(terminal.renderer.render).toHaveBeenCalledTimes(renderCountAfterInit);
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(renderCountAfterInit);
 
     core.dispose();
   });
@@ -184,16 +225,83 @@ describe('TerminalCore demand rendering', () => {
   it('renders once for terminal output and coalesces writes on one frame', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
-    terminal.renderer.render.mockClear();
+    terminal.renderSpy.mockClear();
 
     core.write('one');
     core.write('two');
 
-    expect(terminal.renderer.render).not.toHaveBeenCalled();
+    expect(terminal.renderSpy).not.toHaveBeenCalled();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(terminal.renderer.render).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
     expect(terminal.cursorMoveEmitter.fire).toHaveBeenCalled();
+
+    core.dispose();
+  });
+
+  it('skips dirty rows whose rendered cell content is unchanged', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.cursorY = 99;
+    terminal.renderer.lastCursorPosition = { y: 99 };
+
+    terminal.dirtyRows = new Set([0, 1]);
+    terminal.renderer.render(terminal.wasmTerm, true, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+    terminal.renderLineSpy.mockClear();
+
+    terminal.dirtyRows = new Set([0, 1]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(terminal.renderLineSpy).not.toHaveBeenCalled();
+
+    terminal.lines[1] = [
+      { ...terminal.lines[1][0], codepoint: 69 },
+      terminal.lines[1][1],
+    ];
+    terminal.dirtyRows = new Set([0, 1]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderLineSpy.mock.calls[0]?.[1]).toBe(1);
+
+    core.dispose();
+  });
+
+  it('coalesces same-style cell backgrounds while preserving cell-positioned text rendering', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.cursorY = 99;
+    terminal.renderer.lastCursorPosition = { y: 99 };
+
+    const ctx = {
+      clearRect: vi.fn(),
+      fillRect: vi.fn(),
+      fillText: vi.fn(),
+      fillStyle: '',
+      font: '',
+    };
+    terminal.renderer.ctx = ctx;
+    terminal.renderer.metrics = { width: 10, height: 20, baseline: 15 };
+    terminal.renderer.theme = { background: '#000000' };
+    terminal.renderer.rgbToCSS = vi.fn(() => '#ffffff');
+    terminal.renderer.renderCellText = vi.fn();
+    terminal.renderLineSpy.mockClear();
+
+    terminal.lines[0] = [
+      { ...terminal.lines[0][0], codepoint: 65, bg_r: 32, bg_g: 32, bg_b: 32 },
+      { ...terminal.lines[0][1], codepoint: 69, bg_r: 32, bg_g: 32, bg_b: 32 },
+    ];
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(ctx.fillText).not.toHaveBeenCalled();
+    expect(ctx.fillRect).toHaveBeenCalledTimes(2);
+    expect(ctx.fillRect).toHaveBeenNthCalledWith(1, 0, 0, 20, 20);
+    expect(ctx.fillRect).toHaveBeenNthCalledWith(2, 0, 0, 20, 20);
+    expect(terminal.renderer.renderCellText).toHaveBeenCalledTimes(2);
+    expect(terminal.renderer.renderCellText).toHaveBeenNthCalledWith(1, terminal.lines[0][0], 0, 0);
+    expect(terminal.renderer.renderCellText).toHaveBeenNthCalledWith(2, terminal.lines[0][1], 1, 0);
+    expect(terminal.renderLineSpy).not.toHaveBeenCalled();
 
     core.dispose();
   });
@@ -201,7 +309,7 @@ describe('TerminalCore demand rendering', () => {
   it('renders for scroll, selection, and hover invalidations', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
-    terminal.renderer.render.mockClear();
+    terminal.renderSpy.mockClear();
 
     terminal.scrollLines(1);
     terminal.emitSelectionChange();
@@ -210,7 +318,7 @@ describe('TerminalCore demand rendering', () => {
 
     await vi.runOnlyPendingTimersAsync();
 
-    expect(terminal.renderer.render).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
 
     core.dispose();
   });
@@ -218,12 +326,12 @@ describe('TerminalCore demand rendering', () => {
   it('cancels a queued demand render on dispose', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
-    terminal.renderer.render.mockClear();
+    terminal.renderSpy.mockClear();
 
     core.write('pending');
     core.dispose();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(terminal.renderer.render).not.toHaveBeenCalled();
+    expect(terminal.renderSpy).not.toHaveBeenCalled();
   });
 });
