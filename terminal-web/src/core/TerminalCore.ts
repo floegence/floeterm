@@ -86,6 +86,59 @@ const TERMINAL_SEARCH_ACTIVE_FOREGROUND = '#dc2626';
 const TERMINAL_SELECTION_BACKGROUND = '#f5e6b3';
 const TERMINAL_SELECTION_FOREGROUND = '#1f2328';
 
+function parsePositiveCSSPixelValue(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function resolveCanvasLocalDisplaySize(
+  canvas: HTMLCanvasElement,
+  coordinateRoot: HTMLElement,
+): { cssWidth: number; cssHeight: number; dpr: number } {
+  const canvasRect = canvas.getBoundingClientRect();
+  const rootRect = coordinateRoot.getBoundingClientRect();
+  const rootWidth = coordinateRoot.clientWidth;
+  const rootHeight = coordinateRoot.clientHeight;
+
+  const ratioWidth = rootRect.width > 0 && rootWidth > 0 && canvasRect.width > 0
+    ? rootWidth * (canvasRect.width / rootRect.width)
+    : null;
+  const ratioHeight = rootRect.height > 0 && rootHeight > 0 && canvasRect.height > 0
+    ? rootHeight * (canvasRect.height / rootRect.height)
+    : null;
+
+  const computed = (() => {
+    try {
+      return getComputedStyle(canvas);
+    } catch {
+      return null;
+    }
+  })();
+
+  const cssWidth = ratioWidth
+    ?? parsePositiveCSSPixelValue(canvas.style.width)
+    ?? parsePositiveCSSPixelValue(computed?.width)
+    ?? (canvas.offsetWidth > 0 ? canvas.offsetWidth : null)
+    ?? (canvas.clientWidth > 0 ? canvas.clientWidth : null)
+    ?? canvas.width;
+  const cssHeight = ratioHeight
+    ?? parsePositiveCSSPixelValue(canvas.style.height)
+    ?? parsePositiveCSSPixelValue(computed?.height)
+    ?? (canvas.offsetHeight > 0 ? canvas.offsetHeight : null)
+    ?? (canvas.clientHeight > 0 ? canvas.clientHeight : null)
+    ?? canvas.height;
+  const dpr = cssWidth > 0 ? canvas.width / cssWidth : window.devicePixelRatio ?? 1;
+
+  return {
+    cssWidth,
+    cssHeight,
+    dpr: Number.isFinite(dpr) && dpr > 0 ? dpr : 1,
+  };
+}
+
 const getPerfProbe = (): floeterm_perf_probe | undefined => {
   if (typeof window === 'undefined') {
     return undefined;
@@ -1631,9 +1684,7 @@ export class TerminalCore {
       };
     }
 
-    const cssWidth = termCanvas.getBoundingClientRect().width;
-    const cssHeight = termCanvas.getBoundingClientRect().height;
-    const dpr = cssWidth > 0 ? termCanvas.width / cssWidth : window.devicePixelRatio ?? 1;
+    const { cssWidth, cssHeight, dpr } = resolveCanvasLocalDisplaySize(termCanvas, this.container);
 
     if (
       this.searchOverlay.canvas.width !== termCanvas.width ||
@@ -1642,7 +1693,7 @@ export class TerminalCore {
       this.searchOverlay.cssHeight !== cssHeight ||
       this.searchOverlay.dpr !== dpr
     ) {
-      this.searchOverlay.dpr = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+      this.searchOverlay.dpr = dpr;
       this.searchOverlay.cssWidth = cssWidth;
       this.searchOverlay.cssHeight = cssHeight;
       this.searchOverlay.canvas.style.width = `${cssWidth}px`;
