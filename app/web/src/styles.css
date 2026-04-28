@@ -381,8 +381,9 @@ body::after {
 }
 
 .terminalPane canvas {
-  height: 100%;
-  width: 100%;
+  display: block;
+  max-height: 100%;
+  max-width: 100%;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

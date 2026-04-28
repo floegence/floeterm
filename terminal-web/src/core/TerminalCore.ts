@@ -30,7 +30,9 @@ type terminal_search_overlay = {
 };
 
 type terminal_selection_manager = {
+  __floetermDemandRenderPatched?: boolean;
   copyToClipboard?: ((text: string) => Promise<void> | void) | null;
+  requestRender?: () => void;
 };
 
 type floeterm_perf_probe = {
@@ -53,9 +55,11 @@ type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
 type ghostty_cell_like = Partial<import('ghostty-web').GhosttyCell>;
 
 type ghostty_renderer_with_row_cache = {
+  __floetermDemandCursorPatched?: boolean;
   __floetermRowRenderCachePatched?: boolean;
   __floetermRowRenderCacheForceAll?: boolean;
   __floetermRowRenderCache?: Map<number, string>;
+  cursorVisible?: boolean;
   ctx?: CanvasRenderingContext2D;
   currentBuffer?: {
     getCursor?: () => { y?: number };
@@ -67,6 +71,7 @@ type ghostty_renderer_with_row_cache = {
   lastCursorPosition?: { y?: number };
   render?: (...args: unknown[]) => unknown;
   renderLine?: (cells: ghostty_cell_like[], row: number, cols: number) => unknown;
+  setCursorBlink?: (enabled: boolean) => unknown;
 };
 
 const TERMINAL_SEARCH_MAX_RESULTS = 5000;
@@ -77,6 +82,8 @@ const PRESENTATION_SCALE_EPSILON = 0.0001;
 const TERMINAL_SEARCH_MATCH_BACKGROUND = 'rgba(255, 234, 0, 0.38)';
 const TERMINAL_SEARCH_ACTIVE_BACKGROUND = 'rgba(255, 234, 0, 0.72)';
 const TERMINAL_SEARCH_ACTIVE_FOREGROUND = '#dc2626';
+const TERMINAL_SELECTION_BACKGROUND = '#f5e6b3';
+const TERMINAL_SELECTION_FOREGROUND = '#1f2328';
 
 const getPerfProbe = (): floeterm_perf_probe | undefined => {
   if (typeof window === 'undefined') {
@@ -217,6 +224,7 @@ export class TerminalCore {
 
   private resizeObserver: ResizeObserver | null = null;
   private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private resizeRaf: number | null = null;
   private focusResizeRaf: number | null = null;
   private presentationScaleRaf: number | null = null;
   private state: TerminalState = TerminalState.IDLE;
@@ -317,11 +325,12 @@ export class TerminalCore {
         background: '#1a1a1a',
         foreground: '#ffffff',
         cursor: '#ffffff',
-        selectionBackground: '#ffffff40'
+        selectionBackground: TERMINAL_SELECTION_BACKGROUND,
+        selectionForeground: TERMINAL_SELECTION_FOREGROUND
       },
       fontSize: 12,
       fontFamily: '\"SF Mono\", Monaco, \"Cascadia Code\", \"Roboto Mono\", Consolas, \"Courier New\", monospace',
-      cursorBlink: true,
+      cursorBlink: false,
       scrollback: 1000,
       allowTransparency: false,
       convertEol: true,
@@ -376,6 +385,7 @@ export class TerminalCore {
     this.stopGhosttyRenderLoop();
     this.patchDemandRenderTriggersAfterOpen();
     this.patchSelectionManagerClipboardBehavior();
+    this.patchSelectionManagerRenderingBehavior();
     this.setupInputBridge();
     this.applyRegisteredLinkProviders();
   }
@@ -459,6 +469,35 @@ export class TerminalCore {
     wrapRendererInvalidation('setFontSize');
     wrapRendererInvalidation('setFontFamily');
     wrapRendererInvalidation('clear');
+
+    this.patchRendererCursorBlinkForDemandRendering(renderer);
+  }
+
+  private patchRendererCursorBlinkForDemandRendering(renderer: ghostty_renderer_with_row_cache | null | undefined): void {
+    if (!renderer || renderer.__floetermDemandCursorPatched) {
+      return;
+    }
+
+    renderer.__floetermDemandCursorPatched = true;
+    renderer.cursorVisible = true;
+
+    try {
+      renderer.setCursorBlink?.(false);
+    } catch (error) {
+      this.logger.debug('[TerminalCore] Failed to disable cursor blink for demand rendering', { error });
+    }
+
+    if (this.terminal) {
+      this.terminal.options.cursorBlink = false;
+    }
+  }
+
+  private keepDemandCursorVisible(renderer: ghostty_renderer_with_row_cache | undefined): void {
+    if (!renderer) {
+      return;
+    }
+
+    renderer.cursorVisible = true;
   }
 
   private installRendererRowCachePatch(renderer: ghostty_renderer_with_row_cache | null | undefined): void {
@@ -556,6 +595,24 @@ export class TerminalCore {
     selectionManager.copyToClipboard = async () => {
       // Disable the upstream copy-on-select side effect while keeping
       // the selection lifecycle intact for explicit copy commands.
+    };
+  }
+
+  private patchSelectionManagerRenderingBehavior(): void {
+    const selectionManager = ((this.terminal as unknown as { selectionManager?: terminal_selection_manager | null } | null)
+      ?.selectionManager) ?? null;
+    if (!selectionManager || selectionManager.__floetermDemandRenderPatched) {
+      return;
+    }
+
+    selectionManager.__floetermDemandRenderPatched = true;
+    const originalRequestRender = typeof selectionManager.requestRender === 'function'
+      ? selectionManager.requestRender.bind(selectionManager)
+      : null;
+
+    selectionManager.requestRender = () => {
+      originalRequestRender?.();
+      this.requestDemandRender(false);
     };
   }
 
@@ -734,22 +791,45 @@ export class TerminalCore {
     if (!this.container || !this.fitAddon) {
       return;
     }
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
 
     this.resizeObserver = new ResizeObserver(() => {
-      this.debouncedResize();
+      this.scheduleObservedResize();
     });
 
-    this.resizeObserver.observe(this.container);
+    const observed = new Set<Element>();
+    const observe = (target: Element | null | undefined) => {
+      if (!target || observed.has(target)) {
+        return;
+      }
+      observed.add(target);
+      this.resizeObserver?.observe(target);
+    };
+
+    observe(this.container);
+    observe(this.container.parentElement);
+    observe(this.viewportHost);
+    observe(this.renderHost);
   }
 
-  private debouncedResize(): void {
+  private scheduleObservedResize(): void {
+    if (this.resizeRaf === null) {
+      this.resizeRaf = requestAnimationFrame(() => {
+        this.resizeRaf = null;
+        this.performResize('observer');
+      });
+    }
+
     if (this.resizeDebounceTimer) {
       clearTimeout(this.resizeDebounceTimer);
     }
 
     this.resizeDebounceTimer = setTimeout(() => {
+      this.resizeDebounceTimer = null;
       this.performResize('observer');
-    }, 16);
+    }, 80);
   }
 
   private performResize(reason: 'observer' | 'focus' | 'force' | 'post_init'): void {
@@ -1688,6 +1768,10 @@ export class TerminalCore {
       cancelAnimationFrame(this.clearResizeSuppressionRaf);
       this.clearResizeSuppressionRaf = null;
     }
+    if (this.resizeRaf !== null) {
+      cancelAnimationFrame(this.resizeRaf);
+      this.resizeRaf = null;
+    }
     this.cancelDemandRender();
     this.unbindResponsiveListeners?.();
     this.unbindResponsiveListeners = null;
@@ -1882,7 +1966,7 @@ export class TerminalCore {
     const terminalAny = this.terminal as unknown as {
       isDisposed?: boolean;
       isOpen?: boolean;
-      renderer?: { render?: (...args: unknown[]) => void };
+      renderer?: ghostty_renderer_with_row_cache;
       wasmTerm?: {
         getCursor?: () => { y?: number };
       };
@@ -1898,6 +1982,7 @@ export class TerminalCore {
 
     try {
       const startedAt = performance.now();
+      this.keepDemandCursorVisible(terminalAny.renderer);
       terminalAny.renderer.render(
         terminalAny.wasmTerm,
         forceAll,

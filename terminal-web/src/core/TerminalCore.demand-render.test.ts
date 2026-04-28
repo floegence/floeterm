@@ -65,6 +65,8 @@ vi.mock('ghostty-web', () => {
     onResize = this.resizeEmitter.event;
     onScroll = this.scrollEmitter.event;
     onSelectionChange = this.selectionChangeEmitter.event;
+    selectionRequestRenderSpy = vi.fn();
+    selectionManager: any;
     renderer: any;
     renderSpy = vi.fn();
     renderLineSpy = vi.fn();
@@ -78,7 +80,12 @@ vi.mock('ghostty-web', () => {
     constructor(opts: any) {
       this.cols = typeof opts?.cols === 'number' ? opts.cols : 80;
       this.rows = typeof opts?.rows === 'number' ? opts.rows : 24;
-      this.options = { theme: opts?.theme ?? {}, fontSize: opts?.fontSize, fontFamily: opts?.fontFamily };
+      this.options = {
+        theme: opts?.theme ?? {},
+        fontSize: opts?.fontSize,
+        fontFamily: opts?.fontFamily,
+        cursorBlink: opts?.cursorBlink,
+      };
       this.buffer = { active: { length: 0 } };
       this.wasmTerm = {
         getCursor: () => ({ y: this.cursorY }),
@@ -101,10 +108,20 @@ vi.mock('ghostty-web', () => {
       });
       this.renderLineSpy = vi.fn();
       this.renderer = {
+        cursorVisible: true,
+        cursorBlink: opts?.cursorBlink ?? false,
+        setCursorBlinkSpy: vi.fn(function (this: any, enabled: boolean) {
+          this.cursorBlink = enabled;
+          this.cursorVisible = true;
+        }),
         render: this.renderSpy,
         renderLine: this.renderLineSpy,
         setHoveredHyperlinkId: vi.fn(),
         setHoveredLinkRange: vi.fn(),
+      };
+      this.renderer.setCursorBlink = this.renderer.setCursorBlinkSpy;
+      this.selectionManager = {
+        requestRender: this.selectionRequestRenderSpy,
       };
       mockState.lastTerminal = this;
     }
@@ -239,6 +256,42 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('keeps the cursor visible in demand rendering after input writes', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+
+    expect(terminal.options.cursorBlink).toBe(false);
+    expect(terminal.renderer.setCursorBlinkSpy).toHaveBeenCalledWith(false);
+
+    terminal.renderer.cursorVisible = false;
+    terminal.renderSpy.mockClear();
+
+    core.write('x');
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderer.cursorVisible).toBe(true);
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+
+    core.dispose();
+  });
+
+  it('renders when the selection manager requests a redraw without firing selection events', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+
+    terminal.selectionManager.requestRender();
+
+    expect(terminal.selectionRequestRenderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy).not.toHaveBeenCalled();
+
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+
+    core.dispose();
+  });
+
   it('skips dirty rows whose rendered cell content is unchanged', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
@@ -263,6 +316,24 @@ describe('TerminalCore demand rendering', () => {
 
     expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
     expect(terminal.renderLineSpy.mock.calls[0]?.[1]).toBe(1);
+
+    core.dispose();
+  });
+
+  it('does not skip unchanged rows that currently contain the cursor', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.cursorY = 0;
+
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, true, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+    terminal.renderLineSpy.mockClear();
+
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderLineSpy.mock.calls[0]?.[1]).toBe(0);
 
     core.dispose();
   });

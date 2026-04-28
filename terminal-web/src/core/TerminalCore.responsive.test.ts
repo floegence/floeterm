@@ -10,6 +10,7 @@ vi.mock('ghostty-web', () => {
     rows: number;
     options: any;
     buffer: any;
+    element: HTMLElement | null = null;
     private resizeHandler: ((size: { cols: number; rows: number }) => void) | null = null;
 
     constructor(opts: any) {
@@ -24,8 +25,8 @@ vi.mock('ghostty-web', () => {
       addon.__terminal = this;
     }
 
-    open(_container: HTMLElement) {
-      // noop
+    open(container: HTMLElement) {
+      this.element = container;
     }
 
     onData(_handler: (data: string) => void) {
@@ -60,7 +61,13 @@ vi.mock('ghostty-web', () => {
     fit() {
       const term: any = (this as any).__terminal;
       if (!term) return;
-      term.__applyFit(120, 30);
+      const element = term.element as HTMLElement | null;
+      const measured = (element?.clientWidth ?? 0) > 0
+        ? element
+        : ((element?.parentElement?.clientWidth ?? 0) > 0 ? element?.parentElement : element?.parentElement?.parentElement);
+      const cols = Math.max(2, Math.floor((measured?.clientWidth ?? 0) / 8));
+      const rows = Math.max(1, Math.floor((measured?.clientHeight ?? 0) / 16));
+      term.__applyFit(cols, rows);
     }
   }
 
@@ -69,15 +76,38 @@ vi.mock('ghostty-web', () => {
   return { Terminal: MockTerminal, FitAddon: MockFitAddon, init };
 });
 
+const resizeObservers: MockResizeObserver[] = [];
+
 class MockResizeObserver {
-  constructor(_cb: ResizeObserverCallback) {}
-  observe(_target: Element) {}
-  disconnect() {}
+  readonly observed: Element[] = [];
+
+  constructor(private readonly cb: ResizeObserverCallback) {
+    resizeObservers.push(this);
+  }
+
+  observe(target: Element) {
+    this.observed.push(target);
+  }
+
+  disconnect() {
+    this.observed.length = 0;
+  }
+
+  trigger(target: Element = this.observed[0]) {
+    this.cb([{
+      target,
+      contentRect: {
+        width: (target as HTMLElement).clientWidth ?? 0,
+        height: (target as HTMLElement).clientHeight ?? 0,
+      },
+    } as ResizeObserverEntry], this as unknown as ResizeObserver);
+  }
 }
 
 describe('TerminalCore responsive resize notifications', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    resizeObservers.length = 0;
 
     // Minimal rAF polyfill for deterministic tests.
     globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
@@ -93,6 +123,8 @@ describe('TerminalCore responsive resize notifications', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
+    document.body.replaceChildren();
   });
 
   it('suppresses resize notifications until focused and re-emits on focus even when size is unchanged', async () => {
@@ -126,7 +158,7 @@ describe('TerminalCore responsive resize notifications', () => {
     container.focus();
     await vi.runAllTimersAsync();
     expect(onResize).toHaveBeenCalledTimes(1);
-    expect(onResize).toHaveBeenLastCalledWith({ cols: 120, rows: 30 });
+    expect(onResize).toHaveBeenLastCalledWith({ cols: 100, rows: 25 });
 
     // Blur by moving focus elsewhere.
     const other = document.createElement('button');
@@ -139,9 +171,54 @@ describe('TerminalCore responsive resize notifications', () => {
     container.focus();
     await vi.runAllTimersAsync();
     expect(onResize).toHaveBeenCalledTimes(2);
-    expect(onResize).toHaveBeenLastCalledWith({ cols: 120, rows: 30 });
+    expect(onResize).toHaveBeenLastCalledWith({ cols: 100, rows: 25 });
+
+    core.dispose();
+  });
+
+  it('fits promptly when the component or its parent width changes', async () => {
+    const parent = document.createElement('div');
+    const container = document.createElement('div');
+    parent.appendChild(container);
+    document.body.appendChild(parent);
+
+    Object.defineProperty(parent, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(parent, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const onResize = vi.fn();
+    const core = new TerminalCore(container, {}, { onResize });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    await vi.runAllTimersAsync();
+
+    const observer = resizeObservers[0];
+    expect(observer).toBeDefined();
+    expect(observer.observed).toContain(container);
+    expect(observer.observed).toContain(parent);
+
+    onResize.mockClear();
+    Object.defineProperty(container, 'clientWidth', { value: 640, configurable: true });
+    Object.defineProperty(parent, 'clientWidth', { value: 640, configurable: true });
+
+    observer.trigger(parent);
+    expect(onResize).not.toHaveBeenCalled();
+
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(onResize).toHaveBeenCalledWith({ cols: 80, rows: 25 });
+
+    onResize.mockClear();
+    Object.defineProperty(container, 'clientWidth', { value: 704, configurable: true });
+    Object.defineProperty(parent, 'clientWidth', { value: 704, configurable: true });
+
+    observer.trigger(container);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(onResize).toHaveBeenCalledWith({ cols: 88, rows: 25 });
 
     core.dispose();
   });
 });
-
