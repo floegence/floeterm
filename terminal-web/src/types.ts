@@ -33,6 +33,11 @@ export interface TerminalResponsiveConfig {
   notifyResizeOnlyWhenFocused?: boolean;
 }
 
+export type TerminalDimensions = {
+  cols: number;
+  rows: number;
+};
+
 export interface TerminalClipboardConfig {
   /**
    * When true, mouse selection follows the upstream terminal default and copies
@@ -88,6 +93,12 @@ export interface TerminalLinkProvider {
 export interface TerminalConfig {
   cols?: number;
   rows?: number;
+  /**
+   * When provided, TerminalCore renders at these terminal dimensions instead of
+   * fitting to the container. This is useful for passive mirrors of a remote PTY
+   * whose geometry is owned by another surface.
+   */
+  fixedDimensions?: TerminalDimensions | null;
   theme?: Record<string, unknown>;
   clipboard?: TerminalClipboardConfig;
   fontSize?: number;
@@ -142,6 +153,7 @@ export interface TerminalCoreLike {
   focus(): void;
   setConnected(isConnected: boolean): void;
   forceResize(): void;
+  setFixedDimensions(dimensions: TerminalDimensions | null): void;
   setTheme(theme: Record<string, string>): void;
   setFontSize(size: number): void;
   setPresentationScale(scale: number): void;

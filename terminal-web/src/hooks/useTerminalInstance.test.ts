@@ -123,6 +123,13 @@ class FakeTerminalCore implements TerminalCoreLike {
     this.handlers.onResize?.(this.dimensions);
   }
 
+  setFixedDimensions(dimensions: { cols: number; rows: number } | null): void {
+    if (!dimensions) {
+      return;
+    }
+    this.dimensions = dimensions;
+  }
+
   setTheme(): void {}
   setFontSize(): void {}
   setPresentationScale(): void {}

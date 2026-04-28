@@ -47,6 +47,19 @@ const core = new TerminalCore(container, {
 });
 ```
 
+Passive mirrors of a remote PTY can render with the session owner's current dimensions instead of fitting their own
+container:
+
+```ts
+const core = new TerminalCore(container, {
+  fixedDimensions: { cols: 100, rows: 30 },
+});
+
+// Later, when this surface becomes the active geometry owner:
+core.setFixedDimensions(null);
+core.forceResize();
+```
+
 ## Clipboard behavior
 By default, upstream mouse selection keeps the `ghostty-web` behavior and copies immediately on selection.
 Consumers that want explicit copy commands only can disable that side effect:

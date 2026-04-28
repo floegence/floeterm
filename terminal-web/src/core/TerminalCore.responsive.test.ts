@@ -45,6 +45,12 @@ vi.mock('ghostty-web', () => {
       void this.resizeHandler;
     }
 
+    resize(cols: number, rows: number) {
+      this.cols = cols;
+      this.rows = rows;
+      this.resizeHandler?.({ cols, rows });
+    }
+
     write(_data: string | Uint8Array, cb?: () => void) {
       cb?.();
     }
@@ -218,6 +224,49 @@ describe('TerminalCore responsive resize notifications', () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(onResize).toHaveBeenCalledWith({ cols: 88, rows: 25 });
+
+    core.dispose();
+  });
+
+  it('keeps fixed dimensions across container resize until fitting is restored', async () => {
+    const parent = document.createElement('div');
+    const container = document.createElement('div');
+    parent.appendChild(container);
+    document.body.appendChild(parent);
+
+    Object.defineProperty(parent, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(parent, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const onResize = vi.fn();
+    const core = new TerminalCore(container, {
+      fixedDimensions: { cols: 90, rows: 20 },
+    }, { onResize });
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    await vi.runAllTimersAsync();
+
+    expect(core.getDimensions()).toEqual({ cols: 90, rows: 20 });
+
+    const observer = resizeObservers[0];
+    expect(observer).toBeDefined();
+
+    Object.defineProperty(container, 'clientWidth', { value: 1200, configurable: true });
+    Object.defineProperty(parent, 'clientWidth', { value: 1200, configurable: true });
+
+    observer.trigger(container);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(core.getDimensions()).toEqual({ cols: 90, rows: 20 });
+
+    core.setFixedDimensions({ cols: 72, rows: 18 });
+    expect(core.getDimensions()).toEqual({ cols: 72, rows: 18 });
+
+    core.setFixedDimensions(null);
+    expect(core.getDimensions()).toEqual({ cols: 150, rows: 25 });
 
     core.dispose();
   });

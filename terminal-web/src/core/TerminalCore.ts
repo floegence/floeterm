@@ -7,6 +7,7 @@ import {
   type TerminalConfig,
   type TerminalCopySelectionResult,
   type TerminalCopySelectionSource,
+  type TerminalDimensions,
   type TerminalEventHandlers,
   type TerminalLinkProvider,
   type TerminalResponsiveConfig,
@@ -204,6 +205,25 @@ function samePresentationScale(left: number, right: number): boolean {
   return Math.abs(left - right) <= PRESENTATION_SCALE_EPSILON;
 }
 
+function normalizeTerminalDimensions(value: unknown): TerminalDimensions | null {
+  const raw = (typeof value === 'object' && value) ? value as Partial<TerminalDimensions> : null;
+  if (!raw) {
+    return null;
+  }
+
+  const cols = Math.floor(Number(raw.cols));
+  const rows = Math.floor(Number(raw.rows));
+  if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) {
+    return null;
+  }
+
+  return { cols, rows };
+}
+
+function sameTerminalDimensions(left: TerminalDimensions | null, right: TerminalDimensions | null): boolean {
+  return Boolean(left && right && left.cols === right.cols && left.rows === right.rows);
+}
+
 function hasTransientRendererState(renderer: ghostty_renderer_with_row_cache): boolean {
   return Boolean(
     renderer.currentSelectionCoords
@@ -239,6 +259,7 @@ export class TerminalCore {
   private responsive: Required<TerminalResponsiveConfig>;
   private logicalFontSize = 12;
   private presentationScale = 1;
+  private fixedDimensions: TerminalDimensions | null = null;
   private pendingPresentationScale: number | null = null;
   private suppressResizeNotifications = false;
   private clearResizeSuppressionRaf: number | null = null;
@@ -281,6 +302,7 @@ export class TerminalCore {
     this.responsive = TerminalCore.normalizeResponsiveConfig(config?.responsive);
     this.logicalFontSize = TerminalCore.normalizeFontSize(config?.fontSize);
     this.presentationScale = TerminalCore.normalizePresentationScale(config?.presentationScale);
+    this.fixedDimensions = normalizeTerminalDimensions(config?.fixedDimensions);
   }
 
   // initialize creates the ghostty-web terminal instance and binds addons.
@@ -342,9 +364,10 @@ export class TerminalCore {
     const finalConfig = { ...defaultConfig, ...this.config };
     this.logicalFontSize = TerminalCore.normalizeFontSize(finalConfig.fontSize);
     this.presentationScale = TerminalCore.normalizePresentationScale(finalConfig.presentationScale);
+    const initialDimensions = this.fixedDimensions;
     this.terminal = new TerminalCtor({
-      cols: typeof finalConfig.cols === 'number' ? finalConfig.cols : undefined,
-      rows: typeof finalConfig.rows === 'number' ? finalConfig.rows : undefined,
+      cols: initialDimensions?.cols ?? (typeof finalConfig.cols === 'number' ? finalConfig.cols : undefined),
+      rows: initialDimensions?.rows ?? (typeof finalConfig.rows === 'number' ? finalConfig.rows : undefined),
       cursorBlink: typeof finalConfig.cursorBlink === 'boolean' ? finalConfig.cursorBlink : undefined,
       cursorStyle: typeof (finalConfig as any).cursorStyle === 'string' ? ((finalConfig as any).cursorStyle as any) : undefined,
       theme: mapThemeToGhostty(finalConfig.theme),
@@ -837,6 +860,11 @@ export class TerminalCore {
       return;
     }
 
+    if (this.fixedDimensions) {
+      this.applyFixedDimensions(reason);
+      return;
+    }
+
     if (this.container.clientWidth === 0 || this.container.clientHeight === 0) {
       return;
     }
@@ -864,6 +892,40 @@ export class TerminalCore {
     }
 
     this.emitResize(dims, { source: 'core' });
+  }
+
+  private applyFixedDimensions(reason: 'observer' | 'focus' | 'force' | 'post_init'): void {
+    if (!this.terminal || !this.fixedDimensions) {
+      return;
+    }
+
+    const dims = this.fixedDimensions;
+    const startSeq = this.resizeNotifySeq;
+    const before = this.lastNotifiedSize;
+    const changed = this.terminal.cols !== dims.cols || this.terminal.rows !== dims.rows;
+
+    if (changed) {
+      try {
+        this.terminal.resize(dims.cols, dims.rows);
+      } catch (error) {
+        this.logger.debug('[TerminalCore] Fixed-dimension resize failed', { error });
+      }
+    }
+
+    // Some ghostty-web builds may not emit onResize for programmatic resize().
+    if (this.resizeNotifySeq !== startSeq) {
+      return;
+    }
+
+    if (reason === 'focus' && this.responsive.emitResizeOnFocus) {
+      const force = Boolean(before) && before!.cols === dims.cols && before!.rows === dims.rows;
+      this.emitResize(dims, { source: 'core', force });
+      return;
+    }
+
+    if (changed) {
+      this.emitResize(dims, { source: 'core' });
+    }
   }
 
   private scheduleFocusResize(): void {
@@ -1662,6 +1724,22 @@ export class TerminalCore {
     this.flushPendingPresentationScale();
     this.performResize('force');
     this.forceFullRender();
+  }
+
+  setFixedDimensions(dimensions: TerminalDimensions | null): void {
+    const next = normalizeTerminalDimensions(dimensions);
+    if (sameTerminalDimensions(this.fixedDimensions, next) || (!this.fixedDimensions && !next)) {
+      return;
+    }
+
+    this.fixedDimensions = next;
+    this.config = { ...this.config, fixedDimensions: next };
+
+    if (!this.terminal) {
+      return;
+    }
+
+    this.forceResize();
   }
 
   setTheme(theme: Record<string, string>): void {
