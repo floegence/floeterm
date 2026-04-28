@@ -50,6 +50,21 @@ func (h *sequenceCaptureHandler) OnTerminalSessionCreated(*Session)             
 func (h *sequenceCaptureHandler) OnTerminalSessionClosed(string)                       {}
 func (h *sequenceCaptureHandler) OnTerminalError(string, error)                        {}
 
+type dropSequenceHistoryFilter struct {
+	sequence int64
+}
+
+func (f dropSequenceHistoryFilter) Filter(chunks []TerminalDataChunk) []TerminalDataChunk {
+	out := make([]TerminalDataChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk.Sequence == f.sequence {
+			continue
+		}
+		out = append(out, chunk)
+	}
+	return out
+}
+
 func TestSessionHistoryAndLiveOutputShareSequence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -88,6 +103,52 @@ func TestSessionHistoryAndLiveOutputShareSequence(t *testing.T) {
 	}
 	if history[0].Sequence != liveSeq {
 		t.Fatalf("history sequence %d does not match live sequence %d", history[0].Sequence, liveSeq)
+	}
+}
+
+func TestSessionHistoryPagePreservesCursorWhenFilterDropsChunks(t *testing.T) {
+	session := &Session{
+		ID:                "session-filter",
+		Name:              "filter",
+		WorkingDir:        "/",
+		CreatedAt:         time.Now(),
+		LastActive:        time.Now(),
+		connections:       make(map[string]*ConnectionInfo),
+		ringBuffer:        NewTerminalRingBuffer(4),
+		currentWorkingDir: "/",
+		config: newSessionConfig(ManagerConfig{
+			Logger:        NopLogger{},
+			HistoryFilter: dropSequenceHistoryFilter{sequence: 1},
+		}),
+	}
+
+	if err := session.ringBuffer.writeOwnedWithSequence([]byte("drop"), 1, 1000, false); err != nil {
+		t.Fatalf("write sequence 1 failed: %v", err)
+	}
+	if err := session.ringBuffer.writeOwnedWithSequence([]byte("keep"), 2, 2000, false); err != nil {
+		t.Fatalf("write sequence 2 failed: %v", err)
+	}
+
+	firstPage, err := session.GetHistoryPage(HistoryPageOptions{LimitChunks: 1})
+	if err != nil {
+		t.Fatalf("GetHistoryPage(first) error: %v", err)
+	}
+	if len(firstPage.Chunks) != 0 {
+		t.Fatalf("len(firstPage.Chunks)=%d, want 0 after filter drop", len(firstPage.Chunks))
+	}
+	if !firstPage.HasMore || firstPage.NextStartSeq != 2 || firstPage.LastSequence != 1 {
+		t.Fatalf("unexpected first page cursor metadata: %+v", firstPage)
+	}
+
+	secondPage, err := session.GetHistoryPage(HistoryPageOptions{StartSeq: firstPage.NextStartSeq, LimitChunks: 1})
+	if err != nil {
+		t.Fatalf("GetHistoryPage(second) error: %v", err)
+	}
+	if len(secondPage.Chunks) != 1 || string(secondPage.Chunks[0].Data) != "keep" {
+		t.Fatalf("unexpected second page chunks: %+v", secondPage.Chunks)
+	}
+	if secondPage.HasMore || secondPage.LastSequence != 2 {
+		t.Fatalf("unexpected second page metadata: %+v", secondPage)
 	}
 }
 

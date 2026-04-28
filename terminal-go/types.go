@@ -16,6 +16,26 @@ type TerminalDataChunk struct {
 	Size      int
 }
 
+// HistoryPageOptions configures a bounded chronological terminal history read.
+type HistoryPageOptions struct {
+	StartSeq    int64
+	EndSeq      int64
+	LimitChunks int
+	MaxBytes    int
+}
+
+// HistoryPage is a bounded terminal history snapshot plus replay cursor metadata.
+type HistoryPage struct {
+	Chunks        []TerminalDataChunk
+	FirstSequence int64
+	LastSequence  int64
+	NextStartSeq  int64
+	HasMore       bool
+	CoveredBytes  int64
+	TotalBytes    int64
+	UsedChunks    int
+}
+
 // TerminalSessionInfo summarizes a terminal session for listing APIs.
 type TerminalSessionInfo struct {
 	ID         string
@@ -59,6 +79,7 @@ type TerminalSession interface {
 
 	WriteDataWithSource(data []byte, sourceConnID string) error
 	ResizePTY(cols, rows int) error
+	GetHistoryPage(options HistoryPageOptions) (HistoryPage, error)
 	GetHistoryFromSequence(fromSeq int64) ([]TerminalDataChunk, error)
 	ClearHistory() error
 	Close() error

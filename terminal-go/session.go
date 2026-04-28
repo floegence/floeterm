@@ -225,33 +225,31 @@ func (s *Session) GetHistoryChunks() ([]TerminalDataChunk, error) {
 	return s.ringBuffer.ReadAllChunks(), nil
 }
 
+// GetHistoryPage returns a bounded history page and replay cursor metadata.
+func (s *Session) GetHistoryPage(options HistoryPageOptions) (HistoryPage, error) {
+	s.mu.RLock()
+	ringBuffer := s.ringBuffer
+	s.mu.RUnlock()
+
+	if ringBuffer == nil {
+		return HistoryPage{}, fmt.Errorf("ring buffer not initialized")
+	}
+
+	page := ringBuffer.ReadChunkPage(options)
+	if len(page.Chunks) > 0 && s.config.historyFilter != nil {
+		page.Chunks = s.config.historyFilter.Filter(page.Chunks)
+	}
+
+	return page, nil
+}
+
 // GetHistoryFromSequence returns chunks starting at a given sequence.
 func (s *Session) GetHistoryFromSequence(fromSeq int64) ([]TerminalDataChunk, error) {
-	chunks, err := s.GetHistoryChunks()
+	page, err := s.GetHistoryPage(HistoryPageOptions{StartSeq: fromSeq})
 	if err != nil {
 		return nil, err
 	}
-
-	if len(chunks) == 0 {
-		return []TerminalDataChunk{}, nil
-	}
-
-	var filtered []TerminalDataChunk
-	if fromSeq > 0 {
-		for _, chunk := range chunks {
-			if chunk.Sequence >= fromSeq {
-				filtered = append(filtered, chunk)
-			}
-		}
-	} else {
-		filtered = chunks
-	}
-
-	if s.config.historyFilter != nil {
-		filtered = s.config.historyFilter.Filter(filtered)
-	}
-
-	return filtered, nil
+	return page.Chunks, nil
 }
 
 // GetHistoryStats returns a lightweight snapshot of the history buffer without copying stored data.

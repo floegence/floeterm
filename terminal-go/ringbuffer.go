@@ -165,6 +165,77 @@ func (rb *TerminalRingBuffer) ReadAllChunks() []TerminalDataChunk {
 	return result
 }
 
+// ReadChunkPage returns a bounded page of chunks in chronological order.
+func (rb *TerminalRingBuffer) ReadChunkPage(options HistoryPageOptions) HistoryPage {
+	rb.mutex.RLock()
+	defer rb.mutex.RUnlock()
+
+	atomic.AddInt64(&rb.readCount, 1)
+
+	usedChunks := rb.getUsedChunks()
+	page := HistoryPage{
+		TotalBytes: atomic.LoadInt64(&rb.totalBytes),
+		UsedChunks: usedChunks,
+	}
+	if rb.isEmpty() {
+		page.Chunks = []TerminalDataChunk{}
+		return page
+	}
+
+	startSeq := options.StartSeq
+	endSeq := options.EndSeq
+	limitChunks := options.LimitChunks
+	maxBytes := options.MaxBytes
+	capacity := usedChunks
+	if limitChunks > 0 && limitChunks < capacity {
+		capacity = limitChunks
+	}
+	page.Chunks = make([]TerminalDataChunk, 0, capacity)
+
+	for i := 0; i < usedChunks; i++ {
+		index := (rb.tail + i) % rb.size
+		chunk := rb.chunks[index]
+		if chunk.Data == nil {
+			continue
+		}
+		if startSeq > 0 && chunk.Sequence < startSeq {
+			continue
+		}
+		if endSeq > 0 && chunk.Sequence > endSeq {
+			break
+		}
+
+		chunkBytes := len(chunk.Data)
+		if limitChunks > 0 && len(page.Chunks) >= limitChunks {
+			page.HasMore = true
+			page.NextStartSeq = chunk.Sequence
+			break
+		}
+		if maxBytes > 0 && len(page.Chunks) > 0 && page.CoveredBytes+int64(chunkBytes) > int64(maxBytes) {
+			page.HasMore = true
+			page.NextStartSeq = chunk.Sequence
+			break
+		}
+
+		copyChunk := TerminalDataChunk{
+			Sequence:  chunk.Sequence,
+			Data:      make([]byte, chunkBytes),
+			Timestamp: chunk.Timestamp,
+			Size:      chunk.Size,
+		}
+		copy(copyChunk.Data, chunk.Data)
+		page.Chunks = append(page.Chunks, copyChunk)
+		page.CoveredBytes += int64(chunkBytes)
+
+		if len(page.Chunks) == 1 {
+			page.FirstSequence = chunk.Sequence
+		}
+		page.LastSequence = chunk.Sequence
+	}
+
+	return page
+}
+
 // ReadChunksFrom returns chunks with timestamp >= the provided value.
 func (rb *TerminalRingBuffer) ReadChunksFrom(timestamp int64) []TerminalDataChunk {
 	rb.mutex.RLock()

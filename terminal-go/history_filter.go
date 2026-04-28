@@ -44,6 +44,7 @@ func (DefaultHistoryFilter) Filter(chunks []TerminalDataChunk) []TerminalDataChu
 		}
 
 		chunk.Data = newData
+		chunk.Size = len(newData)
 		filtered = append(filtered, chunk)
 	}
 

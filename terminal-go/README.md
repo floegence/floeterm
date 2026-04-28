@@ -22,6 +22,31 @@ func main() {
 }
 ```
 
+## Bounded history replay
+
+Use `GetHistoryPage` when forwarding terminal history over transports with frame or payload limits:
+
+```go
+page, err := session.GetHistoryPage(terminal.HistoryPageOptions{
+    StartSeq:    1,
+    LimitChunks: 256,
+    MaxBytes:    384 * 1024,
+})
+if err != nil {
+    // handle error
+}
+
+for _, chunk := range page.Chunks {
+    _ = chunk
+}
+if page.HasMore {
+    nextStartSeq := page.NextStartSeq
+    _ = nextStartSeq
+}
+```
+
+`NextStartSeq` advances through retained history even when the configured history filter removes a page's renderable chunks, so callers can keep paging without risking an empty-page loop.
+
 ## Notes
 - Implement `TerminalEventHandler` to receive output and lifecycle events.
 - `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession`.
