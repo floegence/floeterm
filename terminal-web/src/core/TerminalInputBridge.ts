@@ -10,6 +10,7 @@ type input_suppression_token =
   | { kind: 'backspace' };
 
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
+const TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR = '[contenteditable="true"][aria-label="Terminal input"]';
 
 const MODIFIER_ONLY_KEYS = new Set([
   'Alt',
@@ -353,11 +354,22 @@ export class TerminalInputBridge {
       return false;
     }
 
-    // ghostty-web marks the terminal host as contenteditable. Treat that host
-    // as terminal-owned input so Cmd/Ctrl+C can still route through the shared
-    // terminal selection copy path instead of falling through like an embedded
-    // user input control.
-    return target !== this.input && target !== this.container;
+    return !this.isTerminalOwnedEditableTarget(target);
+  }
+
+  private isTerminalOwnedEditableTarget(target: HTMLElement): boolean {
+    if (target === this.input || target === this.container) {
+      return true;
+    }
+
+    if (!this.container.contains(target)) {
+      return false;
+    }
+
+    // ghostty-web places the real keyboard focus on an inner contenteditable
+    // host. Treat only that terminal-owned host as copy-eligible so embedded
+    // user inputs inside overlays still keep their native clipboard behavior.
+    return target.matches(TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR);
   }
 
   private requestSelectionCopy(source: TerminalCopySelectionSource, clipboardData: DataTransfer | null = null): void {

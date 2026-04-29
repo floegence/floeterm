@@ -238,6 +238,50 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  it('treats the inner ghostty contenteditable input host as terminal-owned for Cmd/Ctrl+C copy', async () => {
+    const { container, copySelection } = setup('terminal selection');
+    const terminalInputHost = document.createElement('div');
+    terminalInputHost.setAttribute('contenteditable', 'true');
+    terminalInputHost.setAttribute('aria-label', 'Terminal input');
+    container.appendChild(terminalInputHost);
+    activateTerminal(terminalInputHost);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    terminalInputHost.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).toHaveBeenCalledTimes(1);
+    expect(copySelection).toHaveBeenCalledWith('shortcut', null);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('does not hijack Cmd/Ctrl+C from non-terminal contenteditable targets inside the container', async () => {
+    const { container, copySelection } = setup('terminal selection');
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    container.appendChild(editor);
+    activateTerminal(editor);
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    editor.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it('routes the standard copy event through the shared copy path', async () => {
     const selection = '  echo hi\n';
     const { container, copySelection } = setup(selection);
@@ -249,6 +293,28 @@ describe('TerminalInputBridge', () => {
     });
 
     document.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).toHaveBeenCalledTimes(1);
+    expect(copySelection).toHaveBeenCalledWith('copy_event', expect.objectContaining({ setData }));
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('routes copy events from the inner ghostty contenteditable input host through the shared copy path', async () => {
+    const selection = 'terminal selection';
+    const { container, copySelection } = setup(selection);
+    const terminalInputHost = document.createElement('div');
+    terminalInputHost.setAttribute('contenteditable', 'true');
+    terminalInputHost.setAttribute('aria-label', 'Terminal input');
+    container.appendChild(terminalInputHost);
+    activateTerminal(terminalInputHost);
+    const setData = vi.fn();
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', {
+      value: { setData },
+    });
+
+    terminalInputHost.dispatchEvent(event);
     await Promise.resolve();
 
     expect(copySelection).toHaveBeenCalledTimes(1);
