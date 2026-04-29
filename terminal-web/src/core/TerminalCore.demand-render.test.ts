@@ -70,6 +70,10 @@ vi.mock('ghostty-web', () => {
     renderer: any;
     renderSpy = vi.fn();
     renderLineSpy = vi.fn();
+    setThemeSpy = vi.fn(function (this: any, theme: Record<string, string>) {
+      this.theme = theme;
+    });
+    writes: Array<string | Uint8Array> = [];
     lines = [
       [cell(65), cell(66)],
       [cell(67), cell(68)],
@@ -118,6 +122,7 @@ vi.mock('ghostty-web', () => {
         renderLine: this.renderLineSpy,
         setHoveredHyperlinkId: vi.fn(),
         setHoveredLinkRange: vi.fn(),
+        setTheme: this.setThemeSpy,
       };
       this.renderer.setCursorBlink = this.renderer.setCursorBlinkSpy;
       this.selectionManager = {
@@ -148,6 +153,7 @@ vi.mock('ghostty-web', () => {
     }
 
     write(_data: string | Uint8Array, cb?: () => void) {
+      this.writes.push(_data);
       this.cursorY += 1;
       cb?.();
     }
@@ -401,6 +407,47 @@ describe('TerminalCore demand rendering', () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+
+    core.dispose();
+  });
+
+  it('syncs runtime theme changes into ghostty state and forces a full redraw', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+    terminal.renderLineSpy.mockClear();
+
+    core.setTheme({
+      background: '#ffffff',
+      foreground: '#333333',
+      cursor: '#333333',
+      black: '#000000',
+      red: '#cd3131',
+    });
+
+    expect(terminal.setThemeSpy).toHaveBeenCalledWith(expect.objectContaining({
+      background: '#ffffff',
+      foreground: '#333333',
+    }));
+    expect(terminal.writes[terminal.writes.length - 1]).toBe(
+      '\x1b]10;#333333\x07'
+      + '\x1b]11;#ffffff\x07'
+      + '\x1b]12;#333333\x07'
+      + '\x1b]4;0;#000000;1;#cd3131\x07',
+    );
+    expect(terminal.renderSpy).toHaveBeenCalledWith(
+      terminal.wasmTerm,
+      true,
+      terminal.viewportY,
+      terminal,
+      terminal.scrollbarOpacity,
+    );
+    const renderedCells = terminal.renderLineSpy.mock.calls[0]?.[0];
+    expect(renderedCells?.[0]).toEqual(expect.objectContaining({
+      fg_r: 51,
+      fg_g: 51,
+      fg_b: 51,
+    }));
 
     core.dispose();
   });

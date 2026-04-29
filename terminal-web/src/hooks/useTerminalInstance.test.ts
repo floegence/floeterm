@@ -3,13 +3,16 @@ import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 import { useTerminalInstance } from './useTerminalInstance';
 import type {
+  TerminalAppearance,
   TerminalCoreLike,
   TerminalDataEvent,
   TerminalDataSubscriptionOptions,
   TerminalEventSource,
+  TerminalThemeName,
   TerminalTransport
 } from '../types';
 import { TerminalState } from '../types';
+import { getThemeColors } from '../utils/config';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -34,9 +37,15 @@ class FakeTerminalCore implements TerminalCoreLike {
   private dimensions = { ...FakeTerminalCore.nextDimensions };
 
   readonly writes: string[] = [];
+  readonly themes: Record<string, unknown>[] = [];
+  readonly fontSizes: number[] = [];
+  readonly fontFamilies: string[] = [];
+  readonly presentationScales: number[] = [];
+  readonly appearances: TerminalAppearance[] = [];
   readonly historyReplayDurations: number[] = [];
   endHistoryReplayCalls = 0;
   clearCalls = 0;
+  disposeCalls = 0;
   focusCalls = 0;
   connected = false;
 
@@ -59,6 +68,7 @@ class FakeTerminalCore implements TerminalCoreLike {
   }
 
   dispose(): void {
+    this.disposeCalls += 1;
     this.state = TerminalState.DISPOSED;
     this.handlers.onStateChange?.(TerminalState.DISPOSED);
   }
@@ -130,9 +140,37 @@ class FakeTerminalCore implements TerminalCoreLike {
     this.dimensions = dimensions;
   }
 
-  setTheme(): void {}
-  setFontSize(): void {}
-  setPresentationScale(): void {}
+  setAppearance(appearance: TerminalAppearance): void {
+    this.appearances.push(appearance);
+    if (appearance.theme) {
+      this.setTheme(appearance.theme);
+    }
+    if (typeof appearance.fontSize === 'number') {
+      this.setFontSize(appearance.fontSize);
+    }
+    if (typeof appearance.fontFamily === 'string') {
+      this.setFontFamily(appearance.fontFamily);
+    }
+    if (typeof appearance.presentationScale === 'number') {
+      this.setPresentationScale(appearance.presentationScale);
+    }
+  }
+
+  setTheme(theme: Record<string, unknown>): void {
+    this.themes.push(theme);
+  }
+
+  setFontSize(size: number): void {
+    this.fontSizes.push(size);
+  }
+
+  setFontFamily(family: string): void {
+    this.fontFamilies.push(family);
+  }
+
+  setPresentationScale(scale: number): void {
+    this.presentationScales.push(scale);
+  }
 
   startHistoryReplay(duration?: number): void {
     this.historyReplayDurations.push(duration ?? 0);
@@ -212,6 +250,9 @@ const mountHarness = async (options?: {
   eventSource?: TerminalEventSource;
   transport?: TerminalTransport;
   onResize?: (cols: number, rows: number) => void;
+  themeName?: TerminalThemeName;
+  fontSize?: number;
+  presentationScale?: number;
 }) => {
   const eventHarness = createEventSourceHarness();
   const eventSource = options?.eventSource ?? eventHarness.eventSource;
@@ -220,11 +261,21 @@ const mountHarness = async (options?: {
   let latestState: ReturnType<typeof useTerminalInstance>['state'] | null = null;
   let latestLoadingState = '';
 
-  const Harness = (props: { sessionId: string; isActive: boolean; eventSource: TerminalEventSource }) => {
+  const Harness = (props: {
+    sessionId: string;
+    isActive: boolean;
+    eventSource: TerminalEventSource;
+    themeName?: TerminalThemeName;
+    fontSize?: number;
+    presentationScale?: number;
+  }) => {
     const { containerRef, actions, state, loadingState } = useTerminalInstance({
       sessionId: props.sessionId,
       isActive: props.isActive,
       autoFocus: options?.autoFocus,
+      themeName: props.themeName,
+      fontSize: props.fontSize,
+      presentationScale: props.presentationScale,
       transport,
       eventSource: props.eventSource,
       onResize: options?.onResize,
@@ -243,7 +294,10 @@ const mountHarness = async (options?: {
       React.createElement(Harness, {
         sessionId: options?.sessionId ?? 'A',
         isActive: options?.isActive ?? true,
-        eventSource
+        eventSource,
+        themeName: options?.themeName,
+        fontSize: options?.fontSize,
+        presentationScale: options?.presentationScale
       }),
       { createNodeMock: () => ({}) }
     );
@@ -276,12 +330,22 @@ const mountHarness = async (options?: {
     get loadingState() {
       return latestLoadingState;
     },
-    update: async (props: { sessionId?: string; isActive?: boolean; eventSource?: TerminalEventSource }) => {
+    update: async (props: {
+      sessionId?: string;
+      isActive?: boolean;
+      eventSource?: TerminalEventSource;
+      themeName?: TerminalThemeName;
+      fontSize?: number;
+      presentationScale?: number;
+    }) => {
       await act(async () => {
         renderer.update(React.createElement(Harness, {
           sessionId: props.sessionId ?? options?.sessionId ?? 'A',
           isActive: props.isActive ?? options?.isActive ?? true,
-          eventSource: props.eventSource ?? eventSource
+          eventSource: props.eventSource ?? eventSource,
+          themeName: props.themeName ?? options?.themeName,
+          fontSize: props.fontSize ?? options?.fontSize,
+          presentationScale: props.presentationScale ?? options?.presentationScale
         }));
         vi.runOnlyPendingTimers();
         await flushPromises();
@@ -433,6 +497,48 @@ describe('useTerminalInstance', () => {
     expect(transport.resize).toHaveBeenLastCalledWith('A', 120, 40);
     expect(transport.attach).toHaveBeenCalledTimes(1);
     expect(mounted.state.dimensions).toEqual({ cols: 120, rows: 40 });
+  });
+
+  it('applies themeName prop changes without reinitializing the terminal session', async () => {
+    vi.useFakeTimers();
+    const mounted = await mountHarness({ themeName: 'dark' });
+    const core = FakeTerminalCore.instances[0];
+    const attachCalls = vi.mocked(mounted.transport.attach).mock.calls.length;
+    const replayCalls = core.historyReplayDurations.length;
+
+    await mounted.update({ themeName: 'light' });
+
+    expect(FakeTerminalCore.instances).toHaveLength(1);
+    expect(core.disposeCalls).toBe(0);
+    expect(core.themes[core.themes.length - 1]).toEqual(getThemeColors('light'));
+    expect(vi.mocked(mounted.transport.attach)).toHaveBeenCalledTimes(attachCalls);
+    expect(core.historyReplayDurations).toHaveLength(replayCalls);
+    expect(mounted.eventHarness.subscriptions).toHaveLength(1);
+  });
+
+  it('batches appearance action updates without reinitializing the terminal', async () => {
+    vi.useFakeTimers();
+    const mounted = await mountHarness();
+    const core = FakeTerminalCore.instances[0];
+    const attachCalls = vi.mocked(mounted.transport.attach).mock.calls.length;
+
+    await act(async () => {
+      mounted.actions.setAppearance({
+        themeName: 'monokai',
+        fontSize: 16,
+        fontFamily: '"Iosevka Term", monospace',
+        presentationScale: 1.5
+      });
+      await flushPromises();
+    });
+
+    expect(FakeTerminalCore.instances).toHaveLength(1);
+    expect(core.disposeCalls).toBe(0);
+    expect(core.themes[core.themes.length - 1]).toEqual(getThemeColors('monokai'));
+    expect(core.fontSizes[core.fontSizes.length - 1]).toBe(16);
+    expect(core.fontFamilies[core.fontFamilies.length - 1]).toBe('"Iosevka Term", monospace');
+    expect(core.presentationScales[core.presentationScales.length - 1]).toBe(1.5);
+    expect(vi.mocked(mounted.transport.attach)).toHaveBeenCalledTimes(attachCalls);
   });
 
   it('forwards terminal input and action input to the transport', async () => {

@@ -115,16 +115,6 @@ const TerminalPane = (props: {
     actionsRef.current = actions;
   }, [actions]);
 
-  const didApplyThemeRef = useRef(false);
-
-  useEffect(() => {
-    if (!didApplyThemeRef.current) {
-      didApplyThemeRef.current = true;
-      return;
-    }
-    actionsRef.current.reinitialize?.();
-  }, [themeName]);
-
   useEffect(() => {
     if (typeof document === 'undefined') {
       return;
@@ -140,7 +130,6 @@ const TerminalPane = (props: {
   }, [themeName]);
 
   useEffect(() => {
-    actionsRef.current.setFontSize(fontSize);
     actionsRef.current.forceResize();
   }, [fontSize]);
 

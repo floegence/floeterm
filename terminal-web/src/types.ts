@@ -124,6 +124,13 @@ export interface TerminalConfig {
   [key: string]: unknown;
 }
 
+export interface TerminalAppearance {
+  theme?: Record<string, unknown>;
+  fontSize?: number;
+  fontFamily?: string;
+  presentationScale?: number;
+}
+
 // Logger is a lightweight interface for capturing terminal diagnostics.
 export interface Logger {
   debug: (message: string, meta?: Record<string, unknown>) => void;
@@ -164,7 +171,8 @@ export interface TerminalCoreLike {
   setConnected(isConnected: boolean): void;
   forceResize(): void;
   setFixedDimensions(dimensions: TerminalDimensions | null): void;
-  setTheme(theme: Record<string, string>): void;
+  setAppearance?(appearance: TerminalAppearance): void;
+  setTheme(theme: Record<string, unknown>): void;
   setFontSize(size: number): void;
   setPresentationScale(scale: number): void;
   setFontFamily?(family: string): void;
@@ -294,6 +302,7 @@ export interface TerminalManagerActions {
   focus: () => void;
   getTerminalInfo: () => { rows: number; cols: number; bufferLength: number } | null;
   sendInput: (data: string) => void;
+  setAppearance: (appearance: TerminalManagerAppearance) => void;
   setTheme: (theme: TerminalThemeName) => void;
   setFontSize: (size: number) => void;
   setPresentationScale: (scale: number) => void;
@@ -322,6 +331,13 @@ export interface TerminalManagerOptions {
   onError?: (error: Error) => void;
   config?: TerminalConfig;
   coreConstructor?: TerminalCoreConstructor;
+}
+
+export interface TerminalManagerAppearance {
+  themeName?: TerminalThemeName;
+  fontSize?: number;
+  fontFamily?: string;
+  presentationScale?: number;
 }
 
 export interface TerminalConnectionState {

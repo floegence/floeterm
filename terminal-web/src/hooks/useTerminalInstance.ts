@@ -14,6 +14,7 @@ import type {
   TerminalManagerOptions,
   TerminalManagerReturn,
   TerminalManagerState,
+  TerminalManagerAppearance,
   TerminalDataChunk,
   TerminalDataEvent
 } from '../types';
@@ -281,6 +282,37 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     }
   }, [scheduleDataQueueFlush]);
 
+  const applyCoreAppearance = useCallback((appearance: TerminalManagerAppearance) => {
+    const core = terminalCoreRef.current;
+    if (!core) {
+      return;
+    }
+
+    const theme = appearance.themeName ? getThemeColors(appearance.themeName) : undefined;
+    if (core.setAppearance) {
+      core.setAppearance({
+        ...(theme ? { theme } : {}),
+        ...(typeof appearance.fontSize === 'number' ? { fontSize: appearance.fontSize } : {}),
+        ...(typeof appearance.fontFamily === 'string' ? { fontFamily: appearance.fontFamily } : {}),
+        ...(typeof appearance.presentationScale === 'number' ? { presentationScale: appearance.presentationScale } : {})
+      });
+      return;
+    }
+
+    if (theme) {
+      core.setTheme(theme);
+    }
+    if (typeof appearance.fontSize === 'number') {
+      core.setFontSize(appearance.fontSize);
+    }
+    if (typeof appearance.fontFamily === 'string') {
+      core.setFontFamily?.(appearance.fontFamily);
+    }
+    if (typeof appearance.presentationScale === 'number') {
+      core.setPresentationScale(appearance.presentationScale);
+    }
+  }, []);
+
   const initializeTerminal = useCallback(async () => {
     if (!containerRef.current || isInitializingRef.current || terminalCoreRef.current) {
       return;
@@ -474,8 +506,12 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
   }, [connectionState]);
 
   useEffect(() => {
-    terminalCoreRef.current?.setPresentationScale(presentationScale ?? 1);
-  }, [presentationScale]);
+    applyCoreAppearance({
+      themeName,
+      ...(typeof fontSize === 'number' ? { fontSize } : {}),
+      presentationScale: presentationScale ?? 1
+    });
+  }, [applyCoreAppearance, fontSize, presentationScale, themeName]);
 
   const actions: TerminalManagerActions = {
     write: data => {
@@ -517,12 +553,10 @@ export const useTerminalInstance = (options: TerminalManagerOptions): TerminalMa
     focus: () => terminalCoreRef.current?.focus(),
     getTerminalInfo: () => terminalCoreRef.current?.getTerminalInfo() ?? null,
     sendInput: data => handleUserInput(data),
-    setTheme: theme => {
-      const colors = getThemeColors(theme);
-      terminalCoreRef.current?.setTheme(colors);
-    },
-    setFontSize: size => terminalCoreRef.current?.setFontSize(size),
-    setPresentationScale: scale => terminalCoreRef.current?.setPresentationScale(scale),
+    setAppearance: appearance => applyCoreAppearance(appearance),
+    setTheme: theme => applyCoreAppearance({ themeName: theme }),
+    setFontSize: size => applyCoreAppearance({ fontSize: size }),
+    setPresentationScale: scale => applyCoreAppearance({ presentationScale: scale }),
     reinitialize: async () => {
       terminalDataUnsubscribeRef.current?.();
       terminalDataUnsubscribeRef.current = null;

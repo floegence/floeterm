@@ -29,7 +29,7 @@ export function TerminalPane() {
 - `ghostty-web` needs a one-time `init()` (handled internally by `TerminalCore`).
 - `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and IME input continue to work on touch devices.
 - Explicit terminal copy is handled through shared selection-copy APIs, so keyboard shortcuts, native app menus, and product context menus can reuse the same selection logic.
-- `TerminalCore` now exposes first-class APIs for runtime font updates, shell bell/title events, and custom terminal link providers without reaching into implementation internals.
+- `TerminalCore` now exposes first-class APIs for runtime appearance updates, shell bell/title events, and custom terminal link providers without reaching into implementation internals.
 
 ## Responsive resize (multi-pane / multi-view)
 When the same remote terminal session can be displayed in multiple views (e.g. a Deck widget and a dedicated Terminal page),
@@ -118,9 +118,19 @@ core.registerLinkProvider(linkProvider);
 This is the intended extension point for product features such as modifier-click file navigation,
 build-log deep links, or shell attention badges driven by bell events.
 
-## Runtime font updates
-Consumers that need to react to user preferences can update the font family explicitly:
+## Runtime appearance updates
+Consumers that need to react to user preferences can update appearance without rebuilding the
+terminal session:
 
 ```ts
+import { getThemeColors } from '@floegence/floeterm-terminal-web';
+
+core.setAppearance({
+  theme: getThemeColors('light'),
+  fontSize: 14,
+  fontFamily: '"Iosevka Term", monospace',
+  presentationScale: 1,
+});
+
 core.setFontFamily('"Iosevka Term", monospace');
 ```

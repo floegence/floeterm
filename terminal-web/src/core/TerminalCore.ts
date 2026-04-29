@@ -10,6 +10,7 @@ import {
   type TerminalDimensions,
   type TerminalEventHandlers,
   type TerminalFitConfig,
+  type TerminalAppearance,
   type TerminalLinkProvider,
   type TerminalResponsiveConfig,
   type TerminalSelectionSnapshot,
@@ -77,6 +78,17 @@ type ghostty_renderer_with_row_cache = {
   setCursorBlink?: (enabled: boolean) => unknown;
 };
 
+type rgb_color = {
+  r: number;
+  g: number;
+  b: number;
+};
+
+type terminal_theme_color_translator = {
+  fg: Map<string, rgb_color>;
+  bg: Map<string, rgb_color>;
+};
+
 type ghostty_fit_addon_with_geometry_patch = import('ghostty-web').FitAddon & {
   __floetermGeometryPatchApplied?: boolean;
   proposeDimensions?: () => { cols: number; rows: number } | undefined;
@@ -95,6 +107,26 @@ const TERMINAL_SEARCH_ACTIVE_BACKGROUND = 'rgba(255, 234, 0, 0.72)';
 const TERMINAL_SEARCH_ACTIVE_FOREGROUND = '#dc2626';
 const TERMINAL_SELECTION_BACKGROUND = '#f5e6b3';
 const TERMINAL_SELECTION_FOREGROUND = '#1f2328';
+const OSC = '\x1b]';
+const OSC_TERMINATOR = '\x07';
+const TERMINAL_THEME_PALETTE_KEYS = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'brightBlack',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan',
+  'brightWhite',
+] as const;
 
 function parsePositiveCSSPixelValue(value: string | null | undefined): number | null {
   if (!value) {
@@ -206,6 +238,132 @@ const mapThemeToGhostty = (theme: Record<string, unknown> | undefined): Record<s
 
   return mapped;
 };
+
+function normalizeThemeColor(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const shortHex = /^#([0-9a-fA-F]{3})$/.exec(trimmed);
+  if (shortHex) {
+    const [r, g, b] = shortHex[1].split('');
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
+    return trimmed.toLowerCase();
+  }
+
+  const rgb = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/.exec(trimmed);
+  if (!rgb) {
+    return null;
+  }
+
+  const channels = rgb.slice(1).map(channel => Number(channel));
+  if (channels.some(channel => !Number.isInteger(channel) || channel < 0 || channel > 255)) {
+    return null;
+  }
+
+  return `#${channels.map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function buildTerminalThemeControlSequence(theme: Record<string, string>): string {
+  const parts: string[] = [];
+  const foreground = normalizeThemeColor(theme.foreground);
+  const background = normalizeThemeColor(theme.background);
+  const cursor = normalizeThemeColor(theme.cursor);
+
+  if (foreground) {
+    parts.push(`${OSC}10;${foreground}${OSC_TERMINATOR}`);
+  }
+  if (background) {
+    parts.push(`${OSC}11;${background}${OSC_TERMINATOR}`);
+  }
+  if (cursor) {
+    parts.push(`${OSC}12;${cursor}${OSC_TERMINATOR}`);
+  }
+
+  const paletteEntries: string[] = [];
+  TERMINAL_THEME_PALETTE_KEYS.forEach((key, index) => {
+    const color = normalizeThemeColor(theme[key]);
+    if (color) {
+      paletteEntries.push(String(index), color);
+    }
+  });
+  if (paletteEntries.length > 0) {
+    parts.push(`${OSC}4;${paletteEntries.join(';')}${OSC_TERMINATOR}`);
+  }
+
+  return parts.join('');
+}
+
+function parseThemeColor(value: string | undefined): rgb_color | null {
+  const normalized = normalizeThemeColor(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const hex = normalized.slice(1);
+  return {
+    r: Number.parseInt(hex.slice(0, 2), 16),
+    g: Number.parseInt(hex.slice(2, 4), 16),
+    b: Number.parseInt(hex.slice(4, 6), 16),
+  };
+}
+
+function colorKey(color: rgb_color): string {
+  return `${color.r},${color.g},${color.b}`;
+}
+
+function cellColorKey(cell: ghostty_cell_like, prefix: 'fg' | 'bg'): string | null {
+  const r = Number(cell[`${prefix}_r`]);
+  const g = Number(cell[`${prefix}_g`]);
+  const b = Number(cell[`${prefix}_b`]);
+  if (![r, g, b].every(channel => Number.isInteger(channel) && channel >= 0 && channel <= 255)) {
+    return null;
+  }
+  return `${r},${g},${b}`;
+}
+
+function colorsEqual(left: rgb_color, right: rgb_color): boolean {
+  return left.r === right.r && left.g === right.g && left.b === right.b;
+}
+
+function setColorTranslation(
+  map: Map<string, rgb_color>,
+  source: Record<string, string>,
+  target: Record<string, string>,
+  key: string,
+): void {
+  const sourceColor = parseThemeColor(source[key]);
+  const targetColor = parseThemeColor(target[key]);
+  if (!sourceColor || !targetColor || colorsEqual(sourceColor, targetColor)) {
+    return;
+  }
+  map.set(colorKey(sourceColor), targetColor);
+}
+
+function buildThemeColorTranslator(
+  source: Record<string, string>,
+  target: Record<string, string>,
+): terminal_theme_color_translator | null {
+  const fg = new Map<string, rgb_color>();
+  const bg = new Map<string, rgb_color>();
+
+  for (const key of TERMINAL_THEME_PALETTE_KEYS) {
+    setColorTranslation(fg, source, target, key);
+    setColorTranslation(bg, source, target, key);
+  }
+  setColorTranslation(fg, source, target, 'foreground');
+  setColorTranslation(bg, source, target, 'background');
+
+  if (fg.size === 0 && bg.size === 0) {
+    return null;
+  }
+
+  return { fg, bg };
+}
 
 function buildCellSignature(
   renderer: ghostty_renderer_with_row_cache,
@@ -336,6 +494,8 @@ export class TerminalCore {
   private logicalFontSize = 12;
   private presentationScale = 1;
   private fixedDimensions: TerminalDimensions | null = null;
+  private terminalThemeSource: Record<string, string> = {};
+  private themeColorTranslator: terminal_theme_color_translator | null = null;
   private fontMetricSeq = 0;
   private pendingPresentationScale: number | null = null;
   private suppressResizeNotifications = false;
@@ -440,6 +600,9 @@ export class TerminalCore {
     };
 
     const finalConfig = { ...defaultConfig, ...this.config };
+    const initialTheme = mapThemeToGhostty(finalConfig.theme);
+    this.terminalThemeSource = initialTheme;
+    this.themeColorTranslator = null;
     this.logicalFontSize = TerminalCore.normalizeFontSize(finalConfig.fontSize);
     this.presentationScale = TerminalCore.normalizePresentationScale(finalConfig.presentationScale);
     await this.waitForTerminalFontReady(
@@ -453,7 +616,7 @@ export class TerminalCore {
       rows: initialDimensions?.rows ?? (typeof finalConfig.rows === 'number' ? finalConfig.rows : undefined),
       cursorBlink: typeof finalConfig.cursorBlink === 'boolean' ? finalConfig.cursorBlink : undefined,
       cursorStyle: typeof (finalConfig as any).cursorStyle === 'string' ? ((finalConfig as any).cursorStyle as any) : undefined,
-      theme: mapThemeToGhostty(finalConfig.theme),
+      theme: initialTheme,
       scrollback: typeof finalConfig.scrollback === 'number' ? finalConfig.scrollback : undefined,
       fontSize: this.resolveEffectiveFontSize(),
       fontFamily: typeof finalConfig.fontFamily === 'string' ? finalConfig.fontFamily : undefined,
@@ -691,18 +854,58 @@ export class TerminalCore {
       }
     };
     renderer.renderLine = (cells: ghostty_cell_like[], row: number, cols: number) => {
-      const signature = buildRowSignature(renderer, cells, row, cols);
+      const themedCells = this.translateCellsForTheme(cells);
+      const signature = buildRowSignature(renderer, themedCells, row, cols);
       if (canSkipCachedRowRender(renderer, row) && cache.get(row) === signature) {
         return undefined;
       }
 
-      const result = originalRenderLine(cells, row, cols);
+      const result = originalRenderLine(themedCells, row, cols);
       if (hasTransientRendererState(renderer)) {
         cache.delete(row);
         return result;
       }
       cache.set(row, signature);
       return result;
+    };
+  }
+
+  private translateCellsForTheme(cells: ghostty_cell_like[]): ghostty_cell_like[] {
+    const translator = this.themeColorTranslator;
+    if (!translator) {
+      return cells;
+    }
+
+    let translatedCells: ghostty_cell_like[] | null = null;
+    for (let index = 0; index < cells.length; index += 1) {
+      const cell = translatedCells?.[index] ?? cells[index] ?? {};
+      const translated = this.translateCellForTheme(cell, translator);
+      if (translated !== cell && !translatedCells) {
+        translatedCells = cells.slice(0, index);
+      }
+      translatedCells?.push(translated);
+    }
+
+    return translatedCells ?? cells;
+  }
+
+  private translateCellForTheme(
+    cell: ghostty_cell_like,
+    translator: terminal_theme_color_translator,
+  ): ghostty_cell_like {
+    const fgKey = cellColorKey(cell, 'fg');
+    const bgKey = cellColorKey(cell, 'bg');
+    const fg = fgKey ? translator.fg.get(fgKey) : undefined;
+    const bg = bgKey ? translator.bg.get(bgKey) : undefined;
+
+    if (!fg && !bg) {
+      return cell;
+    }
+
+    return {
+      ...cell,
+      ...(fg ? { fg_r: fg.r, fg_g: fg.g, fg_b: fg.b } : {}),
+      ...(bg ? { bg_r: bg.r, bg_g: bg.g, bg_b: bg.b } : {}),
     };
   }
 
@@ -1746,6 +1949,7 @@ export class TerminalCore {
     }
 
     terminalAny.renderer?.setTheme?.(theme);
+    this.syncTerminalThemeState(theme);
 
     if (terminalAny.renderer?.render && terminalAny.wasmTerm) {
       try {
@@ -1759,6 +1963,23 @@ export class TerminalCore {
       } catch (error) {
         this.logger.debug('[TerminalCore] Theme render failed', { error });
       }
+    }
+  }
+
+  private syncTerminalThemeState(theme: Record<string, string>): void {
+    if (!this.terminal || !this.isReady()) {
+      return;
+    }
+
+    const sequence = buildTerminalThemeControlSequence(theme);
+    if (!sequence) {
+      return;
+    }
+
+    try {
+      this.terminal.write(sequence);
+    } catch (error) {
+      this.logger.debug('[TerminalCore] Failed to sync terminal theme state', { error });
     }
   }
 
@@ -1938,10 +2159,30 @@ export class TerminalCore {
     this.forceResize();
   }
 
-  setTheme(theme: Record<string, string>): void {
+  setAppearance(appearance: TerminalAppearance): void {
+    if (!appearance || typeof appearance !== 'object') {
+      return;
+    }
+
+    if (appearance.theme) {
+      this.setTheme(appearance.theme);
+    }
+    if (typeof appearance.fontSize === 'number') {
+      this.setFontSize(appearance.fontSize);
+    }
+    if (typeof appearance.fontFamily === 'string') {
+      this.setFontFamily(appearance.fontFamily);
+    }
+    if (typeof appearance.presentationScale === 'number') {
+      this.setPresentationScale(appearance.presentationScale);
+    }
+  }
+
+  setTheme(theme: Record<string, unknown>): void {
     const mapped = mapThemeToGhostty(theme);
     // Persist latest theme so a future re-initialization can reuse it.
     this.config = { ...this.config, theme: mapped };
+    this.themeColorTranslator = buildThemeColorTranslator(this.terminalThemeSource, mapped);
 
     if (!this.terminal) {
       return;
