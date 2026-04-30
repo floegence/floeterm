@@ -73,6 +73,7 @@ vi.mock('ghostty-web', () => {
     setThemeSpy = vi.fn(function (this: any, theme: Record<string, string>) {
       this.theme = theme;
     });
+    fitSpy = vi.fn();
     writes: Array<string | Uint8Array> = [];
     lines = [
       [cell(65), cell(66)],
@@ -183,8 +184,10 @@ vi.mock('ghostty-web', () => {
   }
 
   class MockFitAddon {
+    __terminal: MockTerminal | undefined;
+
     fit() {
-      // noop
+      this.__terminal?.fitSpy();
     }
   }
 
@@ -258,6 +261,98 @@ describe('TerminalCore demand rendering', () => {
 
     expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
     expect(terminal.cursorMoveEmitter.fire).toHaveBeenCalled();
+
+    core.dispose();
+  });
+
+  it('keeps writes flowing while visual rendering is suspended', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+
+    const suspend = core.beginVisualSuspend({ reason: 'workbench_widget_drag' });
+
+    core.write('one');
+    core.write('two');
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.writes).toEqual(['one', 'two']);
+    expect(terminal.renderSpy).not.toHaveBeenCalled();
+
+    suspend.dispose();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+
+    core.dispose();
+  });
+
+  it('keeps visual rendering suspended until the last nested handle is disposed', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+
+    const first = core.beginVisualSuspend({ reason: 'workbench_zoom' });
+    const second = core.beginVisualSuspend({ reason: 'workbench_widget_drag' });
+
+    core.write('x');
+    first.dispose();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderSpy).not.toHaveBeenCalled();
+
+    second.dispose();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+
+    core.dispose();
+  });
+
+  it('defers forced renders and resize work during visual suspension', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+    terminal.fitSpy.mockClear();
+
+    const suspend = core.beginVisualSuspend({ reason: 'workbench_window_fit' });
+
+    core.forceResize();
+    core.setFontSize(16);
+    core.clear();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.fitSpy).not.toHaveBeenCalled();
+    expect(terminal.renderSpy).not.toHaveBeenCalled();
+
+    suspend.dispose();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.fitSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(true);
+
+    core.dispose();
+  });
+
+  it('applies theme immediately but defers the expensive theme repaint while suspended', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+
+    const suspend = core.beginVisualSuspend({ reason: 'workbench_zoom' });
+
+    core.setTheme({ background: '#000000', foreground: '#ffffff' });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.setThemeSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy).not.toHaveBeenCalled();
+
+    suspend.dispose();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(true);
 
     core.dispose();
   });

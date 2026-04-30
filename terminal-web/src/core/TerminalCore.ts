@@ -14,6 +14,9 @@ import {
   type TerminalLinkProvider,
   type TerminalResponsiveConfig,
   type TerminalSelectionSnapshot,
+  type TerminalVisualSuspendHandle,
+  type TerminalVisualSuspendOptions,
+  type TerminalVisualSuspendReason,
 } from '../types';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
 
@@ -87,6 +90,18 @@ type rgb_color = {
 type terminal_theme_color_translator = {
   fg: Map<string, rgb_color>;
   bg: Map<string, rgb_color>;
+};
+
+type terminal_resize_reason = 'observer' | 'focus' | 'force' | 'post_init' | 'font';
+
+type terminal_visual_render_state = {
+  suspendDepth: number;
+  nextSuspendId: number;
+  activeReasons: Map<number, TerminalVisualSuspendReason>;
+  pendingDemandRender: boolean;
+  pendingForceFullRender: boolean;
+  pendingResizeReason: terminal_resize_reason | null;
+  pendingSearchOverlayRender: boolean;
 };
 
 type ghostty_fit_addon_with_geometry_patch = import('ghostty-web').FitAddon & {
@@ -526,6 +541,15 @@ export class TerminalCore {
   private terminalEventDisposables: Array<() => void> = [];
   private readonly registeredLinkProviders = new Set<TerminalLinkProvider>();
   private readonly appliedLinkProviders = new Set<TerminalLinkProvider>();
+  private readonly visualRenderState: terminal_visual_render_state = {
+    suspendDepth: 0,
+    nextSuspendId: 1,
+    activeReasons: new Map(),
+    pendingDemandRender: false,
+    pendingForceFullRender: false,
+    pendingResizeReason: null,
+    pendingSearchOverlayRender: false,
+  };
 
   constructor(
     private container: HTMLElement,
@@ -1256,7 +1280,16 @@ export class TerminalCore {
     }, 80);
   }
 
-  private performResize(reason: 'observer' | 'focus' | 'force' | 'post_init' | 'font'): void {
+  private performResize(reason: terminal_resize_reason): void {
+    if (this.isVisualRenderSuspended()) {
+      this.markPendingResize(reason);
+      return;
+    }
+
+    this.performResizeNow(reason);
+  }
+
+  private performResizeNow(reason: terminal_resize_reason): void {
     if (!this.isReady() || !this.fitAddon || !this.terminal) {
       return;
     }
@@ -1295,7 +1328,7 @@ export class TerminalCore {
     this.emitResize(dims, { source: 'core' });
   }
 
-  private applyFixedDimensions(reason: 'observer' | 'focus' | 'force' | 'post_init' | 'font'): void {
+  private applyFixedDimensions(reason: terminal_resize_reason): void {
     if (!this.terminal || !this.fixedDimensions) {
       return;
     }
@@ -1951,6 +1984,11 @@ export class TerminalCore {
     terminalAny.renderer?.setTheme?.(theme);
     this.syncTerminalThemeState(theme);
 
+    if (this.isVisualRenderSuspended()) {
+      this.markPendingDemandRender(true);
+      return;
+    }
+
     if (terminalAny.renderer?.render && terminalAny.wasmTerm) {
       try {
         terminalAny.renderer.render(
@@ -2074,6 +2112,11 @@ export class TerminalCore {
   }
 
   private scheduleRenderSearchOverlay(): void {
+    if (this.isVisualRenderSuspended()) {
+      this.visualRenderState.pendingSearchOverlayRender = true;
+      return;
+    }
+
     if (this.searchOverlayRaf !== null) return;
     this.searchOverlayRaf = requestAnimationFrame(() => {
       this.searchOverlayRaf = null;
@@ -2214,7 +2257,7 @@ export class TerminalCore {
       return;
     }
     this.terminal.options.fontSize = this.resolveEffectiveFontSize();
-    this.fitAddon?.fit();
+    this.performResize('font');
     void this.refreshFontMetricsAfterLoad('font_size');
   }
 
@@ -2257,9 +2300,31 @@ export class TerminalCore {
     }
 
     this.terminal.options.fontFamily = nextFamily;
-    this.fitAddon?.fit();
+    this.performResize('font');
     this.forceFullRender();
     void this.refreshFontMetricsAfterLoad('font_family');
+  }
+
+  beginVisualSuspend(options: TerminalVisualSuspendOptions = {}): TerminalVisualSuspendHandle {
+    const id = this.visualRenderState.nextSuspendId;
+    this.visualRenderState.nextSuspendId += 1;
+    const reason = options.reason ?? 'external';
+    let disposed = false;
+
+    this.visualRenderState.suspendDepth += 1;
+    this.visualRenderState.activeReasons.set(id, reason);
+
+    return {
+      id,
+      reason,
+      dispose: () => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        this.endVisualSuspend(id);
+      },
+    };
   }
 
   registerLinkProvider(provider: TerminalLinkProvider): void {
@@ -2298,6 +2363,12 @@ export class TerminalCore {
       clearTimeout(this.resizeDebounceTimer);
       this.resizeDebounceTimer = null;
     }
+    this.visualRenderState.suspendDepth = 0;
+    this.visualRenderState.activeReasons.clear();
+    this.visualRenderState.pendingDemandRender = false;
+    this.visualRenderState.pendingForceFullRender = false;
+    this.visualRenderState.pendingResizeReason = null;
+    this.visualRenderState.pendingSearchOverlayRender = false;
     if (this.replayingHistoryTimer) {
       clearTimeout(this.replayingHistoryTimer);
       this.replayingHistoryTimer = null;
@@ -2396,6 +2467,86 @@ export class TerminalCore {
     return Math.max(1, this.logicalFontSize * scale);
   }
 
+  private isVisualRenderSuspended(): boolean {
+    return this.visualRenderState.suspendDepth > 0;
+  }
+
+  private markPendingDemandRender(forceAll: boolean): void {
+    this.visualRenderState.pendingDemandRender = true;
+    this.visualRenderState.pendingForceFullRender = this.visualRenderState.pendingForceFullRender || forceAll;
+    this.demandRenderForceAll = this.demandRenderForceAll || forceAll;
+  }
+
+  private markPendingResize(reason: terminal_resize_reason): void {
+    this.visualRenderState.pendingResizeReason = this.mergePendingResizeReason(
+      this.visualRenderState.pendingResizeReason,
+      reason,
+    );
+  }
+
+  private mergePendingResizeReason(
+    current: terminal_resize_reason | null,
+    next: terminal_resize_reason,
+  ): terminal_resize_reason {
+    if (!current) {
+      return next;
+    }
+    if (current === 'force' || next === 'force') {
+      return 'force';
+    }
+    if (current === 'font' || next === 'font') {
+      return 'font';
+    }
+    if (current === 'focus' || next === 'focus') {
+      return 'focus';
+    }
+    if (current === 'post_init' || next === 'post_init') {
+      return 'post_init';
+    }
+    return 'observer';
+  }
+
+  private endVisualSuspend(id: number): void {
+    if (!this.visualRenderState.activeReasons.has(id)) {
+      return;
+    }
+
+    this.visualRenderState.activeReasons.delete(id);
+    this.visualRenderState.suspendDepth = Math.max(0, this.visualRenderState.suspendDepth - 1);
+    if (this.visualRenderState.suspendDepth > 0) {
+      return;
+    }
+
+    this.flushDeferredVisualWork();
+  }
+
+  private flushDeferredVisualWork(): void {
+    if (this.isDisposed || !this.terminal) {
+      return;
+    }
+
+    const resizeReason = this.visualRenderState.pendingResizeReason;
+    const shouldRender = this.visualRenderState.pendingDemandRender || this.demandRenderForceAll;
+    const shouldForceRender = this.visualRenderState.pendingForceFullRender || this.demandRenderForceAll;
+    const shouldRenderSearchOverlay = this.visualRenderState.pendingSearchOverlayRender;
+
+    this.visualRenderState.pendingResizeReason = null;
+    this.visualRenderState.pendingDemandRender = false;
+    this.visualRenderState.pendingForceFullRender = false;
+    this.visualRenderState.pendingSearchOverlayRender = false;
+    this.demandRenderForceAll = false;
+
+    if (resizeReason) {
+      this.performResizeNow(resizeReason);
+    }
+    if (shouldRender) {
+      this.requestDemandRender(shouldForceRender);
+    }
+    if (shouldRenderSearchOverlay) {
+      this.scheduleRenderSearchOverlay();
+    }
+  }
+
   private flushPendingPresentationScale(): void {
     if (this.pendingPresentationScale === null) {
       return;
@@ -2432,6 +2583,13 @@ export class TerminalCore {
     });
 
     this.terminal.options.fontSize = this.resolveEffectiveFontSize(nextScale);
+    if (this.isVisualRenderSuspended()) {
+      this.markPendingResize('force');
+      this.markPendingDemandRender(true);
+      this.scheduleRenderSearchOverlay();
+      return;
+    }
+
     this.fitAddon?.fit();
     this.forceFullRender();
     this.scheduleRenderSearchOverlay();
@@ -2442,11 +2600,21 @@ export class TerminalCore {
       return;
     }
 
+    if (this.isVisualRenderSuspended()) {
+      this.markPendingDemandRender(true);
+      return;
+    }
+
     this.renderDemandFrame(true);
   }
 
   private requestDemandRender(forceAll: boolean): void {
     if (!this.terminal || this.isDisposed) {
+      return;
+    }
+
+    if (this.isVisualRenderSuspended()) {
+      this.markPendingDemandRender(forceAll);
       return;
     }
 

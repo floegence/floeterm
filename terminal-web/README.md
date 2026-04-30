@@ -118,6 +118,23 @@ core.registerLinkProvider(linkProvider);
 This is the intended extension point for product features such as modifier-click file navigation,
 build-log deep links, or shell attention badges driven by bell events.
 
+## Visual work suspension
+Hosts that animate a surrounding workbench can temporarily suspend expensive terminal visual work while keeping PTY output
+and the terminal buffer live:
+
+```ts
+const suspend = core.beginVisualSuspend({ reason: 'workbench_widget_drag' });
+
+try {
+  // Move, zoom, or resize the host surface.
+} finally {
+  suspend.dispose();
+}
+```
+
+While suspended, `write()` continues to update terminal state. Rendering, fit, full repaint, and overlay refresh requests
+are coalesced and reconciled when the final nested suspend handle is disposed.
+
 ## Runtime appearance updates
 Consumers that need to react to user preferences can update appearance without rebuilding the
 terminal session:

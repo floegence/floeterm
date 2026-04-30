@@ -131,6 +131,27 @@ export interface TerminalAppearance {
   presentationScale?: number;
 }
 
+export type TerminalVisualSuspendReason =
+  | 'workbench_pan'
+  | 'workbench_zoom'
+  | 'workbench_widget_drag'
+  | 'workbench_widget_resize'
+  | 'workbench_layer_switch'
+  | 'workbench_window_fit'
+  | 'workbench_widget_create'
+  | 'workbench_widget_close'
+  | 'external';
+
+export interface TerminalVisualSuspendOptions {
+  reason?: TerminalVisualSuspendReason;
+}
+
+export interface TerminalVisualSuspendHandle {
+  readonly id: number;
+  readonly reason: TerminalVisualSuspendReason;
+  dispose(): void;
+}
+
 // Logger is a lightweight interface for capturing terminal diagnostics.
 export interface Logger {
   debug: (message: string, meta?: Record<string, unknown>) => void;
@@ -176,6 +197,7 @@ export interface TerminalCoreLike {
   setFontSize(size: number): void;
   setPresentationScale(scale: number): void;
   setFontFamily?(family: string): void;
+  beginVisualSuspend?(options?: TerminalVisualSuspendOptions): TerminalVisualSuspendHandle;
   registerLinkProvider?(provider: TerminalLinkProvider): void;
   startHistoryReplay(duration?: number): void;
   endHistoryReplay?(): void;

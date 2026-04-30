@@ -31,6 +31,9 @@ export type {
   TerminalLink,
   TerminalLinkProvider,
   TerminalSelectionSnapshot,
+  TerminalVisualSuspendHandle,
+  TerminalVisualSuspendOptions,
+  TerminalVisualSuspendReason,
   TerminalThemeName
 } from './types';
 
