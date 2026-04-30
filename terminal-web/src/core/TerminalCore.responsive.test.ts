@@ -131,6 +131,7 @@ describe('TerminalCore responsive resize notifications', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     document.body.replaceChildren();
+    delete (document as unknown as { fonts?: unknown }).fonts;
   });
 
   it('suppresses resize notifications until focused and re-emits on focus even when size is unchanged', async () => {
@@ -224,6 +225,30 @@ describe('TerminalCore responsive resize notifications', () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(onResize).toHaveBeenCalledWith({ cols: 88, rows: 25 });
+
+    core.dispose();
+  });
+
+  it('fits to the mounted component before initialization resolves', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    Object.defineProperty(container, 'clientWidth', { value: 960, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 480, configurable: true });
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve(),
+      },
+    });
+
+    const onResize = vi.fn();
+    const core = new TerminalCore(container, {}, { onResize });
+
+    await core.initialize();
+
+    expect(core.getDimensions()).toEqual({ cols: 120, rows: 30 });
+    expect(onResize).toHaveBeenLastCalledWith({ cols: 120, rows: 30 });
 
     core.dispose();
   });

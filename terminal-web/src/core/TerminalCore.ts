@@ -51,6 +51,7 @@ type ghostty_disposable = {
 };
 
 type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
+  getScrollbackLength?: () => number;
   onBell?: (handler: () => void) => ghostty_disposable;
   onTitleChange?: (handler: (title: string) => void) => ghostty_disposable;
   onScroll?: (handler: () => void) => ghostty_disposable;
@@ -74,6 +75,7 @@ type ghostty_renderer_with_row_cache = {
   currentSelectionCoords?: unknown;
   hoveredHyperlinkId?: number;
   hoveredLinkRange?: unknown;
+  lastViewportY?: number;
   lastCursorPosition?: { y?: number };
   render?: (...args: unknown[]) => unknown;
   renderLine?: (cells: ghostty_cell_like[], row: number, cols: number) => unknown;
@@ -104,6 +106,13 @@ type terminal_visual_render_state = {
   pendingSearchOverlayRender: boolean;
 };
 
+type terminal_render_snapshot = {
+  cursorY: number | null;
+  rows: number | null;
+  scrollbackLength: number | null;
+  viewportY: number | null;
+};
+
 type ghostty_fit_addon_with_geometry_patch = import('ghostty-web').FitAddon & {
   __floetermGeometryPatchApplied?: boolean;
   proposeDimensions?: () => { cols: number; rows: number } | undefined;
@@ -122,8 +131,6 @@ const TERMINAL_SEARCH_ACTIVE_BACKGROUND = 'rgba(255, 234, 0, 0.72)';
 const TERMINAL_SEARCH_ACTIVE_FOREGROUND = '#dc2626';
 const TERMINAL_SELECTION_BACKGROUND = '#f5e6b3';
 const TERMINAL_SELECTION_FOREGROUND = '#1f2328';
-const OSC = '\x1b]';
-const OSC_TERMINATOR = '\x07';
 const TERMINAL_THEME_PALETTE_KEYS = [
   'black',
   'red',
@@ -281,36 +288,6 @@ function normalizeThemeColor(value: string | undefined): string | null {
   }
 
   return `#${channels.map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
-}
-
-function buildTerminalThemeControlSequence(theme: Record<string, string>): string {
-  const parts: string[] = [];
-  const foreground = normalizeThemeColor(theme.foreground);
-  const background = normalizeThemeColor(theme.background);
-  const cursor = normalizeThemeColor(theme.cursor);
-
-  if (foreground) {
-    parts.push(`${OSC}10;${foreground}${OSC_TERMINATOR}`);
-  }
-  if (background) {
-    parts.push(`${OSC}11;${background}${OSC_TERMINATOR}`);
-  }
-  if (cursor) {
-    parts.push(`${OSC}12;${cursor}${OSC_TERMINATOR}`);
-  }
-
-  const paletteEntries: string[] = [];
-  TERMINAL_THEME_PALETTE_KEYS.forEach((key, index) => {
-    const color = normalizeThemeColor(theme[key]);
-    if (color) {
-      paletteEntries.push(String(index), color);
-    }
-  });
-  if (paletteEntries.length > 0) {
-    parts.push(`${OSC}4;${paletteEntries.join(';')}${OSC_TERMINATOR}`);
-  }
-
-  return parts.join('');
 }
 
 function parseThemeColor(value: string | undefined): rgb_color | null {
@@ -587,6 +564,8 @@ export class TerminalCore {
     this.startSizeWatching();
 
     this.setState(TerminalState.READY);
+    this.performResize('post_init');
+    this.forceFullRender();
 
     setTimeout(() => {
       if (!this.isReady()) {
@@ -870,7 +849,12 @@ export class TerminalCore {
     renderer.__floetermRowRenderCachePatched = true;
     renderer.__floetermRowRenderCache = cache;
     renderer.render = (...args: unknown[]) => {
-      renderer.__floetermRowRenderCacheForceAll = Boolean(args[1]);
+      const incomingViewportY = Number(args[2] ?? 0);
+      const currentViewportY = Number(renderer.lastViewportY ?? 0);
+      const viewportChanged = Number.isFinite(incomingViewportY)
+        && Number.isFinite(currentViewportY)
+        && incomingViewportY !== currentViewportY;
+      renderer.__floetermRowRenderCacheForceAll = Boolean(args[1]) || viewportChanged;
       try {
         return originalRender(...args);
       } finally {
@@ -1451,21 +1435,23 @@ export class TerminalCore {
 
     try {
       getPerfProbe()?.onTerminalWrite?.(typeof data === 'string' ? data.length : data.byteLength);
+      const beforeWrite = this.captureRenderSnapshot();
       const shouldForce = this.needsFullRenderOnNextWrite;
 
       if (callback || shouldForce) {
         this.terminal.write(data as string | Uint8Array, () => {
-          if (shouldForce) {
+          const shouldForceAfterWrite = shouldForce || this.shouldForceFullRenderAfterWrite(beforeWrite);
+          if (shouldForceAfterWrite) {
             this.needsFullRenderOnNextWrite = false;
           }
-          this.requestDemandRender(shouldForce);
+          this.requestDemandRender(shouldForceAfterWrite);
           callback?.();
         });
         return;
       }
 
       this.terminal.write(data as string | Uint8Array);
-      this.requestDemandRender(false);
+      this.requestDemandRender(this.shouldForceFullRenderAfterWrite(beforeWrite));
     } catch (error) {
       this.logger.error('[TerminalCore] Write failed', { error });
       callback?.();
@@ -1982,7 +1968,6 @@ export class TerminalCore {
     }
 
     terminalAny.renderer?.setTheme?.(theme);
-    this.syncTerminalThemeState(theme);
 
     if (this.isVisualRenderSuspended()) {
       this.markPendingDemandRender(true);
@@ -2004,21 +1989,75 @@ export class TerminalCore {
     }
   }
 
-  private syncTerminalThemeState(theme: Record<string, string>): void {
-    if (!this.terminal || !this.isReady()) {
-      return;
+  private captureRenderSnapshot(): terminal_render_snapshot | null {
+    const terminalAny = this.terminal as unknown as {
+      getScrollbackLength?: () => number;
+      rows?: number;
+      viewportY?: number;
+      wasmTerm?: {
+        getCursor?: () => { y?: number };
+        getScrollbackLength?: () => number;
+      };
+    } | null;
+    if (!terminalAny) {
+      return null;
     }
 
-    const sequence = buildTerminalThemeControlSequence(theme);
-    if (!sequence) {
-      return;
+    const cursor = terminalAny.wasmTerm?.getCursor?.();
+    const cursorY = Number(cursor?.y);
+    const rows = Number(terminalAny.rows);
+    const scrollbackLength = (() => {
+      if (typeof terminalAny.getScrollbackLength === 'function') {
+        return Number(terminalAny.getScrollbackLength.call(terminalAny));
+      }
+      if (typeof terminalAny.wasmTerm?.getScrollbackLength === 'function') {
+        return Number(terminalAny.wasmTerm.getScrollbackLength.call(terminalAny.wasmTerm));
+      }
+      return Number.NaN;
+    })();
+    const viewportY = Number(terminalAny.viewportY ?? 0);
+
+    return {
+      cursorY: Number.isFinite(cursorY) ? cursorY : null,
+      rows: Number.isFinite(rows) ? rows : null,
+      scrollbackLength: Number.isFinite(scrollbackLength) ? scrollbackLength : null,
+      viewportY: Number.isFinite(viewportY) ? viewportY : null,
+    };
+  }
+
+  private shouldForceFullRenderAfterWrite(before: terminal_render_snapshot | null): boolean {
+    if (!before) {
+      return false;
     }
 
-    try {
-      this.terminal.write(sequence);
-    } catch (error) {
-      this.logger.debug('[TerminalCore] Failed to sync terminal theme state', { error });
+    const after = this.captureRenderSnapshot();
+    if (!after) {
+      return false;
     }
+
+    if (
+      before.viewportY !== null
+      && after.viewportY !== null
+      && before.viewportY !== after.viewportY
+    ) {
+      return true;
+    }
+
+    if (
+      before.scrollbackLength !== null
+      && after.scrollbackLength !== null
+      && before.scrollbackLength !== after.scrollbackLength
+    ) {
+      return true;
+    }
+
+    return Boolean(
+      before.cursorY !== null
+      && after.cursorY !== null
+      && before.rows !== null
+      && before.cursorY >= before.rows - 1
+      && after.cursorY < before.cursorY
+    );
   }
 
   private ensureSearchOverlaySubscriptions(): void {

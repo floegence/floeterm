@@ -56,6 +56,7 @@ vi.mock('ghostty-web', () => {
     scrollbarOpacity = 0;
     lastCursorY = 0;
     cursorY = 0;
+    scrollbackLength = 0;
     dataEmitter = new MockEventEmitter<string>();
     resizeEmitter = new MockEventEmitter<{ cols: number; rows: number }>();
     scrollEmitter = new MockEventEmitter<number>();
@@ -96,6 +97,7 @@ vi.mock('ghostty-web', () => {
         getCursor: () => ({ y: this.cursorY }),
         getDimensions: () => ({ cols: 2, rows: 2 }),
         getLine: (row: number) => this.lines[row] ?? null,
+        getScrollbackLength: () => this.scrollbackLength,
         isRowDirty: (row: number) => this.dirtyRows.has(row),
         clearDirty: () => {
           this.dirtyRows.clear();
@@ -155,8 +157,17 @@ vi.mock('ghostty-web', () => {
 
     write(_data: string | Uint8Array, cb?: () => void) {
       this.writes.push(_data);
-      this.cursorY += 1;
+      if (this.cursorY >= this.rows - 1) {
+        this.scrollbackLength += 1;
+        this.cursorY = 0;
+      } else {
+        this.cursorY += 1;
+      }
       cb?.();
+    }
+
+    getScrollbackLength() {
+      return this.scrollbackLength;
     }
 
     scrollLines(amount: number) {
@@ -252,6 +263,8 @@ describe('TerminalCore demand rendering', () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
     terminal.renderSpy.mockClear();
+    terminal.rows = 24;
+    terminal.cursorY = 0;
 
     core.write('one');
     core.write('two');
@@ -261,6 +274,44 @@ describe('TerminalCore demand rendering', () => {
 
     expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
     expect(terminal.cursorMoveEmitter.fire).toHaveBeenCalled();
+
+    core.dispose();
+  });
+
+  it('forces a full repaint when terminal output scrolls the viewport', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.rows = 2;
+    terminal.cursorY = 1;
+    terminal.scrollbackLength = 0;
+    terminal.renderSpy.mockClear();
+
+    core.write('\r');
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(true);
+
+    core.dispose();
+  });
+
+  it('forces a full repaint when a write returns the viewport to the bottom', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.viewportY = 3;
+    terminal.renderSpy.mockClear();
+
+    terminal.write = vi.fn(function (this: any, data: string | Uint8Array, cb?: () => void) {
+      this.writes.push(data);
+      this.viewportY = 0;
+      cb?.();
+    });
+
+    core.write('bottom');
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(true);
 
     core.dispose();
   });
@@ -506,11 +557,12 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
-  it('syncs runtime theme changes into ghostty state and forces a full redraw', async () => {
+  it('updates runtime theme without writing unsupported OSC color sequences', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
     terminal.renderSpy.mockClear();
     terminal.renderLineSpy.mockClear();
+    terminal.writes.length = 0;
 
     core.setTheme({
       background: '#ffffff',
@@ -524,12 +576,7 @@ describe('TerminalCore demand rendering', () => {
       background: '#ffffff',
       foreground: '#333333',
     }));
-    expect(terminal.writes[terminal.writes.length - 1]).toBe(
-      '\x1b]10;#333333\x07'
-      + '\x1b]11;#ffffff\x07'
-      + '\x1b]12;#333333\x07'
-      + '\x1b]4;0;#000000;1;#cd3131\x07',
-    );
+    expect(terminal.writes).toEqual([]);
     expect(terminal.renderSpy).toHaveBeenCalledWith(
       terminal.wasmTerm,
       true,
