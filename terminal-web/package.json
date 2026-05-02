@@ -1,7 +1,7 @@
 {
   "name": "@floegence/floeterm-terminal-web",
-  "version": "0.4.32",
-  "description": "Headless ghostty-web (xterm.js API-compatible) integration with data flow utilities. Provides TerminalCore and a React hook without UI components.",
+  "version": "0.5.0",
+  "description": "Framework-neutral ghostty-web (xterm.js API-compatible) integration with terminal core, session, and data flow utilities.",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -50,18 +50,8 @@
     "ghostty-web": "0.4.0-next.14.g6a1a50d"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@types/react-test-renderer": "^18.0.0",
     "jsdom": "^24.1.3",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-test-renderer": "^18.2.0",
     "typescript": "^5.4.0",
     "vitest": "^3.2.4"
-  },
-  "peerDependencies": {
-    "react": ">=18",
-    "react-dom": ">=18"
   }
 }

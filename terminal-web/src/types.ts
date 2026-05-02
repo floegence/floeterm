@@ -1,5 +1,3 @@
-import type React from 'react';
-
 // TerminalState tracks the lifecycle of the terminal instance.
 export enum TerminalState {
   IDLE = 'idle',
@@ -152,6 +150,18 @@ export interface TerminalVisualSuspendHandle {
   dispose(): void;
 }
 
+export interface TerminalRuntimeLineSnapshot {
+  row: number;
+  text: string;
+}
+
+export interface TerminalTouchScrollRuntime {
+  scrollLines(amount: number): boolean;
+  getScrollbackLength(): number;
+  isAlternateScreen(): boolean;
+  sendAlternateScreenInput(data: string): void;
+}
+
 // Logger is a lightweight interface for capturing terminal diagnostics.
 export interface Logger {
   debug: (message: string, meta?: Record<string, unknown>) => void;
@@ -160,7 +170,7 @@ export interface Logger {
   error: (message: string, meta?: Record<string, unknown>) => void;
 }
 
-// TerminalEventHandlers connects terminal callbacks to the hook layer.
+// TerminalEventHandlers connects terminal callbacks to controllers or direct hosts.
 export interface TerminalEventHandlers {
   onData?: (data: string) => void;
   onResize?: (size: { cols: number; rows: number }) => void;
@@ -170,7 +180,7 @@ export interface TerminalEventHandlers {
   onError?: (error: Error) => void;
 }
 
-// TerminalCoreLike describes the subset of TerminalCore behaviour that the hook needs.
+// TerminalCoreLike describes the subset of TerminalCore behaviour the managed controller needs.
 // It allows injecting a lightweight implementation for tests or non-browser runtimes.
 export interface TerminalCoreLike {
   initialize(): Promise<void>;
@@ -201,6 +211,9 @@ export interface TerminalCoreLike {
   registerLinkProvider?(provider: TerminalLinkProvider): void;
   startHistoryReplay(duration?: number): void;
   endHistoryReplay?(): void;
+  readBufferLine?(row: number, options?: { trimRight?: boolean }): string;
+  readBufferLines?(startRow: number, endRowInclusive: number, options?: { trimRight?: boolean }): TerminalRuntimeLineSnapshot[];
+  getTouchScrollRuntime?(): TerminalTouchScrollRuntime | null;
 }
 
 export interface TerminalCoreConstructor {
@@ -337,6 +350,13 @@ export interface SearchOptions {
   regex?: boolean;
 }
 
+export type TerminalLoadingState =
+  | 'idle'
+  | 'initializing_terminal'
+  | 'attaching'
+  | 'processing_history'
+  | 'ready';
+
 export interface TerminalManagerOptions {
   sessionId: TerminalID;
   isActive: boolean;
@@ -353,6 +373,7 @@ export interface TerminalManagerOptions {
   onError?: (error: Error) => void;
   config?: TerminalConfig;
   coreConstructor?: TerminalCoreConstructor;
+  scheduler?: TerminalInstanceScheduler;
 }
 
 export interface TerminalManagerAppearance {
@@ -384,13 +405,42 @@ export const computeConnectionState = (connection: TerminalConnectionState) => (
 
 export type TerminalConnectionStateWithComputed = ReturnType<typeof computeConnectionState>;
 
-export interface TerminalManagerReturn {
-  containerRef: React.RefObject<HTMLDivElement | null>;
+export type TerminalConnectionController = TerminalConnectionStateWithComputed;
+
+export type TerminalInstanceOptions = TerminalManagerOptions;
+
+export type TerminalInstanceMutableOptions = Partial<Omit<TerminalInstanceOptions, 'transport' | 'eventSource' | 'coreConstructor' | 'scheduler'>>;
+
+export interface TerminalInstanceScheduler {
+  requestFrame(callback: FrameRequestCallback): number;
+  cancelFrame(id: number): void;
+  setTimer(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>;
+  clearTimer(id: ReturnType<typeof setTimeout>): void;
+}
+
+export interface TerminalInstanceSnapshot {
   state: TerminalManagerStateWithComputed;
-  actions: TerminalManagerActions;
   connection: TerminalConnectionStateWithComputed;
-  loadingState: string;
+  loadingState: TerminalLoadingState;
   loadingMessage: string;
+}
+
+export type TerminalInstanceListener = (snapshot: TerminalInstanceSnapshot) => void;
+
+export interface TerminalInstanceController {
+  mount(container: HTMLElement): Promise<void>;
+  unmount(): void;
+  dispose(): void;
+  updateOptions(options: TerminalInstanceMutableOptions): void;
+  getSnapshot(): TerminalInstanceSnapshot;
+  subscribe(listener: TerminalInstanceListener): () => void;
+  getCore(): TerminalCoreLike | null;
+  readonly actions: TerminalManagerActions;
+  readonly connection: TerminalConnectionController;
+}
+
+export interface TerminalManagerReturn extends TerminalInstanceSnapshot {
+  actions: TerminalManagerActions;
 }
 
 export type TerminalThemeName = 'dark' | 'light' | 'solarizedDark' | 'monokai' | 'tokyoNight';

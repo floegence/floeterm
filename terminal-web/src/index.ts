@@ -1,9 +1,13 @@
 export { TerminalCore } from './core/TerminalCore';
+export { TerminalState } from './types';
+export {
+  createTerminalInstance,
+  FrameworkNeutralTerminalInstanceController,
+} from './manager/TerminalInstanceController';
 export {
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
 } from './core/TerminalRenderScheduler';
-export { useTerminalInstance } from './hooks/useTerminalInstance';
 export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalRenderSchedulerStats } from './core/TerminalRenderScheduler';
@@ -18,8 +22,15 @@ export type {
   TerminalCopySelectionResult,
   TerminalCopySelectionSource,
   TerminalResponsiveConfig,
+  TerminalRuntimeLineSnapshot,
   TerminalEventHandlers,
-  TerminalState,
+  TerminalInstanceController,
+  TerminalInstanceListener,
+  TerminalInstanceMutableOptions,
+  TerminalInstanceOptions,
+  TerminalInstanceScheduler,
+  TerminalInstanceSnapshot,
+  TerminalLoadingState,
   TerminalID,
   TerminalSessionInfo,
   TerminalDataChunk,
@@ -36,6 +47,7 @@ export type {
   TerminalLink,
   TerminalLinkProvider,
   TerminalSelectionSnapshot,
+  TerminalTouchScrollRuntime,
   TerminalVisualSuspendHandle,
   TerminalVisualSuspendOptions,
   TerminalVisualSuspendReason,

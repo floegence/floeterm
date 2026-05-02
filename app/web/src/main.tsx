@@ -1,5 +1,4 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client';
+import { render } from 'solid-js/web';
 import { App } from './App';
 import { installFrontendPerfProbe } from './perfProbe';
 import '@fontsource/jetbrains-mono/400.css';
@@ -9,8 +8,9 @@ import './styles.css';
 
 installFrontendPerfProbe();
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+const root = document.getElementById('root');
+if (!root) {
+  throw new Error('Missing root element');
+}
+
+render(() => <App />, root);

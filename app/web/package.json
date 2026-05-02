@@ -13,15 +13,12 @@
   "dependencies": {
     "@floegence/floeterm-terminal-web": "file:../../terminal-web",
     "@fontsource/jetbrains-mono": "^5.2.8",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "solid-js": "^1.9.12"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@vitejs/plugin-react": "^5.1.2",
     "typescript": "^5.4.0",
     "vite": "^7.3.2",
+    "vite-plugin-solid": "^2.11.12",
     "vitest": "^3.2.4"
   }
 }

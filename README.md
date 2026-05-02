@@ -45,7 +45,7 @@
 
 - `Product-first`: ship your own terminal experience while floeterm handles PTY lifecycle, history replay, resize coordination, and browser-facing terminal plumbing.
 - `Composable`: use [`terminal-go`](./terminal-go) as the backend engine, [`terminal-web`](./terminal-web) as the headless browser layer, or start from the end-to-end reference app in [`app/`](./app).
-- `User-ready`: mobile-friendly input bridging, IME support, reconnect-friendly history replay, configurable clipboard behavior, and first-class shell bell/title plus link-provider hooks are already in the stack.
+- `User-ready`: mobile-friendly input bridging, IME support, reconnect-friendly history replay, configurable clipboard behavior, and first-class shell bell/title plus link-provider extension points are already in the stack.
 - `Operationally sane`: one `make check` path matches CI for Go race tests, `govulncheck`, web lint/test/build, and `npm audit`.
 
 Typical use cases:
@@ -59,7 +59,7 @@ Typical use cases:
 
 | Tag | What it means in practice |
 | --- | --- |
-| `🧩 HEADLESS UI` | `terminal-web` exposes `TerminalCore`, `useTerminalInstance`, and `TerminalSessionsCoordinator` without forcing a component library or design system. |
+| `🧩 HEADLESS UI` | `terminal-web` exposes `TerminalCore`, `createTerminalInstance`, and `TerminalSessionsCoordinator` without forcing a component library or design system. |
 | `🌱 DORMANT-FIRST` | Sessions can be created before the PTY starts, then activated with the real viewport size on first attach. |
 | `📚 HISTORY REPLAY` | Scrollback is buffered, filtered, and replayed safely after reconnects or remounts. |
 | `⌨️ IME READY` | The web layer bridges the hidden textarea used by `ghostty-web`, keeping soft keyboard and composition input usable on touch devices. |
@@ -71,9 +71,9 @@ Typical use cases:
 
 | Package | Best for | What you get |
 | --- | --- | --- |
-| [`terminal-go`](./terminal-go) | Go backends that need PTY sessions | Session lifecycle, history buffering/filtering, explicit workdir signal parsing, resize coordination, and event hooks |
-| [`terminal-web`](./terminal-web) | React and web clients that want terminal plumbing without UI lock-in | `TerminalCore`, `useTerminalInstance`, `TerminalSessionsCoordinator`, config helpers, and a headless `ghostty-web` wrapper |
-| [`app/`](./app) | Teams that want a working reference before integrating | HTTP APIs, WebSocket streaming, and a React demo UI that wires the stack together |
+| [`terminal-go`](./terminal-go) | Go backends that need PTY sessions | Session lifecycle, history buffering/filtering, explicit workdir signal parsing, resize coordination, and event callbacks |
+| [`terminal-web`](./terminal-web) | Web clients that want terminal plumbing without UI lock-in | `TerminalCore`, `createTerminalInstance`, `TerminalSessionsCoordinator`, config helpers, and a headless `ghostty-web` wrapper |
+| [`app/`](./app) | Teams that want a working reference before integrating | HTTP APIs, WebSocket streaming, and a Solid.js demo UI that wires the stack together |
 
 Install the building blocks you need:
 
@@ -135,21 +135,19 @@ func main() {
 }
 ```
 
-### 3. Mount the terminal in React
+### 3. Mount the terminal in the browser
 
-```tsx
-import { useTerminalInstance } from '@floegence/floeterm-terminal-web';
+```ts
+import { createTerminalInstance } from '@floegence/floeterm-terminal-web';
 
-export function TerminalPane() {
-  const { containerRef } = useTerminalInstance({
-    sessionId: 'session-1',
-    isActive: true,
-    transport: myTransport,
-    eventSource: myEventSource
-  });
+const controller = createTerminalInstance({
+  sessionId: 'session-1',
+  isActive: true,
+  transport: myTransport,
+  eventSource: myEventSource,
+});
 
-  return <div ref={containerRef} style={{ height: 400 }} />;
-}
+await controller.mount(container);
 ```
 
 ## 🧭 Integration Notes
@@ -161,7 +159,7 @@ export function TerminalPane() {
 | Working directory tracking | `terminal-go` follows explicit cwd OSC markers (`633;P;Cwd`, `1337;CurrentDir`, `OSC 7`) and buffers incomplete frames across PTY reads instead of guessing from generic terminal title changes. |
 | UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
 | Input model | `TerminalCore` handles one-time `ghostty-web` initialization internally and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
-| Extension hooks | `TerminalCore` exposes link providers, shell bell/title callbacks, and explicit runtime font updates so downstream apps do not need `any`-based terminal mutations. |
+| Extension points | `TerminalCore` exposes link providers, shell bell/title callbacks, buffer line reads, touch-scroll helpers, and explicit runtime font updates so downstream apps do not need `any`-based terminal mutations. |
 | Reference transport | The sample app uses HTTP APIs for control operations and WebSocket streaming for terminal output. |
 
 ## 🛠 Development
@@ -178,9 +176,9 @@ export function TerminalPane() {
 | Path | Purpose |
 | --- | --- |
 | [`terminal-go/`](./terminal-go) | Go PTY session manager |
-| [`terminal-web/`](./terminal-web) | Headless web terminal package for React/web apps |
+| [`terminal-web/`](./terminal-web) | Framework-neutral web terminal package |
 | [`app/backend/`](./app/backend) | HTTP + WebSocket backend reference implementation |
-| [`app/web/`](./app/web) | React reference UI |
+| [`app/web/`](./app/web) | Solid.js reference UI |
 
 ## 📄 Notices
 

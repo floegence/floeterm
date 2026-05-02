@@ -14,6 +14,8 @@ import {
   type TerminalLinkProvider,
   type TerminalResponsiveConfig,
   type TerminalSelectionSnapshot,
+  type TerminalRuntimeLineSnapshot,
+  type TerminalTouchScrollRuntime,
   type TerminalVisualSuspendHandle,
   type TerminalVisualSuspendOptions,
   type TerminalVisualSuspendReason,
@@ -53,6 +55,9 @@ type ghostty_disposable = {
 
 type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
   getScrollbackLength?: () => number;
+  scrollLines?: (amount: number) => void;
+  isAlternateScreen?: () => boolean;
+  input?: (data: string, wasUserInput?: boolean) => void;
   onBell?: (handler: () => void) => ghostty_disposable;
   onTitleChange?: (handler: (title: string) => void) => ghostty_disposable;
   onScroll?: (handler: () => void) => ghostty_disposable;
@@ -1657,6 +1662,92 @@ export class TerminalCore {
       rows: this.terminal.rows,
       cols: this.terminal.cols,
       bufferLength: this.terminal.buffer.active.length
+    };
+  }
+
+  readBufferLine(row: number, options: { trimRight?: boolean } = {}): string {
+    if (!this.terminal) {
+      return '';
+    }
+
+    const normalizedRow = Math.floor(Number(row));
+    if (!Number.isFinite(normalizedRow) || normalizedRow < 0) {
+      return '';
+    }
+
+    try {
+      const line = this.terminal.buffer?.active?.getLine?.(normalizedRow);
+      const text = line?.translateToString?.(options.trimRight ?? false);
+      return typeof text === 'string' ? text : '';
+    } catch {
+      return '';
+    }
+  }
+
+  readBufferLines(
+    startRow: number,
+    endRowInclusive: number,
+    options: { trimRight?: boolean } = {},
+  ): TerminalRuntimeLineSnapshot[] {
+    const start = Math.floor(Number(startRow));
+    const end = Math.floor(Number(endRowInclusive));
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+      return [];
+    }
+
+    const lines: TerminalRuntimeLineSnapshot[] = [];
+    for (let row = Math.max(0, start); row <= end; row += 1) {
+      const text = this.readBufferLine(row, options);
+      if (text.length > 0) {
+        lines.push({ row, text });
+      }
+    }
+    return lines;
+  }
+
+  getTouchScrollRuntime(): TerminalTouchScrollRuntime | null {
+    const terminal = this.terminal;
+    if (!terminal) {
+      return null;
+    }
+
+    return {
+      scrollLines: amount => {
+        const normalizedAmount = Math.trunc(Number(amount));
+        if (!Number.isFinite(normalizedAmount) || normalizedAmount === 0) {
+          return false;
+        }
+        if (typeof terminal.scrollLines !== 'function') {
+          return false;
+        }
+        terminal.scrollLines(normalizedAmount);
+        this.requestDemandRender(false);
+        return true;
+      },
+      getScrollbackLength: () => {
+        if (typeof terminal.getScrollbackLength !== 'function') {
+          return 0;
+        }
+        const length = Number(terminal.getScrollbackLength());
+        return Number.isFinite(length) && length > 0 ? length : 0;
+      },
+      isAlternateScreen: () => {
+        if (typeof terminal.isAlternateScreen !== 'function') {
+          return false;
+        }
+        return Boolean(terminal.isAlternateScreen());
+      },
+      sendAlternateScreenInput: data => {
+        const text = String(data ?? '');
+        if (!text) {
+          return;
+        }
+        if (typeof terminal.input === 'function') {
+          terminal.input(text, true);
+          return;
+        }
+        this.eventHandlers.onData?.(text);
+      },
     };
   }
 

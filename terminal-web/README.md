@@ -1,44 +1,70 @@
 # terminal-web
 
-Headless ghostty-web (xterm.js API-compatible) integration with data flow utilities. Provides `TerminalCore` and
-`useTerminalInstance` without UI components.
+Framework-neutral ghostty-web (xterm.js API-compatible) integration with terminal core, session, and data flow utilities.
 
 ## Install
+
 ```bash
 npm i @floegence/floeterm-terminal-web
 ```
 
-## Usage (React)
-```tsx
-import { useTerminalInstance } from '@floegence/floeterm-terminal-web';
+## Usage
 
-export function TerminalPane() {
-  const { containerRef } = useTerminalInstance({
-    sessionId: 'session-1',
-    isActive: true,
-    transport: myTransport,
-    eventSource: myEventSource
-  });
+Use the managed controller when you want attach, reconnect-friendly replay, ordered writes, resize, and action helpers handled for you:
 
-  return <div ref={containerRef} style={{ height: 400 }} />;
-}
+```ts
+import { createTerminalInstance } from '@floegence/floeterm-terminal-web';
+
+const controller = createTerminalInstance({
+  sessionId: 'session-1',
+  isActive: true,
+  transport: myTransport,
+  eventSource: myEventSource,
+});
+
+const unsubscribe = controller.subscribe((snapshot) => {
+  console.log(snapshot.connection.state, snapshot.loadingMessage);
+});
+
+await controller.mount(container);
+
+// Later:
+controller.actions.copySelection('command');
+unsubscribe();
+controller.dispose();
+```
+
+Use `TerminalCore` directly when the host product owns its own session lifecycle, paging, shell integration, or workbench coordination:
+
+```ts
+import { TerminalCore, getDefaultTerminalConfig } from '@floegence/floeterm-terminal-web';
+
+const core = new TerminalCore(
+  container,
+  getDefaultTerminalConfig('dark', { clipboard: { copyOnSelect: false } }),
+  {
+    onData: data => transport.sendInput(sessionId, data),
+    onResize: size => transport.resize(sessionId, size.cols, size.rows),
+  },
+);
+
+await core.initialize();
 ```
 
 ## Notes
-- You must provide a `TerminalTransport` and `TerminalEventSource`.
-- `ghostty-web` needs a one-time `init()` (handled internally by `TerminalCore`).
-- `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and IME input continue to work on touch devices.
-- Explicit terminal copy is handled through shared selection-copy APIs, so keyboard shortcuts, native app menus, and product context menus can reuse the same selection logic.
-- `TerminalCore` now exposes first-class APIs for runtime appearance updates, shell bell/title events, and custom terminal link providers without reaching into implementation internals.
-- Multiple live `TerminalCore` instances share one render scheduler, so large terminal grids coalesce demand-driven canvas work into browser frames instead of letting every terminal own a separate RAF.
 
-## Responsive resize (multi-pane / multi-view)
-When the same remote terminal session can be displayed in multiple views (e.g. a Deck widget and a dedicated Terminal page),
-enable the responsive options so the focused terminal re-syncs cols/rows to the remote PTY:
+- You must provide a `TerminalTransport` and `TerminalEventSource` for the managed controller.
+- `ghostty-web` needs a one-time `init()`; `TerminalCore` handles that internally.
+- `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and composition input continue to work on touch devices.
+- Explicit terminal copy is handled through shared selection-copy APIs, so keyboard shortcuts, native app menus, and product context menus can reuse the same selection logic.
+- `TerminalCore` exposes runtime appearance updates, shell bell/title events, custom terminal link providers, buffer line reads, and touch-scroll helpers without requiring consumers to reach into private runtime objects.
+- Multiple live `TerminalCore` instances share one render scheduler, so large terminal grids coalesce demand-driven canvas work into browser frames.
+
+## Responsive Resize
+
+When the same remote terminal session can be displayed in multiple views, enable responsive options so the focused terminal re-syncs cols/rows to the remote PTY:
 
 ```ts
-import { TerminalCore } from '@floegence/floeterm-terminal-web';
-
 const core = new TerminalCore(container, {
   responsive: {
     fitOnFocus: true,
@@ -48,21 +74,18 @@ const core = new TerminalCore(container, {
 });
 ```
 
-Passive mirrors of a remote PTY can render with the session owner's current dimensions instead of fitting their own
-container:
+Passive mirrors of a remote PTY can render with the session owner's current dimensions:
 
 ```ts
 const core = new TerminalCore(container, {
   fixedDimensions: { cols: 100, rows: 30 },
 });
 
-// Later, when this surface becomes the active geometry owner:
 core.setFixedDimensions(null);
 core.forceResize();
 ```
 
-Hosts with overlay scrollbars can remove the default ghostty-web scrollbar reserve so the computed grid fills the
-terminal surface:
+Hosts with overlay scrollbars can remove the default ghostty-web scrollbar reserve:
 
 ```ts
 const core = new TerminalCore(container, {
@@ -72,13 +95,11 @@ const core = new TerminalCore(container, {
 });
 ```
 
-## Clipboard behavior
-By default, upstream mouse selection keeps the `ghostty-web` behavior and copies immediately on selection.
-Consumers that want explicit copy commands only can disable that side effect:
+## Clipboard
+
+By default, upstream mouse selection keeps the `ghostty-web` behavior and copies immediately on selection. Consumers that want explicit copy commands only can disable that side effect:
 
 ```ts
-import { TerminalCore } from '@floegence/floeterm-terminal-web';
-
 const core = new TerminalCore(container, {
   clipboard: {
     copyOnSelect: false,
@@ -92,9 +113,10 @@ With `copyOnSelect: false`, `TerminalCore` keeps selection explicit:
 - `core.copySelection()` writes the current terminal selection to the clipboard.
 - `Cmd+C` / `Ctrl+C` only claims the shortcut when the terminal currently has a selection. Otherwise the shortcut falls through unchanged.
 
-If you use the React hook, the same helpers are available on `actions.hasSelection()` and `actions.copySelection()`.
+The managed controller exposes the same helpers through `controller.actions`.
 
-## Link providers and shell events
+## Link Providers And Buffer Reads
+
 `TerminalCore` forwards shell lifecycle events and lets consumers register custom links over rendered terminal rows:
 
 ```ts
@@ -102,26 +124,40 @@ import { TerminalCore, type TerminalLinkProvider } from '@floegence/floeterm-ter
 
 const linkProvider: TerminalLinkProvider = {
   provideLinks(y, callback) {
-    void y;
+    const line = core.readBufferLine(y);
+    void line;
     callback(undefined);
   },
 };
 
 const core = new TerminalCore(container, {}, {
   onBell: () => console.log('bell'),
-  onTitleChange: (title) => console.log('title', title),
+  onTitleChange: title => console.log('title', title),
 });
 
 await core.initialize();
 core.registerLinkProvider(linkProvider);
 ```
 
-This is the intended extension point for product features such as modifier-click file navigation,
-build-log deep links, or shell attention badges driven by bell events.
+This is the intended extension point for product features such as modifier-click file navigation, build-log deep links, or shell attention badges driven by bell events.
 
-## Visual work suspension
-Hosts that animate a surrounding workbench can temporarily suspend expensive terminal visual work while keeping PTY output
-and the terminal buffer live:
+## Touch Scroll Helpers
+
+Hosts with custom mobile input surfaces can ask `TerminalCore` for a safe touch-scroll facade instead of reaching into the underlying runtime:
+
+```ts
+const touch = core.getTouchScrollRuntime();
+
+if (touch?.isAlternateScreen()) {
+  touch.sendAlternateScreenInput('\x1B[A');
+} else {
+  touch?.scrollLines(-3);
+}
+```
+
+## Visual Work Suspension
+
+Hosts that animate a surrounding workbench can temporarily suspend expensive terminal visual work while keeping PTY output and the terminal buffer live:
 
 ```ts
 const suspend = core.beginVisualSuspend({ reason: 'workbench_widget_drag' });
@@ -133,16 +169,11 @@ try {
 }
 ```
 
-While suspended, `write()` continues to update terminal state. Rendering, fit, full repaint, and overlay refresh requests
-are coalesced and reconciled when the final nested suspend handle is disposed.
+While suspended, `write()` continues to update terminal state. Rendering, fit, full repaint, and overlay refresh requests are coalesced and reconciled when the final nested suspend handle is disposed.
 
-## Multi-terminal render scheduling
-`TerminalCore` keeps ghostty-web rendering demand-driven and routes visible terminal repaints through a shared scheduler.
-The scheduler preserves live output for every terminal, dedupes repeated invalidations for the same terminal inside one
-animation frame, and upgrades dirty-row renders to full repaints when a scrollback, viewport, font, theme, or geometry
-change requires it.
+## Multi-Terminal Render Scheduling
 
-Demo or profiling surfaces can inspect the scheduler without reaching into private instances:
+`TerminalCore` keeps ghostty-web rendering demand-driven and routes visible terminal repaints through a shared scheduler. Demo or profiling surfaces can inspect the scheduler without reaching into private instances:
 
 ```ts
 import { getTerminalRenderSchedulerStats } from '@floegence/floeterm-terminal-web';
@@ -151,12 +182,11 @@ const stats = getTerminalRenderSchedulerStats();
 console.log(stats.lastFrameRendered, stats.pending);
 ```
 
-This API is intended for diagnostics and stress demos; product code should continue to interact with `TerminalCore` or
-`useTerminalInstance`.
+Product code should continue to interact with `TerminalCore` or the managed controller.
 
-## Runtime appearance updates
-Consumers that need to react to user preferences can update appearance without rebuilding the
-terminal session:
+## Runtime Appearance Updates
+
+Consumers that need to respond to user preferences can update appearance without rebuilding the terminal session:
 
 ```ts
 import { getThemeColors } from '@floegence/floeterm-terminal-web';

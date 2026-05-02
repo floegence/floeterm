@@ -1,9 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import {
+  createTerminalInstance,
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
-  useTerminalInstance,
+  type TerminalInstanceController,
+  type TerminalInstanceSnapshot,
+  type TerminalManagerActions,
   type TerminalRenderSchedulerStats,
+  TerminalState,
   type TerminalThemeName,
 } from '@floegence/floeterm-terminal-web';
 import { createEventSource, createTransport, getOrCreateConnId, type AppTerminalTransport } from './terminalApi';
@@ -21,6 +25,53 @@ type GridCount = typeof GRID_COUNTS[number];
 type GridSession = {
   id: string;
   name: string;
+};
+
+const noopActions: TerminalManagerActions = {
+  write: () => {},
+  clear: () => {},
+  findNext: () => false,
+  findPrevious: () => false,
+  clearSearch: () => {},
+  serialize: () => '',
+  getSelectionText: () => '',
+  hasSelection: () => false,
+  copySelection: source => Promise.resolve({ copied: false, reason: 'empty_selection', source: source ?? 'command' }),
+  setConnected: () => {},
+  forceResize: () => {},
+  setSearchResultsCallback: () => {},
+  focus: () => {},
+  getTerminalInfo: () => null,
+  sendInput: () => {},
+  setAppearance: () => {},
+  setTheme: () => {},
+  setFontSize: () => {},
+  setPresentationScale: () => {},
+};
+
+const initialTerminalSnapshot: TerminalInstanceSnapshot = {
+  state: {
+    state: TerminalState.IDLE,
+    dimensions: { cols: 80, rows: 24 },
+    get isReady() { return false; },
+    get isConnected() { return false; },
+    get hasError() { return false; },
+    get isInitializing() { return false; },
+    get isIdle() { return true; },
+  },
+  connection: {
+    state: 'idle',
+    error: null,
+    retryCount: 0,
+    connect: () => {},
+    disconnect: () => {},
+    retry: () => {},
+    clearError: () => {},
+    get isConnecting() { return false; },
+    get isConnected() { return false; },
+  },
+  loadingState: 'idle',
+  loadingMessage: '',
 };
 
 const formatBytes = (bytes: number): string => {
@@ -44,7 +95,6 @@ const formatNumber = (value: number, digits = 1): string => {
   if (!Number.isFinite(value)) {
     return '0';
   }
-
   return value.toFixed(digits);
 };
 
@@ -57,10 +107,6 @@ const isDemoMode = (value: string): value is DemoMode => {
 };
 
 const readStoredGridCount = (): GridCount => {
-  if (typeof window === 'undefined') {
-    return 12;
-  }
-
   const stored = Number(window.localStorage.getItem(GRID_SIZE_STORAGE_KEY));
   return GRID_COUNTS.includes(stored as GridCount) ? stored as GridCount : 12;
 };
@@ -79,111 +125,124 @@ const buildLiveGridCommand = (label: string): string => {
   ].join('; ') + '\r';
 };
 
-const useMediaQuery = (query: string): boolean => {
-  const getMatch = () => (typeof window !== 'undefined' ? window.matchMedia(query).matches : false);
-  const [matches, setMatches] = useState(getMatch);
+const createMediaQuery = (query: string) => {
+  const [matches, setMatches] = createSignal(typeof window !== 'undefined' ? window.matchMedia(query).matches : false);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
+  onMount(() => {
     const mql = window.matchMedia(query);
     const onChange = () => setMatches(mql.matches);
-
     onChange();
-    const legacyMql = mql as MediaQueryList & {
-      addListener?: (listener: (this: MediaQueryList, ev: MediaQueryListEvent) => void) => void;
-      removeListener?: (listener: (this: MediaQueryList, ev: MediaQueryListEvent) => void) => void;
-    };
-
-    if (typeof legacyMql.addEventListener === 'function') {
-      legacyMql.addEventListener('change', onChange);
-      return () => legacyMql.removeEventListener('change', onChange);
-    }
-
-    legacyMql.addListener?.(onChange);
-    return () => legacyMql.removeListener?.(onChange);
-  }, [query]);
+    mql.addEventListener('change', onChange);
+    onCleanup(() => mql.removeEventListener('change', onChange));
+  });
 
   return matches;
 };
 
-const useThemeName = (): [TerminalThemeName, React.Dispatch<React.SetStateAction<TerminalThemeName>>] => {
-  const [themeName, setThemeName] = useState<TerminalThemeName>(() => {
-    if (typeof window === 'undefined') {
-      return 'tokyoNight';
-    }
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY) ?? '';
-    return isThemeName(stored) ? stored : 'tokyoNight';
+const createThemeName = () => {
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY) ?? '';
+  const [themeName, setThemeName] = createSignal<TerminalThemeName>(isThemeName(stored) ? stored : 'tokyoNight');
+
+  createEffect(() => {
+    document.documentElement.dataset.theme = themeName();
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeName());
   });
 
-  useEffect(() => {
-    if (typeof document === 'undefined') {
+  return [themeName, setThemeName] as const;
+};
+
+const createSolidTerminal = (options: () => Parameters<typeof createTerminalInstance>[0]) => {
+  const [snapshot, setSnapshot] = createSignal<TerminalInstanceSnapshot>(initialTerminalSnapshot);
+  const [actions, setActions] = createSignal<TerminalManagerActions>(noopActions);
+  let controller: TerminalInstanceController | null = null;
+  let container: HTMLDivElement | null = null;
+  let unsubscribe: (() => void) | null = null;
+
+  const ensureController = () => {
+    if (controller) {
+      return controller;
+    }
+    controller = createTerminalInstance(options());
+    setActions(() => controller!.actions);
+    unsubscribe = controller.subscribe(next => setSnapshot(next));
+    return controller;
+  };
+
+  const mount = (node: HTMLDivElement) => {
+    container = node;
+    const nextController = ensureController();
+    void nextController.mount(node);
+  };
+
+  createEffect(() => {
+    const nextOptions = options();
+    if (!controller) {
       return;
     }
-    document.documentElement.dataset.theme = themeName;
-  }, [themeName]);
+    controller.updateOptions(nextOptions);
+  });
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    window.localStorage.setItem(THEME_STORAGE_KEY, themeName);
-  }, [themeName]);
+  onCleanup(() => {
+    unsubscribe?.();
+    unsubscribe = null;
+    controller?.dispose();
+    controller = null;
+    container = null;
+  });
 
-  return [themeName, setThemeName];
+  return {
+    mount,
+    snapshot,
+    actions,
+    getContainer: () => container,
+  };
 };
 
 const SchedulerStatsPanel = () => {
-  const [stats, setStats] = useState<TerminalRenderSchedulerStats>(() => getTerminalRenderSchedulerStats());
-  const previousRef = useRef(stats);
-  const [rates, setRates] = useState({ scheduled: 0, rendered: 0, frames: 0 });
+  const [stats, setStats] = createSignal<TerminalRenderSchedulerStats>(getTerminalRenderSchedulerStats());
+  let previous = stats();
+  const [rates, setRates] = createSignal({ scheduled: 0, rendered: 0, frames: 0 });
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
+  onMount(() => {
     const intervalId = window.setInterval(() => {
       const current = getTerminalRenderSchedulerStats();
-      const previous = previousRef.current;
       setRates({
         scheduled: current.scheduled - previous.scheduled,
         rendered: current.rendered - previous.rendered,
         frames: current.frameCount - previous.frameCount,
       });
-      previousRef.current = current;
+      previous = current;
       setStats(current);
     }, 1000);
 
-    return () => window.clearInterval(intervalId);
-  }, []);
+    onCleanup(() => window.clearInterval(intervalId));
+  });
 
   return (
-    <div className="schedulerPanel" aria-label="render scheduler stats">
-      <div className="metric">
-        <span className="metricLabel">scheduled/s</span>
-        <span className="metricValue">{rates.scheduled}</span>
+    <div class="schedulerPanel" aria-label="render scheduler stats">
+      <div class="metric">
+        <span class="metricLabel">scheduled/s</span>
+        <span class="metricValue">{rates().scheduled}</span>
       </div>
-      <div className="metric">
-        <span className="metricLabel">rendered/s</span>
-        <span className="metricValue">{rates.rendered}</span>
+      <div class="metric">
+        <span class="metricLabel">rendered/s</span>
+        <span class="metricValue">{rates().rendered}</span>
       </div>
-      <div className="metric">
-        <span className="metricLabel">frames/s</span>
-        <span className="metricValue">{rates.frames}</span>
+      <div class="metric">
+        <span class="metricLabel">frames/s</span>
+        <span class="metricValue">{rates().frames}</span>
       </div>
-      <div className="metric">
-        <span className="metricLabel">last frame</span>
-        <span className="metricValue">{stats.lastFrameRendered} terms</span>
+      <div class="metric">
+        <span class="metricLabel">last frame</span>
+        <span class="metricValue">{stats().lastFrameRendered} terms</span>
       </div>
-      <div className="metric">
-        <span className="metricLabel">duration</span>
-        <span className="metricValue">{formatNumber(stats.lastFrameDurationMs)} ms</span>
+      <div class="metric">
+        <span class="metricLabel">duration</span>
+        <span class="metricValue">{formatNumber(stats().lastFrameDurationMs)} ms</span>
       </div>
-      <div className="metric">
-        <span className="metricLabel">pending</span>
-        <span className="metricValue">{stats.pending}</span>
+      <div class="metric">
+        <span class="metricLabel">pending</span>
+        <span class="metricValue">{stats().pending}</span>
       </div>
     </div>
   );
@@ -193,17 +252,15 @@ const ThemeSelector = (props: {
   themeName: TerminalThemeName;
   disabled?: boolean;
   onThemeChange: (theme: TerminalThemeName) => void;
-}) => {
-  return (
-    <select value={props.themeName} onChange={e => props.onThemeChange(e.target.value as TerminalThemeName)} disabled={props.disabled}>
-      <option value="tokyoNight">tokyo night</option>
-      <option value="dark">dark</option>
-      <option value="monokai">monokai</option>
-      <option value="solarizedDark">solarized dark</option>
-      <option value="light">light</option>
-    </select>
-  );
-};
+}) => (
+  <select value={props.themeName} onChange={e => props.onThemeChange(e.currentTarget.value as TerminalThemeName)} disabled={props.disabled}>
+    <option value="tokyoNight">tokyo night</option>
+    <option value="dark">dark</option>
+    <option value="monokai">monokai</option>
+    <option value="solarizedDark">solarized dark</option>
+    <option value="light">light</option>
+  </select>
+);
 
 const SingleTerminalPane = (props: {
   sessionId: string;
@@ -215,94 +272,56 @@ const SingleTerminalPane = (props: {
   onRestart: () => void;
   onThemeChange: (theme: TerminalThemeName) => void;
 }) => {
-  const isMobile = useMediaQuery('(max-width: 640px), (pointer: coarse)');
-  const fontSize = isMobile ? 14 : 12;
-  const { containerRef, actions, state, loadingMessage } = useTerminalInstance({
+  const isMobile = createMediaQuery('(max-width: 640px), (pointer: coarse)');
+  const fontSize = createMemo(() => (isMobile() ? 14 : 12));
+  const terminal = createSolidTerminal(() => ({
     sessionId: props.sessionId,
     isActive: true,
-    autoFocus: !isMobile,
-    fontSize,
+    autoFocus: !isMobile(),
+    fontSize: fontSize(),
     themeName: props.themeName,
     transport: props.transport,
-    eventSource: props.eventSource
-  });
+    eventSource: props.eventSource,
+  }));
 
-  const [historyBytes, setHistoryBytes] = useState<number | null>(null);
-  const isMountedRef = useRef(true);
-  const clearStatsRefreshTimerRef = useRef<number | null>(null);
+  const [historyBytes, setHistoryBytes] = createSignal<number | null>(null);
+  let mounted = true;
+  let clearStatsRefreshTimer: number | null = null;
 
-  useEffect(() => {
-    isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-      if (typeof window !== 'undefined' && clearStatsRefreshTimerRef.current !== null) {
-        window.clearTimeout(clearStatsRefreshTimerRef.current);
-        clearStatsRefreshTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  const refreshHistoryBytes = useCallback(async () => {
+  const refreshHistoryBytes = async () => {
     try {
       const stats = await props.transport.getSessionStats(props.sessionId);
-      if (!isMountedRef.current) {
+      if (!mounted) {
         return;
       }
       setHistoryBytes(stats.history.totalBytes);
     } catch {
-      // Best-effort: stats are purely informational and should not impact terminal usability.
     }
-  }, [props.transport, props.sessionId]);
+  };
 
-  const actionsRef = useRef(actions);
-  useEffect(() => {
-    actionsRef.current = actions;
-  }, [actions]);
+  createEffect(() => {
+    void fontSize();
+    terminal.actions().forceResize();
+  });
 
-  useEffect(() => {
-    actionsRef.current.forceResize();
-  }, [fontSize]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-
+  onMount(() => {
     const scheduleResize = () => {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          actionsRef.current.forceResize();
+          terminal.actions().forceResize();
         });
       });
     };
 
     scheduleResize();
-    const postLayoutTimer = setTimeout(scheduleResize, 200);
-
-    const onResize = () => scheduleResize();
-    window.addEventListener('resize', onResize);
-    window.addEventListener('orientationchange', onResize);
-
+    const postLayoutTimer = window.setTimeout(scheduleResize, 200);
+    window.addEventListener('resize', scheduleResize);
+    window.addEventListener('orientationchange', scheduleResize);
     const vv = window.visualViewport;
-    vv?.addEventListener('resize', onResize);
-    vv?.addEventListener('scroll', onResize);
-
-    return () => {
-      clearTimeout(postLayoutTimer);
-      window.removeEventListener('resize', onResize);
-      window.removeEventListener('orientationchange', onResize);
-      vv?.removeEventListener('resize', onResize);
-      vv?.removeEventListener('scroll', onResize);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') {
-      return;
-    }
+    vv?.addEventListener('resize', scheduleResize);
+    vv?.addEventListener('scroll', scheduleResize);
 
     let intervalId: number | null = null;
-
     const stop = () => {
       if (intervalId === null) {
         return;
@@ -310,73 +329,81 @@ const SingleTerminalPane = (props: {
       window.clearInterval(intervalId);
       intervalId = null;
     };
-
     const start = () => {
-      if (HISTORY_STATS_POLL_MS <= 0) {
+      if (HISTORY_STATS_POLL_MS <= 0 || intervalId !== null) {
         return;
       }
-      if (intervalId !== null) {
-        return;
-      }
-      intervalId = window.setInterval(() => {
-        refreshHistoryBytes();
-      }, HISTORY_STATS_POLL_MS);
+      intervalId = window.setInterval(refreshHistoryBytes, HISTORY_STATS_POLL_MS);
     };
-
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        refreshHistoryBytes();
+        void refreshHistoryBytes();
         start();
         return;
       }
       stop();
     };
-
     onVisibilityChange();
     document.addEventListener('visibilitychange', onVisibilityChange);
 
-    return () => {
+    onCleanup(() => {
+      mounted = false;
+      window.clearTimeout(postLayoutTimer);
+      window.removeEventListener('resize', scheduleResize);
+      window.removeEventListener('orientationchange', scheduleResize);
+      vv?.removeEventListener('resize', scheduleResize);
+      vv?.removeEventListener('scroll', scheduleResize);
       stop();
       document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
-  }, [refreshHistoryBytes]);
+      if (clearStatsRefreshTimer !== null) {
+        window.clearTimeout(clearStatsRefreshTimer);
+        clearStatsRefreshTimer = null;
+      }
+    });
+  });
+
+  const clearTerminal = () => {
+    terminal.actions().clear();
+    if (clearStatsRefreshTimer !== null) {
+      window.clearTimeout(clearStatsRefreshTimer);
+    }
+    clearStatsRefreshTimer = window.setTimeout(() => {
+      clearStatsRefreshTimer = null;
+      void refreshHistoryBytes();
+    }, 150);
+  };
+
+  const status = createMemo(() => {
+    const snapshot = terminal.snapshot();
+    const parts: string[] = [snapshot.state.state];
+    if (snapshot.loadingMessage) {
+      parts.push(snapshot.loadingMessage);
+    }
+    const bytes = historyBytes();
+    if (bytes !== null) {
+      parts.push(`history ${formatBytes(bytes)}`);
+    }
+    return parts.join(' :: ');
+  });
 
   return (
     <>
-      <div className="toolbar">
-        <div className="toolbarPrimary">
-          <span className="appTitle">floeterm</span>
-          <span className="status">
-            {state.state}
-            {loadingMessage ? ` :: ${loadingMessage}` : ''}
-            {historyBytes !== null ? ` :: history ${formatBytes(historyBytes)}` : ''}
-          </span>
+      <div class="toolbar">
+        <div class="toolbarPrimary">
+          <span class="appTitle">floeterm</span>
+          <span class="status">{status()}</span>
         </div>
-        <div className="toolbarActions">
+        <div class="toolbarActions">
           <ThemeSelector themeName={props.themeName} onThemeChange={props.onThemeChange} disabled={props.isBusy} />
-          <button onClick={props.onRestart} disabled={props.isBusy}>
-            restart
-          </button>
-          <button
-            onClick={() => {
-              actions.clear();
-              if (clearStatsRefreshTimerRef.current !== null) {
-                window.clearTimeout(clearStatsRefreshTimerRef.current);
-              }
-              clearStatsRefreshTimerRef.current = window.setTimeout(() => {
-                clearStatsRefreshTimerRef.current = null;
-                refreshHistoryBytes();
-              }, 150);
-            }}
-            disabled={props.isBusy}
-          >
-            clear
-          </button>
+          <button onClick={props.onRestart} disabled={props.isBusy}>restart</button>
+          <button onClick={clearTerminal} disabled={props.isBusy}>clear</button>
         </div>
       </div>
-      {props.error ? <div className="error">{props.error}</div> : null}
-      <div className="terminalContainer">
-        <div className="terminalPane" ref={containerRef} />
+      <Show when={props.error}>
+        <div class="error">{props.error}</div>
+      </Show>
+      <div class="terminalContainer">
+        <div class="terminalPane" ref={terminal.mount} />
       </div>
     </>
   );
@@ -389,7 +416,7 @@ const GridTerminalTile = (props: {
   themeName: TerminalThemeName;
   onFocus: (sessionId: string) => void;
 }) => {
-  const { containerRef, actions, state, loadingMessage } = useTerminalInstance({
+  const terminal = createSolidTerminal(() => ({
     sessionId: props.session.id,
     isActive: true,
     autoFocus: false,
@@ -405,46 +432,37 @@ const GridTerminalTile = (props: {
         notifyResizeOnlyWhenFocused: true,
       },
     },
-  });
+  }));
 
-  const didStartStreamRef = useRef(false);
-  const actionsRef = useRef(actions);
+  let didStartStream = false;
 
-  useEffect(() => {
-    actionsRef.current = actions;
-  }, [actions]);
-
-  useEffect(() => {
-    if (didStartStreamRef.current || !state.isConnected) {
+  createEffect(() => {
+    if (didStartStream || !terminal.snapshot().state.isConnected) {
       return;
     }
-    didStartStreamRef.current = true;
+    didStartStream = true;
     props.transport.sendInput(props.session.id, buildLiveGridCommand(props.session.name)).catch(() => {
-      didStartStreamRef.current = false;
+      didStartStream = false;
     });
-  }, [props.session.id, props.session.name, props.transport, state.isConnected]);
+  });
 
-  useEffect(() => {
-    const scheduleResize = () => {
-      requestAnimationFrame(() => {
-        actionsRef.current.forceResize();
-      });
-    };
-
-    scheduleResize();
-  }, []);
+  onMount(() => {
+    requestAnimationFrame(() => {
+      terminal.actions().forceResize();
+    });
+  });
 
   return (
     <section
-      className="gridTerminalTile"
-      onFocusCapture={() => props.onFocus(props.session.id)}
+      class="gridTerminalTile"
+      onFocusIn={() => props.onFocus(props.session.id)}
       onPointerDown={() => props.onFocus(props.session.id)}
     >
-      <div className="tileHeader">
-        <span className="tileName">{props.session.name}</span>
-        <span className="tileState">{loadingMessage || state.state}</span>
+      <div class="tileHeader">
+        <span class="tileName">{props.session.name}</span>
+        <span class="tileState">{terminal.snapshot().loadingMessage || terminal.snapshot().state.state}</span>
       </div>
-      <div className="tileTerminal" ref={containerRef} />
+      <div class="tileTerminal" ref={terminal.mount} />
     </section>
   );
 };
@@ -462,107 +480,97 @@ const GridTerminalDemo = (props: {
   onRebuild: () => void;
   onThemeChange: (theme: TerminalThemeName) => void;
   onFocusSession: (sessionId: string) => void;
-}) => {
-  return (
-    <>
-      <div className="toolbar gridToolbar">
-        <div className="toolbarPrimary">
-          <span className="appTitle">floeterm fabric</span>
-          <span className="status">
-            {props.isBusy ? 'building live grid...' : `${props.sessions.length} live terminals`}
-            {props.activeSessionId ? ` :: active ${props.activeSessionId.slice(0, 8)}` : ''}
-          </span>
-        </div>
-        <div className="toolbarActions">
-          <div className="segmentedControl" aria-label="terminal count">
-            {GRID_COUNTS.map(count => (
+}) => (
+  <>
+    <div class="toolbar gridToolbar">
+      <div class="toolbarPrimary">
+        <span class="appTitle">floeterm fabric</span>
+        <span class="status">
+          {props.isBusy ? 'building live grid...' : `${props.sessions.length} live terminals`}
+          {props.activeSessionId ? ` :: active ${props.activeSessionId.slice(0, 8)}` : ''}
+        </span>
+      </div>
+      <div class="toolbarActions">
+        <div class="segmentedControl" aria-label="terminal count">
+          <For each={GRID_COUNTS}>
+            {count => (
               <button
-                key={count}
-                className={count === props.gridCount ? 'isActive' : ''}
+                class={count === props.gridCount ? 'isActive' : ''}
                 onClick={() => props.onGridCountChange(count)}
                 disabled={props.isBusy}
               >
                 {count}
               </button>
-            ))}
-          </div>
-          <ThemeSelector themeName={props.themeName} onThemeChange={props.onThemeChange} disabled={props.isBusy} />
-          <button onClick={props.onRebuild} disabled={props.isBusy}>
-            rebuild
-          </button>
+            )}
+          </For>
         </div>
+        <ThemeSelector themeName={props.themeName} onThemeChange={props.onThemeChange} disabled={props.isBusy} />
+        <button onClick={props.onRebuild} disabled={props.isBusy}>rebuild</button>
       </div>
-      {props.error ? <div className="error">{props.error}</div> : null}
-      <div className="fabricShell">
-        <SchedulerStatsPanel />
-        <div className="gridTerminalContainer" data-count={props.gridCount}>
-          {props.sessions.length === 0 ? (
-            <div className="gridEmpty">{props.isBusy ? 'building live terminal grid' : 'no sessions'}</div>
-          ) : (
-            props.sessions.map((session, index) => (
+    </div>
+    <Show when={props.error}>
+      <div class="error">{props.error}</div>
+    </Show>
+    <div class="fabricShell">
+      <SchedulerStatsPanel />
+      <div class="gridTerminalContainer" data-count={props.gridCount}>
+        <Show
+          when={props.sessions.length > 0}
+          fallback={<div class="gridEmpty">{props.isBusy ? 'building live terminal grid' : 'no sessions'}</div>}
+        >
+          <For each={props.sessions}>
+            {session => (
               <GridTerminalTile
-                key={session.id}
                 session={session}
                 transport={props.transport}
                 eventSource={props.eventSource}
                 themeName={props.themeName}
                 onFocus={props.onFocusSession}
               />
-            ))
-          )}
-        </div>
+            )}
+          </For>
+        </Show>
       </div>
-    </>
-  );
-};
+    </div>
+  </>
+);
 
 export const App = () => {
-  const connId = useMemo(() => getOrCreateConnId(), []);
-  const transport = useMemo(() => createTransport(connId), [connId]);
-  const eventSource = useMemo(() => createEventSource(connId), [connId]);
-  const [themeName, setThemeName] = useThemeName();
+  const connId = getOrCreateConnId();
+  const transport = createTransport(connId);
+  const eventSource = createEventSource(connId);
+  const [themeName, setThemeName] = createThemeName();
 
-  const [mode, setMode] = useState<DemoMode>(() => {
-    if (typeof window === 'undefined') {
-      return 'single';
-    }
-    const stored = window.localStorage.getItem(MODE_STORAGE_KEY) ?? '';
-    return isDemoMode(stored) ? stored : 'single';
+  const storedMode = window.localStorage.getItem(MODE_STORAGE_KEY) ?? '';
+  const [mode, setMode] = createSignal<DemoMode>(isDemoMode(storedMode) ? storedMode : 'single');
+  const [gridCount, setGridCount] = createSignal<GridCount>(readStoredGridCount());
+  const [sessionId, setSessionId] = createSignal('');
+  const [gridSessions, setGridSessions] = createSignal<GridSession[]>([]);
+  const [activeGridSessionId, setActiveGridSessionId] = createSignal('');
+  const [isBusy, setIsBusy] = createSignal(false);
+  const [error, setError] = createSignal('');
+  let ensureSingleInFlight: Promise<void> | null = null;
+
+  createEffect(() => {
+    window.localStorage.setItem(MODE_STORAGE_KEY, mode());
   });
-  const [gridCount, setGridCount] = useState<GridCount>(() => readStoredGridCount());
-  const [sessionId, setSessionId] = useState<string>('');
-  const [gridSessions, setGridSessions] = useState<GridSession[]>([]);
-  const [activeGridSessionId, setActiveGridSessionId] = useState('');
-  const [isBusy, setIsBusy] = useState(false);
-  const [error, setError] = useState<string>('');
-  const ensureSingleInFlightRef = useRef<Promise<void> | null>(null);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    window.localStorage.setItem(MODE_STORAGE_KEY, mode);
-  }, [mode]);
+  createEffect(() => {
+    window.localStorage.setItem(GRID_SIZE_STORAGE_KEY, String(gridCount()));
+  });
 
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
-    window.localStorage.setItem(GRID_SIZE_STORAGE_KEY, String(gridCount));
-  }, [gridCount]);
-
-  const cleanupSessions = useCallback(async (keepIds: Set<string>) => {
+  const cleanupSessions = async (keepIds: Set<string>) => {
     const list = await transport.listSessions();
     await Promise.all(
       list
         .filter(item => !keepIds.has(item.id))
         .map(item => transport.deleteSession(item.id).catch(() => {}))
     );
-  }, [transport]);
+  };
 
-  const ensureSingleSession = useCallback(async () => {
-    if (ensureSingleInFlightRef.current) {
-      await ensureSingleInFlightRef.current;
+  const ensureSingleSession = async () => {
+    if (ensureSingleInFlight) {
+      await ensureSingleInFlight;
       return;
     }
 
@@ -573,14 +581,15 @@ export const App = () => {
       try {
         const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY) ?? '';
         const list = await transport.listSessions();
+        const current = sessionId();
 
         let chosen = '';
-        if (sessionId && list.some(item => item.id === sessionId)) {
-          chosen = sessionId;
+        if (current && list.some(item => item.id === current)) {
+          chosen = current;
         } else if (stored && list.some(item => item.id === stored)) {
           chosen = stored;
-        } else if (list.length > 0 && !list[0].name.startsWith('grid-')) {
-          chosen = list[0].id;
+        } else if (list.length > 0 && !list[0]!.name.startsWith('grid-')) {
+          chosen = list[0]!.id;
         } else {
           const created = await transport.createSession('', '');
           chosen = created.id;
@@ -588,6 +597,8 @@ export const App = () => {
 
         await cleanupSessions(new Set([chosen]));
         window.sessionStorage.setItem(SESSION_STORAGE_KEY, chosen);
+        setGridSessions([]);
+        setActiveGridSessionId('');
         setSessionId(chosen);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -596,36 +607,39 @@ export const App = () => {
       }
     })();
 
-    ensureSingleInFlightRef.current = run;
+    ensureSingleInFlight = run;
     try {
       await run;
     } finally {
-      if (ensureSingleInFlightRef.current === run) {
-        ensureSingleInFlightRef.current = null;
+      if (ensureSingleInFlight === run) {
+        ensureSingleInFlight = null;
       }
     }
-  }, [cleanupSessions, sessionId, transport]);
+  };
 
-  const restartSession = useCallback(async () => {
+  const restartSession = async () => {
     setIsBusy(true);
     setError('');
 
     try {
-      const current = sessionId;
+      const current = sessionId();
       if (current) {
         await transport.deleteSession(current).catch(() => {});
       }
       const created = await transport.createSession('', '');
       window.sessionStorage.setItem(SESSION_STORAGE_KEY, created.id);
       setSessionId(created.id);
+      await cleanupSessions(new Set([created.id]));
+      setGridSessions([]);
+      setActiveGridSessionId('');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setIsBusy(false);
     }
-  }, [transport, sessionId]);
+  };
 
-  const rebuildGrid = useCallback(async (count = gridCount) => {
+  const rebuildGrid = async (count = gridCount()) => {
     setIsBusy(true);
     setError('');
     resetTerminalRenderSchedulerStats();
@@ -646,91 +660,102 @@ export const App = () => {
     } finally {
       setIsBusy(false);
     }
-  }, [cleanupSessions, gridCount, transport]);
+  };
 
-  const switchMode = useCallback((nextMode: DemoMode) => {
+  const switchMode = (nextMode: DemoMode) => {
     setMode(nextMode);
     setError('');
-  }, []);
-
-  const changeGridCount = useCallback((nextCount: GridCount) => {
-    setGridCount(nextCount);
-    rebuildGrid(nextCount);
-  }, [rebuildGrid]);
-
-  useEffect(() => {
-    if (mode === 'single') {
-      ensureSingleSession().catch(e => setError(e instanceof Error ? e.message : String(e)));
+    if (nextMode === 'single') {
+      setGridSessions([]);
+      setActiveGridSessionId('');
     }
-  }, [ensureSingleSession, mode]);
+  };
 
-  useEffect(() => {
-    if (mode !== 'grid' || gridSessions.length > 0 || isBusy) {
+  const changeGridCount = (nextCount: GridCount) => {
+    setGridCount(nextCount);
+    void rebuildGrid(nextCount);
+  };
+
+  createEffect(() => {
+    if (mode() === 'single') {
+      void ensureSingleSession();
+    }
+  });
+
+  createEffect(() => {
+    if (mode() !== 'grid' || gridSessions().length > 0 || isBusy()) {
       return;
     }
-    rebuildGrid().catch(e => setError(e instanceof Error ? e.message : String(e)));
-  }, [gridSessions.length, isBusy, mode, rebuildGrid]);
+    void rebuildGrid();
+  });
 
   return (
-    <div className="app">
-      <div className="modeBar">
-        <div className="modeBarBrand">
+    <div class="app">
+      <div class="modeBar">
+        <div class="modeBarBrand">
           <span>floeterm</span>
           <strong>live terminal fabric</strong>
         </div>
-        <div className="modeSwitch" aria-label="demo mode">
-          <button className={mode === 'single' ? 'isActive' : ''} onClick={() => switchMode('single')}>
-            single
-          </button>
-          <button className={mode === 'grid' ? 'isActive' : ''} onClick={() => switchMode('grid')}>
-            grid
-          </button>
+        <div class="modeSwitch" aria-label="demo mode">
+          <button class={mode() === 'single' ? 'isActive' : ''} onClick={() => switchMode('single')}>single</button>
+          <button class={mode() === 'grid' ? 'isActive' : ''} onClick={() => switchMode('grid')}>grid</button>
         </div>
       </div>
-      <main className="main">
-        {mode === 'grid' ? (
+      <main class="main">
+        <Show
+          when={mode() === 'grid'}
+          fallback={(
+            <Show
+              when={sessionId()}
+              fallback={(
+                <>
+                  <div class="toolbar">
+                    <div class="toolbarPrimary">
+                      <span class="appTitle">floeterm</span>
+                      <span class="status">{isBusy() ? 'initializing...' : 'idle'}</span>
+                    </div>
+                  </div>
+                  <Show when={error()}>
+                    <div class="error">{error()}</div>
+                  </Show>
+                  <div class="terminalContainer">
+                    <div class="terminalPane">
+                      <div class="loading">{isBusy() ? 'connecting' : 'waiting'}</div>
+                    </div>
+                  </div>
+                </>
+              )}
+            >
+              {id => (
+                <SingleTerminalPane
+                  sessionId={id()}
+                  transport={transport}
+                  eventSource={eventSource}
+                  themeName={themeName()}
+                  isBusy={isBusy()}
+                  error={error()}
+                  onRestart={() => void restartSession()}
+                  onThemeChange={setThemeName}
+                />
+              )}
+            </Show>
+          )}
+        >
           <GridTerminalDemo
             transport={transport}
             eventSource={eventSource}
-            themeName={themeName}
-            gridCount={gridCount}
-            isBusy={isBusy}
-            error={error}
-            sessions={gridSessions}
-            activeSessionId={activeGridSessionId}
+            themeName={themeName()}
+            gridCount={gridCount()}
+            isBusy={isBusy()}
+            error={error()}
+            sessions={gridSessions()}
+            activeSessionId={activeGridSessionId()}
             onGridCountChange={changeGridCount}
-            onRebuild={() => rebuildGrid()}
+            onRebuild={() => void rebuildGrid()}
             onThemeChange={setThemeName}
             onFocusSession={setActiveGridSessionId}
           />
-        ) : sessionId ? (
-          <SingleTerminalPane
-            key={sessionId}
-            sessionId={sessionId}
-            transport={transport}
-            eventSource={eventSource}
-            themeName={themeName}
-            isBusy={isBusy}
-            error={error}
-            onRestart={restartSession}
-            onThemeChange={setThemeName}
-          />
-        ) : (
-          <>
-            <div className="toolbar">
-              <div className="toolbarPrimary">
-                <span className="appTitle">floeterm</span>
-                <span className="status">{isBusy ? 'initializing...' : 'idle'}</span>
-              </div>
-            </div>
-            {error ? <div className="error">{error}</div> : null}
-            <div className="terminalContainer">
-              <div className="terminalPane">
-                <div className="loading">{isBusy ? 'connecting' : 'waiting'}</div>
-              </div>
-            </div>
-          </>
-        )}
+        </Show>
       </main>
     </div>
   );
