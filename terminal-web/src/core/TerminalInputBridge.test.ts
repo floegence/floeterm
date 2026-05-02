@@ -41,14 +41,6 @@ describe('TerminalInputBridge', () => {
     return { bridge, container, textarea, onData, copySelection };
   };
 
-  const appendTerminalContenteditableInputHost = (container: HTMLElement) => {
-    const terminalInputHost = document.createElement('div');
-    terminalInputHost.setAttribute('contenteditable', 'true');
-    terminalInputHost.setAttribute('aria-label', 'Terminal input');
-    container.appendChild(terminalInputHost);
-    return terminalInputHost;
-  };
-
   it('sends plain text from beforeinput without waiting for keydown', () => {
     const { textarea, onData } = setup();
 
@@ -134,86 +126,6 @@ describe('TerminalInputBridge', () => {
     expect(onData).toHaveBeenCalledTimes(1);
     expect(onData).toHaveBeenLastCalledWith('你');
     expect(textarea.value).toBe('');
-  });
-
-  it('sends plain text from the inner ghostty contenteditable host beforeinput', () => {
-    const { container, onData } = setup();
-    const terminalInputHost = appendTerminalContenteditableInputHost(container);
-
-    const event = createInputEvent('beforeinput', {
-      data: 'a',
-      inputType: 'insertText',
-    });
-    terminalInputHost.dispatchEvent(event);
-
-    expect(onData).toHaveBeenCalledTimes(1);
-    expect(onData).toHaveBeenLastCalledWith('a');
-    expect(event.defaultPrevented).toBe(true);
-  });
-
-  it('falls back to contenteditable text when beforeinput is unavailable', () => {
-    const { container, onData } = setup();
-    const terminalInputHost = appendTerminalContenteditableInputHost(container);
-
-    terminalInputHost.textContent = 'hello';
-    terminalInputHost.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-
-    expect(onData).toHaveBeenCalledTimes(1);
-    expect(onData).toHaveBeenLastCalledWith('hello');
-    expect(terminalInputHost.textContent).toBe('');
-  });
-
-  it('bridges Enter from the inner ghostty contenteditable host without beforeinput duplication', () => {
-    const { container, onData } = setup();
-    const terminalInputHost = appendTerminalContenteditableInputHost(container);
-
-    const keydown = new KeyboardEvent('keydown', {
-      key: 'Enter',
-      code: 'Enter',
-      bubbles: true,
-      cancelable: true,
-    });
-    terminalInputHost.dispatchEvent(keydown);
-    terminalInputHost.dispatchEvent(createInputEvent('beforeinput', {
-      data: null,
-      inputType: 'insertLineBreak',
-    }));
-    terminalInputHost.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-
-    expect(onData).toHaveBeenCalledTimes(1);
-    expect(onData).toHaveBeenLastCalledWith('\r');
-    expect(keydown.defaultPrevented).toBe(true);
-  });
-
-  it('bridges control keys from the inner ghostty contenteditable host', () => {
-    const { container, onData } = setup();
-    const terminalInputHost = appendTerminalContenteditableInputHost(container);
-
-    const event = new KeyboardEvent('keydown', {
-      key: 'c',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    terminalInputHost.dispatchEvent(event);
-
-    expect(onData).toHaveBeenCalledTimes(1);
-    expect(onData).toHaveBeenLastCalledWith('\x03');
-    expect(event.defaultPrevented).toBe(true);
-  });
-
-  it('does not bridge input from non-terminal contenteditable targets inside the container', () => {
-    const { container, onData } = setup();
-    const editor = document.createElement('div');
-    editor.setAttribute('contenteditable', 'true');
-    container.appendChild(editor);
-
-    editor.dispatchEvent(createInputEvent('beforeinput', {
-      data: 'x',
-      inputType: 'insertText',
-    }));
-
-    expect(onData).not.toHaveBeenCalled();
   });
 
   it('focuses the hidden textarea when requested', () => {
@@ -327,8 +239,11 @@ describe('TerminalInputBridge', () => {
   });
 
   it('treats the inner ghostty contenteditable input host as terminal-owned for Cmd/Ctrl+C copy', async () => {
-    const { container, onData, copySelection } = setup('terminal selection');
-    const terminalInputHost = appendTerminalContenteditableInputHost(container);
+    const { container, copySelection } = setup('terminal selection');
+    const terminalInputHost = document.createElement('div');
+    terminalInputHost.setAttribute('contenteditable', 'true');
+    terminalInputHost.setAttribute('aria-label', 'Terminal input');
+    container.appendChild(terminalInputHost);
     activateTerminal(terminalInputHost);
 
     const event = new KeyboardEvent('keydown', {
@@ -343,7 +258,6 @@ describe('TerminalInputBridge', () => {
 
     expect(copySelection).toHaveBeenCalledTimes(1);
     expect(copySelection).toHaveBeenCalledWith('shortcut', null);
-    expect(onData).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(true);
   });
 
@@ -389,7 +303,10 @@ describe('TerminalInputBridge', () => {
   it('routes copy events from the inner ghostty contenteditable input host through the shared copy path', async () => {
     const selection = 'terminal selection';
     const { container, copySelection } = setup(selection);
-    const terminalInputHost = appendTerminalContenteditableInputHost(container);
+    const terminalInputHost = document.createElement('div');
+    terminalInputHost.setAttribute('contenteditable', 'true');
+    terminalInputHost.setAttribute('aria-label', 'Terminal input');
+    container.appendChild(terminalInputHost);
     activateTerminal(terminalInputHost);
     const setData = vi.fn();
     const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
