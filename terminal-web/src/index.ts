@@ -1,7 +1,12 @@
 export { TerminalCore } from './core/TerminalCore';
+export {
+  getTerminalRenderSchedulerStats,
+  resetTerminalRenderSchedulerStats,
+} from './core/TerminalRenderScheduler';
 export { useTerminalInstance } from './hooks/useTerminalInstance';
 export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator';
+export type { TerminalRenderSchedulerStats } from './core/TerminalRenderScheduler';
 
 export type {
   Logger,

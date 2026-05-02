@@ -19,6 +19,7 @@ import {
   type TerminalVisualSuspendReason,
 } from '../types';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
+import { terminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler';
 
 type terminal_search_match = {
   row: number;
@@ -462,8 +463,8 @@ export class TerminalCore {
   private terminal: ghostty_runtime_terminal | null = null;
   private fitAddon: import('ghostty-web').FitAddon | null = null;
   private needsFullRenderOnNextWrite = false;
-  private demandRenderRaf: number | null = null;
   private demandRenderForceAll = false;
+  private readonly renderTask: TerminalRenderTask;
   private viewportHost: HTMLDivElement | null = null;
   private renderHost: HTMLDivElement | null = null;
 
@@ -527,6 +528,7 @@ export class TerminalCore {
     pendingResizeReason: null,
     pendingSearchOverlayRender: false,
   };
+  private static nextRenderTaskId = 1;
 
   constructor(
     private container: HTMLElement,
@@ -542,6 +544,14 @@ export class TerminalCore {
     this.logicalFontSize = TerminalCore.normalizeFontSize(config?.fontSize);
     this.presentationScale = TerminalCore.normalizePresentationScale(config?.presentationScale);
     this.fixedDimensions = normalizeTerminalDimensions(config?.fixedDimensions);
+    this.renderTask = {
+      id: TerminalCore.nextRenderTaskId,
+      run: forceAll => {
+        this.demandRenderForceAll = false;
+        this.renderDemandFrame(forceAll);
+      },
+    };
+    TerminalCore.nextRenderTaskId += 1;
   }
 
   // initialize creates the ghostty-web terminal instance and binds addons.
@@ -2658,23 +2668,11 @@ export class TerminalCore {
     }
 
     this.demandRenderForceAll = this.demandRenderForceAll || forceAll;
-    if (this.demandRenderRaf !== null) {
-      return;
-    }
-
-    this.demandRenderRaf = requestAnimationFrame(() => {
-      this.demandRenderRaf = null;
-      const shouldForce = this.demandRenderForceAll;
-      this.demandRenderForceAll = false;
-      this.renderDemandFrame(shouldForce);
-    });
+    terminalRenderScheduler.schedule(this.renderTask, this.demandRenderForceAll);
   }
 
   private cancelDemandRender(): void {
-    if (this.demandRenderRaf !== null) {
-      cancelAnimationFrame(this.demandRenderRaf);
-      this.demandRenderRaf = null;
-    }
+    terminalRenderScheduler.cancel(this.renderTask);
     this.demandRenderForceAll = false;
     this.stopGhosttyRenderLoop();
   }

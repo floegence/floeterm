@@ -30,6 +30,7 @@ export function TerminalPane() {
 - `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and IME input continue to work on touch devices.
 - Explicit terminal copy is handled through shared selection-copy APIs, so keyboard shortcuts, native app menus, and product context menus can reuse the same selection logic.
 - `TerminalCore` now exposes first-class APIs for runtime appearance updates, shell bell/title events, and custom terminal link providers without reaching into implementation internals.
+- Multiple live `TerminalCore` instances share one render scheduler, so large terminal grids coalesce demand-driven canvas work into browser frames instead of letting every terminal own a separate RAF.
 
 ## Responsive resize (multi-pane / multi-view)
 When the same remote terminal session can be displayed in multiple views (e.g. a Deck widget and a dedicated Terminal page),
@@ -134,6 +135,24 @@ try {
 
 While suspended, `write()` continues to update terminal state. Rendering, fit, full repaint, and overlay refresh requests
 are coalesced and reconciled when the final nested suspend handle is disposed.
+
+## Multi-terminal render scheduling
+`TerminalCore` keeps ghostty-web rendering demand-driven and routes visible terminal repaints through a shared scheduler.
+The scheduler preserves live output for every terminal, dedupes repeated invalidations for the same terminal inside one
+animation frame, and upgrades dirty-row renders to full repaints when a scrollback, viewport, font, theme, or geometry
+change requires it.
+
+Demo or profiling surfaces can inspect the scheduler without reaching into private instances:
+
+```ts
+import { getTerminalRenderSchedulerStats } from '@floegence/floeterm-terminal-web';
+
+const stats = getTerminalRenderSchedulerStats();
+console.log(stats.lastFrameRendered, stats.pending);
+```
+
+This API is intended for diagnostics and stress demos; product code should continue to interact with `TerminalCore` or
+`useTerminalInstance`.
 
 ## Runtime appearance updates
 Consumers that need to react to user preferences can update appearance without rebuilding the

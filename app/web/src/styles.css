@@ -1,27 +1,20 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   FLOETERM - Terminal-Style Interface
-   A pure terminal aesthetic: black, green, monospace, minimal
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 :root {
-  /* Terminal color palette */
-  --term-bg: #1a1b26;
-  --term-bg-secondary: #16161e;
-  --term-border: #2a2f41;
-  --term-green: #7aa2f7;
-  --term-green-dim: #3d59a1;
-  --term-green-glow: rgba(122, 162, 247, 0.18);
-  --term-amber: #e0af68;
-  --term-amber-dim: #b58b55;
-  --term-text: #c0caf5;
-  --term-text-dim: #565f89;
-  --term-red: #f7768e;
-  --term-red-bg: rgba(247, 118, 142, 0.12);
-
-  /* Typography */
+  --surface-0: #0f1117;
+  --surface-1: #151923;
+  --surface-2: #1d2430;
+  --surface-3: #273142;
+  --line: #344054;
+  --line-soft: rgba(148, 163, 184, 0.22);
+  --text: #dbe4f0;
+  --text-soft: #97a6ba;
+  --text-muted: #69778d;
+  --accent: #47d7ac;
+  --accent-strong: #72e3ff;
+  --accent-soft: rgba(71, 215, 172, 0.13);
+  --warning: #f2b86b;
+  --danger: #ff6b7a;
+  --danger-soft: rgba(255, 107, 122, 0.12);
   --font-mono: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', Consolas, monospace;
-
-  /* Spacing */
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 12px;
@@ -29,68 +22,58 @@
 }
 
 :root[data-theme='dark'] {
-  --term-bg: #0b0f14;
-  --term-bg-secondary: #0f141b;
-  --term-border: #21262d;
-  --term-green: #57c7ff;
-  --term-green-dim: #2f7a99;
-  --term-green-glow: rgba(87, 199, 255, 0.18);
-  --term-amber: #f3f99d;
-  --term-amber-dim: #c7cc7e;
-  --term-text: #c9d1d9;
-  --term-text-dim: #7d8590;
-  --term-red: #ff5c57;
-  --term-red-bg: rgba(255, 92, 87, 0.12);
+  --surface-0: #0b0f14;
+  --surface-1: #101720;
+  --surface-2: #17202c;
+  --surface-3: #223043;
+  --line: #2f3e53;
+  --text: #d4dde8;
+  --text-soft: #96a4b5;
+  --accent: #57c7ff;
+  --accent-strong: #9be7ff;
+  --accent-soft: rgba(87, 199, 255, 0.14);
 }
 
 :root[data-theme='monokai'] {
-  --term-bg: #272822;
-  --term-bg-secondary: #1f201b;
-  --term-border: #3b3a32;
-  --term-green: #a6e22e;
-  --term-green-dim: #7aa71f;
-  --term-green-glow: rgba(166, 226, 46, 0.16);
-  --term-amber: #f4bf75;
-  --term-amber-dim: #c79a5f;
-  --term-text: #f8f8f2;
-  --term-text-dim: #9a9a90;
-  --term-red: #f92672;
-  --term-red-bg: rgba(249, 38, 114, 0.12);
+  --surface-0: #1d1f1a;
+  --surface-1: #252720;
+  --surface-2: #303226;
+  --surface-3: #404332;
+  --line: #51523f;
+  --text: #f3f1df;
+  --text-soft: #b0ad95;
+  --accent: #a6e22e;
+  --accent-strong: #f4bf75;
+  --accent-soft: rgba(166, 226, 46, 0.13);
 }
 
 :root[data-theme='solarizedDark'] {
-  --term-bg: #002b36;
-  --term-bg-secondary: #073642;
-  --term-border: #0a3a48;
-  --term-green: #2aa198;
-  --term-green-dim: #1a7c75;
-  --term-green-glow: rgba(42, 161, 152, 0.16);
-  --term-amber: #b58900;
-  --term-amber-dim: #8a6a00;
-  --term-text: #93a1a1;
-  --term-text-dim: #657b83;
-  --term-red: #dc322f;
-  --term-red-bg: rgba(220, 50, 47, 0.12);
+  --surface-0: #002b36;
+  --surface-1: #073642;
+  --surface-2: #0b4450;
+  --surface-3: #13515d;
+  --line: #1b6470;
+  --text: #d0dedc;
+  --text-soft: #94a7a5;
+  --accent: #2aa198;
+  --accent-strong: #b58900;
+  --accent-soft: rgba(42, 161, 152, 0.16);
 }
 
 :root[data-theme='light'] {
-  --term-bg: #ffffff;
-  --term-bg-secondary: #f6f8fa;
-  --term-border: #d0d7de;
-  --term-green: #0451a5;
-  --term-green-dim: #0b3b78;
-  --term-green-glow: rgba(4, 81, 165, 0.12);
-  --term-amber: #949800;
-  --term-amber-dim: #6f7100;
-  --term-text: #24292f;
-  --term-text-dim: #57606a;
-  --term-red: #cd3131;
-  --term-red-bg: rgba(205, 49, 49, 0.1);
+  --surface-0: #f3f6fa;
+  --surface-1: #ffffff;
+  --surface-2: #eef3f8;
+  --surface-3: #dde7f0;
+  --line: #c6d2df;
+  --line-soft: rgba(71, 85, 105, 0.18);
+  --text: #172033;
+  --text-soft: #516175;
+  --text-muted: #7b8898;
+  --accent: #047a79;
+  --accent-strong: #0451a5;
+  --accent-soft: rgba(4, 122, 121, 0.1);
 }
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Base Reset & CRT Effects
-   ───────────────────────────────────────────────────────────────────────────── */
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -103,8 +86,8 @@ body {
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.5;
-  background: var(--term-bg);
-  color: var(--term-text);
+  background: var(--surface-0);
+  color: var(--text);
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
@@ -117,41 +100,16 @@ body {
   overflow: hidden;
 }
 
-/* Scanline effect overlay */
 body::before {
   content: '';
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   pointer-events: none;
   z-index: 9999;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.03) 2px,
-    rgba(0, 0, 0, 0.03) 4px
-  );
-}
-
-/* Subtle vignette effect */
-body::after {
-  content: '';
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  pointer-events: none;
-  z-index: 9998;
-  background: radial-gradient(
-    ellipse at center,
-    transparent 0%,
-    transparent 60%,
-    rgba(0, 0, 0, 0.3) 100%
-  );
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.018) 50%, transparent 50%) 0 0 / 100% 4px,
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025), transparent 18%, transparent 82%, rgba(0, 0, 0, 0.16));
+  mix-blend-mode: soft-light;
 }
 
 #root {
@@ -165,9 +123,9 @@ body::after {
   z-index: 10000;
   margin: 0;
   padding: 8px 10px;
-  border: 1px solid rgba(122, 162, 247, 0.45);
-  background: rgba(22, 22, 30, 0.92);
-  color: #c0caf5;
+  border: 1px solid rgba(71, 215, 172, 0.45);
+  background: rgba(15, 17, 23, 0.92);
+  color: var(--text);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.45;
@@ -175,31 +133,98 @@ body::after {
   pointer-events: none;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Layout Structure
-   ───────────────────────────────────────────────────────────────────────────── */
-
 .app {
   height: 100%;
   display: flex;
   flex-direction: column;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 180px),
+    var(--surface-0);
 }
 
 .main {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  height: 100%;
+  min-height: 0;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Terminal Header / Toolbar
-   ───────────────────────────────────────────────────────────────────────────── */
+.modeBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  flex: 0 0 auto;
+}
+
+.modeBarBrand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text-soft);
+  text-transform: lowercase;
+}
+
+.modeBarBrand span {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.modeBarBrand strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modeSwitch,
+.segmentedControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.modeSwitch button,
+.segmentedControl button {
+  min-width: 44px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.modeSwitch button:hover:not(:disabled),
+.segmentedControl button:hover:not(:disabled),
+.modeSwitch button.isActive,
+.segmentedControl button.isActive {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.modeSwitch button:disabled,
+.segmentedControl button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 
 .toolbar {
   padding: var(--space-sm) var(--space-md);
-  padding-top: calc(var(--space-sm) + env(safe-area-inset-top));
-  background: var(--term-bg);
-  border-bottom: 1px solid var(--term-border);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -222,18 +247,21 @@ body::after {
 }
 
 .toolbarActions select {
-  background: var(--term-bg-secondary);
-  border: 1px solid var(--term-border);
-  color: var(--term-text);
-  padding: 6px 10px;
+  height: 30px;
+  min-width: 136px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 0 10px;
   font-family: var(--font-mono);
   font-size: 12px;
   outline: none;
+  cursor: pointer;
 }
 
 .toolbarActions select:focus {
-  border-color: var(--term-green);
-  box-shadow: 0 0 0 1px var(--term-green-glow);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .toolbarActions select:disabled {
@@ -241,33 +269,24 @@ body::after {
   cursor: not-allowed;
 }
 
-/* App title with terminal prompt style */
 .appTitle {
-  font-weight: 700;
+  font-weight: 800;
   font-size: 13px;
-  color: var(--term-green);
-  text-shadow: 0 0 10px var(--term-green-glow);
-  letter-spacing: 0.5px;
+  color: var(--accent);
   display: flex;
   align-items: center;
   gap: 6px;
+  text-transform: lowercase;
 }
 
 .appTitle::before {
   content: '>';
-  color: var(--term-green-dim);
-  animation: blink 1s step-end infinite;
+  color: var(--text-muted);
 }
 
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
-/* Status display - terminal output style */
 .status {
   font-size: 12px;
-  color: var(--term-text-dim);
+  color: var(--text-soft);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -277,183 +296,305 @@ body::after {
 
 .status::before {
   content: '// ';
-  color: var(--term-text-dim);
-  opacity: 0.5;
+  color: var(--text-muted);
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Terminal Buttons - Character-based style
-   ───────────────────────────────────────────────────────────────────────────── */
+.toolbar button,
+.gridTerminalTile {
+  touch-action: manipulation;
+}
 
 .toolbar button {
+  height: 30px;
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 500;
-  padding: var(--space-xs) var(--space-sm);
+  font-weight: 600;
+  padding: 0 var(--space-sm);
   background: transparent;
-  color: var(--term-text);
-  border: 1px solid var(--term-border);
+  color: var(--text);
+  border: 1px solid var(--line);
   cursor: pointer;
-  touch-action: manipulation;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
   text-transform: lowercase;
-  letter-spacing: 0.3px;
-}
-
-.toolbar button::before {
-  content: '[ ';
-  color: var(--term-text-dim);
-}
-
-.toolbar button::after {
-  content: ' ]';
-  color: var(--term-text-dim);
 }
 
 .toolbar button:hover:not(:disabled) {
-  color: var(--term-green);
-  border-color: var(--term-green-dim);
-  text-shadow: 0 0 8px var(--term-green-glow);
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .toolbar button:active:not(:disabled) {
-  transform: scale(0.98);
+  transform: translateY(1px);
 }
 
 .toolbar button:disabled {
-  opacity: 0.3;
+  opacity: 0.4;
   cursor: not-allowed;
 }
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Error Display - Terminal error style
-   ───────────────────────────────────────────────────────────────────────────── */
 
 .error {
   padding: var(--space-sm) var(--space-md);
   font-size: 12px;
-  color: var(--term-red);
-  background: var(--term-red-bg);
-  border-bottom: 1px solid rgba(255, 51, 51, 0.2);
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-bottom: 1px solid rgba(255, 107, 122, 0.28);
   white-space: pre-wrap;
   font-family: var(--font-mono);
 }
 
 .error::before {
   content: 'ERROR: ';
-  font-weight: 700;
+  font-weight: 800;
 }
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Terminal Container
-   ───────────────────────────────────────────────────────────────────────────── */
 
 .terminalContainer {
   flex: 1;
   min-height: 0;
   padding: var(--space-md);
   padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
-  background: var(--term-bg);
+  background: var(--surface-0);
 }
 
 .terminalPane {
   height: 100%;
   width: 100%;
-  background: var(--term-bg-secondary);
-  border: 1px solid var(--term-border);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
   overflow: hidden;
   position: relative;
   outline: none;
   caret-color: transparent;
 }
 
-/* Terminal inner glow effect */
-.terminalPane::before {
+.terminalPane::before,
+.tileTerminal::before {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   pointer-events: none;
   z-index: 1;
-  box-shadow: inset 0 0 60px rgba(0, 255, 65, 0.02);
+  box-shadow: inset 0 0 48px rgba(71, 215, 172, 0.025);
 }
 
-.terminalPane canvas {
+.terminalPane canvas,
+.tileTerminal canvas {
   display: block;
   max-height: 100%;
   max-width: 100%;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Loading State
-   ───────────────────────────────────────────────────────────────────────────── */
+.fabricShell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
+}
 
+.schedulerPanel {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(92px, 1fr));
+  gap: 1px;
+  border: 1px solid var(--line);
+  background: var(--line);
+  flex: 0 0 auto;
+}
+
+.metric {
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--surface-1);
+}
+
+.metricLabel,
+.metricValue {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metricLabel {
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.metricValue {
+  color: var(--accent-strong);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.gridTerminalContainer {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-auto-rows: minmax(180px, 1fr);
+}
+
+.gridTerminalContainer[data-count='24'],
+.gridTerminalContainer[data-count='48'] {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  grid-auto-rows: minmax(150px, 1fr);
+}
+
+.gridTerminalContainer[data-count='48'] {
+  gap: 6px;
+  grid-auto-rows: minmax(124px, 1fr);
+}
+
+.gridTerminalTile {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  cursor: pointer;
+}
+
+.gridTerminalTile:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+.tileHeader {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  flex: 0 0 auto;
+}
+
+.tileName,
+.tileState {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tileName {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.tileState {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.tileTerminal {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-0);
+  cursor: text;
+}
+
+.gridEmpty,
 .loading {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--term-text-dim);
+  color: var(--text-muted);
   font-size: 12px;
 }
 
-.loading::after {
+.loading::after,
+.gridEmpty::after {
   content: '_';
   animation: blink 1s step-end infinite;
   margin-left: 2px;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Mobile Responsive
-   ───────────────────────────────────────────────────────────────────────────── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--surface-0);
+}
+
+::-moz-selection {
+  background: var(--accent);
+  color: var(--surface-0);
+}
+
+@media (max-width: 960px) {
+  .schedulerPanel {
+    grid-template-columns: repeat(3, minmax(92px, 1fr));
+  }
+
+  .gridTerminalContainer,
+  .gridTerminalContainer[data-count='24'],
+  .gridTerminalContainer[data-count='48'] {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-auto-rows: minmax(160px, 1fr);
+  }
+}
 
 @media (max-width: 640px) {
-  .toolbar {
-    flex-direction: column;
+  .modeBar,
+  .toolbar,
+  .gridToolbar {
     align-items: stretch;
+    flex-direction: column;
     gap: var(--space-sm);
   }
 
+  .modeBarBrand,
   .toolbarPrimary {
     justify-content: space-between;
     gap: var(--space-sm);
   }
 
-  .toolbarActions {
+  .modeSwitch,
+  .toolbarActions,
+  .segmentedControl {
     width: 100%;
+  }
+
+  .toolbarActions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-sm);
+    grid-template-columns: 1fr;
   }
 
+  .modeSwitch button,
+  .segmentedControl button,
+  .toolbarActions select,
   .toolbarActions button {
-    padding: var(--space-sm) var(--space-md);
-    justify-content: center;
-    display: flex;
+    width: 100%;
   }
 
-  .terminalContainer {
+  .terminalContainer,
+  .fabricShell {
     padding: var(--space-sm);
     padding-bottom: calc(var(--space-sm) + env(safe-area-inset-bottom));
   }
 
-  .appTitle {
-    font-size: 14px;
+  .schedulerPanel {
+    grid-template-columns: repeat(2, minmax(92px, 1fr));
   }
-}
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Selection Style
-   ───────────────────────────────────────────────────────────────────────────── */
-
-::selection {
-  background: var(--term-green);
-  color: var(--term-bg);
-}
-
-::-moz-selection {
-  background: var(--term-green);
-  color: var(--term-bg);
+  .gridTerminalContainer,
+  .gridTerminalContainer[data-count='24'],
+  .gridTerminalContainer[data-count='48'] {
+    grid-template-columns: 1fr;
+    grid-auto-rows: minmax(220px, 1fr);
+  }
 }
