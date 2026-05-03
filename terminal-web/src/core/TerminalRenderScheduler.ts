@@ -21,6 +21,8 @@ type SchedulerOptions = {
   requestFrame?: (callback: FrameRequestCallback) => number;
   cancelFrame?: (handle: number) => void;
   now?: SchedulerClock;
+  frameBudgetMs?: number;
+  maxTasksPerFrame?: number;
 };
 
 type PendingRenderTask = {
@@ -63,10 +65,15 @@ const createEmptyStats = (): Omit<TerminalRenderSchedulerStats, 'pending'> => ({
   lastFrameRendered: 0,
 });
 
+const DEFAULT_FRAME_BUDGET_MS = 8;
+const DEFAULT_MAX_TASKS_PER_FRAME = 8;
+
 export class TerminalRenderScheduler {
   private readonly requestFrame: (callback: FrameRequestCallback) => number;
   private readonly cancelFrame: (handle: number) => void;
   private readonly now: SchedulerClock;
+  private readonly frameBudgetMs: number;
+  private readonly maxTasksPerFrame: number;
   private readonly pending = new Map<number, PendingRenderTask>();
   private frameHandle: number | null = null;
   private stats = createEmptyStats();
@@ -75,6 +82,8 @@ export class TerminalRenderScheduler {
     this.requestFrame = options.requestFrame ?? resolveRequestFrame();
     this.cancelFrame = options.cancelFrame ?? resolveCancelFrame();
     this.now = options.now ?? resolveNow;
+    this.frameBudgetMs = normalizePositiveNumber(options.frameBudgetMs, DEFAULT_FRAME_BUDGET_MS);
+    this.maxTasksPerFrame = Math.max(1, Math.floor(normalizePositiveNumber(options.maxTasksPerFrame, DEFAULT_MAX_TASKS_PER_FRAME)));
   }
 
   schedule(task: TerminalRenderTask, forceAll = false): void {
@@ -136,14 +145,33 @@ export class TerminalRenderScheduler {
       return;
     }
 
-    const tasks = Array.from(this.pending.values());
+    const tasks = Array.from(this.pending.entries());
     this.pending.clear();
 
     const startedAt = this.now();
     let rendered = 0;
-    for (const { task, forceAll } of tasks) {
+    let nextIndex = 0;
+    for (; nextIndex < tasks.length; nextIndex += 1) {
+      const [, { task, forceAll }] = tasks[nextIndex];
       task.run(forceAll);
       rendered += 1;
+
+      const elapsedMs = Math.max(0, this.now() - startedAt);
+      if (rendered >= this.maxTasksPerFrame || elapsedMs >= this.frameBudgetMs) {
+        nextIndex += 1;
+        break;
+      }
+    }
+
+    const reentrantTasks = Array.from(this.pending.entries());
+    this.pending.clear();
+    for (const [id, task] of tasks.slice(nextIndex)) {
+      this.pending.set(id, mergePendingRenderTask(task, reentrantTasks.find(([reentrantId]) => reentrantId === id)?.[1]));
+    }
+    for (const [id, task] of reentrantTasks) {
+      if (!this.pending.has(id)) {
+        this.pending.set(id, task);
+      }
     }
 
     this.stats.frameCount += 1;
@@ -156,6 +184,23 @@ export class TerminalRenderScheduler {
     }
   }
 }
+
+const normalizePositiveNumber = (value: number | undefined, fallback: number): number => {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+const mergePendingRenderTask = (
+  original: PendingRenderTask,
+  reentrant: PendingRenderTask | undefined,
+): PendingRenderTask => {
+  if (!reentrant) {
+    return original;
+  }
+  return {
+    task: original.task,
+    forceAll: original.forceAll || reentrant.forceAll,
+  };
+};
 
 export const terminalRenderScheduler = new TerminalRenderScheduler();
 

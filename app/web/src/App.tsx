@@ -1,8 +1,9 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import {
   createTerminalInstance,
+  getTerminalFabricDiagnostics,
   getTerminalRenderSchedulerStats,
-  resetTerminalRenderSchedulerStats,
+  type TerminalFabricDiagnostics,
   type TerminalInstanceController,
   type TerminalInstanceSnapshot,
   type TerminalManagerActions,
@@ -10,22 +11,25 @@ import {
   TerminalState,
   type TerminalThemeName,
 } from '@floegence/floeterm-terminal-web';
-import { createEventSource, createTransport, getOrCreateConnId, type AppTerminalTransport } from './terminalApi';
+import { type AppTerminalTransport } from './terminalApi';
+import {
+  buildLiveGridCommand,
+  createFloetermDemoRuntime,
+  createProgressiveCount,
+  formatBytes,
+  formatNumber,
+  GRID_COUNTS,
+  GRID_MOUNT_BATCH_DELAY_MS,
+  GRID_MOUNT_BATCH_SIZE,
+  gridStreamStartDelay,
+  type DemoEventSource,
+  type GridCount,
+  type GridRuntimeStats,
+  type GridSession,
+} from './demoRuntime';
 
-const SESSION_STORAGE_KEY = 'floeterm_session_id';
 const THEME_STORAGE_KEY = 'floeterm_theme_name';
-const MODE_STORAGE_KEY = 'floeterm_demo_mode';
-const GRID_SIZE_STORAGE_KEY = 'floeterm_grid_size';
 const HISTORY_STATS_POLL_MS = 2000;
-const GRID_COUNTS = [4, 12, 24, 48] as const;
-
-type DemoMode = 'single' | 'grid';
-type GridCount = typeof GRID_COUNTS[number];
-
-type GridSession = {
-  id: string;
-  name: string;
-};
 
 const noopActions: TerminalManagerActions = {
   write: () => {},
@@ -74,55 +78,8 @@ const initialTerminalSnapshot: TerminalInstanceSnapshot = {
   loadingMessage: '',
 };
 
-const formatBytes = (bytes: number): string => {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return '0 B';
-  }
-
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  const rounded = unitIndex === 0 ? Math.round(value) : Math.round(value * 10) / 10;
-  return `${rounded} ${units[unitIndex]}`;
-};
-
-const formatNumber = (value: number, digits = 1): string => {
-  if (!Number.isFinite(value)) {
-    return '0';
-  }
-  return value.toFixed(digits);
-};
-
 const isThemeName = (value: string): value is TerminalThemeName => {
   return value === 'tokyoNight' || value === 'dark' || value === 'monokai' || value === 'solarizedDark' || value === 'light';
-};
-
-const isDemoMode = (value: string): value is DemoMode => {
-  return value === 'single' || value === 'grid';
-};
-
-const readStoredGridCount = (): GridCount => {
-  const stored = Number(window.localStorage.getItem(GRID_SIZE_STORAGE_KEY));
-  return GRID_COUNTS.includes(stored as GridCount) ? stored as GridCount : 12;
-};
-
-const buildLiveGridCommand = (label: string): string => {
-  const escapedLabel = label.replace(/'/g, `'\\''`);
-  return [
-    'clear',
-    `printf '\\033[1;36mfloeterm live fabric :: ${escapedLabel}\\033[0m\\n'`,
-    'i=0',
-    'while true; do',
-    '  i=$((i+1))',
-    `  printf '[${escapedLabel}] tick=%05d time=%s load=%s path=%s\\n' "$i" "$(date +%H:%M:%S)" "$(uptime | sed 's/^.*load averages*: //')" "$PWD"`,
-    '  sleep 0.35',
-    'done',
-  ].join('; ') + '\r';
 };
 
 const createMediaQuery = (query: string) => {
@@ -200,6 +157,7 @@ const createSolidTerminal = (options: () => Parameters<typeof createTerminalInst
 
 const SchedulerStatsPanel = () => {
   const [stats, setStats] = createSignal<TerminalRenderSchedulerStats>(getTerminalRenderSchedulerStats());
+  const [fabric, setFabric] = createSignal<TerminalFabricDiagnostics>(getTerminalFabricDiagnostics());
   let previous = stats();
   const [rates, setRates] = createSignal({ scheduled: 0, rendered: 0, frames: 0 });
 
@@ -213,6 +171,7 @@ const SchedulerStatsPanel = () => {
       });
       previous = current;
       setStats(current);
+      setFabric(getTerminalFabricDiagnostics());
     }, 1000);
 
     onCleanup(() => window.clearInterval(intervalId));
@@ -244,6 +203,30 @@ const SchedulerStatsPanel = () => {
         <span class="metricLabel">pending</span>
         <span class="metricValue">{stats().pending}</span>
       </div>
+      <div class="metric metricStrong">
+        <span class="metricLabel">renderer</span>
+        <span class="metricValue">{fabric().backend === 'beamterm_webgl2' ? 'Beamterm' : 'Canvas'}</span>
+      </div>
+      <div class="metric">
+        <span class="metricLabel">path</span>
+        <span class="metricValue">{fabric().renderPath === 'main_thread_webgl2' ? 'WebGL2' : 'fallback'}</span>
+      </div>
+      <div class="metric">
+        <span class="metricLabel">active</span>
+        <span class="metricValue">{fabric().activeRendererCount}</span>
+      </div>
+      <div class="metric">
+        <span class="metricLabel">fabric rows</span>
+        <span class="metricValue">{fabric().lastFrameRenderedRows}</span>
+      </div>
+      <div class="metric">
+        <span class="metricLabel">fabric cells</span>
+        <span class="metricValue">{fabric().lastFrameDirtyCells}</span>
+      </div>
+      <div class="metric">
+        <span class="metricLabel">webgl/wasm</span>
+        <span class="metricValue">{fabric().webgl2Supported && fabric().beamtermLoaded ? 'ready' : 'loading'}</span>
+      </div>
     </div>
   );
 };
@@ -265,7 +248,7 @@ const ThemeSelector = (props: {
 const SingleTerminalPane = (props: {
   sessionId: string;
   transport: AppTerminalTransport;
-  eventSource: ReturnType<typeof createEventSource>;
+  eventSource: DemoEventSource;
   themeName: TerminalThemeName;
   isBusy: boolean;
   error: string;
@@ -282,6 +265,9 @@ const SingleTerminalPane = (props: {
     themeName: props.themeName,
     transport: props.transport,
     eventSource: props.eventSource,
+    config: {
+      rendererType: 'webgl',
+    },
   }));
 
   const [historyBytes, setHistoryBytes] = createSignal<number | null>(null);
@@ -375,7 +361,9 @@ const SingleTerminalPane = (props: {
 
   const status = createMemo(() => {
     const snapshot = terminal.snapshot();
-    const parts: string[] = [snapshot.state.state];
+    const parts: string[] = [
+      snapshot.connection.isConnected ? 'live' : snapshot.connection.error?.message || snapshot.connection.state,
+    ];
     if (snapshot.loadingMessage) {
       parts.push(snapshot.loadingMessage);
     }
@@ -412,43 +400,77 @@ const SingleTerminalPane = (props: {
 const GridTerminalTile = (props: {
   session: GridSession;
   transport: AppTerminalTransport;
-  eventSource: ReturnType<typeof createEventSource>;
+  eventSource: DemoEventSource;
   themeName: TerminalThemeName;
+  streamStartDelayMs: number;
   onFocus: (sessionId: string) => void;
+  onRuntimeState: (sessionId: string, state: string, connected: boolean, hasError: boolean) => void;
 }) => {
   const terminal = createSolidTerminal(() => ({
     sessionId: props.session.id,
     isActive: true,
     autoFocus: false,
-    fontSize: 11,
+    fontSize: 8,
     themeName: props.themeName,
     transport: props.transport,
     eventSource: props.eventSource,
     config: {
       scrollback: 400,
+      fit: {
+        scrollbarReservePx: 0,
+      },
       responsive: {
         fitOnFocus: true,
         emitResizeOnFocus: true,
-        notifyResizeOnlyWhenFocused: true,
+        notifyResizeOnlyWhenFocused: false,
       },
+      rendererType: 'webgl',
     },
   }));
 
   let didStartStream = false;
+  const isLive = createMemo(() => terminal.snapshot().connection.isConnected);
+  const tileStatus = createMemo(() => {
+    const snapshot = terminal.snapshot();
+    return snapshot.state.hasError
+      ? 'error'
+      : snapshot.connection.error?.message || snapshot.loadingMessage || (snapshot.connection.isConnected ? 'live' : snapshot.connection.state);
+  });
 
   createEffect(() => {
-    if (didStartStream || !terminal.snapshot().state.isConnected) {
+    const snapshot = terminal.snapshot();
+    props.onRuntimeState(props.session.id, tileStatus(), snapshot.connection.isConnected, snapshot.state.hasError);
+  });
+
+  createEffect(() => {
+    if (didStartStream || !isLive()) {
       return;
     }
     didStartStream = true;
-    props.transport.sendInput(props.session.id, buildLiveGridCommand(props.session.name)).catch(() => {
-      didStartStream = false;
-    });
+    const timeoutId = window.setTimeout(() => {
+      props.transport.sendInput(props.session.id, '\u0003' + buildLiveGridCommand(props.session.name)).catch(() => {
+        didStartStream = false;
+      });
+    }, props.streamStartDelayMs);
+    onCleanup(() => window.clearTimeout(timeoutId));
   });
 
   onMount(() => {
-    requestAnimationFrame(() => {
-      terminal.actions().forceResize();
+    const scheduleResize = () => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          terminal.actions().forceResize();
+        });
+      });
+    };
+
+    scheduleResize();
+    const settleTimer = window.setTimeout(scheduleResize, 180);
+    window.addEventListener('resize', scheduleResize);
+
+    onCleanup(() => {
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('resize', scheduleResize);
     });
   });
 
@@ -460,33 +482,56 @@ const GridTerminalTile = (props: {
     >
       <div class="tileHeader">
         <span class="tileName">{props.session.name}</span>
-        <span class="tileState">{terminal.snapshot().loadingMessage || terminal.snapshot().state.state}</span>
+        <span class="tileState">{tileStatus()}</span>
       </div>
       <div class="tileTerminal" ref={terminal.mount} />
     </section>
   );
 };
 
+const GridTerminalTileShell = (props: {
+  name: string;
+  status: string;
+}) => (
+  <section class="gridTerminalTile gridTerminalTileShell">
+    <div class="tileHeader">
+      <span class="tileName">{props.name}</span>
+      <span class="tileState">{props.status}</span>
+    </div>
+    <div class="tileTerminal tileTerminalShell" aria-hidden="true">
+      <span>live slot</span>
+    </div>
+  </section>
+);
+
 const GridTerminalDemo = (props: {
   transport: AppTerminalTransport;
-  eventSource: ReturnType<typeof createEventSource>;
+  eventSource: DemoEventSource;
   themeName: TerminalThemeName;
   gridCount: GridCount;
   isBusy: boolean;
   error: string;
   sessions: GridSession[];
   activeSessionId: string;
+  runtimeStats: GridRuntimeStats;
   onGridCountChange: (count: GridCount) => void;
   onRebuild: () => void;
   onThemeChange: (theme: TerminalThemeName) => void;
   onFocusSession: (sessionId: string) => void;
-}) => (
-  <>
+  onRuntimeState: (sessionId: string, state: string, connected: boolean, hasError: boolean) => void;
+}) => {
+  const hydratedCount = createProgressiveCount(() => props.sessions.length, GRID_MOUNT_BATCH_SIZE, GRID_MOUNT_BATCH_DELAY_MS);
+
+  return (
+    <>
     <div class="toolbar gridToolbar">
       <div class="toolbarPrimary">
         <span class="appTitle">floeterm fabric</span>
         <span class="status">
           {props.isBusy ? 'building live grid...' : `${props.sessions.length} live terminals`}
+          {hydratedCount() < props.sessions.length ? ` :: hydrating ${hydratedCount()}/${props.sessions.length}` : ''}
+          {props.sessions.length > 0 ? ` :: connected ${props.runtimeStats.connected}/${props.sessions.length}` : ''}
+          {props.runtimeStats.errors > 0 ? ` :: errors ${props.runtimeStats.errors}` : ''}
           {props.activeSessionId ? ` :: active ${props.activeSessionId.slice(0, 8)}` : ''}
         </span>
       </div>
@@ -519,208 +564,78 @@ const GridTerminalDemo = (props: {
           fallback={<div class="gridEmpty">{props.isBusy ? 'building live terminal grid' : 'no sessions'}</div>}
         >
           <For each={props.sessions}>
-            {session => (
-              <GridTerminalTile
-                session={session}
-                transport={props.transport}
-                eventSource={props.eventSource}
-                themeName={props.themeName}
-                onFocus={props.onFocusSession}
-              />
+            {(session, index) => (
+              <Show
+                when={index() < hydratedCount()}
+                fallback={<GridTerminalTileShell name={session.name} status="queued" />}
+              >
+                <GridTerminalTile
+                  session={session}
+                  transport={props.transport}
+                  eventSource={props.eventSource}
+                  themeName={props.themeName}
+                  streamStartDelayMs={gridStreamStartDelay(index())}
+                  onFocus={props.onFocusSession}
+                  onRuntimeState={props.onRuntimeState}
+                />
+              </Show>
             )}
           </For>
         </Show>
       </div>
     </div>
-  </>
-);
+    </>
+  );
+};
 
 export const App = () => {
-  const connId = getOrCreateConnId();
-  const transport = createTransport(connId);
-  const eventSource = createEventSource(connId);
+  const demo = createFloetermDemoRuntime();
   const [themeName, setThemeName] = createThemeName();
-
-  const storedMode = window.localStorage.getItem(MODE_STORAGE_KEY) ?? '';
-  const [mode, setMode] = createSignal<DemoMode>(isDemoMode(storedMode) ? storedMode : 'single');
-  const [gridCount, setGridCount] = createSignal<GridCount>(readStoredGridCount());
-  const [sessionId, setSessionId] = createSignal('');
-  const [gridSessions, setGridSessions] = createSignal<GridSession[]>([]);
-  const [activeGridSessionId, setActiveGridSessionId] = createSignal('');
-  const [isBusy, setIsBusy] = createSignal(false);
-  const [error, setError] = createSignal('');
-  let ensureSingleInFlight: Promise<void> | null = null;
-
-  createEffect(() => {
-    window.localStorage.setItem(MODE_STORAGE_KEY, mode());
-  });
-
-  createEffect(() => {
-    window.localStorage.setItem(GRID_SIZE_STORAGE_KEY, String(gridCount()));
-  });
-
-  const cleanupSessions = async (keepIds: Set<string>) => {
-    const list = await transport.listSessions();
-    await Promise.all(
-      list
-        .filter(item => !keepIds.has(item.id))
-        .map(item => transport.deleteSession(item.id).catch(() => {}))
-    );
-  };
-
-  const ensureSingleSession = async () => {
-    if (ensureSingleInFlight) {
-      await ensureSingleInFlight;
-      return;
-    }
-
-    const run = (async () => {
-      setIsBusy(true);
-      setError('');
-
-      try {
-        const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY) ?? '';
-        const list = await transport.listSessions();
-        const current = sessionId();
-
-        let chosen = '';
-        if (current && list.some(item => item.id === current)) {
-          chosen = current;
-        } else if (stored && list.some(item => item.id === stored)) {
-          chosen = stored;
-        } else if (list.length > 0 && !list[0]!.name.startsWith('grid-')) {
-          chosen = list[0]!.id;
-        } else {
-          const created = await transport.createSession('', '');
-          chosen = created.id;
-        }
-
-        await cleanupSessions(new Set([chosen]));
-        window.sessionStorage.setItem(SESSION_STORAGE_KEY, chosen);
-        setGridSessions([]);
-        setActiveGridSessionId('');
-        setSessionId(chosen);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setIsBusy(false);
-      }
-    })();
-
-    ensureSingleInFlight = run;
-    try {
-      await run;
-    } finally {
-      if (ensureSingleInFlight === run) {
-        ensureSingleInFlight = null;
-      }
-    }
-  };
-
-  const restartSession = async () => {
-    setIsBusy(true);
-    setError('');
-
-    try {
-      const current = sessionId();
-      if (current) {
-        await transport.deleteSession(current).catch(() => {});
-      }
-      const created = await transport.createSession('', '');
-      window.sessionStorage.setItem(SESSION_STORAGE_KEY, created.id);
-      setSessionId(created.id);
-      await cleanupSessions(new Set([created.id]));
-      setGridSessions([]);
-      setActiveGridSessionId('');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setIsBusy(false);
-    }
-  };
-
-  const rebuildGrid = async (count = gridCount()) => {
-    setIsBusy(true);
-    setError('');
-    resetTerminalRenderSchedulerStats();
-
-    try {
-      const created: GridSession[] = [];
-      for (let index = 0; index < count; index += 1) {
-        const name = `grid-${String(index + 1).padStart(2, '0')}`;
-        const session = await transport.createSession(name, '');
-        created.push({ id: session.id, name });
-      }
-
-      await cleanupSessions(new Set(created.map(session => session.id)));
-      setGridSessions(created);
-      setActiveGridSessionId(created[0]?.id ?? '');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setIsBusy(false);
-    }
-  };
-
-  const switchMode = (nextMode: DemoMode) => {
-    setMode(nextMode);
-    setError('');
-    if (nextMode === 'single') {
-      setGridSessions([]);
-      setActiveGridSessionId('');
-    }
-  };
-
-  const changeGridCount = (nextCount: GridCount) => {
-    setGridCount(nextCount);
-    void rebuildGrid(nextCount);
-  };
-
-  createEffect(() => {
-    if (mode() === 'single') {
-      void ensureSingleSession();
-    }
-  });
-
-  createEffect(() => {
-    if (mode() !== 'grid' || gridSessions().length > 0 || isBusy()) {
-      return;
-    }
-    void rebuildGrid();
-  });
 
   return (
     <div class="app">
+      <div
+        hidden
+        data-testid="demo-runtime-state"
+        data-mode={demo.mode()}
+        data-single-session-id={demo.singleSessionId()}
+        data-single-busy={demo.singleBusy() ? 'true' : 'false'}
+        data-single-error={demo.singleError()}
+        data-grid-busy={demo.gridBusy() ? 'true' : 'false'}
+        data-grid-session-count={demo.gridSessions().length}
+        data-grid-connected={demo.gridRuntimeStats().connected}
+        data-grid-errors={demo.gridRuntimeStats().errors}
+      />
       <div class="modeBar">
         <div class="modeBarBrand">
           <span>floeterm</span>
           <strong>live terminal fabric</strong>
         </div>
         <div class="modeSwitch" aria-label="demo mode">
-          <button class={mode() === 'single' ? 'isActive' : ''} onClick={() => switchMode('single')}>single</button>
-          <button class={mode() === 'grid' ? 'isActive' : ''} onClick={() => switchMode('grid')}>grid</button>
+          <button class={demo.mode() === 'single' ? 'isActive' : ''} onClick={() => demo.switchMode('single')}>single</button>
+          <button class={demo.mode() === 'grid' ? 'isActive' : ''} onClick={() => demo.switchMode('grid')}>grid</button>
         </div>
       </div>
       <main class="main">
         <Show
-          when={mode() === 'grid'}
+          when={demo.mode() === 'grid'}
           fallback={(
             <Show
-              when={sessionId()}
+              when={demo.singleSessionId()}
               fallback={(
                 <>
                   <div class="toolbar">
                     <div class="toolbarPrimary">
                       <span class="appTitle">floeterm</span>
-                      <span class="status">{isBusy() ? 'initializing...' : 'idle'}</span>
+                      <span class="status">{demo.singleBusy() ? 'initializing...' : 'idle'}</span>
                     </div>
                   </div>
-                  <Show when={error()}>
-                    <div class="error">{error()}</div>
+                  <Show when={demo.singleError()}>
+                    <div class="error">{demo.singleError()}</div>
                   </Show>
                   <div class="terminalContainer">
                     <div class="terminalPane">
-                      <div class="loading">{isBusy() ? 'connecting' : 'waiting'}</div>
+                      <div class="loading">{demo.singleBusy() ? 'connecting' : 'waiting'}</div>
                     </div>
                   </div>
                 </>
@@ -729,12 +644,12 @@ export const App = () => {
               {id => (
                 <SingleTerminalPane
                   sessionId={id()}
-                  transport={transport}
-                  eventSource={eventSource}
+                  transport={demo.transport}
+                  eventSource={demo.eventSource}
                   themeName={themeName()}
-                  isBusy={isBusy()}
-                  error={error()}
-                  onRestart={() => void restartSession()}
+                  isBusy={demo.singleBusy()}
+                  error={demo.singleError()}
+                  onRestart={() => void demo.restartSingleSession()}
                   onThemeChange={setThemeName}
                 />
               )}
@@ -742,18 +657,20 @@ export const App = () => {
           )}
         >
           <GridTerminalDemo
-            transport={transport}
-            eventSource={eventSource}
+            transport={demo.transport}
+            eventSource={demo.eventSource}
             themeName={themeName()}
-            gridCount={gridCount()}
-            isBusy={isBusy()}
-            error={error()}
-            sessions={gridSessions()}
-            activeSessionId={activeGridSessionId()}
-            onGridCountChange={changeGridCount}
-            onRebuild={() => void rebuildGrid()}
+            gridCount={demo.gridCount()}
+            isBusy={demo.gridBusy()}
+            error={demo.gridError()}
+            sessions={demo.gridSessions()}
+            activeSessionId={demo.activeGridSessionId()}
+            runtimeStats={demo.gridRuntimeStats()}
+            onGridCountChange={demo.changeGridCount}
+            onRebuild={() => void demo.rebuildGrid(demo.gridCount(), { force: true })}
             onThemeChange={setThemeName}
-            onFocusSession={setActiveGridSessionId}
+            onFocusSession={demo.focusGridSession}
+            onRuntimeState={demo.updateGridRuntimeState}
           />
         </Show>
       </main>

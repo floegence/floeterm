@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TerminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler';
 
-const createHarness = () => {
+const createHarness = (options?: { frameBudgetMs?: number; maxTasksPerFrame?: number }) => {
   const callbacks: FrameRequestCallback[] = [];
   let now = 0;
   const scheduler = new TerminalRenderScheduler({
@@ -13,6 +13,7 @@ const createHarness = () => {
       callbacks[handle - 1] = () => {};
     },
     now: () => now,
+    ...options,
   });
 
   const flushNextFrame = (advanceMs = 1) => {
@@ -32,9 +33,13 @@ const createHarness = () => {
   };
 };
 
-const createTask = (id: number) => {
+type TestRenderTask = TerminalRenderTask & {
+  run: ReturnType<typeof vi.fn<(forceAll: boolean) => void>>;
+};
+
+const createTask = (id: number): TestRenderTask => {
   const run = vi.fn();
-  const task: TerminalRenderTask = { id, run };
+  const task: TestRenderTask = { id, run };
   return task;
 };
 
@@ -133,6 +138,43 @@ describe('TerminalRenderScheduler', () => {
     expect(scheduler.getStats()).toMatchObject({
       frameCount: 2,
       rendered: 2,
+    });
+  });
+
+  it('spreads large render queues across frames by budget', () => {
+    const { scheduler, flushNextFrame, callbacks } = createHarness({
+      frameBudgetMs: 2,
+      maxTasksPerFrame: 2,
+    });
+    const tasks = [createTask(1), createTask(2), createTask(3), createTask(4), createTask(5)];
+
+    for (const task of tasks) {
+      scheduler.schedule(task, false);
+    }
+
+    flushNextFrame();
+    expect(tasks.map(task => task.run.mock.calls.length)).toEqual([1, 1, 0, 0, 0]);
+    expect(callbacks).toHaveLength(1);
+    expect(scheduler.getStats()).toMatchObject({
+      frameCount: 1,
+      lastFrameRendered: 2,
+      pending: 3,
+    });
+
+    flushNextFrame();
+    expect(tasks.map(task => task.run.mock.calls.length)).toEqual([1, 1, 1, 1, 0]);
+    expect(scheduler.getStats()).toMatchObject({
+      frameCount: 2,
+      lastFrameRendered: 2,
+      pending: 1,
+    });
+
+    flushNextFrame();
+    expect(tasks.map(task => task.run.mock.calls.length)).toEqual([1, 1, 1, 1, 1]);
+    expect(scheduler.getStats()).toMatchObject({
+      frameCount: 3,
+      lastFrameRendered: 1,
+      pending: 0,
     });
   });
 

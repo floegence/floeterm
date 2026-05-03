@@ -115,6 +115,7 @@ export interface TerminalConfig {
   cursorBlink?: boolean;
   scrollback?: number;
   rendererType?: 'canvas' | 'webgl' | 'dom';
+  sessionId?: string;
   allowTransparency?: boolean;
   convertEol?: boolean;
   allowProposedApi?: boolean;
@@ -244,12 +245,13 @@ export interface TerminalDataChunk {
 
 export interface TerminalDataEvent {
   sessionId: TerminalID;
-  type?: 'data' | 'replay-complete';
+  type?: 'data' | 'replay-complete' | 'error';
   data: Uint8Array;
   sequence?: number;
   timestampMs?: number;
   echoOfInput?: boolean;
   originalSource?: string;
+  error?: string;
 }
 
 export interface TerminalDataSubscriptionOptions {

@@ -1,6 +1,17 @@
 import { filterXtermAutoResponses } from '../utils/xtermAutoResponseFilter';
 import { createConsoleLogger, noopLogger } from '../utils/logger';
 import {
+  cursorToFabricCursor,
+  mapGhosttyRowToFabricCells,
+  renderReasonFromForce,
+  terminalLiveFabric,
+  themeToFabricTheme,
+  type TerminalFabricRowRenderHints,
+  type TerminalLiveFabricViewHandle,
+} from '../fabric/TerminalLiveFabric';
+import { terminalFabricCoordinator } from '../fabric/TerminalFabricCoordinator';
+import type { TerminalFabricFrame } from '../fabric/types';
+import {
   TerminalState,
   type Logger,
   type TerminalClipboardConfig,
@@ -22,6 +33,7 @@ import {
 } from '../types';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
 import { terminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler';
+import { scheduleUiTurn, type ScheduledTurnCancel } from '../internal/scheduleUiTurn';
 
 type terminal_search_match = {
   row: number;
@@ -42,6 +54,8 @@ type terminal_selection_manager = {
   __floetermDemandRenderPatched?: boolean;
   copyToClipboard?: ((text: string) => Promise<void> | void) | null;
   requestRender?: () => void;
+  hasSelection?: () => boolean;
+  getSelectionCoords?: () => unknown;
 };
 
 type floeterm_perf_probe = {
@@ -71,7 +85,13 @@ type ghostty_renderer_with_row_cache = {
   __floetermDemandCursorPatched?: boolean;
   __floetermRowRenderCachePatched?: boolean;
   __floetermRowRenderCacheForceAll?: boolean;
+  __floetermRowRenderCacheHadTransientState?: boolean;
   __floetermRowRenderCache?: Map<number, string>;
+  metrics?: {
+    width?: number;
+    height?: number;
+    baseline?: number;
+  };
   cursorVisible?: boolean;
   ctx?: CanvasRenderingContext2D;
   currentBuffer?: {
@@ -83,9 +103,14 @@ type ghostty_renderer_with_row_cache = {
   hoveredLinkRange?: unknown;
   lastViewportY?: number;
   lastCursorPosition?: { y?: number };
+  charWidth?: number;
+  charHeight?: number;
+  getCanvas?: () => HTMLCanvasElement;
+  getMetrics?: () => { width?: number; height?: number; baseline?: number };
   render?: (...args: unknown[]) => unknown;
   renderLine?: (cells: ghostty_cell_like[], row: number, cols: number) => unknown;
   remeasureFont?: () => unknown;
+  resize?: (cols: number, rows: number) => unknown;
   setCursorBlink?: (enabled: boolean) => unknown;
 };
 
@@ -117,6 +142,11 @@ type terminal_render_snapshot = {
   rows: number | null;
   scrollbackLength: number | null;
   viewportY: number | null;
+};
+
+type terminal_fabric_dimensions = {
+  cols: number;
+  rows: number;
 };
 
 type ghostty_fit_addon_with_geometry_patch = import('ghostty-web').FitAddon & {
@@ -207,6 +237,34 @@ function resolveCanvasLocalDisplaySize(
     cssHeight,
     dpr: Number.isFinite(dpr) && dpr > 0 ? dpr : 1,
   };
+}
+
+function syncCanvasOverlaySize(
+  overlay: terminal_search_overlay,
+  termCanvas: HTMLCanvasElement,
+  coordinateRoot: HTMLElement,
+): void {
+  const { cssWidth, cssHeight, dpr } = resolveCanvasLocalDisplaySize(termCanvas, coordinateRoot);
+
+  if (
+    overlay.canvas.width === termCanvas.width
+    && overlay.canvas.height === termCanvas.height
+    && overlay.cssWidth === cssWidth
+    && overlay.cssHeight === cssHeight
+    && overlay.dpr === dpr
+  ) {
+    return;
+  }
+
+  overlay.dpr = dpr;
+  overlay.cssWidth = cssWidth;
+  overlay.cssHeight = cssHeight;
+  overlay.canvas.style.width = `${cssWidth}px`;
+  overlay.canvas.style.height = `${cssHeight}px`;
+  overlay.canvas.width = termCanvas.width;
+  overlay.canvas.height = termCanvas.height;
+  overlay.ctx.setTransform(1, 0, 0, 1, 0, 0);
+  overlay.ctx.scale(dpr, dpr);
 }
 
 const getPerfProbe = (): floeterm_perf_probe | undefined => {
@@ -420,6 +478,16 @@ function canSkipCachedRowRender(renderer: ghostty_renderer_with_row_cache, row: 
   return true;
 }
 
+function canSkipNativeCanvasRowRender(
+  renderer: ghostty_renderer_with_row_cache,
+  row: number,
+  fabricActive: boolean,
+): boolean {
+  void renderer;
+  void row;
+  return fabricActive;
+}
+
 function samePresentationScale(left: number, right: number): boolean {
   return Math.abs(left - right) <= PRESENTATION_SCALE_EPSILON;
 }
@@ -455,12 +523,73 @@ function hasUsableClientSize(element: HTMLElement | null | undefined): element i
   return Boolean(element && element.clientWidth > 0 && element.clientHeight > 0);
 }
 
+function formatCssPixelValue(value: number): string {
+  const normalized = Number.isFinite(value) ? Math.max(1, value) : 1;
+  return `${Math.round(normalized * 1000) / 1000}px`;
+}
+
 function hasTransientRendererState(renderer: ghostty_renderer_with_row_cache): boolean {
   return Boolean(
     renderer.currentSelectionCoords
     || (renderer.hoveredHyperlinkId ?? 0) > 0
     || renderer.hoveredLinkRange,
   );
+}
+
+function forceTransientRowsOnExit(renderer: ghostty_renderer_with_row_cache): boolean {
+  const active = hasTransientRendererState(renderer);
+  const previous = Boolean(renderer.__floetermRowRenderCacheHadTransientState);
+  renderer.__floetermRowRenderCacheHadTransientState = active;
+  return previous && !active;
+}
+
+function normalizeNumberField(record: unknown, key: string): number | null {
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+  const value = Number((record as Record<string, unknown>)[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function normalizeSelectionRange(value: unknown): {
+  startCol: number;
+  startRow: number;
+  endCol: number;
+  endRow: number;
+} | null {
+  const startCol = normalizeNumberField(value, 'startCol');
+  const startRow = normalizeNumberField(value, 'startRow');
+  const endCol = normalizeNumberField(value, 'endCol');
+  const endRow = normalizeNumberField(value, 'endRow');
+  if (startCol === null || startRow === null || endCol === null || endRow === null) {
+    return null;
+  }
+  return {
+    startCol: Math.max(0, Math.floor(startCol)),
+    startRow: Math.max(0, Math.floor(startRow)),
+    endCol: Math.max(0, Math.floor(endCol)),
+    endRow: Math.max(0, Math.floor(endRow)),
+  };
+}
+
+function normalizeHoverRange(value: unknown): { startX: number; startY: number; endX: number; endY: number } | null {
+  const startX = normalizeNumberField(value, 'startX');
+  const startY = normalizeNumberField(value, 'startY');
+  const endX = normalizeNumberField(value, 'endX');
+  const endY = normalizeNumberField(value, 'endY');
+  if (startX === null || startY === null || endX === null || endY === null) {
+    return null;
+  }
+  return {
+    startX: Math.max(0, Math.floor(startX)),
+    startY: Math.max(0, Math.floor(startY)),
+    endX: Math.max(0, Math.floor(endX)),
+    endY: Math.max(0, Math.floor(endY)),
+  };
+}
+
+function normalizeFabricIdentifier(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'terminal';
 }
 
 // TerminalCore provides a focused wrapper around ghostty-web (xterm.js API-compatible) and its fit addon.
@@ -470,6 +599,10 @@ export class TerminalCore {
   private needsFullRenderOnNextWrite = false;
   private demandRenderForceAll = false;
   private readonly renderTask: TerminalRenderTask;
+  private fabricView: TerminalLiveFabricViewHandle | null = null;
+  private readonly fabricViewId: string;
+  private fabricAttachSeq = 0;
+  private cancelFabricAttachSchedule: ScheduledTurnCancel | null = null;
   private viewportHost: HTMLDivElement | null = null;
   private renderHost: HTMLDivElement | null = null;
 
@@ -556,6 +689,7 @@ export class TerminalCore {
         this.renderDemandFrame(forceAll);
       },
     };
+    this.fabricViewId = `floeterm-view-${this.renderTask.id}`;
     TerminalCore.nextRenderTaskId += 1;
   }
 
@@ -690,6 +824,11 @@ export class TerminalCore {
   }
 
   private proposeFitDimensions(): TerminalDimensions | undefined {
+    const fabricDimensions = this.proposeFabricFitDimensions();
+    if (fabricDimensions) {
+      return fabricDimensions;
+    }
+
     const terminalAny = this.terminal as unknown as {
       element?: HTMLElement | null;
       renderer?: {
@@ -729,12 +868,107 @@ export class TerminalCore {
     };
   }
 
+  private proposeFabricFitDimensions(): TerminalDimensions | null {
+    if (this.config.rendererType !== 'webgl') {
+      return null;
+    }
+
+    const geometry = this.fabricView?.renderer.getGeometry();
+    if (!geometry) {
+      return null;
+    }
+
+    const cols = Math.floor(Number(geometry.cols));
+    const rows = Math.floor(Number(geometry.rows));
+    if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) {
+      return null;
+    }
+
+    return {
+      cols: Math.max(MIN_TERMINAL_COLS, cols),
+      rows: Math.max(MIN_TERMINAL_ROWS, rows),
+    };
+  }
+
+  private syncGhosttyInputGeometryToFabric(): void {
+    if (!this.terminal || !this.isFabricRendererActive()) {
+      return;
+    }
+
+    const geometry = this.fabricView?.renderer.getGeometry();
+    if (!geometry) {
+      return;
+    }
+
+    const terminalAny = this.terminal as unknown as {
+      cols?: number;
+      rows?: number;
+      renderer?: ghostty_renderer_with_row_cache | null;
+    };
+    const renderer = terminalAny.renderer;
+    const canvas = renderer?.getCanvas?.();
+    const cols = Math.floor(Number(terminalAny.cols ?? geometry.cols));
+    const rows = Math.floor(Number(terminalAny.rows ?? geometry.rows));
+    const cellWidth = Number(geometry.cellWidth);
+    const cellHeight = Number(geometry.cellHeight);
+
+    if (
+      !renderer
+      || !canvas
+      || !Number.isFinite(cols)
+      || !Number.isFinite(rows)
+      || !Number.isFinite(cellWidth)
+      || !Number.isFinite(cellHeight)
+      || cols <= 0
+      || rows <= 0
+      || cellWidth <= 0
+      || cellHeight <= 0
+    ) {
+      return;
+    }
+
+    const currentMetrics = renderer.getMetrics?.() ?? renderer.metrics ?? {};
+    const baselineRatio = Number(currentMetrics.height) > 0
+      ? Number(currentMetrics.baseline ?? cellHeight * 0.8) / Number(currentMetrics.height)
+      : 0.8;
+    const nextMetrics = {
+      ...currentMetrics,
+      width: cellWidth,
+      height: cellHeight,
+      baseline: Math.max(1, Math.round(cellHeight * baselineRatio)),
+    };
+    renderer.metrics = nextMetrics;
+
+    const gridWidth = cols * cellWidth;
+    const gridHeight = rows * cellHeight;
+    canvas.style.width = formatCssPixelValue(gridWidth);
+    canvas.style.height = formatCssPixelValue(gridHeight);
+    canvas.style.maxWidth = 'none';
+    canvas.style.maxHeight = 'none';
+
+    const canvasDpr = canvas.width > 0 && gridWidth > 0
+      ? canvas.width / gridWidth
+      : window.devicePixelRatio ?? 1;
+    const dpr = Number.isFinite(canvasDpr) && canvasDpr > 0 ? canvasDpr : 1;
+    const expectedWidth = Math.max(1, Math.round(gridWidth * dpr));
+    const expectedHeight = Math.max(1, Math.round(gridHeight * dpr));
+    if (canvas.width !== expectedWidth || canvas.height !== expectedHeight) {
+      canvas.width = expectedWidth;
+      canvas.height = expectedHeight;
+    }
+    canvas.style.position = 'absolute';
+    canvas.style.left = '0';
+    canvas.style.top = '0';
+    canvas.style.inset = '0 auto auto 0';
+    canvas.style.zIndex = '1';
+  }
+
   private resolveFitElement(terminalElement: HTMLElement | null | undefined): HTMLElement | null {
     const candidates = [
-      terminalElement,
       this.renderHost,
       this.viewportHost,
       this.container,
+      terminalElement,
     ];
     return candidates.find(hasUsableClientSize) ?? terminalElement ?? this.renderHost ?? this.container;
   }
@@ -869,15 +1103,26 @@ export class TerminalCore {
       const viewportChanged = Number.isFinite(incomingViewportY)
         && Number.isFinite(currentViewportY)
         && incomingViewportY !== currentViewportY;
-      renderer.__floetermRowRenderCacheForceAll = Boolean(args[1]) || viewportChanged;
+      const forceTransientExit = forceTransientRowsOnExit(renderer);
+      const forceAll = Boolean(args[1]) || viewportChanged || forceTransientExit;
+      renderer.__floetermRowRenderCacheForceAll = forceAll;
+      const fabricFrame = this.beginFabricFrame(forceAll, args[0]);
       try {
-        return originalRender(...args);
+        const renderArgs = [...args];
+        renderArgs[1] = forceAll;
+        return originalRender(...renderArgs);
       } finally {
+        this.finishFabricFrame(fabricFrame);
         renderer.__floetermRowRenderCacheForceAll = false;
       }
     };
     renderer.renderLine = (cells: ghostty_cell_like[], row: number, cols: number) => {
       const themedCells = this.translateCellsForTheme(cells);
+      const fabricActive = this.writeFabricRow(renderer, row, themedCells, cols);
+      if (canSkipNativeCanvasRowRender(renderer, row, fabricActive)) {
+        return undefined;
+      }
+
       const signature = buildRowSignature(renderer, themedCells, row, cols);
       if (canSkipCachedRowRender(renderer, row) && cache.get(row) === signature) {
         return undefined;
@@ -891,6 +1136,129 @@ export class TerminalCore {
       cache.set(row, signature);
       return result;
     };
+  }
+
+  private beginFabricFrame(forceAll: boolean, buffer: unknown): TerminalFabricFrame | null {
+    const renderer = this.fabricView?.renderer;
+    if (!renderer?.isActive()) {
+      return null;
+    }
+
+    const dimensions = this.resolveFabricDimensions(buffer);
+    if (!dimensions) {
+      return null;
+    }
+
+    const frame = terminalFabricCoordinator.beginFrame(renderReasonFromForce(forceAll), forceAll);
+    const theme = this.resolveFabricTheme();
+    renderer.startFrame(frame, {
+      cols: dimensions.cols,
+      rows: dimensions.rows,
+      theme: themeToFabricTheme(theme),
+    });
+    return frame;
+  }
+
+  private resolveFabricDimensions(buffer: unknown): terminal_fabric_dimensions | null {
+    const raw = buffer as {
+      getDimensions?: () => { cols?: number; rows?: number } | null | undefined;
+    } | null | undefined;
+    const dimensions = raw?.getDimensions?.();
+    const cols = Math.floor(Number(dimensions?.cols ?? this.terminal?.cols ?? 0));
+    const rows = Math.floor(Number(dimensions?.rows ?? this.terminal?.rows ?? 0));
+    if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) {
+      return null;
+    }
+    return { cols, rows };
+  }
+
+  private writeFabricRow(
+    renderer: ghostty_renderer_with_row_cache,
+    row: number,
+    cells: ghostty_cell_like[],
+    cols: number,
+  ): boolean {
+    const fabricRenderer = this.fabricView?.renderer;
+    if (!fabricRenderer?.isActive()) {
+      return false;
+    }
+    fabricRenderer.writeRow(row, mapGhosttyRowToFabricCells(
+      renderer,
+      row,
+      cells,
+      cols,
+      this.resolveFabricRowRenderHints(renderer),
+    ), cols);
+    return true;
+  }
+
+  private resolveFabricRowRenderHints(renderer: ghostty_renderer_with_row_cache): TerminalFabricRowRenderHints {
+    return {
+      selection: this.resolveFabricSelectionHint(renderer),
+      hover: {
+        hyperlinkId: Number(renderer.hoveredHyperlinkId ?? 0),
+        range: normalizeHoverRange(renderer.hoveredLinkRange),
+      },
+    };
+  }
+
+  private resolveFabricSelectionHint(
+    renderer: ghostty_renderer_with_row_cache,
+  ): TerminalFabricRowRenderHints['selection'] {
+    const range = normalizeSelectionRange(renderer.currentSelectionCoords);
+    if (!range) {
+      return null;
+    }
+
+    const theme = this.resolveFabricTheme();
+    return {
+      ...range,
+      background: parseThemeColor(theme.selectionBackground ?? TERMINAL_SELECTION_BACKGROUND)
+        ?? parseThemeColor(TERMINAL_SELECTION_BACKGROUND)!,
+      foreground: parseThemeColor(theme.selectionForeground ?? TERMINAL_SELECTION_FOREGROUND)
+        ?? parseThemeColor(TERMINAL_SELECTION_FOREGROUND)!,
+    };
+  }
+
+  private syncFabricSelectionState(): void {
+    const renderer = (this.terminal as unknown as {
+      renderer?: ghostty_renderer_with_row_cache | null;
+      selectionManager?: terminal_selection_manager | null;
+    } | null)?.renderer;
+    const selectionManager = (this.terminal as unknown as {
+      selectionManager?: terminal_selection_manager | null;
+    } | null)?.selectionManager;
+    if (!renderer || !selectionManager) {
+      return;
+    }
+    renderer.currentSelectionCoords = selectionManager.hasSelection?.()
+      ? selectionManager.getSelectionCoords?.() ?? null
+      : null;
+    renderer.__floetermRowRenderCache?.clear();
+    this.demandRenderForceAll = true;
+  }
+
+  private finishFabricFrame(frame: TerminalFabricFrame | null): void {
+    const fabricRenderer = this.fabricView?.renderer;
+    if (!frame || !fabricRenderer?.isActive()) {
+      return;
+    }
+
+    const terminalAny = this.terminal as unknown as {
+      wasmTerm?: { getCursor?: () => unknown };
+    } | null;
+    const result = fabricRenderer.finishFrame(cursorToFabricCursor(terminalAny?.wasmTerm?.getCursor?.()));
+    if (result.rendered) {
+      terminalFabricCoordinator.completeFrame(frame, result.renderedRows, result.dirtyCells);
+    }
+  }
+
+  private resolveFabricTheme(): Record<string, string> {
+    if (this.searchQuery.trim().length > 0 && this.searchThemeRestore) {
+      return this.applySearchThemeOverride(this.searchThemeRestore);
+    }
+    const configured = mapThemeToGhostty(this.config.theme);
+    return Object.keys(configured).length > 0 ? configured : this.terminalThemeSource;
   }
 
   private translateCellsForTheme(cells: ghostty_cell_like[]): ghostty_cell_like[] {
@@ -1006,8 +1374,86 @@ export class TerminalCore {
 
     selectionManager.requestRender = () => {
       originalRequestRender?.();
+      this.syncFabricSelectionState();
       this.requestDemandRender(false);
     };
+  }
+
+  private async attachFabricRenderer(): Promise<void> {
+    if (this.fabricView || this.config.rendererType !== 'webgl' || !this.terminal) {
+      return;
+    }
+
+    const terminalAny = this.terminal as unknown as {
+      renderer?: ghostty_renderer_with_row_cache;
+      options?: {
+        fontFamily?: string;
+        fontSize?: number;
+      };
+    };
+    const theme = Object.keys(this.terminalThemeSource).length > 0
+      ? this.terminalThemeSource
+      : mapThemeToGhostty(this.config.theme);
+    const fontFamily = typeof terminalAny.options?.fontFamily === 'string'
+      ? terminalAny.options.fontFamily
+      : typeof this.config.fontFamily === 'string'
+        ? this.config.fontFamily
+        : '"JetBrains Mono", monospace';
+    const fontSize = Number(terminalAny.options?.fontSize ?? this.resolveEffectiveFontSize());
+    const sessionId = normalizeFabricIdentifier(
+      typeof this.config.sessionId === 'string' ? this.config.sessionId : this.fabricViewId,
+    );
+
+    this.fabricView = await terminalLiveFabric.attachView({
+      sessionId,
+      viewId: this.fabricViewId,
+      container: this.renderHost ?? this.container,
+      logger: this.logger,
+      fontFamily,
+      fontSize: Number.isFinite(fontSize) && fontSize > 0 ? fontSize : this.resolveEffectiveFontSize(),
+      theme,
+      getGhosttyCanvas: () => terminalAny.renderer?.getCanvas?.() ?? null,
+      focusInputSurface: () => this.inputBridge?.focus(),
+      forwardWheel: event => {
+        this.container.dispatchEvent(new WheelEvent(event.type, event));
+      },
+    });
+    this.fabricView.renderer.setAppearance({ theme, fontFamily, fontSize });
+    this.performResize('force');
+    this.syncGhosttyInputGeometryToFabric();
+    this.forceFullRender();
+  }
+
+  private scheduleFabricRendererAttach(): void {
+    if (this.config.rendererType !== 'webgl' || this.fabricView || !this.terminal) {
+      return;
+    }
+
+    if (this.cancelFabricAttachSchedule !== null) {
+      return;
+    }
+
+    const seq = ++this.fabricAttachSeq;
+    const attach = () => {
+      this.cancelFabricAttachSchedule = null;
+      if (this.isDisposed || seq !== this.fabricAttachSeq || this.fabricView) {
+        return;
+      }
+      this.attachFabricRenderer().catch(error => {
+        if (this.isDisposed || seq !== this.fabricAttachSeq) {
+          return;
+        }
+        this.logger.warn('[TerminalCore] Beamterm live fabric attach failed; keeping ghostty canvas live', { error });
+      });
+    };
+
+    this.cancelFabricAttachSchedule = scheduleUiTurn(() => {
+      if (this.isDisposed || seq !== this.fabricAttachSeq || this.fabricView) {
+        this.cancelFabricAttachSchedule = null;
+        return;
+      }
+      this.cancelFabricAttachSchedule = scheduleUiTurn(attach);
+    });
   }
 
   private setupInputBridge(): void {
@@ -1188,6 +1634,7 @@ export class TerminalCore {
 
     if (typeof this.terminal.onSelectionChange === 'function') {
       const disposable = this.terminal.onSelectionChange(() => {
+        this.syncFabricSelectionState();
         this.requestDemandRender(false);
       });
       this.trackTerminalEventDisposable(disposable);
@@ -1306,7 +1753,16 @@ export class TerminalCore {
     const before = this.lastNotifiedSize;
 
     try {
+      if (this.isFabricRendererActive()) {
+        this.resizeFabricToHost();
+      }
       this.fitAddon.fit();
+      if (this.isFabricRendererActive()) {
+        this.syncGhosttyInputGeometryToFabric();
+      }
+      if (!this.isFabricRendererActive()) {
+        this.resizeFabricToHost();
+      }
     } catch (error) {
       this.logger.debug('[TerminalCore] Resize failed', { error });
     }
@@ -1340,6 +1796,7 @@ export class TerminalCore {
     if (changed) {
       try {
         this.terminal.resize(dims.cols, dims.rows);
+        this.resizeFabricToHost();
       } catch (error) {
         this.logger.debug('[TerminalCore] Fixed-dimension resize failed', { error });
       }
@@ -2041,6 +2498,7 @@ export class TerminalCore {
     const restore = this.searchThemeRestore;
     this.searchThemeRestore = null;
     this.applyRendererTheme(terminalAny, restore);
+    this.forceFullRender();
   }
 
   private applySearchThemeOverride(theme: Record<string, string>): Record<string, string> {
@@ -2069,6 +2527,7 @@ export class TerminalCore {
     }
 
     terminalAny.renderer?.setTheme?.(theme);
+    this.fabricView?.renderer.setAppearance({ theme });
 
     if (this.isVisualRenderSuspended()) {
       this.markPendingDemandRender(true);
@@ -2190,6 +2649,41 @@ export class TerminalCore {
     this.searchOverlay = null;
   }
 
+  private createCanvasOverlay(zIndex: string): terminal_search_overlay | null {
+    const t: any = this.terminal;
+    if (!t) return null;
+    const renderer = t?.renderer;
+    const termCanvas = renderer?.getCanvas?.() as HTMLCanvasElement | undefined;
+    if (!termCanvas) return null;
+
+    try {
+      const style = getComputedStyle(this.container);
+      if (style.position === 'static') this.container.style.position = 'relative';
+    } catch {
+    }
+
+    const overlay = document.createElement('canvas');
+    overlay.style.position = 'absolute';
+    overlay.style.top = '0';
+    overlay.style.left = '0';
+    overlay.style.pointerEvents = 'none';
+    overlay.style.zIndex = zIndex;
+    overlay.style.mixBlendMode = 'normal';
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return null;
+    this.container.appendChild(overlay);
+    const state = {
+      canvas: overlay,
+      ctx,
+      dpr: 1,
+      cssWidth: 0,
+      cssHeight: 0,
+      termCanvas,
+    };
+    syncCanvasOverlaySize(state, termCanvas, this.container);
+    return state;
+  }
+
   private ensureSearchOverlay(): terminal_search_overlay | null {
     const t: any = this.terminal;
     if (!t) return null;
@@ -2209,43 +2703,11 @@ export class TerminalCore {
     }
 
     if (!this.searchOverlay) {
-      const overlay = document.createElement('canvas');
-      overlay.style.position = 'absolute';
-      overlay.style.top = '0';
-      overlay.style.left = '0';
-      overlay.style.pointerEvents = 'none';
-      overlay.style.zIndex = '5';
-      const ctx = overlay.getContext('2d');
-      if (!ctx) return null;
-      this.container.appendChild(overlay);
-      this.searchOverlay = {
-        canvas: overlay,
-        ctx,
-        dpr: 1,
-        cssWidth: 0,
-        cssHeight: 0,
-        termCanvas
-      };
+      this.searchOverlay = this.createCanvasOverlay('5');
     }
 
-    const { cssWidth, cssHeight, dpr } = resolveCanvasLocalDisplaySize(termCanvas, this.container);
-
-    if (
-      this.searchOverlay.canvas.width !== termCanvas.width ||
-      this.searchOverlay.canvas.height !== termCanvas.height ||
-      this.searchOverlay.cssWidth !== cssWidth ||
-      this.searchOverlay.cssHeight !== cssHeight ||
-      this.searchOverlay.dpr !== dpr
-    ) {
-      this.searchOverlay.dpr = dpr;
-      this.searchOverlay.cssWidth = cssWidth;
-      this.searchOverlay.cssHeight = cssHeight;
-      this.searchOverlay.canvas.style.width = `${cssWidth}px`;
-      this.searchOverlay.canvas.style.height = `${cssHeight}px`;
-      this.searchOverlay.canvas.width = termCanvas.width;
-      this.searchOverlay.canvas.height = termCanvas.height;
-      this.searchOverlay.ctx.setTransform(1, 0, 0, 1, 0, 0);
-      this.searchOverlay.ctx.scale(this.searchOverlay.dpr, this.searchOverlay.dpr);
+    if (this.searchOverlay) {
+      syncCanvasOverlaySize(this.searchOverlay, termCanvas, this.container);
     }
 
     return this.searchOverlay;
@@ -2265,17 +2727,17 @@ export class TerminalCore {
   }
 
   private renderSearchOverlay(): void {
-    const overlay = this.ensureSearchOverlay();
-    if (!overlay) return;
-
     const t: any = this.terminal;
     const queryActive = this.searchQuery.trim().length > 0;
     const rowIndex = this.searchRowIndex;
 
     if (!queryActive || rowIndex.size === 0 || !t) {
-      overlay.ctx.clearRect(0, 0, overlay.cssWidth, overlay.cssHeight);
+      this.searchOverlay?.ctx.clearRect(0, 0, this.searchOverlay.cssWidth, this.searchOverlay.cssHeight);
       return;
     }
+
+    const overlay = this.ensureSearchOverlay();
+    if (!overlay) return;
 
     const renderer = t?.renderer;
     const charW = typeof renderer?.charWidth === 'number' ? renderer.charWidth : 0;
@@ -2318,6 +2780,9 @@ export class TerminalCore {
 
   setConnected(isConnected: boolean): void {
     this.setState(isConnected ? TerminalState.CONNECTED : TerminalState.READY);
+    if (isConnected) {
+      this.scheduleFabricRendererAttach();
+    }
   }
 
   forceResize(): void {
@@ -2397,6 +2862,7 @@ export class TerminalCore {
       return;
     }
     this.terminal.options.fontSize = this.resolveEffectiveFontSize();
+    this.fabricView?.renderer.setAppearance({ fontSize: this.resolveEffectiveFontSize() });
     this.performResize('font');
     void this.refreshFontMetricsAfterLoad('font_size');
   }
@@ -2440,6 +2906,10 @@ export class TerminalCore {
     }
 
     this.terminal.options.fontFamily = nextFamily;
+    this.fabricView?.renderer.setAppearance({
+      fontFamily: nextFamily,
+      fontSize: this.resolveEffectiveFontSize(),
+    });
     this.performResize('font');
     this.forceFullRender();
     void this.refreshFontMetricsAfterLoad('font_family');
@@ -2453,6 +2923,9 @@ export class TerminalCore {
 
     this.visualRenderState.suspendDepth += 1;
     this.visualRenderState.activeReasons.set(id, reason);
+    // Legacy compatibility: keep the handle lifecycle observable, but never
+    // freeze visible terminal rendering in the live fabric path.
+    this.visualRenderState.suspendDepth = Math.max(0, this.visualRenderState.suspendDepth - 1);
 
     return {
       id,
@@ -2516,6 +2989,11 @@ export class TerminalCore {
     this.disposeInputBridge();
     this.disposeTerminalEventListeners();
     this.disposeSearchOverlay();
+    this.fabricAttachSeq += 1;
+    this.cancelFabricAttachSchedule?.();
+    this.cancelFabricAttachSchedule = null;
+    this.fabricView?.dispose();
+    this.fabricView = null;
     this.terminal?.dispose();
     this.terminal = null;
     this.viewportHost = null;
@@ -2723,6 +3201,7 @@ export class TerminalCore {
     });
 
     this.terminal.options.fontSize = this.resolveEffectiveFontSize(nextScale);
+    this.fabricView?.renderer.setAppearance({ fontSize: this.resolveEffectiveFontSize(nextScale) });
     if (this.isVisualRenderSuspended()) {
       this.markPendingResize('force');
       this.markPendingDemandRender(true);
@@ -2730,9 +3209,22 @@ export class TerminalCore {
       return;
     }
 
-    this.fitAddon?.fit();
+    this.performResize('force');
     this.forceFullRender();
     this.scheduleRenderSearchOverlay();
+  }
+
+  private resizeFabricToHost(): void {
+    const host = this.renderHost ?? this.container;
+    if (!host) {
+      return;
+    }
+    this.fabricView?.renderer.resize(host.clientWidth, host.clientHeight);
+    this.syncGhosttyInputGeometryToFabric();
+  }
+
+  private isFabricRendererActive(): boolean {
+    return Boolean(this.fabricView?.renderer.isActive());
   }
 
   private forceFullRender(): void {

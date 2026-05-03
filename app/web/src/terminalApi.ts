@@ -55,6 +55,20 @@ const decodeBase64 = (input: string): Uint8Array => {
   return out;
 };
 
+const MIN_TERMINAL_COLS = 20;
+const MIN_TERMINAL_ROWS = 5;
+const MAX_TERMINAL_COLS = 500;
+const MAX_TERMINAL_ROWS = 200;
+
+export const normalizeTerminalDimensions = (cols: number, rows: number): { cols: number; rows: number } => {
+  const normalizedCols = Math.floor(Number.isFinite(cols) ? cols : 80);
+  const normalizedRows = Math.floor(Number.isFinite(rows) ? rows : 24);
+  return {
+    cols: Math.max(MIN_TERMINAL_COLS, Math.min(MAX_TERMINAL_COLS, normalizedCols)),
+    rows: Math.max(MIN_TERMINAL_ROWS, Math.min(MAX_TERMINAL_ROWS, normalizedRows)),
+  };
+};
+
 const requestJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(path, {
     ...init,
@@ -97,15 +111,17 @@ export type AppTerminalTransport = Omit<TerminalTransport, 'listSessions' | 'cre
 export const createTransport = (connId: string): AppTerminalTransport => {
   return {
     attach: async (sessionId, cols, rows) => {
+      const dims = normalizeTerminalDimensions(cols, rows);
       await requestNoContent(`/api/sessions/${encodeURIComponent(sessionId)}/attach`, {
         method: 'POST',
-        body: JSON.stringify({ connId, cols, rows })
+        body: JSON.stringify({ connId, cols: dims.cols, rows: dims.rows })
       });
     },
     resize: async (sessionId, cols, rows) => {
+      const dims = normalizeTerminalDimensions(cols, rows);
       await requestNoContent(`/api/sessions/${encodeURIComponent(sessionId)}/resize`, {
         method: 'POST',
-        body: JSON.stringify({ connId, cols, rows })
+        body: JSON.stringify({ connId, cols: dims.cols, rows: dims.rows })
       });
     },
     sendInput: async (sessionId, input) => {
@@ -193,6 +209,18 @@ export const createEventSource = (connId: string): TerminalEventSource => {
             data: new Uint8Array(0),
             sequence: parsed.sequence,
             timestampMs: parsed.timestampMs
+          };
+          handler(payload);
+          return;
+        }
+
+        if (parsed.type === 'error') {
+          const payload: TerminalDataEvent = {
+            sessionId,
+            type: 'error',
+            data: new Uint8Array(0),
+            timestampMs: parsed.timestampMs,
+            error: parsed.error
           };
           handler(payload);
           return;

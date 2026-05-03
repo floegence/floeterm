@@ -8,9 +8,19 @@ export {
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
 } from './core/TerminalRenderScheduler';
+export {
+  getTerminalFabricDiagnostics,
+  resetTerminalFabricDiagnostics,
+} from './fabric/TerminalFabricCoordinator';
 export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalRenderSchedulerStats } from './core/TerminalRenderScheduler';
+export type {
+  TerminalFabricBackend,
+  TerminalFabricDiagnostics,
+  TerminalFabricRenderPath,
+  TerminalFabricStats,
+} from './fabric/types';
 
 export type {
   Logger,

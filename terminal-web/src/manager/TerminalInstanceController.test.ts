@@ -250,7 +250,7 @@ describe('TerminalInstanceController', () => {
     expect(coreInstances).toHaveLength(0);
 
     controller.updateOptions({ isActive: true });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(150);
     await Promise.resolve();
 
     expect(coreInstances).toHaveLength(1);
@@ -296,7 +296,7 @@ describe('TerminalInstanceController', () => {
       .mockResolvedValueOnce(undefined);
     const transport = makeTransport({ attach });
     const { controller } = await mountController({ transport, autoRunTimers: false });
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(150);
     await Promise.resolve();
 
     expect(controller.getSnapshot().connection.state).toBe('failed');

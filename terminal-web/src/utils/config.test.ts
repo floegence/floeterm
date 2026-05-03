@@ -18,7 +18,7 @@ describe('config helpers', () => {
     expect(config.theme).toBeDefined();
   });
 
-  it('uses a readable beige selection style for every built-in theme', () => {
+  it('uses a readable yellow selection style for every built-in theme', () => {
     for (const theme of themeNames) {
       const colors = getThemeColors(theme);
       expect(colors.selectionBackground).toBe('#f5e6b3');

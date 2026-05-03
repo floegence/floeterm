@@ -28,6 +28,54 @@ const mockState = vi.hoisted(() => ({
   lastTerminal: null as any,
 }));
 
+const mockFabric = vi.hoisted(() => ({
+  attachView: vi.fn(),
+  startFrame: vi.fn(),
+  writeRow: vi.fn(),
+  finishFrame: vi.fn(() => ({
+    rendered: true,
+    renderedRows: 0,
+    dirtyCells: 0,
+  })),
+  setAppearance: vi.fn(),
+  setVisible: vi.fn(),
+  dispose: vi.fn(),
+  renderer: null as any,
+}));
+
+vi.mock('../fabric/TerminalLiveFabric', async importOriginal => {
+  const actual = await importOriginal<typeof import('../fabric/TerminalLiveFabric')>();
+  const renderer = {
+    backend: 'beamterm_webgl2',
+    renderPath: 'main_thread_webgl2',
+    initialize: vi.fn(),
+    isActive: vi.fn(() => true),
+    startFrame: mockFabric.startFrame,
+    writeRow: mockFabric.writeRow,
+    finishFrame: mockFabric.finishFrame,
+    resize: vi.fn(),
+    getGeometry: vi.fn(() => null),
+    setAppearance: mockFabric.setAppearance,
+    setVisible: mockFabric.setVisible,
+    loseContextForTest: vi.fn(),
+    getDiagnostics: vi.fn(),
+    dispose: mockFabric.dispose,
+  };
+  mockFabric.renderer = renderer;
+
+  return {
+    ...actual,
+    terminalLiveFabric: {
+      attachView: mockFabric.attachView.mockResolvedValue({
+        viewId: 'mock-view',
+        sessionId: 'mock-session',
+        renderer,
+        dispose: mockFabric.dispose,
+      }),
+    },
+  };
+});
+
 vi.mock('ghostty-web', () => {
   const cell = (codepoint: number) => ({
     codepoint,
@@ -74,6 +122,7 @@ vi.mock('ghostty-web', () => {
     setThemeSpy = vi.fn(function (this: any, theme: Record<string, string>) {
       this.theme = theme;
     });
+    ghosttyCanvas = document.createElement('canvas');
     fitSpy = vi.fn();
     writes: Array<string | Uint8Array> = [];
     lines = [
@@ -115,8 +164,13 @@ vi.mock('ghostty-web', () => {
       });
       this.renderLineSpy = vi.fn();
       this.renderer = {
+        metrics: { width: 8, height: 16, baseline: 13 },
         cursorVisible: true,
         cursorBlink: opts?.cursorBlink ?? false,
+        getCanvas: vi.fn(() => this.ghosttyCanvas),
+        getMetrics: vi.fn(function (this: any) {
+          return { ...this.metrics };
+        }),
         setCursorBlinkSpy: vi.fn(function (this: any, enabled: boolean) {
           this.cursorBlink = enabled;
           this.cursorVisible = true;
@@ -130,6 +184,8 @@ vi.mock('ghostty-web', () => {
       this.renderer.setCursorBlink = this.renderer.setCursorBlinkSpy;
       this.selectionManager = {
         requestRender: this.selectionRequestRenderSpy,
+        hasSelection: vi.fn(() => Boolean(this.renderer.currentSelectionCoords)),
+        getSelectionCoords: vi.fn(() => this.renderer.currentSelectionCoords),
       };
       mockState.lastTerminal = this;
     }
@@ -196,8 +252,15 @@ vi.mock('ghostty-web', () => {
 
   class MockFitAddon {
     __terminal: MockTerminal | undefined;
+    proposeDimensions?: () => { cols: number; rows: number } | undefined;
 
     fit() {
+      const dims = this.proposeDimensions?.();
+      if (dims && this.__terminal) {
+        this.__terminal.cols = dims.cols;
+        this.__terminal.rows = dims.rows;
+        this.__terminal.resizeEmitter.fire(dims);
+      }
       this.__terminal?.fitSpy();
     }
   }
@@ -226,10 +289,31 @@ const createCore = async (): Promise<TerminalCore> => {
   return core;
 };
 
+const createWebGLCore = async (): Promise<TerminalCore> => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+  Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+  const core = new TerminalCore(container, { rendererType: 'webgl', sessionId: 'session-a' });
+  const init = core.initialize();
+  await vi.runAllTimersAsync();
+  await init;
+  core.setConnected(true);
+  await vi.runAllTimersAsync();
+  return core;
+};
+
 describe('TerminalCore demand rendering', () => {
   beforeEach(() => {
     vi.useFakeTimers();
 
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      clearRect: vi.fn(),
+      fillRect: vi.fn(),
+      scale: vi.fn(),
+      setTransform: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
     globalThis.requestAnimationFrame = (cb: FrameRequestCallback): number => {
       return setTimeout(() => cb(Date.now()), 0) as unknown as number;
     };
@@ -238,6 +322,16 @@ describe('TerminalCore demand rendering', () => {
     };
     (globalThis as any).ResizeObserver = MockResizeObserver;
     mockState.lastTerminal = null;
+    Object.values(mockFabric).forEach(value => {
+      if (typeof value === 'function' && 'mockClear' in value) {
+        value.mockClear();
+      }
+    });
+    mockFabric.finishFrame.mockReturnValue({
+      rendered: true,
+      renderedRows: 2,
+      dirtyCells: 4,
+    });
   });
 
   afterEach(() => {
@@ -316,7 +410,7 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
-  it('keeps writes flowing while visual rendering is suspended', async () => {
+  it('keeps terminal output live when legacy visual suspend handles are active', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
     terminal.renderSpy.mockClear();
@@ -328,7 +422,7 @@ describe('TerminalCore demand rendering', () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(terminal.writes).toEqual(['one', 'two']);
-    expect(terminal.renderSpy).not.toHaveBeenCalled();
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
 
     suspend.dispose();
     await vi.runOnlyPendingTimersAsync();
@@ -338,7 +432,7 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
-  it('keeps visual rendering suspended until the last nested handle is disposed', async () => {
+  it('keeps terminal rendering live while nested legacy suspend handles are active', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
     terminal.renderSpy.mockClear();
@@ -350,7 +444,7 @@ describe('TerminalCore demand rendering', () => {
     first.dispose();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(terminal.renderSpy).not.toHaveBeenCalled();
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
 
     second.dispose();
     await vi.runOnlyPendingTimersAsync();
@@ -360,7 +454,7 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
-  it('defers forced renders and resize work during visual suspension', async () => {
+  it('keeps forced renders and resize work live when legacy suspend is active', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
     terminal.renderSpy.mockClear();
@@ -373,20 +467,22 @@ describe('TerminalCore demand rendering', () => {
     core.clear();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(terminal.fitSpy).not.toHaveBeenCalled();
-    expect(terminal.renderSpy).not.toHaveBeenCalled();
+    const fitCountBeforeDispose = terminal.fitSpy.mock.calls.length;
+    const renderCountBeforeDispose = terminal.renderSpy.mock.calls.length;
+    expect(fitCountBeforeDispose).toBeGreaterThan(0);
+    expect(renderCountBeforeDispose).toBeGreaterThan(0);
+    expect((terminal.renderSpy.mock.calls as unknown[][]).some(call => call[1] === true)).toBe(true);
 
     suspend.dispose();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(terminal.fitSpy).toHaveBeenCalledTimes(1);
-    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
-    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(true);
+    expect(terminal.fitSpy).toHaveBeenCalledTimes(fitCountBeforeDispose);
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(renderCountBeforeDispose);
 
     core.dispose();
   });
 
-  it('applies theme immediately but defers the expensive theme repaint while suspended', async () => {
+  it('applies theme and repaints immediately when legacy suspend is active', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
     terminal.renderSpy.mockClear();
@@ -397,13 +493,13 @@ describe('TerminalCore demand rendering', () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(terminal.setThemeSpy).toHaveBeenCalledTimes(1);
-    expect(terminal.renderSpy).not.toHaveBeenCalled();
+    const renderCountBeforeDispose = terminal.renderSpy.mock.calls.length;
+    expect(renderCountBeforeDispose).toBeGreaterThan(0);
 
     suspend.dispose();
     await vi.runOnlyPendingTimersAsync();
 
-    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
-    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(true);
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(renderCountBeforeDispose);
 
     core.dispose();
   });
@@ -511,6 +607,214 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('mirrors webgl render rows into the Beamterm live fabric path', async () => {
+    const core = await createWebGLCore();
+    const terminal = mockState.lastTerminal;
+
+    expect(mockFabric.attachView).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-a',
+      viewId: expect.stringMatching(/^floeterm-view-/),
+    }));
+
+    mockFabric.startFrame.mockClear();
+    mockFabric.writeRow.mockClear();
+    mockFabric.finishFrame.mockClear();
+    terminal.dirtyRows = new Set([0, 1]);
+    terminal.renderer.render(terminal.wasmTerm, true, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(mockFabric.startFrame).toHaveBeenCalledWith(
+      expect.objectContaining({ forceAll: true }),
+      expect.objectContaining({ cols: 2, rows: 2 }),
+    );
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(2);
+    expect(mockFabric.writeRow).toHaveBeenNthCalledWith(
+      1,
+      0,
+      expect.arrayContaining([
+        expect.objectContaining({ symbol: 'A' }),
+        expect.objectContaining({ symbol: 'B' }),
+      ]),
+      2,
+    );
+    expect(mockFabric.finishFrame).toHaveBeenCalledWith(expect.any(Object));
+
+    core.dispose();
+    expect(mockFabric.dispose).toHaveBeenCalled();
+  });
+
+  it('keeps Beamterm live fabric as the display owner during selection', async () => {
+    const core = await createWebGLCore();
+    const terminal = mockState.lastTerminal;
+
+    mockFabric.writeRow.mockClear();
+    terminal.renderLineSpy.mockClear();
+    terminal.cursorY = 99;
+    terminal.renderer.lastCursorPosition = { y: 99 };
+    terminal.dirtyRows = new Set([0, 1]);
+
+    terminal.renderer.render(terminal.wasmTerm, true, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(2);
+    expect(terminal.renderLineSpy).not.toHaveBeenCalled();
+
+    mockFabric.writeRow.mockClear();
+    terminal.renderer.currentSelectionCoords = { startCol: 0, startRow: 0, endCol: 1, endRow: 0 };
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(1);
+    expect(mockFabric.writeRow.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fg: { r: 31, g: 35, b: 40 },
+        bg: { r: 245, g: 230, b: 179 },
+      }),
+    ]));
+    expect(terminal.renderLineSpy).not.toHaveBeenCalled();
+
+    core.dispose();
+  });
+
+  it('syncs selection-manager redraws into the Beamterm fabric frame', async () => {
+    const core = await createWebGLCore();
+    const terminal = mockState.lastTerminal;
+    terminal.cursorY = 99;
+    terminal.renderer.lastCursorPosition = { y: 99 };
+
+    mockFabric.writeRow.mockClear();
+    terminal.renderer.currentSelectionCoords = { startCol: 0, startRow: 0, endCol: 1, endRow: 0 };
+    terminal.selectionManager.requestRender();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(mockFabric.writeRow).toHaveBeenCalledWith(
+      0,
+      expect.arrayContaining([
+        expect.objectContaining({
+          fg: { r: 31, g: 35, b: 40 },
+          bg: { r: 245, g: 230, b: 179 },
+        }),
+      ]),
+      2,
+    );
+
+    core.dispose();
+  });
+
+  it('skips Beamterm-owned cursor rows without falling back to hidden canvas painting', async () => {
+    const core = await createWebGLCore();
+    const terminal = mockState.lastTerminal;
+
+    mockFabric.writeRow.mockClear();
+    terminal.renderLineSpy.mockClear();
+    terminal.cursorY = 0;
+    terminal.renderer.lastCursorPosition = { y: 0 };
+    terminal.dirtyRows = new Set([0]);
+
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(1);
+    expect(terminal.renderLineSpy).not.toHaveBeenCalled();
+
+    core.dispose();
+  });
+
+  it('does not block terminal readiness and waits for connection before attaching Beamterm live fabric', async () => {
+    let resolveAttach!: (handle: any) => void;
+    mockFabric.attachView.mockReturnValueOnce(new Promise(resolve => {
+      resolveAttach = resolve;
+    }));
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const core = new TerminalCore(container, { rendererType: 'webgl', sessionId: 'session-a' });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    expect(core.getState()).toBe('ready');
+    expect(mockFabric.attachView).not.toHaveBeenCalled();
+
+    core.setConnected(true);
+    await vi.runAllTimersAsync();
+
+    expect(mockFabric.attachView).toHaveBeenCalled();
+
+    resolveAttach({
+      viewId: 'mock-view',
+      sessionId: 'mock-session',
+      renderer: {
+        backend: 'beamterm_webgl2',
+        renderPath: 'main_thread_webgl2',
+        initialize: vi.fn(),
+        isActive: vi.fn(() => true),
+        startFrame: mockFabric.startFrame,
+        writeRow: mockFabric.writeRow,
+        finishFrame: mockFabric.finishFrame,
+        resize: vi.fn(),
+        getGeometry: vi.fn(() => null),
+        setAppearance: mockFabric.setAppearance,
+        setVisible: mockFabric.setVisible,
+        loseContextForTest: vi.fn(),
+        getDiagnostics: vi.fn(),
+        dispose: mockFabric.dispose,
+      },
+      dispose: mockFabric.dispose,
+    });
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+
+    core.dispose();
+  });
+
+  it('fits the terminal grid from Beamterm geometry after the WebGL renderer attaches', async () => {
+    const core = await createWebGLCore();
+    vi.mocked(mockFabric.renderer.getGeometry).mockReturnValue({
+      width: 800,
+      height: 400,
+      cellWidth: 9,
+      cellHeight: 19,
+      cols: 88,
+      rows: 21,
+    });
+
+    core.forceResize();
+
+    expect(core.getDimensions()).toEqual({ cols: 88, rows: 21 });
+
+    core.dispose();
+  });
+
+  it('aligns the hidden ghostty selection canvas to Beamterm cell geometry', async () => {
+    const core = await createWebGLCore();
+    const terminal = mockState.lastTerminal;
+    vi.mocked(mockFabric.renderer.getGeometry).mockReturnValue({
+      width: 800,
+      height: 401,
+      cellWidth: 4.5,
+      cellHeight: 9.5,
+      cols: 177,
+      rows: 42,
+    });
+
+    core.forceResize();
+
+    expect(terminal.renderer.metrics).toMatchObject({
+      width: 4.5,
+      height: 9.5,
+    });
+    expect(terminal.ghosttyCanvas.style.width).toBe('796.5px');
+    expect(terminal.ghosttyCanvas.style.height).toBe('399px');
+    expect(terminal.ghosttyCanvas.style.maxWidth).toBe('none');
+    expect(terminal.ghosttyCanvas.style.maxHeight).toBe('none');
+    expect(terminal.ghosttyCanvas.style.position).toBe('absolute');
+    expect(terminal.ghosttyCanvas.style.left).toBe('0px');
+    expect(terminal.ghosttyCanvas.style.top).toBe('0px');
+
+    core.dispose();
+  });
+
   it('does not cache rows rendered under transient selection state', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
@@ -518,24 +822,37 @@ describe('TerminalCore demand rendering', () => {
     terminal.renderer.lastCursorPosition = { y: 99 };
 
     terminal.renderLineSpy.mockClear();
+    terminal.renderer.currentSelectionCoords = { startCol: 0, startRow: 0, endCol: 1, endRow: 0 };
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
+
+    terminal.renderLineSpy.mockClear();
+    terminal.dirtyRows = new Set([0]);
+    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
+
+    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
+
+    core.dispose();
+  });
+
+  it('forces Beamterm rows once after transient selection clears', async () => {
+    const core = await createWebGLCore();
+    const terminal = mockState.lastTerminal;
+    terminal.cursorY = 99;
+    terminal.renderer.lastCursorPosition = { y: 99 };
+
     terminal.renderer.currentSelectionCoords = { startRow: 0, endRow: 0 };
     terminal.dirtyRows = new Set([0]);
     terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
 
-    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
-
-    terminal.renderLineSpy.mockClear();
+    mockFabric.writeRow.mockClear();
     terminal.renderer.currentSelectionCoords = null;
-    terminal.dirtyRows = new Set([0]);
+    terminal.dirtyRows = new Set();
     terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
 
-    expect(terminal.renderLineSpy).toHaveBeenCalledTimes(1);
-
-    terminal.renderLineSpy.mockClear();
-    terminal.dirtyRows = new Set([0]);
-    terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
-
-    expect(terminal.renderLineSpy).not.toHaveBeenCalled();
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(2);
 
     core.dispose();
   });

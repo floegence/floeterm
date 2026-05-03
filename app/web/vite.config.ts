@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
+import wasm from 'vite-plugin-wasm';
 
 const env = (globalThis as typeof globalThis & {
   process?: { env?: Record<string, string | undefined> };
@@ -12,9 +13,15 @@ const parsePort = (value: string | undefined, fallback: number): number => {
 
 const backendOrigin = env.FLOETERM_BACKEND_ORIGIN ?? 'http://localhost:8080';
 const backendWsOrigin = backendOrigin.replace(/^http/, 'ws');
+const terminalWebSrc = decodeURIComponent(new URL('../../terminal-web/src/index.ts', import.meta.url).pathname);
 
 export default defineConfig({
-  plugins: [solid()],
+  plugins: [wasm(), solid()],
+  resolve: {
+    alias: {
+      '@floegence/floeterm-terminal-web': terminalWebSrc,
+    },
+  },
   server: {
     host: true,
     port: parsePort(env.FLOETERM_WEB_PORT, 5173),
