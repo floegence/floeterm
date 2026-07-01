@@ -144,6 +144,22 @@ type terminal_render_snapshot = {
   viewportY: number | null;
 };
 
+type terminal_cursor_position = {
+  x?: number;
+  y?: number;
+  viewportX?: number;
+  viewportY?: number;
+  visible?: boolean;
+};
+
+type terminal_input_anchor_geometry = {
+  canvas: HTMLCanvasElement;
+  cellWidth: number;
+  cellHeight: number;
+  cols: number;
+  rows: number;
+};
+
 type terminal_fabric_dimensions = {
   cols: number;
   rows: number;
@@ -603,6 +619,7 @@ export class TerminalCore {
   private readonly fabricViewId: string;
   private fabricAttachSeq = 0;
   private cancelFabricAttachSchedule: ScheduledTurnCancel | null = null;
+  private cancelInputRefocusSchedule: ScheduledTurnCancel | null = null;
   private viewportHost: HTMLDivElement | null = null;
   private renderHost: HTMLDivElement | null = null;
 
@@ -961,6 +978,137 @@ export class TerminalCore {
     canvas.style.top = '0';
     canvas.style.inset = '0 auto auto 0';
     canvas.style.zIndex = '1';
+    this.syncImeInputAnchor();
+  }
+
+  private syncImeInputAnchor(): void {
+    const input = resolveTerminalInputElement(this.container);
+    if (!input || this.shouldPreserveTransientInputPlacement(input)) {
+      return;
+    }
+
+    const geometry = this.resolveImeInputAnchorGeometry();
+    const cursor = this.resolveImeCursorPosition();
+    if (!geometry || !cursor) {
+      return;
+    }
+
+    const canvasRect = geometry.canvas.getBoundingClientRect();
+    const left = Number(canvasRect.left) + cursor.x * geometry.cellWidth;
+    const top = Number(canvasRect.top) + cursor.y * geometry.cellHeight;
+    if (!Number.isFinite(left) || !Number.isFinite(top)) {
+      return;
+    }
+
+    input.style.position = 'fixed';
+    input.style.left = formatCssPixelValue(left);
+    input.style.top = formatCssPixelValue(top);
+    input.style.width = formatCssPixelValue(geometry.cellWidth);
+    input.style.height = formatCssPixelValue(geometry.cellHeight);
+    input.style.padding = '0';
+    input.style.border = 'none';
+    input.style.margin = '0';
+    input.style.opacity = '0';
+    input.style.overflow = 'hidden';
+    input.style.whiteSpace = 'nowrap';
+    input.style.resize = 'none';
+    input.style.clipPath = 'none';
+    input.style.pointerEvents = 'none';
+    input.style.zIndex = '0';
+  }
+
+  private shouldPreserveTransientInputPlacement(input: HTMLTextAreaElement): boolean {
+    return input.style.pointerEvents === 'auto' || input.style.zIndex === '1000';
+  }
+
+  private resolveImeInputAnchorGeometry(): terminal_input_anchor_geometry | null {
+    const terminalAny = this.terminal as unknown as {
+      cols?: number;
+      rows?: number;
+      renderer?: ghostty_renderer_with_row_cache | null;
+    } | null;
+    const renderer = terminalAny?.renderer ?? null;
+    const canvas = renderer?.getCanvas?.() ?? this.container.querySelector('canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      return null;
+    }
+
+    const fabricGeometry = this.isFabricRendererActive()
+      ? this.fabricView?.renderer.getGeometry()
+      : null;
+    if (fabricGeometry) {
+      const cellWidth = Number(fabricGeometry.cellWidth);
+      const cellHeight = Number(fabricGeometry.cellHeight);
+      const cols = Math.floor(Number(terminalAny?.cols ?? fabricGeometry.cols));
+      const rows = Math.floor(Number(terminalAny?.rows ?? fabricGeometry.rows));
+      if (this.isUsableAnchorGeometry(cellWidth, cellHeight, cols, rows)) {
+        return { canvas, cellWidth, cellHeight, cols, rows };
+      }
+    }
+
+    const metrics = renderer?.getMetrics?.() ?? renderer?.metrics ?? {};
+    const cols = Math.floor(Number(terminalAny?.cols));
+    const rows = Math.floor(Number(terminalAny?.rows));
+    const canvasRect = canvas.getBoundingClientRect();
+    const fallbackCellWidth = cols > 0 ? Number(canvasRect.width) / cols : Number.NaN;
+    const fallbackCellHeight = rows > 0 ? Number(canvasRect.height) / rows : Number.NaN;
+    const cellWidth = Number(metrics.width ?? renderer?.charWidth ?? fallbackCellWidth);
+    const cellHeight = Number(metrics.height ?? renderer?.charHeight ?? fallbackCellHeight);
+    if (!this.isUsableAnchorGeometry(cellWidth, cellHeight, cols, rows)) {
+      return null;
+    }
+    return { canvas, cellWidth, cellHeight, cols, rows };
+  }
+
+  private isUsableAnchorGeometry(cellWidth: number, cellHeight: number, cols: number, rows: number): boolean {
+    return Number.isFinite(cellWidth)
+      && Number.isFinite(cellHeight)
+      && Number.isFinite(cols)
+      && Number.isFinite(rows)
+      && cellWidth > 0
+      && cellHeight > 0
+      && cols > 0
+      && rows > 0;
+  }
+
+  private resolveImeCursorPosition(): { x: number; y: number } | null {
+    const terminalAny = this.terminal as unknown as {
+      cols?: number;
+      rows?: number;
+      wasmTerm?: {
+        getCursor?: () => terminal_cursor_position | null | undefined;
+      };
+    } | null;
+    const cursor = terminalAny?.wasmTerm?.getCursor?.();
+    if (!cursor) {
+      return null;
+    }
+    const cols = Math.max(1, Math.floor(Number(terminalAny?.cols ?? 1)));
+    const rows = Math.max(1, Math.floor(Number(terminalAny?.rows ?? 1)));
+    const rawX = Number(cursor.viewportX ?? cursor.x);
+    const rawY = Number(cursor.viewportY ?? cursor.y);
+    if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) {
+      return null;
+    }
+    return {
+      x: Math.max(0, Math.min(cols - 1, Math.floor(rawX))),
+      y: Math.max(0, Math.min(rows - 1, Math.floor(rawY))),
+    };
+  }
+
+  private focusInputSurface(): void {
+    this.inputBridge?.focus();
+  }
+
+  private scheduleInputSurfaceRefocus(): void {
+    this.cancelInputRefocusSchedule?.();
+    this.cancelInputRefocusSchedule = scheduleUiTurn(() => {
+      this.cancelInputRefocusSchedule = null;
+      if (this.isDisposed) {
+        return;
+      }
+      this.focusInputSurface();
+    });
   }
 
   private resolveFitElement(terminalElement: HTMLElement | null | undefined): HTMLElement | null {
@@ -1474,7 +1622,12 @@ export class TerminalCore {
       this.logger,
       () => this.hasSelection(),
       (source, clipboardData) => this.performSelectionCopy(source, clipboardData),
+      () => this.syncImeInputAnchor(),
     );
+    this.syncImeInputAnchor();
+    if (this.isContainerFocused()) {
+      this.scheduleInputSurfaceRefocus();
+    }
   }
 
   private async waitForDOMAndFonts(): Promise<void> {
@@ -1627,6 +1780,7 @@ export class TerminalCore {
 
     if (typeof this.terminal.onScroll === 'function') {
       const disposable = this.terminal.onScroll(() => {
+        this.syncImeInputAnchor();
         this.requestDemandRender(false);
       });
       this.trackTerminalEventDisposable(disposable);
@@ -1763,6 +1917,7 @@ export class TerminalCore {
       if (!this.isFabricRendererActive()) {
         this.resizeFabricToHost();
       }
+      this.syncImeInputAnchor();
     } catch (error) {
       this.logger.debug('[TerminalCore] Resize failed', { error });
     }
@@ -1797,6 +1952,7 @@ export class TerminalCore {
       try {
         this.terminal.resize(dims.cols, dims.rows);
         this.resizeFabricToHost();
+        this.syncImeInputAnchor();
       } catch (error) {
         this.logger.debug('[TerminalCore] Fixed-dimension resize failed', { error });
       }
@@ -2772,10 +2928,8 @@ export class TerminalCore {
 
   focus(): void {
     this.terminal?.focus();
-
-    if (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0) {
-      this.inputBridge?.focus();
-    }
+    this.focusInputSurface();
+    this.scheduleInputSurfaceRefocus();
   }
 
   setConnected(isConnected: boolean): void {
@@ -2992,6 +3146,8 @@ export class TerminalCore {
     this.fabricAttachSeq += 1;
     this.cancelFabricAttachSchedule?.();
     this.cancelFabricAttachSchedule = null;
+    this.cancelInputRefocusSchedule?.();
+    this.cancelInputRefocusSchedule = null;
     this.fabricView?.dispose();
     this.fabricView = null;
     this.terminal?.dispose();
@@ -3307,6 +3463,7 @@ export class TerminalCore {
         terminalAny.lastCursorY = cursor.y;
         terminalAny.cursorMoveEmitter?.fire?.();
       }
+      this.syncImeInputAnchor();
       getPerfProbe()?.onTerminalRender?.(performance.now() - startedAt);
     } catch (error) {
       this.logger.debug('[TerminalCore] Force render failed', { error });

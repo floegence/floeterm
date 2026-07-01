@@ -11,7 +11,12 @@ vi.mock('ghostty-web', () => {
     options: any;
     buffer: any;
     element: HTMLElement | null = null;
+    canvas: HTMLCanvasElement | null = null;
     textarea: HTMLTextAreaElement | null = null;
+    cursor = { x: 0, y: 0, visible: true };
+    scrollHandler: (() => void) | null = null;
+    renderer: any;
+    wasmTerm: any;
     selectionManager: {
       copySpy: ReturnType<typeof vi.fn>;
       copyToClipboard: (text: string) => Promise<void>;
@@ -23,6 +28,15 @@ vi.mock('ghostty-web', () => {
       this.rows = typeof opts?.rows === 'number' ? opts.rows : 24;
       this.options = { theme: opts?.theme ?? {}, fontSize: opts?.fontSize, fontFamily: opts?.fontFamily };
       this.buffer = { active: { length: 0 } };
+      this.renderer = {
+        metrics: { width: 10, height: 20, baseline: 16 },
+        getCanvas: () => this.canvas,
+        getMetrics: () => this.renderer.metrics,
+        render: vi.fn(),
+      };
+      this.wasmTerm = {
+        getCursor: () => this.cursor,
+      };
       const copySpy = vi.fn().mockResolvedValue(undefined);
       this.selectionManager = {
         copySpy,
@@ -38,6 +52,7 @@ vi.mock('ghostty-web', () => {
       this.element = container;
       const canvas = document.createElement('canvas');
       container.appendChild(canvas);
+      this.canvas = canvas;
       const textarea = document.createElement('textarea');
       textarea.setAttribute('aria-label', 'Terminal input');
       container.appendChild(textarea);
@@ -53,6 +68,13 @@ vi.mock('ghostty-web', () => {
       return { dispose: () => {} };
     }
 
+    onScroll(handler: () => void) {
+      this.scrollHandler = handler;
+      return { dispose: () => {
+        if (this.scrollHandler === handler) this.scrollHandler = null;
+      } };
+    }
+
     write(_data: string | Uint8Array, cb?: () => void) {
       cb?.();
     }
@@ -63,6 +85,9 @@ vi.mock('ghostty-web', () => {
     }
     focus() {
       this.element?.focus();
+      setTimeout(() => {
+        this.element?.focus();
+      }, 0);
     }
     dispose() {}
   }
@@ -93,6 +118,60 @@ const createInputEvent = (
   Object.defineProperty(event, 'inputType', { value: init.inputType ?? '' });
   Object.defineProperty(event, 'isComposing', { value: Boolean(init.isComposing) });
   return event;
+};
+
+const setCanvasRect = (
+  canvas: HTMLCanvasElement,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+) => {
+  Object.defineProperty(canvas, 'getBoundingClientRect', {
+    value: () => ({
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }),
+    configurable: true,
+  });
+};
+
+const initializeCore = async (
+  config: Record<string, unknown> = {},
+  handlers: TerminalEventHandlers = {},
+) => {
+  const container = document.createElement('div');
+  container.tabIndex = 0;
+  document.body.appendChild(container);
+  Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+  Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+  const core = new TerminalCore(container, config as any, handlers);
+  const init = core.initialize();
+  await vi.runAllTimersAsync();
+  await init;
+
+  const terminal = (core as unknown as { terminal?: any | null }).terminal;
+  const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+  const canvas = terminal?.canvas as HTMLCanvasElement | null;
+  expect(terminal).toBeTruthy();
+  expect(textarea).toBeTruthy();
+  expect(canvas).toBeTruthy();
+
+  return {
+    container,
+    core,
+    terminal: terminal!,
+    textarea: textarea!,
+    canvas: canvas!,
+  };
 };
 
 describe('TerminalCore mobile input integration', () => {
@@ -232,6 +311,101 @@ describe('TerminalCore mobile input integration', () => {
     core.focus();
 
     expect(document.activeElement).toBe(textarea);
+
+    core.dispose();
+  });
+
+  it('keeps the hidden textarea focused after desktop terminal focus handoff', async () => {
+    Object.defineProperty(globalThis.navigator, 'maxTouchPoints', { value: 0, configurable: true });
+    const { core, textarea } = await initializeCore();
+
+    core.focus();
+
+    expect(document.activeElement).toBe(textarea);
+
+    await vi.runAllTimersAsync();
+
+    expect(document.activeElement).toBe(textarea);
+
+    core.dispose();
+  });
+
+  it('positions the hidden textarea at the terminal cursor for IME candidate anchoring', async () => {
+    const { core, terminal, textarea, canvas } = await initializeCore();
+    setCanvasRect(canvas, 40, 60, 800, 400);
+    terminal.cursor = { x: 3, y: 2, visible: true };
+
+    core.focus();
+
+    expect(textarea.style.position).toBe('fixed');
+    expect(textarea.style.left).toBe('70px');
+    expect(textarea.style.top).toBe('100px');
+    expect(textarea.style.width).toBe('10px');
+    expect(textarea.style.height).toBe('20px');
+    expect(textarea.style.clipPath).toBe('none');
+
+    core.dispose();
+  });
+
+  it('uses active fabric geometry for the IME anchor instead of stale ghostty metrics', async () => {
+    const { core, terminal, textarea, canvas } = await initializeCore({ rendererType: 'webgl' });
+    setCanvasRect(canvas, 10, 20, 800, 400);
+    terminal.cursor = { x: 4, y: 1, visible: true };
+    terminal.renderer.metrics = { width: 99, height: 99, baseline: 80 };
+    (core as unknown as { fabricView: unknown }).fabricView = {
+      viewId: 'test-view',
+      sessionId: 'test-session',
+      dispose: vi.fn(),
+      renderer: {
+        isActive: () => true,
+        getGeometry: () => ({ cols: 120, rows: 30, cellWidth: 8, cellHeight: 18 }),
+      },
+    };
+
+    core.focus();
+
+    expect(textarea.style.left).toBe('42px');
+    expect(textarea.style.top).toBe('38px');
+    expect(textarea.style.width).toBe('8px');
+    expect(textarea.style.height).toBe('18px');
+
+    core.dispose();
+  });
+
+  it('updates the IME anchor after terminal scroll events', async () => {
+    const { core, terminal, textarea, canvas } = await initializeCore();
+    setCanvasRect(canvas, 100, 120, 800, 400);
+    terminal.cursor = { x: 1, y: 1, visible: true };
+    core.focus();
+    expect(textarea.style.left).toBe('110px');
+    expect(textarea.style.top).toBe('140px');
+
+    terminal.cursor = { x: 5, y: 3, visible: true };
+    terminal.scrollHandler?.();
+
+    expect(textarea.style.left).toBe('150px');
+    expect(textarea.style.top).toBe('180px');
+
+    core.dispose();
+  });
+
+  it('does not overwrite transient native context-menu textarea placement', async () => {
+    const { core, terminal, textarea, canvas } = await initializeCore();
+    setCanvasRect(canvas, 40, 60, 800, 400);
+    terminal.cursor = { x: 2, y: 2, visible: true };
+    core.focus();
+
+    textarea.style.pointerEvents = 'auto';
+    textarea.style.zIndex = '1000';
+    textarea.style.left = '321px';
+    textarea.style.top = '654px';
+    terminal.cursor = { x: 8, y: 8, visible: true };
+
+    core.focus();
+    await vi.runAllTimersAsync();
+
+    expect(textarea.style.left).toBe('321px');
+    expect(textarea.style.top).toBe('654px');
 
     core.dispose();
   });

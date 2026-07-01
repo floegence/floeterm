@@ -170,6 +170,7 @@ export class TerminalInputBridge {
       reason: 'empty_selection',
       source,
     }),
+    private readonly syncInputGeometry: () => void = () => {},
   ) {
     this.input.setAttribute('inputmode', 'text');
     this.input.setAttribute('enterkeyhint', 'enter');
@@ -178,6 +179,7 @@ export class TerminalInputBridge {
   }
 
   focus(): void {
+    this.syncInputGeometry();
     this.input.focus();
   }
 
@@ -202,6 +204,7 @@ export class TerminalInputBridge {
   }
 
   private handleKeydown(event: KeyboardEvent): void {
+    this.syncInputGeometry();
     if (this.isComposing || event.isComposing || event.keyCode === 229) {
       return;
     }
@@ -231,6 +234,7 @@ export class TerminalInputBridge {
   }
 
   private handleBeforeInput(event: InputEvent): void {
+    this.syncInputGeometry();
     if (this.isComposing || event.isComposing) {
       return;
     }
@@ -256,6 +260,7 @@ export class TerminalInputBridge {
   }
 
   private handleInput(): void {
+    this.syncInputGeometry();
     if (this.isComposing) {
       return;
     }
@@ -284,6 +289,7 @@ export class TerminalInputBridge {
   }
 
   private handleCompositionStart(): void {
+    this.syncInputGeometry();
     this.clearEphemeralStateResetTimer();
     this.isComposing = true;
     this.suppressionToken = null;
@@ -291,6 +297,7 @@ export class TerminalInputBridge {
   }
 
   private handleCompositionEnd(event: CompositionEvent): void {
+    this.syncInputGeometry();
     this.isComposing = false;
 
     const data = String(event.data ?? this.input.value ?? '');
