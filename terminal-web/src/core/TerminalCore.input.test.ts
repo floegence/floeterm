@@ -49,13 +49,19 @@ vi.mock('ghostty-web', () => {
     }
 
     open(container: HTMLElement) {
-      this.element = container;
+      const inputHost = document.createElement('div');
+      inputHost.tabIndex = 0;
+      inputHost.setAttribute('contenteditable', 'true');
+      inputHost.setAttribute('aria-label', 'Terminal input');
+      inputHost.setAttribute('role', 'textbox');
+      container.appendChild(inputHost);
+      this.element = inputHost;
       const canvas = document.createElement('canvas');
-      container.appendChild(canvas);
+      inputHost.appendChild(canvas);
       this.canvas = canvas;
       const textarea = document.createElement('textarea');
       textarea.setAttribute('aria-label', 'Terminal input');
-      container.appendChild(textarea);
+      inputHost.appendChild(textarea);
       this.textarea = textarea;
       container.tabIndex = 0;
     }
@@ -322,6 +328,19 @@ describe('TerminalCore mobile input integration', () => {
     core.focus();
 
     expect(document.activeElement).toBe(textarea);
+
+    await vi.runAllTimersAsync();
+
+    expect(document.activeElement).toBe(textarea);
+
+    core.dispose();
+  });
+
+  it('reclaims hidden textarea focus when ghostty contenteditable host receives focus directly', async () => {
+    const { core, terminal, textarea } = await initializeCore();
+
+    terminal.element.focus();
+    expect(document.activeElement).toBe(terminal.element);
 
     await vi.runAllTimersAsync();
 

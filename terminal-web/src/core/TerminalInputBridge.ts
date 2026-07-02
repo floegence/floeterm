@@ -156,6 +156,16 @@ export class TerminalInputBridge {
     this.clearInputValue();
   };
 
+  private readonly containerFocusInListener = (event: FocusEvent) => {
+    this.handleContainerFocusIn(event);
+  };
+
+  private readonly containerPointerDownListener = () => {
+    this.scheduleInputFocusClaim();
+  };
+
+  private inputFocusClaimTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(
     private readonly container: HTMLElement,
     private readonly input: HTMLTextAreaElement,
@@ -185,6 +195,7 @@ export class TerminalInputBridge {
 
   dispose(): void {
     this.clearEphemeralStateResetTimer();
+    this.clearInputFocusClaimTimer();
     this.unregisterDocumentShortcutBridge();
     this.input.removeEventListener('keydown', this.keydownListener);
     this.input.removeEventListener('beforeinput', this.beforeInputListener as EventListener);
@@ -192,6 +203,8 @@ export class TerminalInputBridge {
     this.input.removeEventListener('compositionstart', this.compositionStartListener);
     this.input.removeEventListener('compositionend', this.compositionEndListener as EventListener);
     this.input.removeEventListener('focus', this.focusListener);
+    this.container.removeEventListener('focusin', this.containerFocusInListener);
+    this.container.removeEventListener('pointerdown', this.containerPointerDownListener, true);
   }
 
   private attach(): void {
@@ -201,6 +214,36 @@ export class TerminalInputBridge {
     this.input.addEventListener('compositionstart', this.compositionStartListener);
     this.input.addEventListener('compositionend', this.compositionEndListener as EventListener);
     this.input.addEventListener('focus', this.focusListener);
+    this.container.addEventListener('focusin', this.containerFocusInListener);
+    this.container.addEventListener('pointerdown', this.containerPointerDownListener, true);
+  }
+
+  private handleContainerFocusIn(event: FocusEvent): void {
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || target === this.input) {
+      return;
+    }
+
+    if (!this.isTerminalOwnedEditableTarget(target)) {
+      return;
+    }
+
+    this.scheduleInputFocusClaim();
+  }
+
+  private scheduleInputFocusClaim(): void {
+    this.clearInputFocusClaimTimer();
+    this.inputFocusClaimTimer = setTimeout(() => {
+      this.inputFocusClaimTimer = null;
+      const active = this.container.ownerDocument.activeElement;
+      if (!(active instanceof HTMLElement) || active === this.input) {
+        return;
+      }
+      if (!this.isTerminalOwnedEditableTarget(active)) {
+        return;
+      }
+      this.focus();
+    }, 0);
   }
 
   private handleKeydown(event: KeyboardEvent): void {
@@ -422,6 +465,15 @@ export class TerminalInputBridge {
 
     clearTimeout(this.ephemeralStateResetTimer);
     this.ephemeralStateResetTimer = null;
+  }
+
+  private clearInputFocusClaimTimer(): void {
+    if (!this.inputFocusClaimTimer) {
+      return;
+    }
+
+    clearTimeout(this.inputFocusClaimTimer);
+    this.inputFocusClaimTimer = null;
   }
 }
 
