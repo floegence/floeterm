@@ -1005,6 +1005,7 @@ export class TerminalCore {
     input.style.top = formatCssPixelValue(top);
     input.style.width = formatCssPixelValue(geometry.cellWidth);
     input.style.height = formatCssPixelValue(geometry.cellHeight);
+    input.style.lineHeight = formatCssPixelValue(geometry.cellHeight);
     input.style.padding = '0';
     input.style.border = 'none';
     input.style.margin = '0';
@@ -1015,10 +1016,44 @@ export class TerminalCore {
     input.style.clipPath = 'none';
     input.style.pointerEvents = 'none';
     input.style.zIndex = '0';
+    this.calibrateImeInputAnchorRect(input, left, top);
   }
 
   private shouldPreserveTransientInputPlacement(input: HTMLTextAreaElement): boolean {
     return input.style.pointerEvents === 'auto' || input.style.zIndex === '1000';
+  }
+
+  private calibrateImeInputAnchorRect(
+    input: HTMLTextAreaElement,
+    targetLeft: number,
+    targetTop: number,
+  ): void {
+    const rect = input.getBoundingClientRect();
+    if (
+      rect.width <= 0
+      || rect.height <= 0
+      || !Number.isFinite(rect.left)
+      || !Number.isFinite(rect.top)
+    ) {
+      return;
+    }
+
+    const deltaLeft = targetLeft - Number(rect.left);
+    const deltaTop = targetTop - Number(rect.top);
+    if (Math.abs(deltaLeft) < 0.5 && Math.abs(deltaTop) < 0.5) {
+      return;
+    }
+
+    const currentLeft = Number.parseFloat(input.style.left);
+    const currentTop = Number.parseFloat(input.style.top);
+    const nextLeft = (Number.isFinite(currentLeft) ? currentLeft : targetLeft) + deltaLeft;
+    const nextTop = (Number.isFinite(currentTop) ? currentTop : targetTop) + deltaTop;
+    if (Number.isFinite(nextLeft)) {
+      input.style.left = formatCssPixelValue(nextLeft);
+    }
+    if (Number.isFinite(nextTop)) {
+      input.style.top = formatCssPixelValue(nextTop);
+    }
   }
 
   private resolveImeInputAnchorGeometry(): terminal_input_anchor_geometry | null {

@@ -149,6 +149,35 @@ const setCanvasRect = (
   });
 };
 
+const setTextareaRectWithContainingBlockOffset = (
+  textarea: HTMLTextAreaElement,
+  offsetLeft: number,
+  offsetTop: number,
+) => {
+  Object.defineProperty(textarea, 'getBoundingClientRect', {
+    value: () => {
+      const styleLeft = Number.parseFloat(textarea.style.left) || 0;
+      const styleTop = Number.parseFloat(textarea.style.top) || 0;
+      const width = Number.parseFloat(textarea.style.width) || 0;
+      const height = Number.parseFloat(textarea.style.height) || 0;
+      const left = styleLeft + offsetLeft;
+      const top = styleTop + offsetTop;
+      return {
+        left,
+        top,
+        width,
+        height,
+        right: left + width,
+        bottom: top + height,
+        x: left,
+        y: top,
+        toJSON: () => ({}),
+      };
+    },
+    configurable: true,
+  });
+};
+
 const initializeCore = async (
   config: Record<string, unknown> = {},
   handlers: TerminalEventHandlers = {},
@@ -361,7 +390,24 @@ describe('TerminalCore mobile input integration', () => {
     expect(textarea.style.top).toBe('100px');
     expect(textarea.style.width).toBe('10px');
     expect(textarea.style.height).toBe('20px');
+    expect(textarea.style.lineHeight).toBe('20px');
     expect(textarea.style.clipPath).toBe('none');
+
+    core.dispose();
+  });
+
+  it('calibrates the IME anchor when fixed positioning is scoped by a containing block', async () => {
+    const { core, terminal, textarea, canvas } = await initializeCore();
+    setCanvasRect(canvas, 40, 60, 800, 400);
+    setTextareaRectWithContainingBlockOffset(textarea, 40, 60);
+    terminal.cursor = { x: 3, y: 2, visible: true };
+
+    core.focus();
+
+    expect(textarea.style.left).toBe('30px');
+    expect(textarea.style.top).toBe('40px');
+    expect(textarea.getBoundingClientRect().left).toBe(70);
+    expect(textarea.getBoundingClientRect().top).toBe(100);
 
     core.dispose();
   });
