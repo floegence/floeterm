@@ -365,6 +365,43 @@ describe('TerminalCore mobile input integration', () => {
     core.dispose();
   });
 
+  it('focuses terminal input surfaces without scrolling the terminal host', async () => {
+    Object.defineProperty(globalThis.navigator, 'maxTouchPoints', { value: 0, configurable: true });
+    let terminalHost: HTMLElement | null = null;
+    let textareaElement: HTMLTextAreaElement | null = null;
+    const focusCalls: Array<{ target: HTMLElement; options?: FocusOptions }> = [];
+    const originalFocus = HTMLElement.prototype.focus;
+    const focusSpy = vi
+      .spyOn(HTMLElement.prototype, 'focus')
+      .mockImplementation(function focus(this: HTMLElement, options?: FocusOptions) {
+        focusCalls.push({ target: this, options });
+        if (this === terminalHost && options?.preventScroll !== true) {
+          terminalHost.scrollTop = 200;
+        }
+        if (this === textareaElement && options?.preventScroll !== true && terminalHost) {
+          terminalHost.scrollTop = 300;
+        }
+        originalFocus.call(this);
+      });
+    const { core, terminal, textarea } = await initializeCore();
+    terminalHost = terminal.element as HTMLElement;
+    textareaElement = textarea;
+    terminalHost.scrollTop = 42;
+
+    core.focus();
+    await vi.runAllTimersAsync();
+
+    expect(terminalHost.scrollTop).toBe(42);
+    expect(document.activeElement).toBe(textarea);
+    expect(focusCalls.filter((call) => call.target === terminalHost).map((call) => call.options))
+      .toEqual([{ preventScroll: true }, { preventScroll: true }]);
+    expect(focusCalls.filter((call) => call.target === textarea).map((call) => call.options))
+      .toEqual([{ preventScroll: true }, { preventScroll: true }]);
+
+    focusSpy.mockRestore();
+    core.dispose();
+  });
+
   it('reclaims hidden textarea focus when ghostty contenteditable host receives focus directly', async () => {
     const { core, terminal, textarea } = await initializeCore();
 

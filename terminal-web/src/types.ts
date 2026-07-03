@@ -36,6 +36,15 @@ export type TerminalDimensions = {
   rows: number;
 };
 
+export interface TerminalFocusOptions {
+  /**
+   * Programmatic terminal focus should not move the host page or an embedded
+   * terminal viewport unless a caller explicitly opts into native focus
+   * scrolling.
+   */
+  preventScroll?: boolean;
+}
+
 export interface TerminalFitConfig {
   /**
    * Extra horizontal space reserved before computing terminal columns.
@@ -199,7 +208,7 @@ export interface TerminalCoreLike {
   findPrevious(term: string, options?: SearchOptions): boolean;
   clearSearch(): void;
   setSearchResultsCallback(callback: ((results: { resultIndex: number; resultCount: number; matchPositions?: number[] }) => void) | null): void;
-  focus(): void;
+  focus(options?: TerminalFocusOptions): void;
   setConnected(isConnected: boolean): void;
   forceResize(): void;
   setFixedDimensions(dimensions: TerminalDimensions | null): void;
@@ -336,7 +345,7 @@ export interface TerminalManagerActions {
   setConnected: (connected: boolean) => void;
   forceResize: () => void;
   setSearchResultsCallback: (callback: ((results: { resultIndex: number; resultCount: number; matchPositions?: number[] }) => void) | null) => void;
-  focus: () => void;
+  focus: (options?: TerminalFocusOptions) => void;
   getTerminalInfo: () => { rows: number; cols: number; bufferLength: number } | null;
   sendInput: (data: string) => void;
   setAppearance: (appearance: TerminalManagerAppearance) => void;

@@ -19,10 +19,19 @@ describe('TerminalInputBridge', () => {
     target.dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
   };
 
-  const setup = (selectionText = '') => {
+  const setup = (selectionText = '', options: { terminalInputHost?: boolean } = {}) => {
     const container = document.createElement('div');
     const textarea = document.createElement('textarea');
-    container.appendChild(textarea);
+    let terminalInputHost: HTMLDivElement | null = null;
+    if (options.terminalInputHost) {
+      terminalInputHost = document.createElement('div');
+      terminalInputHost.setAttribute('contenteditable', 'true');
+      terminalInputHost.setAttribute('aria-label', 'Terminal input');
+      terminalInputHost.appendChild(textarea);
+      container.appendChild(terminalInputHost);
+    } else {
+      container.appendChild(textarea);
+    }
     document.body.appendChild(container);
     const onData = vi.fn();
     const copySelection = vi.fn().mockResolvedValue({
@@ -38,7 +47,7 @@ describe('TerminalInputBridge', () => {
       () => selectionText.length > 0,
       copySelection,
     );
-    return { bridge, container, textarea, onData, copySelection };
+    return { bridge, container, textarea, terminalInputHost, onData, copySelection };
   };
 
   it('sends plain text from beforeinput without waiting for keydown', () => {
@@ -130,10 +139,116 @@ describe('TerminalInputBridge', () => {
 
   it('focuses the hidden textarea when requested', () => {
     const { bridge, textarea } = setup();
+    const focusCalls: Array<FocusOptions | undefined> = [];
+    const originalFocus = HTMLTextAreaElement.prototype.focus;
+    const focusSpy = vi
+      .spyOn(HTMLTextAreaElement.prototype, 'focus')
+      .mockImplementation(function focus(this: HTMLTextAreaElement, options?: FocusOptions) {
+        focusCalls.push(options);
+        originalFocus.call(this);
+      });
 
     bridge.focus();
 
     expect(document.activeElement).toBe(textarea);
+    expect(focusCalls).toEqual([{ preventScroll: true }]);
+    focusSpy.mockRestore();
+  });
+
+  it('lets callers opt into native focus scrolling', () => {
+    const { bridge } = setup();
+    const focusCalls: Array<FocusOptions | undefined> = [];
+    const focusSpy = vi
+      .spyOn(HTMLTextAreaElement.prototype, 'focus')
+      .mockImplementation(function focus(_options?: FocusOptions) {
+        focusCalls.push(_options);
+      });
+
+    bridge.focus({ preventScroll: false });
+
+    expect(focusCalls).toEqual([{ preventScroll: false }]);
+    focusSpy.mockRestore();
+  });
+
+  it('patches native terminal host focus to avoid browser scroll alignment', () => {
+    const focusCalls: Array<FocusOptions | undefined> = [];
+    const originalFocus = HTMLElement.prototype.focus;
+    const focusSpy = vi
+      .spyOn(HTMLElement.prototype, 'focus')
+      .mockImplementation(function focus(this: HTMLElement, options?: FocusOptions) {
+        focusCalls.push(options);
+        originalFocus.call(this);
+      });
+    const { bridge, terminalInputHost } = setup('', { terminalInputHost: true });
+    expect(terminalInputHost).toBeTruthy();
+
+    terminalInputHost!.focus();
+    terminalInputHost!.focus({ preventScroll: false });
+    bridge.dispose();
+    terminalInputHost!.focus({ preventScroll: false });
+
+    expect(focusCalls).toEqual([
+      { preventScroll: true },
+      { preventScroll: false },
+      { preventScroll: false },
+    ]);
+    focusSpy.mockRestore();
+  });
+
+  it('restores shared terminal host focus after out-of-order bridge disposal', () => {
+    const focusCalls: Array<FocusOptions | undefined> = [];
+    const originalFocus = HTMLElement.prototype.focus;
+    const focusSpy = vi
+      .spyOn(HTMLElement.prototype, 'focus')
+      .mockImplementation(function focus(this: HTMLElement, options?: FocusOptions) {
+        focusCalls.push(options);
+        originalFocus.call(this);
+      });
+    const { bridge: firstBridge, container, textarea, terminalInputHost } = setup('', { terminalInputHost: true });
+    expect(terminalInputHost).toBeTruthy();
+    const secondBridge = new TerminalInputBridge(container, textarea, vi.fn());
+
+    terminalInputHost!.focus();
+    firstBridge.dispose();
+    terminalInputHost!.focus();
+    secondBridge.dispose();
+    terminalInputHost!.focus();
+
+    expect(focusCalls).toEqual([
+      { preventScroll: true },
+      { preventScroll: true },
+      undefined,
+    ]);
+    expect(Object.prototype.hasOwnProperty.call(terminalInputHost, 'focus')).toBe(false);
+    focusSpy.mockRestore();
+  });
+
+  it('keeps terminal pointer events available for native mouse handling', () => {
+    const { terminalInputHost } = setup('', { terminalInputHost: true });
+    expect(terminalInputHost).toBeTruthy();
+    const canvas = document.createElement('canvas');
+    terminalInputHost!.appendChild(canvas);
+    const bubbled = vi.fn();
+    terminalInputHost!.addEventListener('pointerdown', bubbled);
+
+    const event = new Event('pointerdown', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'button', { value: 0 });
+    canvas.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(bubbled).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not prevent pointer focus for non-terminal editables inside the container', () => {
+    const { container } = setup();
+    const input = document.createElement('input');
+    container.appendChild(input);
+
+    const event = new Event('pointerdown', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'button', { value: 0 });
+    input.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
   });
 
   it('routes Cmd/Ctrl+C through the shared copy path when the terminal has a selection', async () => {

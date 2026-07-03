@@ -8,6 +8,7 @@ import {
   type TerminalDataEvent,
   type TerminalEventHandlers,
   type TerminalEventSource,
+  type TerminalFocusOptions,
   type TerminalInstanceOptions,
   type TerminalInstanceSnapshot,
   type TerminalTransport,
@@ -29,6 +30,7 @@ class MockCore implements TerminalCoreLike {
   historyReplayStarted = 0;
   historyReplayEnded = 0;
   appearanceCalls: unknown[] = [];
+  focusCalls: Array<TerminalFocusOptions | undefined> = [];
   readonly config?: unknown;
   readonly container: HTMLElement;
   readonly eventHandlers?: TerminalEventHandlers;
@@ -67,7 +69,7 @@ class MockCore implements TerminalCoreLike {
   findPrevious(): boolean { return false; }
   clearSearch(): void {}
   setSearchResultsCallback(): void {}
-  focus(): void {}
+  focus(options?: TerminalFocusOptions): void { this.focusCalls.push(options); }
   setConnected(isConnected: boolean): void { this.connected = isConnected; }
   forceResize(): void {}
   setFixedDimensions(): void {}
@@ -196,6 +198,17 @@ describe('TerminalInstanceController', () => {
 
     expect(transport.clear).toHaveBeenCalledWith('s1');
     expect(transport.sendInput).toHaveBeenCalledWith('s1', '\r');
+
+    controller.dispose();
+  });
+
+  it('passes focus options through the shared action facade', async () => {
+    const { controller } = await mountController();
+    const core = coreInstances[0]!;
+
+    controller.actions.focus({ preventScroll: false });
+
+    expect(core.focusCalls).toEqual([{ preventScroll: false }]);
 
     controller.dispose();
   });

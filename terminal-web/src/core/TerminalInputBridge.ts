@@ -2,6 +2,7 @@ import type {
   Logger,
   TerminalCopySelectionResult,
   TerminalCopySelectionSource,
+  TerminalFocusOptions,
 } from '../types';
 import { noopLogger } from '../utils/logger';
 
@@ -55,6 +56,71 @@ const mapKeydownToTerminalData = (event: KeyboardEvent): string | null => {
   if (event.key === 'Enter') return '\r';
   if (event.key === 'Backspace') return '\x7f';
   return null;
+};
+
+const normalizeTerminalFocusOptions = (options?: TerminalFocusOptions | FocusOptions): FocusOptions => ({
+  ...options,
+  preventScroll: options?.preventScroll ?? true,
+});
+
+const focusTerminalElement = (element: HTMLElement, options?: TerminalFocusOptions): void => {
+  element.focus(normalizeTerminalFocusOptions(options));
+};
+
+type terminal_focus_host_patch = {
+  originalFocus: typeof HTMLElement.prototype.focus;
+  originalDescriptor?: PropertyDescriptor;
+  wrappedFocus: typeof HTMLElement.prototype.focus;
+  references: number;
+};
+
+const terminalFocusHostPatches = new WeakMap<HTMLElement, terminal_focus_host_patch>();
+
+const retainTerminalFocusHostPatch = (host: HTMLElement): (() => void) => {
+  const existingPatch = terminalFocusHostPatches.get(host);
+  if (existingPatch) {
+    existingPatch.references += 1;
+    return () => {
+      releaseTerminalFocusHostPatch(host, existingPatch);
+    };
+  }
+
+  const originalDescriptor = Object.getOwnPropertyDescriptor(host, 'focus');
+  const originalFocus = host.focus;
+  const patch: terminal_focus_host_patch = {
+    originalFocus,
+    originalDescriptor,
+    wrappedFocus: ((options?: FocusOptions) => {
+      originalFocus.call(host, normalizeTerminalFocusOptions(options));
+    }) as typeof host.focus,
+    references: 1,
+  };
+  terminalFocusHostPatches.set(host, patch);
+  host.focus = patch.wrappedFocus;
+  return () => {
+    releaseTerminalFocusHostPatch(host, patch);
+  };
+};
+
+const releaseTerminalFocusHostPatch = (host: HTMLElement, patch: terminal_focus_host_patch): void => {
+  const currentPatch = terminalFocusHostPatches.get(host);
+  if (currentPatch !== patch) {
+    return;
+  }
+
+  patch.references -= 1;
+  if (patch.references > 0) {
+    return;
+  }
+
+  terminalFocusHostPatches.delete(host);
+  if (host.focus === patch.wrappedFocus) {
+    if (patch.originalDescriptor) {
+      Object.defineProperty(host, 'focus', patch.originalDescriptor);
+    } else {
+      delete (host as { focus?: typeof host.focus }).focus;
+    }
+  }
 };
 
 const matchesBeforeInputSuppression = (token: input_suppression_token, event: InputEvent): boolean => {
@@ -130,6 +196,8 @@ export class TerminalInputBridge {
   private ignoreNextInput = false;
   private suppressionToken: input_suppression_token | null = null;
   private ephemeralStateResetTimer: ReturnType<typeof setTimeout> | null = null;
+  private patchedTerminalFocusHost: HTMLElement | null = null;
+  private restoreTerminalFocusHost: (() => void) | null = null;
   private readonly unregisterDocumentShortcutBridge: () => void;
 
   private readonly keydownListener = (event: KeyboardEvent) => {
@@ -188,14 +256,17 @@ export class TerminalInputBridge {
     this.attach();
   }
 
-  focus(): void {
+  focus(options?: TerminalFocusOptions): void {
     this.syncInputGeometry();
-    this.input.focus();
+    focusTerminalElement(this.input, options);
   }
 
   dispose(): void {
     this.clearEphemeralStateResetTimer();
     this.clearInputFocusClaimTimer();
+    this.restoreTerminalFocusHost?.();
+    this.restoreTerminalFocusHost = null;
+    this.patchedTerminalFocusHost = null;
     this.unregisterDocumentShortcutBridge();
     this.input.removeEventListener('keydown', this.keydownListener);
     this.input.removeEventListener('beforeinput', this.beforeInputListener as EventListener);
@@ -208,6 +279,7 @@ export class TerminalInputBridge {
   }
 
   private attach(): void {
+    this.patchTerminalFocusHost();
     this.input.addEventListener('keydown', this.keydownListener);
     this.input.addEventListener('beforeinput', this.beforeInputListener as EventListener);
     this.input.addEventListener('input', this.inputListener);
@@ -420,6 +492,19 @@ export class TerminalInputBridge {
     // host. Treat only that terminal-owned host as copy-eligible so embedded
     // user inputs inside overlays still keep their native clipboard behavior.
     return target.matches(TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR);
+  }
+
+  private patchTerminalFocusHost(): void {
+    const host = this.container.matches(TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR)
+      ? this.container
+      : this.container.querySelector(TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR);
+    if (!(host instanceof HTMLElement) || this.patchedTerminalFocusHost === host) {
+      return;
+    }
+
+    this.restoreTerminalFocusHost?.();
+    this.patchedTerminalFocusHost = host;
+    this.restoreTerminalFocusHost = retainTerminalFocusHostPatch(host);
   }
 
   private requestSelectionCopy(source: TerminalCopySelectionSource, clipboardData: DataTransfer | null = null): void {

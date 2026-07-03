@@ -135,7 +135,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     setConnected: connected => this.terminalCore?.setConnected(connected),
     forceResize: () => this.terminalCore?.forceResize(),
     setSearchResultsCallback: callback => this.terminalCore?.setSearchResultsCallback(callback),
-    focus: () => this.terminalCore?.focus(),
+    focus: options => this.terminalCore?.focus(options),
     getTerminalInfo: () => this.terminalCore?.getTerminalInfo() ?? null,
     sendInput: data => this.handleUserInput(data),
     setAppearance: appearance => this.applyCoreAppearance(appearance),

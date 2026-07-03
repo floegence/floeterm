@@ -34,6 +34,7 @@ export type {
   TerminalResponsiveConfig,
   TerminalRuntimeLineSnapshot,
   TerminalEventHandlers,
+  TerminalFocusOptions,
   TerminalInstanceController,
   TerminalInstanceListener,
   TerminalInstanceMutableOptions,

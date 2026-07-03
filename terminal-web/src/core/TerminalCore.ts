@@ -21,6 +21,7 @@ import {
   type TerminalDimensions,
   type TerminalEventHandlers,
   type TerminalFitConfig,
+  type TerminalFocusOptions,
   type TerminalAppearance,
   type TerminalLinkProvider,
   type TerminalResponsiveConfig,
@@ -1131,18 +1132,18 @@ export class TerminalCore {
     };
   }
 
-  private focusInputSurface(): void {
-    this.inputBridge?.focus();
+  private focusInputSurface(options?: TerminalFocusOptions): void {
+    this.inputBridge?.focus(options);
   }
 
-  private scheduleInputSurfaceRefocus(): void {
+  private scheduleInputSurfaceRefocus(options?: TerminalFocusOptions): void {
     this.cancelInputRefocusSchedule?.();
     this.cancelInputRefocusSchedule = scheduleUiTurn(() => {
       this.cancelInputRefocusSchedule = null;
       if (this.isDisposed) {
         return;
       }
-      this.focusInputSurface();
+      this.focusInputSurface(options);
     });
   }
 
@@ -2261,7 +2262,7 @@ export class TerminalCore {
     textarea.style.pointerEvents = 'none';
 
     document.body.appendChild(textarea);
-    textarea.focus();
+    textarea.focus({ preventScroll: true });
     textarea.select();
 
     try {
@@ -2278,7 +2279,7 @@ export class TerminalCore {
     }
 
     textarea.remove();
-    previousActiveElement?.focus();
+    previousActiveElement?.focus({ preventScroll: true });
 
     if (restorableSelection) {
       try {
@@ -2961,10 +2962,10 @@ export class TerminalCore {
     }
   }
 
-  focus(): void {
+  focus(options?: TerminalFocusOptions): void {
     this.terminal?.focus();
-    this.focusInputSurface();
-    this.scheduleInputSurfaceRefocus();
+    this.focusInputSurface(options);
+    this.scheduleInputSurfaceRefocus(options);
   }
 
   setConnected(isConnected: boolean): void {
