@@ -4,6 +4,7 @@ import {
   TerminalSessionsCoordinator,
   TerminalState,
   createTerminalInstance,
+  createTerminalOutputPipeline,
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
   type TerminalAppearance,
@@ -12,6 +13,8 @@ import {
   type TerminalEventSource,
   type TerminalInstanceController,
   type TerminalLinkProvider,
+  type TerminalOutputPipelineChunk,
+  type TerminalOutputPipelineHandle,
   type TerminalResponsiveConfig,
   type TerminalRuntimeLineSnapshot,
   type TerminalSessionInfo,
@@ -24,6 +27,7 @@ describe('public framework-neutral API', () => {
     expect(TerminalCore).toBeTypeOf('function');
     expect(TerminalSessionsCoordinator).toBeTypeOf('function');
     expect(createTerminalInstance).toBeTypeOf('function');
+    expect(createTerminalOutputPipeline).toBeTypeOf('function');
     expect(TerminalState.IDLE).toBe('idle');
     expect(getTerminalRenderSchedulerStats()).toEqual(expect.objectContaining({ scheduled: expect.any(Number) }));
     resetTerminalRenderSchedulerStats();
@@ -70,6 +74,10 @@ describe('public framework-neutral API', () => {
     const appearance: TerminalAppearance = { fontSize: 13, presentationScale: 1 };
     const responsive: TerminalResponsiveConfig = { fitOnFocus: true, notifyResizeOnlyWhenFocused: true };
     const line: TerminalRuntimeLineSnapshot = { row: 0, text: 'demo' };
+    const pipelineChunk: TerminalOutputPipelineChunk = { sequence: 1, data: chunk.data };
+    const pipeline: TerminalOutputPipelineHandle = createTerminalOutputPipeline({
+      write: () => {},
+    });
     const touchScroll: TerminalTouchScrollRuntime = {
       scrollLines: () => true,
       getScrollbackLength: () => 10,
@@ -89,8 +97,11 @@ describe('public framework-neutral API', () => {
     expect(linkProvider).toBeDefined();
     expect(appearance.fontSize).toBe(13);
     expect(line.text).toBe('demo');
+    expect(pipelineChunk.sequence).toBe(1);
+    expect(pipeline.getStats().pendingChunks).toBe(0);
     expect(touchScroll.scrollLines(1)).toBe(true);
 
+    pipeline.dispose();
     controller.dispose();
   });
 });

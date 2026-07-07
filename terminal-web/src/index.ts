@@ -8,6 +8,7 @@ export {
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
 } from './core/TerminalRenderScheduler';
+export { createTerminalOutputPipeline } from './core/TerminalOutputPipeline';
 export {
   getTerminalFabricDiagnostics,
   resetTerminalFabricDiagnostics,
@@ -15,6 +16,17 @@ export {
 export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalRenderSchedulerStats } from './core/TerminalRenderScheduler';
+export type {
+  TerminalOutputPipelineCatchUpReason,
+  TerminalOutputPipelineCatchUpRequest,
+  TerminalOutputPipelineChunk,
+  TerminalOutputPipelineHandle,
+  TerminalOutputPipelineOptions,
+  TerminalOutputPipelinePolicy,
+  TerminalOutputPipelineResetOptions,
+  TerminalOutputPipelineScheduler,
+  TerminalOutputPipelineStats,
+} from './core/TerminalOutputPipeline';
 export type {
   TerminalFabricBackend,
   TerminalFabricDiagnostics,
