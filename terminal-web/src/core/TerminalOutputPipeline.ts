@@ -48,6 +48,14 @@ export interface TerminalOutputPipelineStats {
   disposed: boolean;
 }
 
+export interface TerminalOutputPipelineDrainState {
+  livePending: boolean;
+  inactivePending: boolean;
+  catchUpPending: boolean;
+  drainPending: boolean;
+  disposed: boolean;
+}
+
 export interface TerminalOutputPipelineScheduler {
   requestFrame?: (callback: FrameRequestCallback) => number;
   cancelFrame?: (handle: number) => void;
@@ -75,6 +83,7 @@ export interface TerminalOutputPipelineHandle {
   reset(options?: TerminalOutputPipelineResetOptions): void;
   dispose(): void;
   getStats(): TerminalOutputPipelineStats;
+  getDrainState(): TerminalOutputPipelineDrainState;
 }
 
 const DEFAULT_POLICY: TerminalOutputPipelinePolicy = {
@@ -299,6 +308,19 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
       lastObservedSequence: this.lastObservedSequence,
       lastAppliedSequence: this.lastAppliedSequence,
       catchUpPending: this.catchUpPending,
+      disposed: this.disposed,
+    };
+  }
+
+  getDrainState(): TerminalOutputPipelineDrainState {
+    const livePending = this.liveQueue.length > 0 || this.frameHandle !== null;
+    const inactivePending = this.inactiveQueue.length > 0;
+    const catchUpPending = this.catchUpPending;
+    return {
+      livePending,
+      inactivePending,
+      catchUpPending,
+      drainPending: livePending || inactivePending || catchUpPending,
       disposed: this.disposed,
     };
   }

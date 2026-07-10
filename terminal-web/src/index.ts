@@ -20,6 +20,7 @@ export type {
   TerminalOutputPipelineCatchUpReason,
   TerminalOutputPipelineCatchUpRequest,
   TerminalOutputPipelineChunk,
+  TerminalOutputPipelineDrainState,
   TerminalOutputPipelineHandle,
   TerminalOutputPipelineOptions,
   TerminalOutputPipelinePolicy,

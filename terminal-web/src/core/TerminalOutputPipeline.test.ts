@@ -128,6 +128,13 @@ describe('TerminalOutputPipeline', () => {
 
     expect(writes).toEqual([]);
     expect(frames.pendingFrames()).toBe(0);
+    expect(pipeline.getDrainState()).toEqual({
+      livePending: false,
+      inactivePending: true,
+      catchUpPending: false,
+      drainPending: true,
+      disposed: false,
+    });
     expect(pipeline.getStats()).toEqual(expect.objectContaining({
       inactiveChunks: 2,
       inactiveBytes: 2,
@@ -137,9 +144,23 @@ describe('TerminalOutputPipeline', () => {
     pipeline.flush();
 
     expect(frames.pendingFrames()).toBe(1);
+    expect(pipeline.getDrainState()).toEqual({
+      livePending: true,
+      inactivePending: false,
+      catchUpPending: false,
+      drainPending: true,
+      disposed: false,
+    });
     frames.flushFrame();
 
     expect(writes).toEqual(['ab']);
+    expect(pipeline.getDrainState()).toEqual({
+      livePending: false,
+      inactivePending: false,
+      catchUpPending: false,
+      drainPending: false,
+      disposed: false,
+    });
     expect(pipeline.getStats()).toEqual(expect.objectContaining({
       inactiveChunks: 0,
       pendingChunks: 0,
@@ -177,6 +198,13 @@ describe('TerminalOutputPipeline', () => {
       catchUpRequests: 1,
       inactiveOverflows: 1,
     }));
+    expect(pipeline.getDrainState()).toEqual({
+      livePending: false,
+      inactivePending: false,
+      catchUpPending: true,
+      drainPending: true,
+      disposed: false,
+    });
   });
 
   it('detects sequence gaps and resumes only after reset', () => {
@@ -203,8 +231,22 @@ describe('TerminalOutputPipeline', () => {
       }),
     ]);
     expect(pipeline.getStats().catchUpPending).toBe(true);
+    expect(pipeline.getDrainState()).toEqual({
+      livePending: false,
+      inactivePending: false,
+      catchUpPending: true,
+      drainPending: true,
+      disposed: false,
+    });
 
     pipeline.reset({ startSequence: 3 });
+    expect(pipeline.getDrainState()).toEqual({
+      livePending: false,
+      inactivePending: false,
+      catchUpPending: false,
+      drainPending: false,
+      disposed: false,
+    });
     pipeline.enqueue(chunk(3, 'c'));
     frames.flushFrame();
 
@@ -272,6 +314,13 @@ describe('TerminalOutputPipeline', () => {
     pipeline.dispose();
 
     expect(frames.pendingFrames()).toBe(0);
+    expect(pipeline.getDrainState()).toEqual({
+      livePending: false,
+      inactivePending: false,
+      catchUpPending: false,
+      drainPending: false,
+      disposed: true,
+    });
     pipeline.enqueue(chunk(2, 'b'));
     frames.flushFrame();
 

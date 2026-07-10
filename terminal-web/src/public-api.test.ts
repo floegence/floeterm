@@ -14,6 +14,7 @@ import {
   type TerminalInstanceController,
   type TerminalLinkProvider,
   type TerminalOutputPipelineChunk,
+  type TerminalOutputPipelineDrainState,
   type TerminalOutputPipelineHandle,
   type TerminalResponsiveConfig,
   type TerminalRuntimeLineSnapshot,
@@ -78,6 +79,7 @@ describe('public framework-neutral API', () => {
     const pipeline: TerminalOutputPipelineHandle = createTerminalOutputPipeline({
       write: () => {},
     });
+    const pipelineDrainState: TerminalOutputPipelineDrainState = pipeline.getDrainState();
     const touchScroll: TerminalTouchScrollRuntime = {
       scrollLines: () => true,
       getScrollbackLength: () => 10,
@@ -99,6 +101,7 @@ describe('public framework-neutral API', () => {
     expect(line.text).toBe('demo');
     expect(pipelineChunk.sequence).toBe(1);
     expect(pipeline.getStats().pendingChunks).toBe(0);
+    expect(pipelineDrainState.drainPending).toBe(false);
     expect(touchScroll.scrollLines(1)).toBe(true);
 
     pipeline.dispose();
