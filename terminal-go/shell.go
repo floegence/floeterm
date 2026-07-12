@@ -24,6 +24,12 @@ type ShellInitWriter interface {
 	EnsureShellInitFiles(pathPrepend string) error
 }
 
+// ShellInitRequirement lets a writer request initialization even when the
+// environment provider does not need to prepend PATH.
+type ShellInitRequirement interface {
+	ShouldEnsureShellInit(pathPrepend string) bool
+}
+
 // DefaultShellResolver implements the shell lookup strategy used by the original agent.
 type DefaultShellResolver struct{}
 

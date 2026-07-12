@@ -48,7 +48,11 @@ func (s *Session) startPTY(cols, rows int) error {
 		env = os.Environ()
 	}
 
-	if pathPrepend != "" && s.config.shellInitWriter != nil {
+	shouldEnsureShellInit := pathPrepend != ""
+	if requirement, ok := s.config.shellInitWriter.(ShellInitRequirement); ok {
+		shouldEnsureShellInit = requirement.ShouldEnsureShellInit(pathPrepend)
+	}
+	if shouldEnsureShellInit && s.config.shellInitWriter != nil {
 		if err := s.config.shellInitWriter.EnsureShellInitFiles(pathPrepend); err != nil {
 			s.config.logger.Warn("Failed to ensure shell init files", "error", err)
 		}

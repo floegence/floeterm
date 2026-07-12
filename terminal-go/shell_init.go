@@ -75,8 +75,14 @@ type DefaultShellInitWriter struct {
 	EnableCommandLifecycle bool
 }
 
+// ShouldEnsureShellInit reports whether the generated integration files are
+// needed for PATH injection or command lifecycle hooks.
+func (w DefaultShellInitWriter) ShouldEnsureShellInit(pathPrepend string) bool {
+	return strings.TrimSpace(pathPrepend) != "" || w.EnableCommandLifecycle
+}
+
 func (w DefaultShellInitWriter) EnsureShellInitFiles(pathPrepend string) error {
-	if strings.TrimSpace(pathPrepend) == "" && !w.EnableCommandLifecycle {
+	if !w.ShouldEnsureShellInit(pathPrepend) {
 		return nil
 	}
 

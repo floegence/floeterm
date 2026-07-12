@@ -11,6 +11,16 @@ type emptyArgsProvider struct{}
 
 func (emptyArgsProvider) GetShellArgs(string, string) ([]string, []string) { return []string{}, nil }
 
+type requiredShellInitWriter struct {
+	calls int
+}
+
+func (w *requiredShellInitWriter) ShouldEnsureShellInit(string) bool { return true }
+func (w *requiredShellInitWriter) EnsureShellInitFiles(string) error {
+	w.calls++
+	return nil
+}
+
 func TestShellArgsProviderEmptySliceSkipsLoginFallback(t *testing.T) {
 	manager := NewManager(ManagerConfig{
 		Logger:                        NopLogger{},
@@ -36,6 +46,29 @@ func TestShellArgsProviderEmptySliceSkipsLoginFallback(t *testing.T) {
 	}
 	if got := session.Cmd.Args; len(got) != 1 {
 		t.Fatalf("expected shell to be started without fallback args, got %v", got)
+	}
+}
+
+func TestSessionEnsuresRequiredShellInitWithoutPathPrepend(t *testing.T) {
+	writer := &requiredShellInitWriter{}
+	manager := NewManager(ManagerConfig{
+		Logger:                        NopLogger{},
+		ShellResolver:                 testShellResolver{shell: "/bin/sh"},
+		ShellArgsProvider:             emptyArgsProvider{},
+		ShellInitWriter:               writer,
+		InitialResizeSuppressDuration: time.Millisecond,
+	})
+	session, err := manager.CreateSession("test", "")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.DeleteSession(session.ID) })
+
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatalf("ActivateSession failed: %v", err)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("EnsureShellInitFiles calls=%d, want 1", writer.calls)
 	}
 }
 

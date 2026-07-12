@@ -79,6 +79,8 @@ args := terminal.DefaultShellArgsProvider{
 
 Lifecycle mode works even when no PATH prepend is required. Bash, Zsh, and Fish receive native hooks; POSIX fallback shells retain their original profile behavior without unsafe command-hook emulation.
 
+Custom `ShellInitWriter` implementations that also need to run without a PATH prepend can implement `ShellInitRequirement`. Existing writers keep the previous PATH-triggered behavior.
+
 ## Notes
 - Implement `TerminalEventHandler` to receive output and lifecycle events.
 - `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession`.
