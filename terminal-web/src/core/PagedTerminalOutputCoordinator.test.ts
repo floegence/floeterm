@@ -111,6 +111,26 @@ describe('PagedTerminalOutputCoordinator', () => {
     coordinator.dispose();
   });
 
+  it('flushes accepted live output before a following gap starts recovery', async () => {
+    const writes: string[] = [];
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({ coveredThroughSequence: 1 }))
+      .mockResolvedValueOnce(page({ coveredThroughSequence: 4 }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+    });
+
+    await coordinator.attach(1);
+    coordinator.pushLive(chunk(2, 'two'));
+    coordinator.pushLive(chunk(5, 'five'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().state).toBe('live'));
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    expect(writes.join('')).toBe('twofive');
+    coordinator.dispose();
+  });
+
   it('retries transient failures and keeps input live during background recovery', async () => {
     vi.useFakeTimers();
     const fetchPage = vi.fn()
@@ -129,6 +149,75 @@ describe('PagedTerminalOutputCoordinator', () => {
     expect(coordinator.getSnapshot().retainedLiveChunks).toBeGreaterThanOrEqual(2);
     await vi.advanceTimersByTimeAsync(250);
     await vi.waitFor(() => expect(coordinator.getSnapshot().state).toBe('live'));
+    coordinator.dispose();
+  });
+
+  it('uses bounded retries when catch-up history has not reached retained live output', async () => {
+    vi.useFakeTimers();
+    let historyCaughtUp = false;
+    const writes: string[] = [];
+    const fetchPage = vi.fn().mockImplementation(async () => {
+      if (fetchPage.mock.calls.length === 1) {
+        return page({ coveredThroughSequence: 1 });
+      }
+      return historyCaughtUp
+        ? page({ coveredThroughSequence: 4 })
+        : page({ chunks: [chunk(2, 'two')], coveredThroughSequence: 2 });
+    });
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      policy: { retryDelaysMs: [250, 1000] },
+    });
+
+    await coordinator.attach(1);
+    coordinator.pushLive(chunk(5, 'five'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().state).toBe('retry-wait'));
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(250);
+    await vi.waitFor(() => expect(coordinator.getSnapshot().retryAttempt).toBe(2));
+    expect(fetchPage).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(coordinator.getSnapshot().state).toBe('failed'));
+    expect(fetchPage).toHaveBeenCalledTimes(4);
+    expect(coordinator.getSnapshot().retainedLiveChunks).toBe(1);
+    expect(writes.join('')).toBe('two');
+
+    historyCaughtUp = true;
+    coordinator.retry();
+    await vi.waitFor(() => expect(coordinator.getSnapshot().state).toBe('live'));
+    await vi.runAllTimersAsync();
+    expect(writes.join('')).toBe('twofive');
+    coordinator.dispose();
+  });
+
+  it('retains the rest of the live queue when draining discovers another gap', async () => {
+    let releaseFirstCatchUp: ((value: PagedTerminalHistoryPage) => void) | undefined;
+    const firstCatchUp = new Promise<PagedTerminalHistoryPage>(resolve => {
+      releaseFirstCatchUp = resolve;
+    });
+    const writes: string[] = [];
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({ coveredThroughSequence: 1 }))
+      .mockReturnValueOnce(firstCatchUp)
+      .mockResolvedValueOnce(page({ coveredThroughSequence: 9 }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+    });
+
+    await coordinator.attach(1);
+    coordinator.pushLive(chunk(5, 'five'));
+    coordinator.pushLive(chunk(10, 'ten'));
+    coordinator.pushLive(chunk(11, 'eleven'));
+    releaseFirstCatchUp?.(page({ coveredThroughSequence: 4 }));
+
+    await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().state).toBe('live'));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(writes.join('')).toBe('fiveteneleven');
     coordinator.dispose();
   });
 

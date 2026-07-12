@@ -304,12 +304,32 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
         return;
       }
 
+      let firstRetainedSequence: number | undefined;
+      for (const chunk of this.retainedLive) {
+        const sequence = chunk.sequence;
+        if (
+          typeof sequence === 'number'
+          && Number.isFinite(sequence)
+          && sequence > 0
+          && (firstRetainedSequence === undefined || sequence < firstRetainedSequence)
+        ) {
+          firstRetainedSequence = Math.floor(sequence);
+        }
+      }
+      if (
+        this.recoveryKind === 'catch-up'
+        && firstRetainedSequence
+        && firstRetainedSequence > this.coveredThroughSequence + 1
+      ) {
+        throw new Error('terminal history coverage has not reached retained live output');
+      }
+
       this.pipeline.reset();
       this.retryAttempt = 0;
       this.lastError = null;
       this.setState('live');
       this.drainRetainedLive(replayedSequences);
-      this.pipeline.flush();
+      this.pipeline.flushNow();
     } catch (error) {
       if (controller.signal.aborted || this.disposed || generation !== this.generation) return;
       this.lastError = error;
@@ -360,6 +380,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       return;
     }
     if (sequence && this.coveredThroughSequence > 0 && sequence > this.coveredThroughSequence + 1) {
+      this.pipeline.flushNow();
       this.retainLive({ ...chunk, sequence });
       this.beginCatchUp(this.coveredThroughSequence + 1);
       return;
@@ -392,14 +413,20 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     if (this.coveredThroughSequence === 0 && firstSequence && replayedSequences.size === 0) {
       this.coveredThroughSequence = firstSequence - 1;
     }
-    for (const chunk of retained) {
+    for (let index = 0; index < retained.length; index += 1) {
+      const chunk = retained[index]!;
       if (chunk.sequence && replayedSequences.has(chunk.sequence)) continue;
       if (chunk.sequence && chunk.sequence <= this.coveredThroughSequence) {
         this.enqueueForRender(chunk);
         continue;
       }
       this.acceptLive(chunk);
-      if (this.state !== 'live') break;
+      if (this.state !== 'live') {
+        for (const pending of retained.slice(index + 1)) {
+          this.retainLive(pending);
+        }
+        break;
+      }
     }
   }
 

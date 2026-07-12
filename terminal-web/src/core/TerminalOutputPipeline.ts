@@ -86,6 +86,7 @@ export interface TerminalOutputPipelineResetOptions {
 export interface TerminalOutputPipelineHandle {
   enqueue(chunk: TerminalOutputPipelineChunk): void;
   flush(): void;
+  flushNow(): void;
   reset(options?: TerminalOutputPipelineResetOptions): void;
   dispose(): void;
   getStats(): TerminalOutputPipelineStats;
@@ -287,6 +288,23 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
       return;
     }
     this.scheduleFrame();
+  }
+
+  flushNow(): void {
+    if (this.disposed || this.catchUpPending) {
+      return;
+    }
+    if (!this.isInteractive()) {
+      this.deferLiveQueue();
+      return;
+    }
+
+    this.cancelFrameIfScheduled();
+    this.promoteInactiveQueue();
+    while (this.flushNextBatch()) {
+      // Drain accepted output before a lifecycle boundary resets the pipeline.
+    }
+    this.emitDrainIfIdle();
   }
 
   reset(options: TerminalOutputPipelineResetOptions = {}): void {
@@ -582,14 +600,22 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
     }
 
     this.promoteInactiveQueue();
+    if (!this.flushNextBatch()) {
+      this.emitDrainIfIdle();
+      return;
+    }
+
+    this.scheduleFrame();
+  }
+
+  private flushNextBatch(): boolean {
     const batch = takeChunkBatch(
       this.liveQueue,
       this.policy.maxLiveBatchChunks,
       this.policy.maxLiveBatchBytes,
     );
     if (batch.length === 0) {
-      this.emitDrainIfIdle();
-      return;
+      return false;
     }
 
     this.liveBytes -= countChunkBytes(batch);
@@ -601,13 +627,7 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
 
     this.stats.flushedChunks += batch.length;
     this.stats.flushedBytes += payload.byteLength;
-
-    if (this.liveQueue.length > 0) {
-      this.scheduleFrame();
-      return;
-    }
-
-    this.emitDrainIfIdle();
+    return this.liveQueue.length > 0;
   }
 
   private markApplied(chunks: readonly TerminalOutputPipelineChunk[]): void {

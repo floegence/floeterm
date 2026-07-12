@@ -77,6 +77,28 @@ describe('TerminalOutputPipeline', () => {
     }));
   });
 
+  it('flushes all accepted batches synchronously before a lifecycle reset', () => {
+    const frames = createManualFrameScheduler();
+    const writes: string[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: data => writes.push(text(data)),
+      scheduler: frames.scheduler,
+      policy: { maxLiveBatchChunks: 1 },
+    });
+
+    pipeline.enqueue(chunk(1, 'a'));
+    pipeline.enqueue(chunk(2, 'b'));
+    pipeline.flushNow();
+
+    expect(writes).toEqual(['a', 'b']);
+    expect(frames.pendingFrames()).toBe(0);
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      flushedChunks: 2,
+      lastAppliedSequence: 2,
+      pendingChunks: 0,
+    }));
+  });
+
   it('merges large output into bounded frame batches', () => {
     const frames = createManualFrameScheduler();
     const writes: string[] = [];
