@@ -42,6 +42,8 @@ export interface TerminalOutputPipelineStats {
   pendingBytes: number;
   inactiveChunks: number;
   inactiveBytes: number;
+  catchUpChunks: number;
+  catchUpBytes: number;
   lastObservedSequence: number;
   lastAppliedSequence: number;
   catchUpPending: boolean;
@@ -75,6 +77,10 @@ export interface TerminalOutputPipelineOptions {
 export interface TerminalOutputPipelineResetOptions {
   startSequence?: number;
   resetStats?: boolean;
+  /** Re-enqueue bounded live output retained while catch-up was pending. */
+  resumeCatchUp?: boolean;
+  /** Treat sequence gaps inside retained catch-up output as covered by the completed catch-up. */
+  allowSequenceSkipOnResume?: boolean;
 }
 
 export interface TerminalOutputPipelineHandle {
@@ -196,6 +202,9 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
   private liveBytes = 0;
   private inactiveQueue: TerminalOutputPipelineChunk[] = [];
   private inactiveBytes = 0;
+  private catchUpQueue: TerminalOutputPipelineChunk[] = [];
+  private catchUpBytes = 0;
+  private catchUpSequences = new Set<number>();
   private queuedSequences = new Set<number>();
   private frameHandle: number | null = null;
   private disposed = false;
@@ -219,40 +228,46 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
   }
 
   enqueue(chunk: TerminalOutputPipelineChunk): void {
+    const sequence = normalizeSequence(chunk.sequence);
+    const normalizedChunk: TerminalOutputPipelineChunk = sequence
+      ? { ...chunk, sequence }
+      : chunk;
+    this.enqueueNormalized(normalizedChunk, true);
+  }
+
+  private enqueueNormalized(chunk: TerminalOutputPipelineChunk, countEnqueued: boolean): void {
     if (this.disposed) {
       return;
     }
 
     if (this.catchUpPending) {
-      this.stats.droppedChunks += 1;
-      this.stats.droppedBytes += chunk.data.byteLength;
+      this.enqueueCatchUp(chunk, countEnqueued);
       return;
     }
 
     const sequence = normalizeSequence(chunk.sequence);
-    const normalizedChunk: TerminalOutputPipelineChunk = sequence
-      ? { ...chunk, sequence }
-      : chunk;
-    if (!this.acceptSequence(sequence, normalizedChunk.data.byteLength)) {
+    if (!this.acceptSequence(chunk, sequence, countEnqueued)) {
       return;
     }
 
-    this.stats.enqueuedChunks += 1;
-    this.stats.enqueuedBytes += normalizedChunk.data.byteLength;
+    if (countEnqueued) {
+      this.stats.enqueuedChunks += 1;
+      this.stats.enqueuedBytes += chunk.data.byteLength;
+    }
 
-    if (normalizedChunk.data.byteLength === 0) {
-      this.markApplied([normalizedChunk]);
+    if (chunk.data.byteLength === 0) {
+      this.markApplied([chunk]);
       this.emitDrainIfIdle();
       return;
     }
 
     if (!this.isInteractive()) {
-      this.enqueueInactive(normalizedChunk);
+      this.enqueueInactive(chunk);
       return;
     }
 
-    this.liveQueue.push(normalizedChunk);
-    this.liveBytes += normalizedChunk.data.byteLength;
+    this.liveQueue.push(chunk);
+    this.liveBytes += chunk.data.byteLength;
     this.scheduleFrame();
   }
 
@@ -275,8 +290,10 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
   }
 
   reset(options: TerminalOutputPipelineResetOptions = {}): void {
+    const catchUpQueue = options.resumeCatchUp ? this.takeCatchUpQueue() : [];
     this.cancelFrameIfScheduled();
     this.clearQueues();
+    this.clearCatchUpQueue();
     this.catchUpPending = false;
 
     const startSequence = normalizeStartSequence(options.startSequence);
@@ -285,6 +302,10 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
 
     if (options.resetStats) {
       this.stats = createEmptyStats();
+    }
+
+    if (catchUpQueue.length > 0) {
+      this.resumeCatchUpQueue(catchUpQueue, options.allowSequenceSkipOnResume === true);
     }
   }
 
@@ -295,16 +316,19 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
     this.disposed = true;
     this.cancelFrameIfScheduled();
     this.clearQueues();
+    this.clearCatchUpQueue();
     this.catchUpPending = false;
   }
 
   getStats(): TerminalOutputPipelineStats {
     return {
       ...this.stats,
-      pendingChunks: this.liveQueue.length,
-      pendingBytes: this.liveBytes,
+      pendingChunks: this.liveQueue.length + this.catchUpQueue.length,
+      pendingBytes: this.liveBytes + this.catchUpBytes,
       inactiveChunks: this.inactiveQueue.length,
       inactiveBytes: this.inactiveBytes,
+      catchUpChunks: this.catchUpQueue.length,
+      catchUpBytes: this.catchUpBytes,
       lastObservedSequence: this.lastObservedSequence,
       lastAppliedSequence: this.lastAppliedSequence,
       catchUpPending: this.catchUpPending,
@@ -325,7 +349,11 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
     };
   }
 
-  private acceptSequence(sequence: number | undefined, byteLength: number): boolean {
+  private acceptSequence(
+    chunk: TerminalOutputPipelineChunk,
+    sequence: number | undefined,
+    countEnqueued: boolean,
+  ): boolean {
     if (!sequence) {
       return true;
     }
@@ -339,7 +367,7 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
     if (sequence > expectedSequence) {
       this.stats.sequenceGaps += 1;
       if (this.requestCatchUp) {
-        this.requestCatchUpForGap(sequence, expectedSequence, byteLength);
+        this.requestCatchUpForGap(chunk, sequence, expectedSequence, countEnqueued);
         return false;
       }
     }
@@ -350,20 +378,23 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
   }
 
   private requestCatchUpForGap(
+    chunk: TerminalOutputPipelineChunk,
     observedSequence: number,
     expectedSequence: number,
-    currentChunkBytes: number,
+    countEnqueued: boolean,
   ): void {
     const droppedChunks = this.liveQueue.length + this.inactiveQueue.length + 1;
-    const droppedBytes = this.liveBytes + this.inactiveBytes + currentChunkBytes;
+    const droppedBytes = this.liveBytes + this.inactiveBytes + chunk.data.byteLength;
     const startSequence = this.lastAppliedSequence > 0 ? this.lastAppliedSequence + 1 : 0;
+    const pending = this.takeQueuedOutput();
 
-    this.clearQueues();
     this.cancelFrameIfScheduled();
     this.catchUpPending = true;
     this.stats.catchUpRequests += 1;
-    this.stats.droppedChunks += droppedChunks;
-    this.stats.droppedBytes += droppedBytes;
+    for (const pendingChunk of pending) {
+      this.enqueueCatchUp(pendingChunk, false);
+    }
+    this.enqueueCatchUp(chunk, countEnqueued);
     this.requestCatchUp?.({
       reason: 'sequence-gap',
       startSequence,
@@ -379,14 +410,16 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
     const droppedBytes = this.liveBytes + this.inactiveBytes + nextChunk.data.byteLength;
     const firstBufferedSequence = this.findFirstBufferedSequence();
     const startSequence = firstBufferedSequence ?? (this.lastAppliedSequence > 0 ? this.lastAppliedSequence + 1 : 0);
+    const pending = this.takeQueuedOutput();
 
-    this.clearQueues();
     this.cancelFrameIfScheduled();
     this.catchUpPending = true;
     this.stats.catchUpRequests += 1;
     this.stats.inactiveOverflows += 1;
-    this.stats.droppedChunks += droppedChunks;
-    this.stats.droppedBytes += droppedBytes;
+    for (const pendingChunk of pending) {
+      this.enqueueCatchUp(pendingChunk, false);
+    }
+    this.enqueueCatchUp(nextChunk, false);
     this.requestCatchUp?.({
       reason: 'inactive-buffer-overflow',
       startSequence,
@@ -417,6 +450,68 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
 
     this.inactiveQueue.push(chunk);
     this.inactiveBytes += chunk.data.byteLength;
+  }
+
+  private enqueueCatchUp(chunk: TerminalOutputPipelineChunk, countEnqueued: boolean): void {
+    const sequence = normalizeSequence(chunk.sequence);
+    if (sequence && this.catchUpSequences.has(sequence)) {
+      this.stats.duplicateChunks += 1;
+      return;
+    }
+
+    if (countEnqueued) {
+      this.stats.enqueuedChunks += 1;
+      this.stats.enqueuedBytes += chunk.data.byteLength;
+    }
+
+    if (chunk.data.byteLength > this.policy.maxInactiveBytes) {
+      this.stats.droppedChunks += 1;
+      this.stats.droppedBytes += chunk.data.byteLength;
+      return;
+    }
+
+    while (
+      this.catchUpQueue.length > 0
+      && (
+        this.catchUpQueue.length >= this.policy.maxInactiveChunks
+        || this.catchUpBytes + chunk.data.byteLength > this.policy.maxInactiveBytes
+      )
+    ) {
+      const dropped = this.catchUpQueue.shift();
+      if (!dropped) break;
+      this.catchUpBytes -= dropped.data.byteLength;
+      const droppedSequence = normalizeSequence(dropped.sequence);
+      if (droppedSequence) this.catchUpSequences.delete(droppedSequence);
+      this.stats.droppedChunks += 1;
+      this.stats.droppedBytes += dropped.data.byteLength;
+    }
+
+    this.catchUpQueue.push(chunk);
+    this.catchUpBytes += chunk.data.byteLength;
+    if (sequence) this.catchUpSequences.add(sequence);
+  }
+
+  private takeCatchUpQueue(): TerminalOutputPipelineChunk[] {
+    const queue = this.catchUpQueue;
+    this.catchUpQueue = [];
+    this.catchUpBytes = 0;
+    this.catchUpSequences.clear();
+    return queue;
+  }
+
+  private resumeCatchUpQueue(
+    queue: readonly TerminalOutputPipelineChunk[],
+    allowSequenceSkip: boolean,
+  ): void {
+    for (const chunk of queue) {
+      const sequence = normalizeSequence(chunk.sequence);
+      const expectedSequence = Math.max(this.lastObservedSequence, this.lastAppliedSequence) + 1;
+      if (allowSequenceSkip && sequence && sequence > expectedSequence) {
+        this.lastObservedSequence = sequence - 1;
+        this.lastAppliedSequence = sequence - 1;
+      }
+      this.enqueueNormalized(chunk, false);
+    }
   }
 
   private evictInactiveUntilFits(chunk: TerminalOutputPipelineChunk): void {
@@ -558,6 +653,22 @@ class TerminalOutputPipeline implements TerminalOutputPipelineHandle {
     this.inactiveQueue = [];
     this.inactiveBytes = 0;
     this.queuedSequences.clear();
+  }
+
+  private takeQueuedOutput(): TerminalOutputPipelineChunk[] {
+    const queue = [...this.inactiveQueue, ...this.liveQueue];
+    this.liveQueue = [];
+    this.liveBytes = 0;
+    this.inactiveQueue = [];
+    this.inactiveBytes = 0;
+    this.queuedSequences.clear();
+    return queue;
+  }
+
+  private clearCatchUpQueue(): void {
+    this.catchUpQueue = [];
+    this.catchUpBytes = 0;
+    this.catchUpSequences.clear();
   }
 
   private cancelFrameIfScheduled(): void {

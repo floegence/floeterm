@@ -16,6 +16,7 @@ import {
   type TerminalOutputPipelineChunk,
   type TerminalOutputPipelineDrainState,
   type TerminalOutputPipelineHandle,
+  type TerminalOutputPipelineResetOptions,
   type TerminalResponsiveConfig,
   type TerminalRuntimeLineSnapshot,
   type TerminalSessionInfo,
@@ -80,6 +81,11 @@ describe('public framework-neutral API', () => {
       write: () => {},
     });
     const pipelineDrainState: TerminalOutputPipelineDrainState = pipeline.getDrainState();
+    const pipelineResetOptions: TerminalOutputPipelineResetOptions = {
+      startSequence: 2,
+      resumeCatchUp: true,
+      allowSequenceSkipOnResume: true,
+    };
     const touchScroll: TerminalTouchScrollRuntime = {
       scrollLines: () => true,
       getScrollbackLength: () => 10,
@@ -102,6 +108,8 @@ describe('public framework-neutral API', () => {
     expect(pipelineChunk.sequence).toBe(1);
     expect(pipeline.getStats().pendingChunks).toBe(0);
     expect(pipelineDrainState.drainPending).toBe(false);
+    expect(pipelineResetOptions.resumeCatchUp).toBe(true);
+    expect(pipelineResetOptions.allowSequenceSkipOnResume).toBe(true);
     expect(touchScroll.scrollLines(1)).toBe(true);
 
     pipeline.dispose();

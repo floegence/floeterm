@@ -257,6 +257,172 @@ describe('TerminalOutputPipeline', () => {
     }));
   });
 
+  it('buffers live output during catch-up and resumes it from the recovered baseline', () => {
+    const frames = createManualFrameScheduler();
+    const catchUps: TerminalOutputPipelineCatchUpRequest[] = [];
+    const writes: string[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: data => writes.push(text(data)),
+      requestCatchUp: request => catchUps.push(request),
+      scheduler: frames.scheduler,
+    });
+
+    pipeline.enqueue(chunk(1, 'a'));
+    frames.flushFrame();
+    pipeline.enqueue(chunk(5, 'e'));
+    pipeline.enqueue(chunk(6, 'f'));
+
+    expect(catchUps).toHaveLength(1);
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      catchUpPending: true,
+      catchUpChunks: 2,
+      catchUpBytes: 2,
+    }));
+
+    pipeline.reset({
+      startSequence: 3,
+      resumeCatchUp: true,
+      allowSequenceSkipOnResume: true,
+    });
+    frames.flushFrame();
+
+    expect(catchUps).toHaveLength(1);
+    expect(writes).toEqual(['a', 'ef']);
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      lastAppliedSequence: 6,
+      catchUpPending: false,
+      catchUpChunks: 0,
+    }));
+  });
+
+  it('retains output that was queued before a sequence gap requested catch-up', () => {
+    const frames = createManualFrameScheduler();
+    const writes: string[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: data => writes.push(text(data)),
+      requestCatchUp: () => {},
+      scheduler: frames.scheduler,
+    });
+
+    pipeline.enqueue(chunk(1, 'a'));
+    pipeline.enqueue(chunk(3, 'c'));
+
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      catchUpPending: true,
+      catchUpChunks: 2,
+      enqueuedChunks: 2,
+      droppedChunks: 0,
+    }));
+
+    pipeline.reset({
+      startSequence: 1,
+      resumeCatchUp: true,
+      allowSequenceSkipOnResume: true,
+    });
+    frames.flushFrame();
+
+    expect(writes).toEqual(['ac']);
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      enqueuedChunks: 2,
+      flushedChunks: 2,
+      lastAppliedSequence: 3,
+    }));
+  });
+
+  it('drops catch-up chunks already covered by history while resuming newer live output', () => {
+    const frames = createManualFrameScheduler();
+    const writes: string[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: data => writes.push(text(data)),
+      requestCatchUp: () => {},
+      scheduler: frames.scheduler,
+    });
+
+    pipeline.enqueue(chunk(5, 'covered'));
+    pipeline.enqueue(chunk(6, 'fresh'));
+    pipeline.reset({ startSequence: 6, resumeCatchUp: true });
+    frames.flushFrame();
+
+    expect(writes).toEqual(['fresh']);
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      duplicateChunks: 1,
+      lastAppliedSequence: 6,
+    }));
+  });
+
+  it('keeps catch-up buffering bounded before resuming retained live output', () => {
+    const frames = createManualFrameScheduler();
+    const writes: string[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: data => writes.push(text(data)),
+      requestCatchUp: () => {},
+      scheduler: frames.scheduler,
+      policy: {
+        maxInactiveChunks: 2,
+        maxInactiveBytes: 2,
+      },
+    });
+
+    pipeline.enqueue(chunk(5, 'e'));
+    pipeline.enqueue(chunk(6, 'f'));
+    pipeline.enqueue(chunk(7, 'g'));
+
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      catchUpChunks: 2,
+      catchUpBytes: 2,
+      droppedChunks: 1,
+    }));
+
+    pipeline.reset({
+      startSequence: 3,
+      resumeCatchUp: true,
+      allowSequenceSkipOnResume: true,
+    });
+    frames.flushFrame();
+
+    expect(writes).toEqual(['fg']);
+    expect(pipeline.getStats().lastAppliedSequence).toBe(7);
+  });
+
+  it('keeps reset backward-compatible by discarding catch-up output unless resume is requested', () => {
+    const frames = createManualFrameScheduler();
+    const writes: string[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: data => writes.push(text(data)),
+      requestCatchUp: () => {},
+      scheduler: frames.scheduler,
+    });
+
+    pipeline.enqueue(chunk(2, 'b'));
+    pipeline.enqueue(chunk(3, 'c'));
+    pipeline.reset({ startSequence: 2 });
+    frames.flushFrame();
+
+    expect(writes).toEqual([]);
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      catchUpPending: false,
+      catchUpChunks: 0,
+      pendingChunks: 0,
+    }));
+  });
+
+  it('keeps resumed sequence validation strict unless sparse resume is explicitly allowed', () => {
+    const catchUps: TerminalOutputPipelineCatchUpRequest[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: () => {},
+      requestCatchUp: request => catchUps.push(request),
+    });
+
+    pipeline.enqueue(chunk(5, 'e'));
+    pipeline.reset({ startSequence: 3, resumeCatchUp: true });
+
+    expect(catchUps).toHaveLength(2);
+    expect(pipeline.getStats()).toEqual(expect.objectContaining({
+      catchUpPending: true,
+      catchUpChunks: 1,
+    }));
+  });
+
   it('deduplicates already queued or applied sequence chunks', () => {
     const frames = createManualFrameScheduler();
     const writes: string[] = [];
