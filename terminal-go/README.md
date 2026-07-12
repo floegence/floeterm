@@ -47,6 +47,38 @@ if page.HasMore {
 
 `NextStartSeq` advances through retained history even when the configured history filter removes a page's renderable chunks, so callers can keep paging without risking an empty-page loop.
 
+Retained history can be bounded by both chunk count and bytes without limiting the number of terminal sessions:
+
+```go
+manager := terminal.NewManager(terminal.ManagerConfig{
+    HistoryBufferSize:     2048,
+    HistoryBufferMaxBytes: 8 * 1024 * 1024,
+})
+
+diagnostics := manager.GetDiagnostics()
+_ = diagnostics.SessionCount
+_ = diagnostics.HistoryBytes
+```
+
+`HistoryBufferMaxBytes` set to zero preserves the existing chunk-only behavior. A single oversized chunk is retained whole rather than slicing an ANSI or OSC sequence. Diagnostics are observational and never reject session creation.
+
+## Command lifecycle shell integration
+
+Hosts can enable OSC 633 prompt, command, exit-status, and working-directory markers without maintaining product-specific shell scripts:
+
+```go
+writer := terminal.DefaultShellInitWriter{
+    BaseDir:                cacheDir,
+    EnableCommandLifecycle: true,
+}
+args := terminal.DefaultShellArgsProvider{
+    ShellInitBaseDir:       cacheDir,
+    EnableCommandLifecycle: true,
+}
+```
+
+Lifecycle mode works even when no PATH prepend is required. Bash, Zsh, and Fish receive native hooks; POSIX fallback shells retain their original profile behavior without unsafe command-hook emulation.
+
 ## Notes
 - Implement `TerminalEventHandler` to receive output and lifecycle events.
 - `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession`.

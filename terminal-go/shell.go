@@ -100,16 +100,20 @@ func resolveShellFromPasswd(logger Logger) string {
 // When pathPrepend is non-empty, it returns non-nil argv/env so the session can inject PATH
 // in a shell-appropriate way.
 type DefaultShellArgsProvider struct {
-	ShellInitBaseDir string
+	ShellInitBaseDir       string
+	EnableCommandLifecycle bool
 }
 
 func (p DefaultShellArgsProvider) GetShellArgs(shellPath string, pathPrepend string) ([]string, []string) {
-	if strings.TrimSpace(pathPrepend) == "" {
+	if strings.TrimSpace(pathPrepend) == "" && !p.EnableCommandLifecycle {
 		return nil, nil
 	}
 
 	initPaths := newShellInitPaths(p.ShellInitBaseDir)
-	env := []string{pathPrependEnvKey + "=" + pathPrepend}
+	env := []string{}
+	if strings.TrimSpace(pathPrepend) != "" {
+		env = append(env, pathPrependEnvKey+"="+pathPrepend)
+	}
 
 	switch detectShellType(shellPath) {
 	case shellTypeBash:

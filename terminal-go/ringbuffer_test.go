@@ -94,6 +94,60 @@ func TestRingBufferStatsTotalBytesWithOverflow(t *testing.T) {
 	}
 }
 
+func TestRingBufferEvictsWholeChunksAtByteLimit(t *testing.T) {
+	buffer := NewTerminalRingBufferWithByteLimit(8, 6)
+	for _, value := range []string{"aa", "bbb", "cccc"} {
+		if err := buffer.Write([]byte(value)); err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+	}
+
+	chunks := buffer.ReadAllChunks()
+	if len(chunks) != 1 || string(chunks[0].Data) != "cccc" {
+		t.Fatalf("unexpected retained chunks: %+v", chunks)
+	}
+	if got := buffer.GetStats().TotalBytes; got != 4 {
+		t.Fatalf("TotalBytes=%d, want 4", got)
+	}
+}
+
+func TestRingBufferByteAndChunkLimitsCompose(t *testing.T) {
+	buffer := NewTerminalRingBufferWithByteLimit(2, 8)
+	for _, value := range []string{"aa", "bb", "cc"} {
+		_ = buffer.Write([]byte(value))
+	}
+	chunks := buffer.ReadAllChunks()
+	if len(chunks) != 2 || string(chunks[0].Data) != "bb" || string(chunks[1].Data) != "cc" {
+		t.Fatalf("unexpected retained chunks: %+v", chunks)
+	}
+}
+
+func TestRingBufferRetainsSingleOversizedChunkWithoutSlicing(t *testing.T) {
+	buffer := NewTerminalRingBufferWithByteLimit(4, 3)
+	_ = buffer.Write([]byte("one"))
+	_ = buffer.Write([]byte("oversized"))
+
+	chunks := buffer.ReadAllChunks()
+	if len(chunks) != 1 || string(chunks[0].Data) != "oversized" {
+		t.Fatalf("unexpected retained chunks: %+v", chunks)
+	}
+}
+
+func TestRingBufferClearResetsByteLimitedBuffer(t *testing.T) {
+	buffer := NewTerminalRingBufferWithByteLimit(4, 8)
+	_ = buffer.Write([]byte("one"))
+	buffer.Clear()
+	_ = buffer.Write([]byte("two"))
+
+	chunks := buffer.ReadAllChunks()
+	if len(chunks) != 1 || chunks[0].Sequence != 1 || string(chunks[0].Data) != "two" {
+		t.Fatalf("unexpected chunks after clear: %+v", chunks)
+	}
+	if got := buffer.GetStats().TotalBytes; got != 3 {
+		t.Fatalf("TotalBytes=%d, want 3", got)
+	}
+}
+
 func TestRingBufferReadChunkPageRespectsChunkLimit(t *testing.T) {
 	buffer := NewTerminalRingBuffer(8)
 	for _, value := range []string{"one", "two", "three", "four"} {

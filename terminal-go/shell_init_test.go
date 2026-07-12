@@ -100,6 +100,37 @@ func TestDefaultShellInitWriterAndArgsProvider(t *testing.T) {
 	}
 }
 
+func TestDefaultShellIntegrationCanEnableCommandLifecycleWithoutPathPrepend(t *testing.T) {
+	baseDir := t.TempDir()
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	if err := writer.EnsureShellInitFiles(""); err != nil {
+		t.Fatalf("EnsureShellInitFiles failed: %v", err)
+	}
+
+	paths := newShellInitPaths(baseDir)
+	for _, path := range []string{paths.BashRC(), paths.ZshRC(), paths.FishConfig()} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "]633;") {
+			t.Fatalf("%s does not contain OSC 633 lifecycle integration", path)
+		}
+	}
+
+	provider := DefaultShellArgsProvider{
+		ShellInitBaseDir:       baseDir,
+		EnableCommandLifecycle: true,
+	}
+	args, env := provider.GetShellArgs("/bin/bash", "")
+	if len(args) != 2 || args[0] != "--rcfile" || args[1] != paths.BashRC() {
+		t.Fatalf("unexpected bash args: %#v", args)
+	}
+	if len(env) != 0 {
+		t.Fatalf("unexpected env without PATH prepend: %#v", env)
+	}
+}
+
 func contains(items []string, needle string) bool {
 	for _, item := range items {
 		if item == needle {

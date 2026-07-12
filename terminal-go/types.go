@@ -46,6 +46,14 @@ type TerminalSessionInfo struct {
 	IsActive   bool
 }
 
+// ManagerDiagnostics reports terminal history memory without imposing a
+// session-count limit or changing session lifecycle behavior.
+type ManagerDiagnostics struct {
+	SessionCount        int
+	HistoryBytes        int64
+	SessionHistoryBytes map[string]int64
+}
+
 // ConnectionInfo stores metadata for a connected client.
 type ConnectionInfo struct {
 	ConnID   string
@@ -95,6 +103,7 @@ type TerminalManager interface {
 	RenameSession(sessionID, newName string) error
 	ActivateSession(sessionID string, cols, rows int) error
 	SetEventHandler(handler TerminalEventHandler)
+	GetDiagnostics() ManagerDiagnostics
 	Cleanup()
 }
 

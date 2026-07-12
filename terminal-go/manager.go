@@ -78,7 +78,7 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		connections:       make(map[string]*ConnectionInfo),
 		ctx:               ctx,
 		cancel:            cancel,
-		ringBuffer:        NewTerminalRingBuffer(sessionCfg.historyBufferSize),
+		ringBuffer:        NewTerminalRingBufferWithByteLimit(sessionCfg.historyBufferSize, sessionCfg.historyBufferMaxBytes),
 		currentWorkingDir: workingDir,
 		inputWindow:       sessionCfg.inputWindow,
 		eventHandler:      initialHandler,
@@ -112,6 +112,35 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	}
 
 	return session, nil
+}
+
+// GetDiagnostics returns a point-in-time view of retained history memory.
+// It is intentionally observational: Floeterm never limits session creation.
+func (m *Manager) GetDiagnostics() ManagerDiagnostics {
+	m.mu.RLock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.mu.RUnlock()
+
+	diagnostics := ManagerDiagnostics{
+		SessionCount:        len(sessions),
+		SessionHistoryBytes: make(map[string]int64, len(sessions)),
+	}
+	for _, session := range sessions {
+		session.mu.RLock()
+		ringBuffer := session.ringBuffer
+		sessionID := session.ID
+		session.mu.RUnlock()
+		if ringBuffer == nil {
+			continue
+		}
+		bytes := ringBuffer.GetStats().TotalBytes
+		diagnostics.SessionHistoryBytes[sessionID] = bytes
+		diagnostics.HistoryBytes += bytes
+	}
+	return diagnostics
 }
 
 // GetSession returns a session by ID.

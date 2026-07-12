@@ -71,11 +71,12 @@ func (p shellInitPaths) PosixRC() string { return filepath.Join(p.baseDir, "shrc
 // The generated rc files source the user's original shell configuration and then
 // prepend $FLOETERM_PATH_PREPEND to PATH.
 type DefaultShellInitWriter struct {
-	BaseDir string
+	BaseDir                string
+	EnableCommandLifecycle bool
 }
 
 func (w DefaultShellInitWriter) EnsureShellInitFiles(pathPrepend string) error {
-	if strings.TrimSpace(pathPrepend) == "" {
+	if strings.TrimSpace(pathPrepend) == "" && !w.EnableCommandLifecycle {
 		return nil
 	}
 
@@ -88,13 +89,13 @@ func (w DefaultShellInitWriter) EnsureShellInitFiles(pathPrepend string) error {
 		return fmt.Errorf("failed to create zsh init directory: %w", err)
 	}
 
-	if err := writeFile(paths.BashRC(), bashInitScript()); err != nil {
+	if err := writeFile(paths.BashRC(), bashInitScript(w.EnableCommandLifecycle)); err != nil {
 		return err
 	}
-	if err := writeFile(paths.ZshRC(), zshInitScript()); err != nil {
+	if err := writeFile(paths.ZshRC(), zshInitScript(w.EnableCommandLifecycle)); err != nil {
 		return err
 	}
-	if err := writeFile(paths.FishConfig(), fishInitScript()); err != nil {
+	if err := writeFile(paths.FishConfig(), fishInitScript(w.EnableCommandLifecycle)); err != nil {
 		return err
 	}
 	if err := writeFile(paths.PosixRC(), posixInitScript()); err != nil {
@@ -111,8 +112,8 @@ func writeFile(path string, content string) error {
 	return nil
 }
 
-func bashInitScript() string {
-	return `#!/bin/bash
+func bashInitScript(enableCommandLifecycle bool) string {
+	script := `#!/bin/bash
 # floeterm shell integration - auto-generated, do not edit.
 
 # Source user's original bash configuration.
@@ -129,15 +130,19 @@ if [ -n "$` + pathPrependEnvKey + `" ]; then
     export PATH="$` + pathPrependEnvKey + `:$PATH"
 fi
 `
+	if !enableCommandLifecycle {
+		return script
+	}
+	return script + bashCommandLifecycleScript()
 }
 
-func zshInitScript() string {
+func zshInitScript(enableCommandLifecycle bool) string {
 	homeDir, _ := os.UserHomeDir()
 	if homeDir == "" {
 		homeDir = "$HOME"
 	}
 
-	return fmt.Sprintf(`# floeterm shell integration - auto-generated, do not edit.
+	script := fmt.Sprintf(`# floeterm shell integration - auto-generated, do not edit.
 
 # Restore original ZDOTDIR for nested shells.
 if [ -n "$%s" ]; then
@@ -166,15 +171,19 @@ if [ -n "$%s" ]; then
     export PATH="$%s:$PATH"
 fi
 `, originalZdotdirEnvKey, originalZdotdirEnvKey, homeDir, homeDir, homeDir, homeDir, pathPrependEnvKey, pathPrependEnvKey)
+	if !enableCommandLifecycle {
+		return script
+	}
+	return script + zshCommandLifecycleScript()
 }
 
-func fishInitScript() string {
+func fishInitScript(enableCommandLifecycle bool) string {
 	homeDir, _ := os.UserHomeDir()
 	if homeDir == "" {
 		homeDir = "$HOME"
 	}
 
-	return fmt.Sprintf(`# floeterm shell integration - auto-generated, do not edit.
+	script := fmt.Sprintf(`# floeterm shell integration - auto-generated, do not edit.
 
 # Source user's original fish configuration.
 if test -f "%s/.config/fish/config.fish"
@@ -191,6 +200,10 @@ if set -q %s
     end
 end
 `, homeDir, homeDir, pathPrependEnvKey, pathPrependEnvKey)
+	if !enableCommandLifecycle {
+		return script
+	}
+	return script + fishCommandLifecycleScript()
 }
 
 func posixInitScript() string {
@@ -206,5 +219,146 @@ fi
 if [ -n "$` + pathPrependEnvKey + `" ]; then
     export PATH="$` + pathPrependEnvKey + `:$PATH"
 fi
+`
+}
+
+func bashCommandLifecycleScript() string {
+	return `
+# Emit OSC 633 command lifecycle and working-directory markers.
+__floeterm_terminal_osc() {
+    printf '\033]633;%s\a' "$1"
+}
+
+__floeterm_terminal_emit_cwd() {
+    if [ -n "${PWD:-}" ]; then
+        __floeterm_terminal_osc "P;Cwd=$PWD"
+    fi
+}
+
+__floeterm_terminal_command_start() {
+    if [ "${__floeterm_terminal_at_prompt:-0}" = "1" ]; then
+        __floeterm_terminal_at_prompt=0
+        __floeterm_terminal_osc "B"
+    fi
+}
+
+__floeterm_terminal_precmd() {
+    local exit_code=$?
+    if [ "${__floeterm_terminal_prompt_seen:-0}" = "1" ] && [ "${__floeterm_terminal_at_prompt:-0}" = "0" ]; then
+        __floeterm_terminal_osc "D;$exit_code"
+    fi
+    __floeterm_terminal_prompt_seen=1
+    __floeterm_terminal_at_prompt=1
+    __floeterm_terminal_emit_cwd
+    __floeterm_terminal_osc "A"
+}
+
+if [ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]; then
+    export __FLOETERM_COMMAND_LIFECYCLE_LOADED=1
+    __floeterm_terminal_existing_debug_trap=""
+    if __floeterm_terminal_trap_output=$(trap -p DEBUG 2>/dev/null); then
+        __floeterm_terminal_existing_debug_trap=$(printf '%s\n' "$__floeterm_terminal_trap_output" | sed -E "s/^trap -- '(.*)' DEBUG$/\1/")
+    fi
+    __floeterm_terminal_debug_trap() {
+        __floeterm_terminal_command_start
+        if [ -n "${__floeterm_terminal_existing_debug_trap:-}" ]; then
+            eval "$__floeterm_terminal_existing_debug_trap"
+        fi
+    }
+    trap '__floeterm_terminal_debug_trap' DEBUG
+    if [ -n "${PROMPT_COMMAND:-}" ]; then
+        PROMPT_COMMAND="__floeterm_terminal_precmd;${PROMPT_COMMAND}"
+    else
+        PROMPT_COMMAND="__floeterm_terminal_precmd"
+    fi
+fi
+`
+}
+
+func zshCommandLifecycleScript() string {
+	return `
+# Emit OSC 633 command lifecycle and working-directory markers.
+__floeterm_terminal_osc() {
+    printf '\033]633;%s\a' "$1"
+}
+
+__floeterm_terminal_emit_cwd() {
+    if [ -n "${PWD:-}" ]; then
+        __floeterm_terminal_osc "P;Cwd=$PWD"
+    fi
+}
+
+__floeterm_terminal_preexec() {
+    __floeterm_terminal_command_running=1
+    __floeterm_terminal_osc "B"
+}
+
+__floeterm_terminal_precmd() {
+    local exit_code=$?
+    if [[ "${__floeterm_terminal_prompt_seen:-0}" = "1" && "${__floeterm_terminal_command_running:-0}" = "1" ]]; then
+        __floeterm_terminal_osc "D;$exit_code"
+    fi
+    __floeterm_terminal_prompt_seen=1
+    __floeterm_terminal_command_running=0
+    __floeterm_terminal_emit_cwd
+    __floeterm_terminal_osc "A"
+}
+
+if [[ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]]; then
+    export __FLOETERM_COMMAND_LIFECYCLE_LOADED=1
+    autoload -Uz add-zsh-hook 2>/dev/null || true
+    if typeset -f add-zsh-hook >/dev/null 2>&1; then
+        add-zsh-hook preexec __floeterm_terminal_preexec
+        add-zsh-hook precmd __floeterm_terminal_precmd
+    else
+        typeset -ga preexec_functions precmd_functions
+        preexec_functions+=(__floeterm_terminal_preexec)
+        precmd_functions+=(__floeterm_terminal_precmd)
+    fi
+fi
+`
+}
+
+func fishCommandLifecycleScript() string {
+	return `
+# Emit OSC 633 command lifecycle and working-directory markers.
+function __floeterm_terminal_osc --argument payload
+    printf '\e]633;%s\a' $payload
+end
+
+function __floeterm_terminal_emit_cwd
+    if test -n "$PWD"
+        __floeterm_terminal_osc "P;Cwd=$PWD"
+    end
+end
+
+set -g __floeterm_terminal_prompt_seen 0
+set -g __floeterm_terminal_command_running 0
+
+function __floeterm_terminal_fish_preexec --on-event fish_preexec
+    set -g __floeterm_terminal_command_running 1
+    __floeterm_terminal_osc B
+end
+
+function __floeterm_terminal_fish_postexec --on-event fish_postexec
+    if test "$__floeterm_terminal_prompt_seen" = "1" -a "$__floeterm_terminal_command_running" = "1"
+        __floeterm_terminal_osc "D;$status"
+    end
+    set -g __floeterm_terminal_command_running 0
+end
+
+if not functions -q __floeterm_terminal_original_fish_prompt
+    if functions -q fish_prompt
+        functions -c fish_prompt __floeterm_terminal_original_fish_prompt
+    end
+    function fish_prompt
+        set -g __floeterm_terminal_prompt_seen 1
+        __floeterm_terminal_emit_cwd
+        __floeterm_terminal_osc A
+        if functions -q __floeterm_terminal_original_fish_prompt
+            __floeterm_terminal_original_fish_prompt
+        end
+    end
+end
 `
 }

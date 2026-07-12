@@ -11,6 +11,7 @@ type ManagerConfig struct {
 	ShellInitWriter               ShellInitWriter
 	HistoryFilter                 HistoryFilter
 	HistoryBufferSize             int
+	HistoryBufferMaxBytes         int64
 	InputWindow                   time.Duration
 	InitialResizeSuppressDuration time.Duration
 	ResizeSuppressDuration        time.Duration
@@ -90,6 +91,7 @@ type sessionConfig struct {
 	shellInitWriter               ShellInitWriter
 	historyFilter                 HistoryFilter
 	historyBufferSize             int
+	historyBufferMaxBytes         int64
 	inputWindow                   time.Duration
 	initialResizeSuppressDuration time.Duration
 	resizeSuppressDuration        time.Duration
@@ -106,6 +108,7 @@ func newSessionConfig(cfg ManagerConfig) sessionConfig {
 		shellInitWriter:               cfg.ShellInitWriter,
 		historyFilter:                 cfg.HistoryFilter,
 		historyBufferSize:             cfg.HistoryBufferSize,
+		historyBufferMaxBytes:         cfg.HistoryBufferMaxBytes,
 		inputWindow:                   cfg.InputWindow,
 		initialResizeSuppressDuration: cfg.InitialResizeSuppressDuration,
 		resizeSuppressDuration:        cfg.ResizeSuppressDuration,

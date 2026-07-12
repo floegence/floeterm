@@ -30,14 +30,24 @@ type TerminalRingBuffer struct {
 	writeCount   int64
 	readCount    int64
 	nextSequence int64
+	maxBytes     int64
 
 	mutex sync.RWMutex
 }
 
 // NewTerminalRingBuffer creates a ring buffer with the provided capacity.
 func NewTerminalRingBuffer(size int) *TerminalRingBuffer {
+	return NewTerminalRingBufferWithByteLimit(size, 0)
+}
+
+// NewTerminalRingBufferWithByteLimit creates a chunk-bounded ring buffer with
+// an optional retained-byte limit. A zero byte limit preserves legacy behavior.
+func NewTerminalRingBufferWithByteLimit(size int, maxBytes int64) *TerminalRingBuffer {
 	if size <= 0 {
 		size = 2048
+	}
+	if maxBytes < 0 {
+		maxBytes = 0
 	}
 
 	return &TerminalRingBuffer{
@@ -47,6 +57,7 @@ func NewTerminalRingBuffer(size int) *TerminalRingBuffer {
 		tail:         0,
 		full:         false,
 		nextSequence: 1,
+		maxBytes:     maxBytes,
 	}
 }
 
@@ -77,12 +88,16 @@ func (rb *TerminalRingBuffer) writeOwnedWithSequence(data []byte, sequence int64
 		sequence = atomic.LoadInt64(&rb.nextSequence)
 	}
 
-	// When the buffer is full, the next write overwrites the oldest chunk at head.
-	// Adjust byte accounting before overwriting so TotalBytes stays correct.
-	if rb.full {
-		oldChunk := rb.chunks[rb.head]
-		atomic.AddInt64(&rb.totalBytes, -int64(oldChunk.Size))
-		rb.tail = (rb.tail + 1) % rb.size
+	// Keep whole chunks and evict from the oldest edge until both limits fit.
+	// A single chunk larger than maxBytes is retained by itself so callers never
+	// receive a byte-sliced ANSI/OSC sequence.
+	for !rb.isEmpty() && (rb.full || (rb.maxBytes > 0 && int64(len(data)) <= rb.maxBytes && atomic.LoadInt64(&rb.totalBytes)+int64(len(data)) > rb.maxBytes)) {
+		rb.evictOldestLocked()
+	}
+	if rb.maxBytes > 0 && int64(len(data)) > rb.maxBytes {
+		for !rb.isEmpty() {
+			rb.evictOldestLocked()
+		}
 	}
 
 	chunk := TerminalDataChunk{
@@ -104,6 +119,17 @@ func (rb *TerminalRingBuffer) writeOwnedWithSequence(data []byte, sequence int64
 	rb.full = rb.head == rb.tail
 
 	return nil
+}
+
+func (rb *TerminalRingBuffer) evictOldestLocked() {
+	if rb.isEmpty() {
+		return
+	}
+	oldChunk := rb.chunks[rb.tail]
+	atomic.AddInt64(&rb.totalBytes, -int64(oldChunk.Size))
+	rb.chunks[rb.tail] = TerminalDataChunk{}
+	rb.tail = (rb.tail + 1) % rb.size
+	rb.full = false
 }
 
 // ReadAll returns all data slices in chronological order.
