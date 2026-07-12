@@ -77,7 +77,7 @@ await output.attach(1);
 events.onData(sessionId, chunk => output.pushLive(chunk));
 ```
 
-The coordinator understands sparse sequence coverage, retains live output while history is loading, catches up gaps, retries transient failures, and reports history truncation before rebasing. Background catch-up does not block terminal input.
+The coordinator understands sparse sequence coverage, retains live output while history is loading, catches up gaps, retries transient failures, and reports history truncation before rebasing. A live chunk remains renderable when a sparse history page covers its sequence without returning that chunk. Background catch-up does not block terminal input.
 
 ## Restorable In-Memory Snapshots
 

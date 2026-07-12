@@ -42,14 +42,51 @@ describe('PagedTerminalOutputCoordinator', () => {
     });
 
     const attach = coordinator.attach(1);
+    coordinator.pushLive(chunk(4, 'sparse-live-four'));
     coordinator.pushLive(chunk(5, 'duplicate-five'));
     coordinator.pushLive(chunk(7, 'seven'));
     await attach;
     await new Promise(resolve => setTimeout(resolve, 20));
 
     expect(fetchPage).toHaveBeenCalledTimes(2);
-    expect(writes.join('')).toBe('twofiveseven');
+    expect(writes.join('')).toBe('twofivesparse-live-fourseven');
     expect(coordinator.getSnapshot().coveredThroughSequence).toBe(7);
+    coordinator.dispose();
+  });
+
+  it('accepts the first non-one live sequence after empty initial history', async () => {
+    const writes: string[] = [];
+    const fetchPage = vi.fn().mockResolvedValue(page({ coveredThroughSequence: 0 }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+    });
+    await coordinator.attach(0);
+    coordinator.pushLive(chunk(264, 'late-first'));
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(writes).toEqual(['late-first']);
+    coordinator.dispose();
+  });
+
+  it('retains inactive output and drains it without recreating the coordinator', async () => {
+    const writes: string[] = [];
+    const fetchPage = vi.fn().mockResolvedValue(page({ coveredThroughSequence: 1 }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+    });
+    await coordinator.attach(1);
+    coordinator.setActive(false);
+    coordinator.pushLive(chunk(2, 'two'));
+    coordinator.pushLive(chunk(3, 'three'));
+    expect(writes).toEqual([]);
+
+    coordinator.setActive(true);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(writes).toEqual(['twothree']);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
     coordinator.dispose();
   });
 

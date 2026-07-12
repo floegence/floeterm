@@ -80,6 +80,10 @@ export interface PagedTerminalOutputCoordinatorHandle {
   dispose(): void;
 }
 
+type CoordinatorPipelineChunk = TerminalOutputPipelineChunk & {
+  coordinatorSequence?: number;
+};
+
 const DEFAULT_POLICY: PagedTerminalOutputPolicy = {
   maxRetainedLiveChunks: 2048,
   maxRetainedLiveBytes: 8 * 1024 * 1024,
@@ -144,8 +148,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     };
     this.pipeline = createTerminalOutputPipeline({
       write: (_data, chunks) => this.writeAcceptedChunks(chunks),
-      isInteractive: () => this.active && (this.options.isInteractive?.() ?? true),
-      requestCatchUp: request => this.beginCatchUp(request.startSequence),
+      isInteractive: () => true,
       policy: pipelinePolicy,
       scheduler: options.scheduler,
     });
@@ -166,17 +169,29 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
 
   pushLive(chunk: TerminalOutputPipelineChunk): void {
     if (this.disposed) return;
-    if (this.recoveryKind === 'initial' && this.state !== 'live' && this.state !== 'idle') {
+    if (this.state !== 'live' || !this.canRenderLive()) {
       this.retainLive(chunk);
       return;
     }
-    this.pipeline.enqueue(chunk);
+    this.acceptLive(chunk);
   }
 
   setActive(active: boolean): void {
     if (this.disposed) return;
     this.active = active;
-    if (active) this.pipeline.flush();
+    if (active) {
+      if (this.needsRebase) {
+        this.needsRebase = false;
+        this.recoveryKind = 'catch-up';
+        this.recoveryStartSequence = 0;
+        this.options.clear?.();
+        this.options.onHistoryTruncated?.('retained-live-overflow');
+        void this.runRecovery();
+      } else {
+        this.drainRetainedLive(new Set());
+        this.pipeline.flush();
+      }
+    }
     this.emitState();
   }
 
@@ -241,6 +256,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.setState(this.recoveryKind === 'initial' ? 'initial-replay' : 'catching-up');
 
     try {
+      const replayedSequences = new Set<number>();
       let cursor: string | number | undefined;
       let startSequence = this.recoveryStartSequence;
       let firstPage = true;
@@ -260,9 +276,13 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           this.pipeline.reset({ startSequence: firstAvailable });
         }
         firstPage = false;
-        this.writeAcceptedChunks(page.chunks.filter(chunk => (
+        const replayChunks = page.chunks.filter(chunk => (
           !chunk.sequence || chunk.sequence > this.coveredThroughSequence
-        )));
+        ));
+        for (const chunk of replayChunks) {
+          if (chunk.sequence) replayedSequences.add(chunk.sequence);
+        }
+        this.writeAcceptedChunks(replayChunks);
         this.coveredThroughSequence = Math.max(
           this.coveredThroughSequence,
           Math.floor(page.coveredThroughSequence || 0),
@@ -284,24 +304,11 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
         return;
       }
 
-      this.pipeline.reset({
-        startSequence: this.coveredThroughSequence + 1,
-        resumeCatchUp: this.recoveryKind === 'catch-up',
-        allowSequenceSkipOnResume: true,
-      });
-      if (this.recoveryKind === 'initial') {
-        const retained = this.retainedLive;
-        this.retainedLive = [];
-        this.retainedLiveBytes = 0;
-        for (const chunk of retained) {
-          if (!chunk.sequence || chunk.sequence > this.coveredThroughSequence) {
-            this.pipeline.enqueue(chunk);
-          }
-        }
-      }
+      this.pipeline.reset();
       this.retryAttempt = 0;
       this.lastError = null;
       this.setState('live');
+      this.drainRetainedLive(replayedSequences);
       this.pipeline.flush();
     } catch (error) {
       if (controller.signal.aborted || this.disposed || generation !== this.generation) return;
@@ -341,11 +348,70 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.emitState();
   }
 
+  private canRenderLive(): boolean {
+    return this.active && (this.options.isInteractive?.() ?? true);
+  }
+
+  private acceptLive(chunk: TerminalOutputPipelineChunk): void {
+    const sequence = typeof chunk.sequence === 'number' && Number.isFinite(chunk.sequence) && chunk.sequence > 0
+      ? Math.floor(chunk.sequence)
+      : undefined;
+    if (sequence && sequence <= this.coveredThroughSequence) {
+      return;
+    }
+    if (sequence && this.coveredThroughSequence > 0 && sequence > this.coveredThroughSequence + 1) {
+      this.retainLive({ ...chunk, sequence });
+      this.beginCatchUp(this.coveredThroughSequence + 1);
+      return;
+    }
+    this.enqueueForRender(sequence ? { ...chunk, sequence } : chunk);
+  }
+
+  private enqueueForRender(chunk: TerminalOutputPipelineChunk): void {
+    const sequence = chunk.sequence;
+    const pipelineChunk: CoordinatorPipelineChunk = {
+      ...chunk,
+      sequence: undefined,
+      coordinatorSequence: sequence,
+    };
+    this.pipeline.enqueue(pipelineChunk);
+    if (sequence) {
+      this.coveredThroughSequence = Math.max(this.coveredThroughSequence, sequence);
+    }
+  }
+
+  private drainRetainedLive(replayedSequences: ReadonlySet<number>): void {
+    if (!this.canRenderLive() || this.retainedLive.length === 0) return;
+    const retained = [...this.retainedLive].sort((left, right) => (
+      (left.sequence ?? 0) - (right.sequence ?? 0)
+    ));
+    this.retainedLive = [];
+    this.retainedLiveBytes = 0;
+
+    const firstSequence = retained.find(chunk => chunk.sequence)?.sequence;
+    if (this.coveredThroughSequence === 0 && firstSequence && replayedSequences.size === 0) {
+      this.coveredThroughSequence = firstSequence - 1;
+    }
+    for (const chunk of retained) {
+      if (chunk.sequence && replayedSequences.has(chunk.sequence)) continue;
+      if (chunk.sequence && chunk.sequence <= this.coveredThroughSequence) {
+        this.enqueueForRender(chunk);
+        continue;
+      }
+      this.acceptLive(chunk);
+      if (this.state !== 'live') break;
+    }
+  }
+
   private writeAcceptedChunks(chunks: readonly TerminalOutputPipelineChunk[]): void {
     if (chunks.length === 0) return;
     const acceptedChunks: TerminalOutputPipelineChunk[] = [];
     const data: Uint8Array[] = [];
-    for (const chunk of chunks) {
+    for (const queuedChunk of chunks) {
+      const coordinatorSequence = (queuedChunk as CoordinatorPipelineChunk).coordinatorSequence;
+      const chunk = coordinatorSequence
+        ? { ...queuedChunk, sequence: coordinatorSequence }
+        : queuedChunk;
       const transformed = this.options.transformChunk
         ? this.options.transformChunk(chunk)
         : chunk.data;
