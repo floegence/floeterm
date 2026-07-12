@@ -165,6 +165,30 @@ export interface TerminalRuntimeLineSnapshot {
   text: string;
 }
 
+export interface TerminalRestorableSnapshotOptions {
+  coveredThroughSequence?: number;
+  maxBytes?: number;
+  now?: () => number;
+}
+
+export interface TerminalRestorableSnapshot {
+  readonly version: 1;
+  readonly data: string;
+  readonly byteLength: number;
+  readonly partial: boolean;
+  readonly coveredThroughSequence: number;
+  readonly cols: number;
+  readonly rows: number;
+  readonly createdAtMs: number;
+}
+
+export interface TerminalResourceEstimate {
+  readonly bufferBytes: number;
+  readonly cellCount: number;
+  readonly estimatedBytes: number;
+  readonly rendererType: 'canvas' | 'webgl' | 'dom';
+}
+
 export interface TerminalTouchScrollRuntime {
   scrollLines(amount: number): boolean;
   getScrollbackLength(): number;
@@ -198,6 +222,9 @@ export interface TerminalCoreLike {
   write(data: string | Uint8Array, callback?: () => void): void;
   clear(): void;
   serialize(): string;
+  captureRestorableSnapshot?(options?: TerminalRestorableSnapshotOptions): TerminalRestorableSnapshot | null;
+  restoreSnapshot?(snapshot: TerminalRestorableSnapshot): Promise<boolean>;
+  getResourceEstimate?(): TerminalResourceEstimate;
   getSelectionText(): string;
   hasSelection(): boolean;
   copySelection(source?: TerminalCopySelectionSource): Promise<TerminalCopySelectionResult>;

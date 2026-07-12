@@ -9,6 +9,7 @@ export {
   resetTerminalRenderSchedulerStats,
 } from './core/TerminalRenderScheduler';
 export { createTerminalOutputPipeline } from './core/TerminalOutputPipeline';
+export { createPagedTerminalOutputCoordinator } from './core/PagedTerminalOutputCoordinator';
 export {
   getTerminalFabricDiagnostics,
   resetTerminalFabricDiagnostics,
@@ -29,6 +30,17 @@ export type {
   TerminalOutputPipelineStats,
 } from './core/TerminalOutputPipeline';
 export type {
+  PagedTerminalHistoryPage,
+  PagedTerminalHistoryRequest,
+  PagedTerminalHistoryTruncationReason,
+  PagedTerminalOutputCoordinatorHandle,
+  PagedTerminalOutputCoordinatorOptions,
+  PagedTerminalOutputPolicy,
+  PagedTerminalOutputScheduler,
+  PagedTerminalOutputSnapshot,
+  PagedTerminalOutputState,
+} from './core/PagedTerminalOutputCoordinator';
+export type {
   TerminalFabricBackend,
   TerminalFabricDiagnostics,
   TerminalFabricRenderPath,
@@ -46,6 +58,9 @@ export type {
   TerminalCopySelectionSource,
   TerminalResponsiveConfig,
   TerminalRuntimeLineSnapshot,
+  TerminalRestorableSnapshot,
+  TerminalRestorableSnapshotOptions,
+  TerminalResourceEstimate,
   TerminalEventHandlers,
   TerminalFocusOptions,
   TerminalInstanceController,

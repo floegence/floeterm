@@ -27,6 +27,9 @@ import {
   type TerminalResponsiveConfig,
   type TerminalSelectionSnapshot,
   type TerminalRuntimeLineSnapshot,
+  type TerminalRestorableSnapshot,
+  type TerminalRestorableSnapshotOptions,
+  type TerminalResourceEstimate,
   type TerminalTouchScrollRuntime,
   type TerminalVisualSuspendHandle,
   type TerminalVisualSuspendOptions,
@@ -120,6 +123,14 @@ type rgb_color = {
   g: number;
   b: number;
 };
+
+const TERMINAL_SNAPSHOT_VERSION = 1 as const;
+const DEFAULT_TERMINAL_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024;
+const ESTIMATED_RENDERER_BYTES = 4 * 1024 * 1024;
+const ESTIMATED_CELL_BYTES = 16;
+const SNAPSHOT_RESET_PREFIX = '\x1bc\x1b[2J\x1b[H';
+
+const encodedByteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 type terminal_theme_color_translator = {
   fg: Map<string, rgb_color>;
@@ -2133,7 +2144,88 @@ export class TerminalCore {
   }
 
   serialize(): string {
-    return '';
+    return this.captureRestorableSnapshot()?.data ?? '';
+  }
+
+  captureRestorableSnapshot(options: TerminalRestorableSnapshotOptions = {}): TerminalRestorableSnapshot | null {
+    if (!this.terminal || !this.isReady()) {
+      return null;
+    }
+
+    const maxBytes = Number.isFinite(options.maxBytes) && Number(options.maxBytes) > 0
+      ? Math.floor(Number(options.maxBytes))
+      : DEFAULT_TERMINAL_SNAPSHOT_MAX_BYTES;
+    const info = this.getTerminalInfo();
+    if (!info) {
+      return null;
+    }
+
+    const lines: string[] = [];
+    for (let row = 0; row < info.bufferLength; row += 1) {
+      lines.push(this.readBufferLine(row, { trimRight: true }));
+    }
+
+    const suffix = '\x1b[0m';
+    let selected = lines;
+    let data = SNAPSHOT_RESET_PREFIX + selected.join('\r\n') + suffix;
+    let partial = false;
+    while (selected.length > Math.max(1, info.rows) && encodedByteLength(data) > maxBytes) {
+      partial = true;
+      selected = selected.slice(Math.max(1, Math.floor(selected.length / 4)));
+      data = SNAPSHOT_RESET_PREFIX + selected.join('\r\n') + suffix;
+    }
+    if (encodedByteLength(data) > maxBytes) {
+      partial = true;
+      const availableBytes = Math.max(0, maxBytes - encodedByteLength(SNAPSHOT_RESET_PREFIX + suffix));
+      const encoded = new TextEncoder().encode(selected.join('\r\n'));
+      const tail = encoded.slice(Math.max(0, encoded.byteLength - availableBytes));
+      data = SNAPSHOT_RESET_PREFIX + new TextDecoder().decode(tail) + suffix;
+    }
+
+    return {
+      version: TERMINAL_SNAPSHOT_VERSION,
+      data,
+      byteLength: encodedByteLength(data),
+      partial,
+      coveredThroughSequence: Math.max(0, Math.floor(options.coveredThroughSequence ?? 0)),
+      cols: info.cols,
+      rows: info.rows,
+      createdAtMs: options.now?.() ?? Date.now(),
+    };
+  }
+
+  async restoreSnapshot(snapshot: TerminalRestorableSnapshot): Promise<boolean> {
+    if (!this.terminal || !this.isReady() || snapshot.version !== TERMINAL_SNAPSHOT_VERSION) {
+      return false;
+    }
+    if (!Number.isFinite(snapshot.coveredThroughSequence) || snapshot.coveredThroughSequence < 0) {
+      return false;
+    }
+
+    this.startHistoryReplay();
+    return new Promise(resolve => {
+      this.write(snapshot.data, () => {
+        this.endHistoryReplay();
+        resolve(true);
+      });
+    });
+  }
+
+  getResourceEstimate(): TerminalResourceEstimate {
+    const info = this.getTerminalInfo();
+    const cellCount = info ? Math.max(0, info.cols * info.bufferLength) : 0;
+    let bufferBytes = 0;
+    if (info) {
+      for (let row = 0; row < info.bufferLength; row += 1) {
+        bufferBytes += encodedByteLength(this.readBufferLine(row));
+      }
+    }
+    return {
+      bufferBytes,
+      cellCount,
+      estimatedBytes: ESTIMATED_RENDERER_BYTES + bufferBytes + cellCount * ESTIMATED_CELL_BYTES,
+      rendererType: this.config.rendererType ?? 'canvas',
+    };
   }
 
   getSelectionText(): string {

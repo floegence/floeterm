@@ -5,6 +5,7 @@ import {
   TerminalState,
   createTerminalInstance,
   createTerminalOutputPipeline,
+  createPagedTerminalOutputCoordinator,
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
   type TerminalAppearance,
@@ -19,6 +20,8 @@ import {
   type TerminalOutputPipelineResetOptions,
   type TerminalResponsiveConfig,
   type TerminalRuntimeLineSnapshot,
+  type TerminalRestorableSnapshot,
+  type TerminalResourceEstimate,
   type TerminalSessionInfo,
   type TerminalTouchScrollRuntime,
   type TerminalTransport,
@@ -30,6 +33,7 @@ describe('public framework-neutral API', () => {
     expect(TerminalSessionsCoordinator).toBeTypeOf('function');
     expect(createTerminalInstance).toBeTypeOf('function');
     expect(createTerminalOutputPipeline).toBeTypeOf('function');
+    expect(createPagedTerminalOutputCoordinator).toBeTypeOf('function');
     expect(TerminalState.IDLE).toBe('idle');
     expect(getTerminalRenderSchedulerStats()).toEqual(expect.objectContaining({ scheduled: expect.any(Number) }));
     resetTerminalRenderSchedulerStats();
@@ -92,6 +96,22 @@ describe('public framework-neutral API', () => {
       isAlternateScreen: () => false,
       sendAlternateScreenInput: () => {},
     };
+    const restorableSnapshot: TerminalRestorableSnapshot = {
+      version: 1,
+      data: '\x1bc',
+      byteLength: 2,
+      partial: false,
+      coveredThroughSequence: 1,
+      cols: 80,
+      rows: 24,
+      createdAtMs: 1,
+    };
+    const resourceEstimate: TerminalResourceEstimate = {
+      bufferBytes: 0,
+      cellCount: 0,
+      estimatedBytes: 0,
+      rendererType: 'canvas',
+    };
 
     const controller: TerminalInstanceController = createTerminalInstance({
       sessionId: session.id,
@@ -111,6 +131,8 @@ describe('public framework-neutral API', () => {
     expect(pipelineResetOptions.resumeCatchUp).toBe(true);
     expect(pipelineResetOptions.allowSequenceSkipOnResume).toBe(true);
     expect(touchScroll.scrollLines(1)).toBe(true);
+    expect(restorableSnapshot.coveredThroughSequence).toBe(1);
+    expect(resourceEstimate.rendererType).toBe('canvas');
 
     pipeline.dispose();
     controller.dispose();

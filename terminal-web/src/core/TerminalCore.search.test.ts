@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from 'vitest';
+import { TerminalState } from '../types';
 import { TerminalCore } from './TerminalCore';
 
 type fake_line = { translateToString: (trimRight?: boolean) => string };
 
 const makeFakeTerminal = (lines: string[]) => {
   return {
+    cols: 80,
+    rows: 24,
     buffer: {
       active: {
         length: lines.length,
@@ -79,5 +82,43 @@ describe('TerminalCore search scanning', () => {
     runtime?.sendAlternateScreenInput('\x1B[A');
     expect(scrollLines).toHaveBeenCalledWith(3);
     expect(input).toHaveBeenCalledWith('\x1B[A', true);
+  });
+
+  it('captures bounded in-memory snapshots with sequence coverage and resource estimates', () => {
+    const core = new TerminalCore(document.createElement('div'));
+    (core as any).terminal = makeFakeTerminal(['alpha', 'beta', 'gamma']);
+    (core as any).state = TerminalState.READY;
+
+    const snapshot = core.captureRestorableSnapshot({
+      coveredThroughSequence: 42,
+      maxBytes: 16,
+      now: () => 100,
+    });
+    const estimate = core.getResourceEstimate();
+
+    expect(snapshot).toEqual(expect.objectContaining({
+      version: 1,
+      partial: true,
+      coveredThroughSequence: 42,
+      createdAtMs: 100,
+    }));
+    expect(snapshot?.byteLength).toBeLessThanOrEqual(16);
+    expect(estimate.bufferBytes).toBeGreaterThan(0);
+    expect(estimate.cellCount).toBe(240);
+    expect(estimate.estimatedBytes).toBeGreaterThan(estimate.bufferBytes);
+  });
+
+  it('restores compatible snapshots and rejects incompatible versions', async () => {
+    const core = new TerminalCore(document.createElement('div'));
+    (core as any).terminal = makeFakeTerminal(['alpha']);
+    (core as any).state = TerminalState.READY;
+    const write = vi.fn((_data: string | Uint8Array, callback?: () => void) => callback?.());
+    (core as any).write = write;
+    const snapshot = core.captureRestorableSnapshot({ coveredThroughSequence: 2 });
+
+    expect(snapshot).not.toBeNull();
+    await expect(core.restoreSnapshot(snapshot!)).resolves.toBe(true);
+    expect(write).toHaveBeenCalledWith(snapshot?.data, expect.any(Function));
+    await expect(core.restoreSnapshot({ ...snapshot!, version: 2 as 1 })).resolves.toBe(false);
   });
 });

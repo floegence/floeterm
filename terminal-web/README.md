@@ -61,6 +61,41 @@ await core.initialize();
 - `TerminalCore` exposes runtime appearance updates, shell bell/title events, custom terminal link providers, buffer line reads, and touch-scroll helpers without requiring consumers to reach into private runtime objects.
 - Multiple live `TerminalCore` instances share one render scheduler, so large terminal grids coalesce demand-driven canvas work into browser frames.
 
+## Paged History And Live Recovery
+
+Hosts with cursor-paged history APIs can use the framework-neutral coordinator instead of maintaining a second live-output queue:
+
+```ts
+const output = createPagedTerminalOutputCoordinator({
+  fetchPage: ({ startSequence, cursor, signal }) =>
+    transport.historyPage(sessionId, startSequence, cursor, signal),
+  write: data => core.write(data),
+  clear: () => core.clear(),
+});
+
+await output.attach(1);
+events.onData(sessionId, chunk => output.pushLive(chunk));
+```
+
+The coordinator understands sparse sequence coverage, retains live output while history is loading, catches up gaps, retries transient failures, and reports history truncation before rebasing. Background catch-up does not block terminal input.
+
+## Restorable In-Memory Snapshots
+
+Adaptive host worksets can release inactive renderers without closing their PTY sessions:
+
+```ts
+const snapshot = core.captureRestorableSnapshot({
+  coveredThroughSequence: output.getSnapshot().coveredThroughSequence,
+});
+const estimate = core.getResourceEstimate();
+
+core.dispose(); // The host-owned PTY and output coordinator remain alive.
+
+const restored = await nextCore.restoreSnapshot(snapshot);
+```
+
+Snapshots are versioned opaque values intended for memory-only storage. They are bounded to 2 MiB by default and include sequence coverage so the host can fetch only newer output. Floeterm does not write snapshots to persistent browser storage.
+
 ## Responsive Resize
 
 When the same remote terminal session can be displayed in multiple views, enable responsive options so the focused terminal re-syncs cols/rows to the remote PTY:
