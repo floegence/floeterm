@@ -40,12 +40,21 @@ for _, chunk := range page.Chunks {
     _ = chunk
 }
 if page.HasMore {
-    nextStartSeq := page.NextStartSeq
-    _ = nextStartSeq
+    next, err := session.GetHistoryPage(terminal.HistoryPageOptions{
+        StartSeq:          page.NextStartSeq,
+        EndSeq:            page.SnapshotEndSequence,
+        HistoryGeneration: page.HistoryGeneration,
+        LimitChunks:       256,
+        MaxBytes:          384 * 1024,
+    })
+    _ = next
+    _ = err
 }
 ```
 
-`NextStartSeq` advances through retained history even when the configured history filter removes a page's renderable chunks, so callers can keep paging without risking an empty-page loop.
+`SnapshotEndSequence` freezes the committed source high-water captured by the first page, so a busy PTY cannot extend the initial replay forever. Pass it and `HistoryGeneration` to every later page. `CoveredThroughSequence` advances through retained or explicitly filtered source sequences even when a configured history filter removes every renderable chunk from a page.
+
+Check `HistoryReset` and `HistoryTruncated` before accepting a page. `FirstRetainedSequence` reports the current retention floor even for an empty requested range; a caller must rebase rather than treating evicted output as a normal sparse sequence. `ClearHistory` advances the generation without resetting the live source sequence.
 
 Retained history can be bounded by both chunk count and bytes without limiting the number of terminal sessions:
 
@@ -84,7 +93,8 @@ Custom `ShellInitWriter` implementations that also need to run without a PATH pr
 ## Notes
 - Implement `TerminalEventHandler` to receive output and lifecycle events.
 - `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession`.
-- Configure defaults via `ManagerConfig` (history buffer size, env, filters, and timing).
+- Configure defaults via `ManagerConfig` (history buffer size, env, and filters). The legacy resize suppression duration fields are deprecated; resize never drops terminal history.
+- PTYs start at the effective attached viewport, preserve their last size after the final detach, and skip redundant same-size resizes.
 - Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and `OSC 7 file://...`) and ignores generic title-only OSC updates.
 - Cwd parsing is stream-safe across PTY read chunks, so fragmented fullscreen/TUI control sequences do not trigger false working-directory parse failures.
 - `NewStdLogger` colorizes output by level when writing to a TTY (disable via `NO_COLOR=1` or `FLOETERM_LOG_COLOR=0`).

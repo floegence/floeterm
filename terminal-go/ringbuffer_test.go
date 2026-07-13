@@ -272,3 +272,70 @@ func TestRingBufferReadChunkPageEmptyBuffer(t *testing.T) {
 		t.Fatalf("unexpected empty stats: %+v", page)
 	}
 }
+
+func TestRingBufferHistoryCoverageTracksSparseSequences(t *testing.T) {
+	buffer := NewTerminalRingBuffer(8)
+	if err := buffer.writeOwnedWithSequence([]byte("one"), 1, 1000, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := buffer.writeOwnedWithSequence([]byte("three"), 3, 3000, false); err != nil {
+		t.Fatal(err)
+	}
+
+	first := buffer.ReadChunkPage(HistoryPageOptions{LimitChunks: 1})
+	if first.NextStartSeq != 3 || first.CoveredThroughSequence != 2 || first.SnapshotEndSequence != 3 {
+		t.Fatalf("unexpected sparse first page: %+v", first)
+	}
+	second := buffer.ReadChunkPage(HistoryPageOptions{StartSeq: first.NextStartSeq, EndSeq: first.SnapshotEndSequence})
+	if second.HasMore || second.CoveredThroughSequence != 3 {
+		t.Fatalf("unexpected sparse final page: %+v", second)
+	}
+}
+
+func TestRingBufferHistoryPageReportsRetentionFloorOnEmptyRange(t *testing.T) {
+	buffer := NewTerminalRingBuffer(2)
+	for sequence, value := range []string{"one", "two", "three"} {
+		if err := buffer.writeOwnedWithSequence([]byte(value), int64(sequence+1), int64(sequence+1), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page := buffer.ReadChunkPage(HistoryPageOptions{StartSeq: 1, EndSeq: 2})
+	if page.FirstRetainedSequence != 2 || !page.HistoryTruncated {
+		t.Fatalf("expected retained floor truncation metadata, got %+v", page)
+	}
+}
+
+func TestRingBufferHistoryPageReportsFullyEvictedBoundedRange(t *testing.T) {
+	buffer := NewTerminalRingBuffer(2)
+	for sequence, value := range []string{"one", "two", "three", "four"} {
+		if err := buffer.writeOwnedWithSequence([]byte(value), int64(sequence+1), int64(sequence+1), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page := buffer.ReadChunkPage(HistoryPageOptions{StartSeq: 1, EndSeq: 2})
+	if len(page.Chunks) != 0 || page.FirstRetainedSequence != 3 || !page.HistoryTruncated {
+		t.Fatalf("expected fully evicted bounded range, got %+v", page)
+	}
+}
+
+func TestRingBufferInitialHistoryDetectsOnlyARealRetentionGap(t *testing.T) {
+	complete := NewTerminalRingBuffer(2)
+	if err := complete.writeOwnedWithSequence([]byte("one"), 1, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	if page := complete.ReadChunkPage(HistoryPageOptions{}); page.HistoryTruncated {
+		t.Fatalf("sequence one should not report truncation: %+v", page)
+	}
+
+	truncated := NewTerminalRingBuffer(2)
+	for sequence := int64(1); sequence <= 3; sequence++ {
+		if err := truncated.writeOwnedWithSequence([]byte("data"), sequence, sequence, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if page := truncated.ReadChunkPage(HistoryPageOptions{}); !page.HistoryTruncated || page.FirstRetainedSequence != 2 {
+		t.Fatalf("initial replay should report the missing sequence one: %+v", page)
+	}
+}

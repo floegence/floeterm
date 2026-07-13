@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 // TerminalDataChunk represents a chunk of PTY output stored for history replay.
@@ -18,22 +20,29 @@ type TerminalDataChunk struct {
 
 // HistoryPageOptions configures a bounded chronological terminal history read.
 type HistoryPageOptions struct {
-	StartSeq    int64
-	EndSeq      int64
-	LimitChunks int
-	MaxBytes    int
+	StartSeq          int64
+	EndSeq            int64
+	HistoryGeneration int64
+	LimitChunks       int
+	MaxBytes          int
 }
 
 // HistoryPage is a bounded terminal history snapshot plus replay cursor metadata.
 type HistoryPage struct {
-	Chunks        []TerminalDataChunk
-	FirstSequence int64
-	LastSequence  int64
-	NextStartSeq  int64
-	HasMore       bool
-	CoveredBytes  int64
-	TotalBytes    int64
-	UsedChunks    int
+	Chunks                 []TerminalDataChunk
+	FirstSequence          int64
+	LastSequence           int64
+	FirstRetainedSequence  int64
+	NextStartSeq           int64
+	HasMore                bool
+	CoveredThroughSequence int64
+	SnapshotEndSequence    int64
+	HistoryGeneration      int64
+	HistoryReset           bool
+	HistoryTruncated       bool
+	CoveredBytes           int64
+	TotalBytes             int64
+	UsedChunks             int
 }
 
 // TerminalSessionInfo summarizes a terminal session for listing APIs.
@@ -131,13 +140,19 @@ type Session struct {
 	lastInputLen    int
 	inputWindow     time.Duration
 
-	sequenceNumber int64
+	sequenceNumber    int64
+	committedSequence int64
+	historyGeneration int64
 
 	currentWorkingDir string
 	workdirPending    []byte
 
-	isResizing    bool
-	resizeEndTime time.Time
+	lastAppliedCols int
+	lastAppliedRows int
+	setPTYSize      func(*os.File, *pty.Winsize) error
+	resizeQueued    bool
+	resizeRunning   bool
+	resizeReason    string
 
 	eventHandler TerminalEventHandler
 

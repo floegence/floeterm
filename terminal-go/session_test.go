@@ -120,6 +120,8 @@ func TestSessionHistoryPagePreservesCursorWhenFilterDropsChunks(t *testing.T) {
 			Logger:        NopLogger{},
 			HistoryFilter: dropSequenceHistoryFilter{sequence: 1},
 		}),
+		committedSequence: 2,
+		historyGeneration: 1,
 	}
 
 	if err := session.ringBuffer.writeOwnedWithSequence([]byte("drop"), 1, 1000, false); err != nil {
@@ -149,6 +151,103 @@ func TestSessionHistoryPagePreservesCursorWhenFilterDropsChunks(t *testing.T) {
 	}
 	if secondPage.HasMore || secondPage.LastSequence != 2 {
 		t.Fatalf("unexpected second page metadata: %+v", secondPage)
+	}
+}
+
+func TestSessionHistoryPageUsesFixedSnapshotEnd(t *testing.T) {
+	session := &Session{
+		ID:                "session-snapshot",
+		connections:       make(map[string]*ConnectionInfo),
+		ringBuffer:        NewTerminalRingBuffer(8),
+		historyGeneration: 1,
+		config:            newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.processRawPTYData([]byte("one"))
+	session.processRawPTYData([]byte("two"))
+
+	first, err := session.GetHistoryPage(HistoryPageOptions{LimitChunks: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SnapshotEndSequence != 2 || first.CoveredThroughSequence != 1 || first.HistoryGeneration != 1 {
+		t.Fatalf("unexpected first page metadata: %+v", first)
+	}
+
+	session.processRawPTYData([]byte("three"))
+	second, err := session.GetHistoryPage(HistoryPageOptions{
+		StartSeq:          first.NextStartSeq,
+		EndSeq:            first.SnapshotEndSequence,
+		HistoryGeneration: first.HistoryGeneration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SnapshotEndSequence != 2 || second.CoveredThroughSequence != 2 || len(second.Chunks) != 1 || second.Chunks[0].Sequence != 2 {
+		t.Fatalf("second page chased moving tail: %+v", second)
+	}
+}
+
+func TestSessionClearHistoryPreservesCoverageAndInvalidatesGeneration(t *testing.T) {
+	session := &Session{
+		ID:                "session-clear-generation",
+		connections:       make(map[string]*ConnectionInfo),
+		ringBuffer:        NewTerminalRingBuffer(8),
+		historyGeneration: 1,
+		config:            newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.processRawPTYData([]byte("one"))
+	before, err := session.GetHistoryPage(HistoryPageOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.ClearHistory(); err != nil {
+		t.Fatal(err)
+	}
+
+	reset, err := session.GetHistoryPage(HistoryPageOptions{HistoryGeneration: before.HistoryGeneration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reset.HistoryReset || reset.HistoryGeneration != 2 {
+		t.Fatalf("expected generation reset, got %+v", reset)
+	}
+
+	after, err := session.GetHistoryPage(HistoryPageOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Chunks) != 0 || after.CoveredThroughSequence != 1 || after.SnapshotEndSequence != 1 {
+		t.Fatalf("clear regressed committed coverage: %+v", after)
+	}
+
+	session.processRawPTYData([]byte("two"))
+	latest, err := session.GetHistoryPage(HistoryPageOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest.Chunks) != 1 || latest.Chunks[0].Sequence != 2 || latest.CoveredThroughSequence != 2 {
+		t.Fatalf("source sequence did not remain monotonic after clear: %+v", latest)
+	}
+}
+
+func TestSessionHistoryPageMarksEvictionBetweenPages(t *testing.T) {
+	session := &Session{
+		ID:                "session-page-eviction",
+		connections:       make(map[string]*ConnectionInfo),
+		ringBuffer:        NewTerminalRingBuffer(2),
+		historyGeneration: 1,
+		config:            newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	for _, value := range []string{"one", "two", "three"} {
+		session.processRawPTYData([]byte(value))
+	}
+
+	page, err := session.GetHistoryPage(HistoryPageOptions{StartSeq: 1, EndSeq: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.HistoryTruncated || page.FirstRetainedSequence != 2 {
+		t.Fatalf("expected explicit history eviction, got %+v", page)
 	}
 }
 

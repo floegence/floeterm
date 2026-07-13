@@ -205,11 +205,23 @@ func (rb *TerminalRingBuffer) ReadChunkPage(options HistoryPageOptions) HistoryP
 	}
 	if rb.isEmpty() {
 		page.Chunks = []TerminalDataChunk{}
+		page.SnapshotEndSequence = options.EndSeq
+		page.CoveredThroughSequence = options.EndSeq
 		return page
 	}
+	page.FirstRetainedSequence = rb.chunks[rb.tail].Sequence
+	newestIndex := rb.head - 1
+	if newestIndex < 0 {
+		newestIndex = rb.size - 1
+	}
+	snapshotEnd := options.EndSeq
+	if snapshotEnd <= 0 || snapshotEnd > rb.chunks[newestIndex].Sequence {
+		snapshotEnd = rb.chunks[newestIndex].Sequence
+	}
+	page.SnapshotEndSequence = snapshotEnd
 
 	startSeq := options.StartSeq
-	endSeq := options.EndSeq
+	endSeq := snapshotEnd
 	limitChunks := options.LimitChunks
 	maxBytes := options.MaxBytes
 	capacity := usedChunks
@@ -257,6 +269,18 @@ func (rb *TerminalRingBuffer) ReadChunkPage(options HistoryPageOptions) HistoryP
 			page.FirstSequence = chunk.Sequence
 		}
 		page.LastSequence = chunk.Sequence
+	}
+	if page.HasMore && page.NextStartSeq > 0 {
+		page.CoveredThroughSequence = page.NextStartSeq - 1
+	} else {
+		page.CoveredThroughSequence = snapshotEnd
+	}
+	effectiveStart := startSeq
+	if effectiveStart <= 0 {
+		effectiveStart = 1
+	}
+	if effectiveStart <= snapshotEnd && page.FirstRetainedSequence > effectiveStart {
+		page.HistoryTruncated = true
 	}
 
 	return page

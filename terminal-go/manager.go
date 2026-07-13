@@ -79,6 +79,7 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		ctx:               ctx,
 		cancel:            cancel,
 		ringBuffer:        NewTerminalRingBufferWithByteLimit(sessionCfg.historyBufferSize, sessionCfg.historyBufferMaxBytes),
+		historyGeneration: 1,
 		currentWorkingDir: workingDir,
 		inputWindow:       sessionCfg.inputWindow,
 		eventHandler:      initialHandler,
@@ -252,12 +253,6 @@ func (m *Manager) ActivateSession(sessionID string, cols, rows int) error {
 	// startPTY is internally synchronized and will no-op when already active.
 	if err := session.startPTY(cols, rows); err != nil {
 		return fmt.Errorf("failed to activate session: %w", err)
-	}
-
-	if session.hasConnections() {
-		if err := session.resizePTYToMinimumSize(); err != nil {
-			return fmt.Errorf("failed to reconcile PTY size after activation: %w", err)
-		}
 	}
 
 	m.config.Logger.Info("Activated dormant session", "sessionID", sessionID, "cols", cols, "rows", rows)

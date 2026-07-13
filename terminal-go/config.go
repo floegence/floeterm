@@ -4,18 +4,20 @@ import "time"
 
 // ManagerConfig defines defaults used for all sessions created by a manager.
 type ManagerConfig struct {
-	Logger                        Logger
-	EnvProvider                   ShellEnvProvider
-	ShellResolver                 ShellResolver
-	ShellArgsProvider             ShellArgsProvider
-	ShellInitWriter               ShellInitWriter
-	HistoryFilter                 HistoryFilter
-	HistoryBufferSize             int
-	HistoryBufferMaxBytes         int64
-	InputWindow                   time.Duration
+	Logger                Logger
+	EnvProvider           ShellEnvProvider
+	ShellResolver         ShellResolver
+	ShellArgsProvider     ShellArgsProvider
+	ShellInitWriter       ShellInitWriter
+	HistoryFilter         HistoryFilter
+	HistoryBufferSize     int
+	HistoryBufferMaxBytes int64
+	InputWindow           time.Duration
+	// Deprecated: terminal output is no longer dropped during initial resize.
 	InitialResizeSuppressDuration time.Duration
-	ResizeSuppressDuration        time.Duration
-	TerminalEnv                   TerminalEnv
+	// Deprecated: terminal output is no longer dropped during resize.
+	ResizeSuppressDuration time.Duration
+	TerminalEnv            TerminalEnv
 }
 
 // TerminalEnv defines environment variables applied to every PTY session.
@@ -84,34 +86,30 @@ func (cfg ManagerConfig) applyDefaults() ManagerConfig {
 }
 
 type sessionConfig struct {
-	logger                        Logger
-	envProvider                   ShellEnvProvider
-	shellResolver                 ShellResolver
-	shellArgsProvider             ShellArgsProvider
-	shellInitWriter               ShellInitWriter
-	historyFilter                 HistoryFilter
-	historyBufferSize             int
-	historyBufferMaxBytes         int64
-	inputWindow                   time.Duration
-	initialResizeSuppressDuration time.Duration
-	resizeSuppressDuration        time.Duration
-	terminalEnv                   TerminalEnv
+	logger                Logger
+	envProvider           ShellEnvProvider
+	shellResolver         ShellResolver
+	shellArgsProvider     ShellArgsProvider
+	shellInitWriter       ShellInitWriter
+	historyFilter         HistoryFilter
+	historyBufferSize     int
+	historyBufferMaxBytes int64
+	inputWindow           time.Duration
+	terminalEnv           TerminalEnv
 }
 
 func newSessionConfig(cfg ManagerConfig) sessionConfig {
 	cfg = cfg.applyDefaults()
 	return sessionConfig{
-		logger:                        cfg.Logger,
-		envProvider:                   cfg.EnvProvider,
-		shellResolver:                 cfg.ShellResolver,
-		shellArgsProvider:             cfg.ShellArgsProvider,
-		shellInitWriter:               cfg.ShellInitWriter,
-		historyFilter:                 cfg.HistoryFilter,
-		historyBufferSize:             cfg.HistoryBufferSize,
-		historyBufferMaxBytes:         cfg.HistoryBufferMaxBytes,
-		inputWindow:                   cfg.InputWindow,
-		initialResizeSuppressDuration: cfg.InitialResizeSuppressDuration,
-		resizeSuppressDuration:        cfg.ResizeSuppressDuration,
-		terminalEnv:                   cfg.TerminalEnv,
+		logger:                cfg.Logger,
+		envProvider:           cfg.EnvProvider,
+		shellResolver:         cfg.ShellResolver,
+		shellArgsProvider:     cfg.ShellArgsProvider,
+		shellInitWriter:       cfg.ShellInitWriter,
+		historyFilter:         cfg.HistoryFilter,
+		historyBufferSize:     cfg.HistoryBufferSize,
+		historyBufferMaxBytes: cfg.HistoryBufferMaxBytes,
+		inputWindow:           cfg.InputWindow,
+		terminalEnv:           cfg.TerminalEnv,
 	}
 }

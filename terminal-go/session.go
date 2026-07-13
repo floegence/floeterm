@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -88,27 +87,21 @@ func (s *Session) startPTY(cols, rows int) error {
 	)
 	cmd.Env = env
 
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		return fmt.Errorf("failed to start PTY: %w", err)
+	if effectiveCols, effectiveRows, ok := s.getMinimumTerminalSizeLocked(); ok {
+		cols, rows = effectiveCols, effectiveRows
 	}
-
-	s.isResizing = true
-	s.resizeEndTime = time.Now().Add(s.config.initialResizeSuppressDuration)
 
 	winsize := buildWinSize(cols, rows)
-	if err := pty.Setsize(ptmx, winsize); err != nil {
-		s.config.logger.Warn("Failed to set terminal size", "error", err, "rows", rows, "cols", cols)
-	}
-
-	time.Sleep(10 * time.Millisecond)
-	if err := pty.Setsize(ptmx, winsize); err == nil {
-		s.config.logger.Debug("Terminal size re-confirmed")
+	ptmx, err := pty.StartWithSize(cmd, winsize)
+	if err != nil {
+		return fmt.Errorf("failed to start PTY: %w", err)
 	}
 
 	s.PTY = ptmx
 	s.Cmd = cmd
 	s.isActive = true
+	s.lastAppliedCols = cols
+	s.lastAppliedRows = rows
 	s.LastActive = time.Now()
 	s.procWaitDone = make(chan struct{})
 
@@ -173,6 +166,7 @@ func (s *Session) Close() error {
 func (s *Session) cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.resizeQueued = false
 
 	if s.cancel != nil {
 		s.cancel()
@@ -231,15 +225,50 @@ func (s *Session) GetHistoryChunks() ([]TerminalDataChunk, error) {
 
 // GetHistoryPage returns a bounded history page and replay cursor metadata.
 func (s *Session) GetHistoryPage(options HistoryPageOptions) (HistoryPage, error) {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	ringBuffer := s.ringBuffer
-	s.mu.RUnlock()
 
 	if ringBuffer == nil {
 		return HistoryPage{}, fmt.Errorf("ring buffer not initialized")
 	}
 
-	page := ringBuffer.ReadChunkPage(options)
+	if s.historyGeneration <= 0 {
+		s.historyGeneration = 1
+	}
+	snapshotEnd := s.committedSequence
+	if options.EndSeq > 0 && options.EndSeq < snapshotEnd {
+		snapshotEnd = options.EndSeq
+	}
+
+	readOptions := options
+	readOptions.EndSeq = snapshotEnd
+	page := ringBuffer.ReadChunkPage(readOptions)
+	page.SnapshotEndSequence = snapshotEnd
+	page.HistoryGeneration = s.historyGeneration
+	if options.HistoryGeneration > 0 && options.HistoryGeneration != s.historyGeneration {
+		page.Chunks = []TerminalDataChunk{}
+		page.FirstSequence = 0
+		page.LastSequence = 0
+		page.NextStartSeq = 0
+		page.HasMore = false
+		page.CoveredThroughSequence = 0
+		page.CoveredBytes = 0
+		page.HistoryReset = true
+		return page, nil
+	}
+	if page.HasMore && page.NextStartSeq > 0 {
+		page.CoveredThroughSequence = page.NextStartSeq - 1
+	} else {
+		page.CoveredThroughSequence = snapshotEnd
+	}
+	effectiveStart := options.StartSeq
+	if effectiveStart <= 0 {
+		effectiveStart = 1
+	}
+	if effectiveStart <= snapshotEnd && page.FirstRetainedSequence > effectiveStart {
+		page.HistoryTruncated = true
+	}
 	if len(page.Chunks) > 0 && s.config.historyFilter != nil {
 		page.Chunks = s.config.historyFilter.Filter(page.Chunks)
 	}
@@ -276,6 +305,10 @@ func (s *Session) ClearHistory() error {
 
 	if s.ringBuffer != nil {
 		s.ringBuffer.Clear()
+	}
+	s.historyGeneration++
+	if s.historyGeneration <= 0 {
+		s.historyGeneration = 1
 	}
 
 	s.config.logger.Info("Terminal history cleared", "sessionID", s.ID)
@@ -342,31 +375,19 @@ func (s *Session) readPTYOutput() {
 	}
 }
 
-func (s *Session) shouldSkipRingBufferWrite() bool {
-	if s.isResizing {
-		if time.Now().After(s.resizeEndTime) {
-			s.isResizing = false
-			s.config.logger.Debug("Resize suppression ended", "sessionID", s.ID)
-			return false
-		}
-		return true
-	}
-	return false
-}
-
 func (s *Session) processRawPTYData(data []byte) {
-	seqNum := atomic.AddInt64(&s.sequenceNumber, 1)
 	timestamp := time.Now().UnixMilli()
 
 	s.mu.Lock()
+	s.sequenceNumber++
+	seqNum := s.sequenceNumber
 	s.LastActive = time.Now()
 
-	shouldSkip := s.shouldSkipRingBufferWrite()
-	if shouldSkip {
-		s.config.logger.Debug("Skipping ring buffer write during resize", "sessionID", s.ID, "dataLength", len(data))
-	} else if s.ringBuffer != nil {
+	if s.ringBuffer != nil {
 		if err := s.ringBuffer.writeOwnedWithSequence(data, seqNum, timestamp, false); err != nil {
 			s.config.logger.Error("Failed to write to ring buffer", "sessionID", s.ID, "error", err)
+		} else {
+			s.committedSequence = seqNum
 		}
 	}
 
