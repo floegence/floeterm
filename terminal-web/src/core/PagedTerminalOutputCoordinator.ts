@@ -184,6 +184,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   private recoveryKind: RecoveryKind = 'initial';
   private recoveryRunning = false;
   private needsRebase = false;
+  private historyRebasePrepared = false;
   private writeChain: Promise<void> = Promise.resolve();
   private pendingLiveWrites: TaggedChunk[] = [];
   private liveWriteScheduled = false;
@@ -227,6 +228,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.retryAttempt = 0;
     this.failure = null;
     this.lastError = null;
+    this.historyRebasePrepared = false;
     await this.runRecovery();
   }
 
@@ -279,6 +281,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.retryAttempt = 0;
     this.failure = null;
     this.lastError = null;
+    this.historyRebasePrepared = false;
     this.setState('idle');
     this.resolveBaselineWaiters();
   }
@@ -361,7 +364,6 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
         });
         if (!this.isRecoveryCurrent(generation, recoverySerial, controller)) return;
 
-        const coverage = this.validatePage(page, coveredEnd);
         const pageSnapshotEnd = normalizeSequence(page.snapshotEndSequence, 'snapshotEndSequence', true);
         const pageGeneration = normalizeSequence(page.historyGeneration, 'historyGeneration', true);
         const firstRetained = normalizeSequence(
@@ -369,25 +371,42 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           'firstRetainedSequence',
           true,
         );
+        const generationChanged = historyGeneration !== undefined
+          && pageGeneration !== undefined
+          && pageGeneration !== historyGeneration;
+        const effectivePageStart = Math.max(1, startSequence);
+        const retentionAdvanced = firstRetained !== undefined
+          && firstRetained > effectivePageStart;
+        const generationNeedsRebase = page.historyReset || generationChanged;
+        const retentionNeedsRebase = page.historyTruncated || retentionAdvanced;
+        if (!this.historyRebasePrepared && (generationNeedsRebase || retentionNeedsRebase)) {
+          this.prepareHistoryGenerationRebase(firstRetained);
+          this.recoveryRunning = false;
+          await this.runRecovery();
+          return;
+        }
+        if (this.historyRebasePrepared && generationNeedsRebase) {
+          throw new HistoryContractError('history_contract_invalid', 'history generation reset persisted after rebase');
+        }
+
+        const coverage = this.validatePage(page, coveredEnd);
 
         if (firstPage) {
           snapshotEnd = pageSnapshotEnd;
           historyGeneration = pageGeneration;
           const effectiveStart = Math.max(1, startSequence);
-          if (page.historyReset || page.historyTruncated || (
-            firstRetained !== undefined && firstRetained > effectiveStart
-          )) {
-            this.options.clear?.();
-            this.options.onHistoryTruncated?.('history-evicted');
+          if (firstRetained !== undefined && firstRetained > effectiveStart) {
+            if (!this.historyRebasePrepared) {
+              this.options.clear?.();
+              this.options.onHistoryTruncated?.('history-evicted');
+            }
             this.coveredThroughSequence = Math.max(0, (firstRetained ?? effectiveStart) - 1);
             this.scheduledThroughSequence = this.coveredThroughSequence;
           }
+          this.historyRebasePrepared = false;
         } else {
           if (snapshotEnd !== undefined && pageSnapshotEnd !== undefined && pageSnapshotEnd !== snapshotEnd) {
             throw new HistoryContractError('history_contract_invalid', 'snapshotEndSequence changed during pagination');
-          }
-          if (historyGeneration !== undefined && pageGeneration !== undefined && pageGeneration !== historyGeneration) {
-            throw new HistoryContractError('history_evicted', 'historyGeneration changed during pagination', firstRetained);
           }
         }
 
@@ -595,12 +614,28 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
 
   private prepareRetainedLiveRebase(): void {
     this.needsRebase = false;
+    this.historyRebasePrepared = false;
     this.recoveryKind = this.baselineReady ? 'catch-up' : 'initial';
     this.recoveryStartSequence = 0;
     this.coveredThroughSequence = 0;
     this.scheduledThroughSequence = 0;
     this.options.clear?.();
     this.options.onHistoryTruncated?.('retained-live-overflow');
+  }
+
+  private prepareHistoryGenerationRebase(firstRetainedSequence: number | undefined): void {
+    this.recoveryKind = this.baselineReady ? 'catch-up' : 'initial';
+    this.recoveryStartSequence = 0;
+    this.coveredThroughSequence = 0;
+    this.scheduledThroughSequence = 0;
+    this.options.clear?.();
+    this.options.onHistoryTruncated?.('history-evicted');
+    this.historyRebasePrepared = true;
+    if (firstRetainedSequence !== undefined && firstRetainedSequence > 1) {
+      this.recoveryStartSequence = firstRetainedSequence;
+      this.coveredThroughSequence = firstRetainedSequence - 1;
+      this.scheduledThroughSequence = this.coveredThroughSequence;
+    }
   }
 
   private canRenderLive(): boolean {
