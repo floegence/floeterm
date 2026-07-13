@@ -67,17 +67,32 @@ Hosts with cursor-paged history APIs can use the framework-neutral coordinator i
 
 ```ts
 const output = createPagedTerminalOutputCoordinator({
-  fetchPage: ({ startSequence, cursor, signal }) =>
-    transport.historyPage(sessionId, startSequence, cursor, signal),
-  write: data => core.write(data),
+  fetchPage: ({ startSequence, endSequence, historyGeneration, cursor, signal }) =>
+    transport.historyPage(sessionId, {
+      startSequence,
+      endSequence,
+      historyGeneration,
+      cursor,
+      signal,
+    }),
+  write: data => new Promise(resolve => core.write(data, resolve)),
+  writeHistory: data => new Promise(resolve => core.writeHistory(data, resolve)),
   clear: () => core.clear(),
 });
 
-await output.attach(1);
+void output.attach(1);
+const baseline = await output.waitForBaseline();
+if (!baseline.baselineReady) {
+  throw baseline.failure;
+}
 events.onData(sessionId, chunk => output.pushLive(chunk));
 ```
 
-The coordinator understands sparse sequence coverage, retains live output while history is loading, catches up gaps, retries transient failures, and reports history truncation before rebasing. A live chunk remains renderable when a sparse history page covers its sequence without returning that chunk. Background catch-up does not block terminal input.
+History pages must explicitly include `coveredThroughSequence`, including the valid empty-history value `0`. A missing or malformed value produces a structured contract failure instead of guessing from the last returned chunk. The first page may also provide `snapshotEndSequence`, `firstRetainedSequence`, and `historyGeneration`; pass the snapshot end and generation through each later request.
+
+`baselineReady` becomes true only after the complete fixed history snapshot has been source-sequence merged with retained live output and the final history writer completion has fired. After that fence, catch-up retries preserve baseline readiness and do not need to block input. Structured failures distinguish initial replay from background catch-up and expose stable codes without requiring error-string parsing.
+
+Use `TerminalCore.writeHistory` for history batches. Its auto-response suppression is scoped to that parser write and ends at its completion callback, so later live output and user input use normal terminal behavior.
 
 ## Restorable In-Memory Snapshots
 

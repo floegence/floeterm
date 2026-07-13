@@ -33,6 +33,8 @@ export type {
   PagedTerminalHistoryPage,
   PagedTerminalHistoryRequest,
   PagedTerminalHistoryTruncationReason,
+  PagedTerminalOutputFailure,
+  PagedTerminalOutputFailureCode,
   PagedTerminalOutputCoordinatorHandle,
   PagedTerminalOutputCoordinatorOptions,
   PagedTerminalOutputPolicy,

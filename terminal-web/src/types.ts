@@ -220,6 +220,7 @@ export interface TerminalCoreLike {
   initialize(): Promise<void>;
   dispose(): void;
   write(data: string | Uint8Array, callback?: () => void): void;
+  writeHistory?(data: string | Uint8Array, callback?: () => void): void;
   clear(): void;
   serialize(): string;
   captureRestorableSnapshot?(options?: TerminalRestorableSnapshotOptions): TerminalRestorableSnapshot | null;

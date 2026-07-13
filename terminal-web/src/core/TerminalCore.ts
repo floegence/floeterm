@@ -644,6 +644,7 @@ export class TerminalCore {
   private isDisposed = false;
 
   private isReplayingHistory = false;
+  private historyWriteDepth = 0;
   private replayingHistoryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private logger: Logger;
@@ -1793,7 +1794,7 @@ export class TerminalCore {
     if (this.eventHandlers.onData) {
       const disposable = this.terminal.onData((data: string) => {
         let filtered = data;
-        if (this.isReplayingHistory) {
+        if (this.isReplayingHistory || this.historyWriteDepth > 0) {
           filtered = filterXtermAutoResponses(data);
           if (filtered.length === 0) {
             return;
@@ -2131,6 +2132,15 @@ export class TerminalCore {
       this.logger.error('[TerminalCore] Write failed', { error });
       callback?.();
     }
+  }
+
+  writeHistory(data: string | Uint8Array, callback?: () => void): void {
+
+    this.historyWriteDepth += 1;
+    this.write(data, () => {
+      this.historyWriteDepth = Math.max(0, this.historyWriteDepth - 1);
+      callback?.();
+    });
   }
 
   clear(): void {
