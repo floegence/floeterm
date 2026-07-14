@@ -457,7 +457,11 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       }
 
       const replayChunks = this.mergeRecoveryChunks(historyChunks, coveredEnd);
-      await this.writeOrdered(replayChunks, generation);
+      await this.writeOrdered(
+        replayChunks,
+        generation,
+        () => this.isRecoveryCurrent(generation, recoverySerial, controller),
+      );
       if (!this.isRecoveryCurrent(generation, recoverySerial, controller)) return;
       if (this.needsRebase) {
         this.prepareRetainedLiveRebase();
@@ -552,13 +556,17 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     ];
   }
 
-  private async writeOrdered(chunks: readonly TaggedChunk[], generation: number): Promise<void> {
+  private async writeOrdered(
+    chunks: readonly TaggedChunk[],
+    generation: number,
+    canStartBatch: () => boolean = () => this.isCurrent(generation),
+  ): Promise<void> {
     let batch: TaggedChunk[] = [];
     let batchBytes = 0;
     let batchSource: 'history' | 'live' | undefined;
 
     const flush = async () => {
-      if (batch.length === 0 || !this.isCurrent(generation)) return;
+      if (batch.length === 0 || !this.isCurrent(generation) || !canStartBatch()) return;
       const current = batch;
       const source = batchSource;
       batch = [];
@@ -575,15 +583,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       }
       if (accepted.length === 0 || !this.isCurrent(generation)) return;
       const writer = source === 'history' ? (this.options.writeHistory ?? this.options.write) : this.options.write;
-      await this.invokeWriter(writer, concatData(data), accepted);
-      if (!this.isCurrent(generation)) return;
-      for (const item of accepted) {
-        const sequence = this.chunkSequence(item);
-        if (sequence !== undefined) {
-          this.coveredThroughSequence = Math.max(this.coveredThroughSequence, sequence);
-          this.scheduledThroughSequence = Math.max(this.scheduledThroughSequence, sequence);
-        }
-      }
+      await this.invokeWriter(writer, concatData(data), accepted, generation);
     };
 
     for (const item of chunks) {
@@ -741,10 +741,19 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     writer: PagedTerminalOutputWriter,
     data: Uint8Array,
     chunks: readonly TerminalOutputPipelineChunk[],
+    generation: number,
   ): Promise<void> {
     this.activeWriters += 1;
     try {
       await writer(data, chunks);
+      if (!this.isCurrent(generation)) return;
+      for (const item of chunks) {
+        const sequence = this.chunkSequence(item);
+        if (sequence !== undefined) {
+          this.coveredThroughSequence = Math.max(this.coveredThroughSequence, sequence);
+          this.scheduledThroughSequence = Math.max(this.scheduledThroughSequence, sequence);
+        }
+      }
     } finally {
       this.activeWriters -= 1;
       if (this.activeWriters === 0) {

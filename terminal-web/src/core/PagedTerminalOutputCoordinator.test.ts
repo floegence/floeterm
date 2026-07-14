@@ -223,6 +223,46 @@ describe('PagedTerminalOutputCoordinator', () => {
     coordinator.dispose();
   });
 
+  it('stops a cancelled multi-batch history recovery after the committed writer', async () => {
+    let completeFirstWrite: (() => void) | undefined;
+    const firstWriteCompletion = new Promise<void>(resolve => { completeFirstWrite = resolve; });
+    const writes: string[] = [];
+    const transforms: number[] = [];
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'one'), chunk(2, 'two')],
+        coveredThroughSequence: 2,
+      }),
+      transformChunk: item => {
+        transforms.push(item.sequence ?? 0);
+        return item.data;
+      },
+      write: () => {},
+      writeHistory: async data => {
+        writes.push(decoder.decode(data));
+        if (writes.length === 1) await firstWriteCompletion;
+      },
+      policy: { maxWriteBatchBytes: 3 },
+    });
+
+    void coordinator.attach(1);
+    await vi.waitFor(() => expect(writes).toEqual(['one']));
+    const pause = coordinator.pause();
+    await Promise.resolve();
+    expect(coordinator.getSnapshot().active).toBe(false);
+
+    completeFirstWrite?.();
+    await expect(pause).resolves.toMatchObject({
+      active: false,
+      coveredThroughSequence: 1,
+    });
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    expect(transforms).toEqual([1]);
+    expect(writes).toEqual(['one']);
+    coordinator.dispose();
+  });
+
   it('pauses catch-up without waiting for a fetch that ignores abort', async () => {
     let resolveCatchUp: ((value: PagedTerminalHistoryPage) => void) | undefined;
     const catchUp = new Promise<PagedTerminalHistoryPage>(resolve => { resolveCatchUp = resolve; });
