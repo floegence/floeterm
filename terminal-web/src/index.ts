@@ -30,6 +30,7 @@ export type {
   TerminalOutputPipelineStats,
 } from './core/TerminalOutputPipeline';
 export type {
+  AtomicPagedTerminalOutputCoordinatorHandle,
   PagedTerminalHistoryPage,
   PagedTerminalHistoryRequest,
   PagedTerminalHistoryTruncationReason,

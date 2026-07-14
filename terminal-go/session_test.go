@@ -106,6 +106,34 @@ func TestSessionHistoryAndLiveOutputShareSequence(t *testing.T) {
 	}
 }
 
+func TestSessionAddConnectionReturnsAtomicHistoryBoundary(t *testing.T) {
+	session := &Session{
+		ID:                "session-boundary",
+		connections:       make(map[string]*ConnectionInfo),
+		ringBuffer:        NewTerminalRingBuffer(8),
+		historyGeneration: 1,
+		config:            newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.processRawPTYData([]byte("before"))
+
+	boundary := session.AddConnectionWithHistoryBoundary("client", 80, 24)
+	if boundary != 1 {
+		t.Fatalf("history boundary=%d, want 1", boundary)
+	}
+	if _, ok := session.connections["client"]; !ok {
+		t.Fatal("connection was not registered with the boundary")
+	}
+
+	session.processRawPTYData([]byte("after"))
+	page, err := session.GetHistoryPage(HistoryPageOptions{EndSeq: boundary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Chunks) != 1 || page.Chunks[0].Sequence != 1 || page.SnapshotEndSequence != 1 {
+		t.Fatalf("initial history crossed attach boundary: %+v", page)
+	}
+}
+
 func TestSessionHistoryPagePreservesCursorWhenFilterDropsChunks(t *testing.T) {
 	session := &Session{
 		ID:                "session-filter",

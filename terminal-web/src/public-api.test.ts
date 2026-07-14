@@ -8,6 +8,8 @@ import {
   createPagedTerminalOutputCoordinator,
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
+  type AtomicPagedTerminalOutputCoordinatorHandle,
+  type PagedTerminalOutputCoordinatorHandle,
   type TerminalAppearance,
   type TerminalDataChunk,
   type TerminalDataEvent,
@@ -136,5 +138,45 @@ describe('public framework-neutral API', () => {
 
     pipeline.dispose();
     controller.dispose();
+  });
+
+  it('keeps legacy coordinator handle implementations source compatible', () => {
+    const snapshot = {
+      state: 'idle' as const,
+      active: true,
+      baselineReady: false,
+      coveredThroughSequence: 0,
+      retainedLiveChunks: 0,
+      retainedLiveBytes: 0,
+      retryAttempt: 0,
+      retryScheduled: false,
+      failure: null,
+      lastError: null,
+      attachGeneration: 0,
+      disposed: false,
+    };
+    const legacyHandle: PagedTerminalOutputCoordinatorHandle = {
+      attach: async () => {},
+      waitForBaseline: async () => snapshot,
+      pause: async () => snapshot,
+      pushLive: () => {},
+      setActive: () => {},
+      clear: () => {},
+      retry: () => {},
+      getSnapshot: () => snapshot,
+      dispose: () => {},
+    };
+    const atomicHandle: AtomicPagedTerminalOutputCoordinatorHandle = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => ({
+        chunks: [],
+        hasMore: false,
+        coveredThroughSequence: 0,
+      }),
+      write: () => {},
+    });
+
+    expect('beginAttach' in legacyHandle).toBe(false);
+    expect(atomicHandle.beginAttach).toBeTypeOf('function');
+    atomicHandle.dispose();
   });
 });

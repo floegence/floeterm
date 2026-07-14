@@ -116,6 +116,13 @@ export interface PagedTerminalOutputCoordinatorHandle {
   dispose(): void;
 }
 
+export interface AtomicPagedTerminalOutputCoordinatorHandle
+  extends PagedTerminalOutputCoordinatorHandle {
+  beginAttach(startSequence?: number): number;
+  completeAttach(attachGeneration: number, snapshotEndSequence?: number): Promise<void>;
+  attach(startSequence?: number, snapshotEndSequence?: number): Promise<void>;
+}
+
 type RecoveryKind = 'initial' | 'catch-up';
 type TaggedChunk = TerminalOutputPipelineChunk & { source?: 'history' | 'live' };
 
@@ -182,6 +189,8 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   private lastError: unknown = null;
   private failure: PagedTerminalOutputFailure | null = null;
   private recoveryStartSequence = 1;
+  private recoveryEndSequence: number | undefined;
+  private explicitAttachFence = false;
   private recoveryKind: RecoveryKind = 'initial';
   private recoveryRunning = false;
   private needsRebase = false;
@@ -193,6 +202,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   private activeWriters = 0;
   private writerQuiescenceWaiters: Array<() => void> = [];
   private pausedRecoveryPending = false;
+  private droppedLiveThroughSequence = 0;
 
   constructor(options: PagedTerminalOutputCoordinatorOptions) {
     this.options = options;
@@ -215,8 +225,13 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     };
   }
 
-  async attach(startSequence = 1): Promise<void> {
-    if (this.disposed) return;
+  async attach(startSequence = 1, snapshotEndSequence?: number): Promise<void> {
+    const attachGeneration = this.beginAttach(startSequence);
+    await this.completeAttach(attachGeneration, snapshotEndSequence);
+  }
+
+  beginAttach(startSequence = 1): number {
+    if (this.disposed) return this.generation;
     this.cancelRecovery();
     this.resolveBaselineWaiters();
     this.retainedLive = [];
@@ -230,10 +245,35 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.scheduledThroughSequence = this.coveredThroughSequence;
     this.recoveryKind = 'initial';
     this.recoveryStartSequence = Math.max(0, Math.floor(startSequence));
+    this.recoveryEndSequence = undefined;
+    this.explicitAttachFence = false;
+    this.droppedLiveThroughSequence = 0;
+    this.needsRebase = false;
     this.retryAttempt = 0;
     this.failure = null;
     this.lastError = null;
     this.historyRebasePrepared = false;
+    this.setState('idle');
+    return this.generation;
+  }
+
+  async completeAttach(attachGeneration: number, snapshotEndSequence?: number): Promise<void> {
+    if (this.disposed || !this.isCurrent(attachGeneration)) return;
+    this.explicitAttachFence = snapshotEndSequence !== undefined;
+    this.recoveryEndSequence = normalizeSequence(snapshotEndSequence, 'snapshotEndSequence', true);
+    if (this.explicitAttachFence && this.recoveryEndSequence === 0) {
+      if (this.needsRebase) {
+        this.prepareRetainedLiveRebase();
+        await this.runRecovery();
+        return;
+      }
+      this.baselineReady = true;
+      this.resolveBaselineWaiters();
+      this.emitState();
+      this.setState('live');
+      this.drainRetainedLive();
+      return;
+    }
     await this.runRecovery();
   }
 
@@ -304,6 +344,9 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.baselineReady = false;
     this.coveredThroughSequence = Math.max(0, Math.floor(startSequence) - 1);
     this.scheduledThroughSequence = this.coveredThroughSequence;
+    this.recoveryEndSequence = undefined;
+    this.explicitAttachFence = false;
+    this.droppedLiveThroughSequence = 0;
     this.retryAttempt = 0;
     this.failure = null;
     this.lastError = null;
@@ -353,6 +396,10 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     if (this.disposed || this.recoveryRunning || this.state === 'initial-replay') return;
     this.recoveryKind = 'catch-up';
     this.recoveryStartSequence = Math.max(0, Math.floor(startSequence));
+    const firstRetainedSequence = this.firstRetainedLiveSequence();
+    this.recoveryEndSequence = firstRetainedSequence === undefined
+      ? undefined
+      : Math.max(0, firstRetainedSequence - 1);
     this.retryAttempt = 0;
     void this.runRecovery();
   }
@@ -376,7 +423,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       const historyChunks: TaggedChunk[] = [];
       let cursor: string | number | undefined;
       let startSequence = this.recoveryStartSequence;
-      let snapshotEnd: number | undefined;
+      let snapshotEnd = this.recoveryEndSequence;
       let historyGeneration: number | undefined;
       let coveredEnd = this.coveredThroughSequence;
       let firstPage = true;
@@ -406,23 +453,50 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           && firstRetained > effectivePageStart;
         const generationNeedsRebase = page.historyReset || generationChanged;
         const retentionNeedsRebase = page.historyTruncated || retentionAdvanced;
+        const fencedRangeFullyEvicted = this.recoveryEndSequence !== undefined
+          && firstRetained !== undefined
+          && firstRetained > this.recoveryEndSequence;
         if (!this.historyRebasePrepared && (generationNeedsRebase || retentionNeedsRebase)) {
-          this.prepareHistoryGenerationRebase(firstRetained);
-          this.recoveryRunning = false;
-          await this.runRecovery();
-          return;
+          if (fencedRangeFullyEvicted) {
+            this.options.clear?.();
+            this.options.onHistoryTruncated?.('history-evicted');
+            if (generationNeedsRebase) {
+              this.historyRebasePrepared = true;
+              this.recoveryRunning = false;
+              await this.runRecovery();
+              return;
+            }
+          } else {
+            this.prepareHistoryGenerationRebase(firstRetained);
+            this.recoveryRunning = false;
+            await this.runRecovery();
+            return;
+          }
         }
         if (this.historyRebasePrepared && generationNeedsRebase) {
           throw new HistoryContractError('history_contract_invalid', 'history generation reset persisted after rebase');
         }
 
         const coverage = this.validatePage(page, coveredEnd);
+        if (snapshotEnd !== undefined && coverage > snapshotEnd) {
+          throw new HistoryContractError('history_contract_invalid', 'coveredThroughSequence exceeded the recovery fence');
+        }
 
         if (firstPage) {
-          snapshotEnd = pageSnapshotEnd;
+          if (this.recoveryEndSequence !== undefined) {
+            if (pageSnapshotEnd !== undefined && pageSnapshotEnd !== this.recoveryEndSequence) {
+              throw new HistoryContractError(
+                'history_contract_invalid',
+                'snapshotEndSequence does not match the requested recovery fence',
+              );
+            }
+            snapshotEnd = this.recoveryEndSequence;
+          } else {
+            snapshotEnd = pageSnapshotEnd;
+          }
           historyGeneration = pageGeneration;
           const effectiveStart = Math.max(1, startSequence);
-          if (firstRetained !== undefined && firstRetained > effectiveStart) {
+          if (!fencedRangeFullyEvicted && firstRetained !== undefined && firstRetained > effectiveStart) {
             if (!this.historyRebasePrepared) {
               this.options.clear?.();
               this.options.onHistoryTruncated?.('history-evicted');
@@ -449,6 +523,12 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       } while (!controller.signal.aborted);
 
       if (!this.isRecoveryCurrent(generation, recoverySerial, controller)) return;
+      if (this.recoveryEndSequence !== undefined && coveredEnd < this.recoveryEndSequence) {
+        throw new HistoryContractError(
+          'history_coverage_incomplete',
+          'terminal history coverage did not reach the recovery fence',
+        );
+      }
       if (this.needsRebase) {
 		this.prepareRetainedLiveRebase();
         this.recoveryRunning = false;
@@ -541,7 +621,8 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     for (const item of this.retainedLive) {
       const sequence = this.chunkSequence(item);
       if (sequence !== undefined && sequence <= coveredEnd) {
-        if (!selected.has(sequence)) selected.set(sequence, item);
+        // A live copy preserves terminal query/response semantics that history replay suppresses.
+        selected.set(sequence, item);
       } else {
         remaining.push(item);
         remainingBytes += item.data.byteLength;
@@ -634,6 +715,10 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       const removed = this.retainedLive.shift();
       if (!removed) break;
       this.retainedLiveBytes -= removed.data.byteLength;
+      const removedSequence = this.chunkSequence(removed);
+      if (removedSequence !== undefined) {
+        this.droppedLiveThroughSequence = Math.max(this.droppedLiveThroughSequence, removedSequence);
+      }
       this.needsRebase = true;
     }
     this.emitState();
@@ -644,6 +729,12 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.historyRebasePrepared = false;
     this.recoveryKind = this.baselineReady ? 'catch-up' : 'initial';
     this.recoveryStartSequence = 0;
+    const firstRetainedSequence = this.firstRetainedLiveSequence();
+    this.recoveryEndSequence = Math.max(
+      this.droppedLiveThroughSequence,
+      firstRetainedSequence === undefined ? 0 : firstRetainedSequence - 1,
+    ) || undefined;
+    this.droppedLiveThroughSequence = 0;
     this.coveredThroughSequence = 0;
     this.scheduledThroughSequence = 0;
     this.options.clear?.();
@@ -672,6 +763,16 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   private acceptLive(chunk: TaggedChunk): void {
     const sequence = this.chunkSequence(chunk);
     if (sequence !== undefined && sequence <= this.scheduledThroughSequence) return;
+    if (
+      sequence !== undefined
+      && this.explicitAttachFence
+      && this.scheduledThroughSequence === 0
+      && sequence > 1
+    ) {
+      this.retainLive(chunk);
+      this.beginCatchUp(1);
+      return;
+    }
     if (
       sequence !== undefined
       && this.scheduledThroughSequence > 0
@@ -830,4 +931,4 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
 
 export const createPagedTerminalOutputCoordinator = (
   options: PagedTerminalOutputCoordinatorOptions,
-): PagedTerminalOutputCoordinatorHandle => new PagedTerminalOutputCoordinator(options);
+): AtomicPagedTerminalOutputCoordinatorHandle => new PagedTerminalOutputCoordinator(options);

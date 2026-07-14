@@ -9,9 +9,15 @@ import (
 
 // AddConnection registers a client connection with the session.
 func (s *Session) AddConnection(connectionID string, cols, rows int) {
+	s.AddConnectionWithHistoryBoundary(connectionID, cols, rows)
+}
+
+// AddConnectionWithHistoryBoundary registers a client and returns the last
+// committed source sequence that belongs to its initial history snapshot.
+func (s *Session) AddConnectionWithHistoryBoundary(connectionID string, cols, rows int) int64 {
 	if connectionID == "" {
 		s.config.logger.Error("Cannot add connection with empty ID", "sessionID", s.ID)
-		return
+		return 0
 	}
 
 	s.config.logger.Debug("Adding connection", "sessionID", s.ID, "connectionID", connectionID, "cols", cols, "rows", rows)
@@ -32,6 +38,7 @@ func (s *Session) AddConnection(connectionID string, cols, rows int) {
 	if s.isActive {
 		s.schedulePTYSizeReconcileLocked("connection-added")
 	}
+	return s.committedSequence
 }
 
 // RemoveConnection unregisters a client connection.

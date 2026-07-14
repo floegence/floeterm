@@ -52,7 +52,7 @@ if page.HasMore {
 }
 ```
 
-`SnapshotEndSequence` freezes the committed source high-water captured by the first page, so a busy PTY cannot extend the initial replay forever. Pass it and `HistoryGeneration` to every later page. `CoveredThroughSequence` advances through retained or explicitly filtered source sequences even when a configured history filter removes every renderable chunk from a page.
+`SnapshotEndSequence` freezes the committed source high-water captured by the first page, so a busy PTY cannot extend the initial replay forever. Pass it and `HistoryGeneration` to every later page. `CoveredThroughSequence` advances through retained or explicitly filtered source sequences even when a configured history filter removes every renderable chunk from a page. Hosts that attach a live client should use `AddConnectionWithHistoryBoundary`: the returned sequence is captured atomically with connection registration, belongs to initial history, and lets the host route only later sequences to that client's live stream.
 
 Check `HistoryReset` and `HistoryTruncated` before accepting a page. `FirstRetainedSequence` reports the current retention floor even for an empty requested range; a caller must rebase rather than treating evicted output as a normal sparse sequence. `ClearHistory` advances the generation without resetting the live source sequence.
 
