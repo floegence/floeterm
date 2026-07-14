@@ -78,14 +78,14 @@ func (s *Session) startPTYContext(ctx context.Context, cols, rows int) error {
 	}
 
 	s.mu.Lock()
+	if s.closed || sessionContextDone(s.ctx) {
+		s.mu.Unlock()
+		return errSessionClosed
+	}
 	if s.isActive {
 		s.mu.Unlock()
 		s.config.logger.Warn("Attempted to start PTY for active session", "sessionID", s.ID)
 		return nil
-	}
-	if s.closed || sessionContextDone(s.ctx) {
-		s.mu.Unlock()
-		return errSessionClosed
 	}
 	activation := s.activation
 	if activation == nil {
@@ -313,6 +313,21 @@ func (s *Session) waitForProcess(cmd *exec.Cmd) error {
 	return cmd.Wait()
 }
 
+func (s *Session) closeActivationAdmission() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.closed = true
+	if s.cancel != nil {
+		s.cancel()
+	}
+	activation := s.activation
+	s.activation = nil
+	s.mu.Unlock()
+	activation.complete(errSessionClosed)
+}
+
 func buildWinSize(cols, rows int) *pty.Winsize {
 	// Approximate pixel sizing for better compatibility with certain programs.
 	charWidth := 8.4
@@ -332,13 +347,7 @@ func (s *Session) waitProcessExit(cmd *exec.Cmd, ptyFile *os.File, readerDone ch
 
 	err := s.waitForProcess(cmd)
 
-	s.mu.Lock()
-	s.closed = true
-	activation := s.activation
-	s.activation = nil
-	s.mu.Unlock()
-
-	activation.complete(errSessionClosed)
+	s.closeActivationAdmission()
 	// The process has already been reaped. Publish that independently from PTY
 	// drain so a synchronous event handler can delete the session without
 	// waiting on the reader goroutine that is currently invoking it.

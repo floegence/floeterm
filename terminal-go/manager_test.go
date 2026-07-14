@@ -1,6 +1,10 @@
 package terminal
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
 func TestManagerListRenameDelete(t *testing.T) {
 	manager := NewManager(ManagerConfig{
@@ -36,6 +40,54 @@ func TestManagerListRenameDelete(t *testing.T) {
 
 	if err := manager.DeleteSession(session.ID); err != nil {
 		t.Fatalf("delete failed: %v", err)
+	}
+}
+
+func TestDetachedActiveSessionRejectsActivationThroughStaleReference(t *testing.T) {
+	manager := NewManager(ManagerConfig{
+		Logger:            NopLogger{},
+		ShellResolver:     testShellResolver{shell: "/bin/sh"},
+		ShellArgsProvider: catShellArgsProvider{},
+	})
+	session, err := manager.CreateSession("test", "")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatalf("ActivateSession failed: %v", err)
+	}
+
+	detached, _, removed := manager.detachSession(session.ID)
+	if !removed || detached != session {
+		t.Fatal("detachSession did not return the active session")
+	}
+	defer detached.cleanup()
+	if err := detached.startPTYContext(context.Background(), 100, 30); !errors.Is(err, errSessionClosed) {
+		t.Fatalf("stale activation error = %v, want session closed", err)
+	}
+}
+
+func TestCleanupDetachRejectsActivationThroughStaleReference(t *testing.T) {
+	manager := NewManager(ManagerConfig{
+		Logger:            NopLogger{},
+		ShellResolver:     testShellResolver{shell: "/bin/sh"},
+		ShellArgsProvider: catShellArgsProvider{},
+	})
+	session, err := manager.CreateSession("test", "")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatalf("ActivateSession failed: %v", err)
+	}
+
+	sessions := manager.detachAllSessions()
+	if len(sessions) != 1 || sessions[0] != session {
+		t.Fatal("detachAllSessions did not return the active session")
+	}
+	defer session.cleanup()
+	if err := session.startPTYContext(context.Background(), 100, 30); !errors.Is(err, errSessionClosed) {
+		t.Fatalf("stale activation error = %v, want session closed", err)
 	}
 }
 

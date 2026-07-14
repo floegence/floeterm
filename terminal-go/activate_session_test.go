@@ -50,6 +50,26 @@ func (tailOutputShellArgsProvider) GetShellArgs(string, string) ([]string, []str
 	return []string{"-c", "printf 'floeterm-tail-marker\\n'; exit 0"}, nil
 }
 
+type blockingNaturalExitDataHandler struct {
+	reaped  <-chan struct{}
+	entered chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (h *blockingNaturalExitDataHandler) OnTerminalData(string, []byte, int64, bool, string) {
+	h.once.Do(func() {
+		<-h.reaped
+		close(h.entered)
+		<-h.release
+	})
+}
+
+func (h *blockingNaturalExitDataHandler) OnTerminalNameChanged(string, string, string, string) {}
+func (h *blockingNaturalExitDataHandler) OnTerminalSessionCreated(*Session)                    {}
+func (h *blockingNaturalExitDataHandler) OnTerminalSessionClosed(string)                       {}
+func (h *blockingNaturalExitDataHandler) OnTerminalError(string, error)                        {}
+
 func (p *blockingContextEnvProvider) BuildEnv(string, string) ([]string, string, error) {
 	return os.Environ(), "", nil
 }
@@ -364,6 +384,69 @@ func TestNaturalExitRejectsReactivationBeforeCloseCallbackReturns(t *testing.T) 
 	if err := manager.DeleteSession(session.ID); err != nil {
 		t.Fatalf("DeleteSession failed: %v", err)
 	}
+}
+
+func TestNaturalExitRejectsReactivationWhilePTYOutputIsDraining(t *testing.T) {
+	manager := NewManager(ManagerConfig{
+		Logger:            NopLogger{},
+		ShellResolver:     testShellResolver{shell: "/bin/sh"},
+		ShellArgsProvider: tailOutputShellArgsProvider{},
+	})
+	reaped := make(chan struct{})
+	releaseReader := make(chan struct{})
+	handler := &blockingNaturalExitDataHandler{
+		reaped:  reaped,
+		entered: make(chan struct{}),
+		release: releaseReader,
+	}
+	manager.SetEventHandler(handler)
+
+	session, err := manager.CreateSession("test", "")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	session.waitProcess = func(cmd *exec.Cmd) error {
+		err := cmd.Wait()
+		close(reaped)
+		return err
+	}
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatalf("ActivateSession failed: %v", err)
+	}
+
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("PTY reader did not enter the blocked drain window")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.mu.RLock()
+		closed := session.closed
+		active := session.isActive
+		session.mu.RUnlock()
+		if closed && active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("session did not enter the closed-but-draining state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := manager.ActivateSessionContext(context.Background(), session.ID, 100, 30); !errors.Is(err, errSessionClosed) {
+		t.Fatalf("reactivation error = %v, want session closed", err)
+	}
+	close(releaseReader)
+
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, exists := manager.GetSession(session.ID); !exists {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("naturally exited session remained registered after reader drain")
 }
 
 func TestNaturalExitDrainsTailOutputBeforeRemovingSession(t *testing.T) {

@@ -191,6 +191,9 @@ func (m *Manager) detachSession(sessionID string) (*Session, TerminalEventHandle
 		return nil, nil, false
 	}
 
+	// Detaching is the lifecycle admission fence. Any activation that already
+	// resolved this pointer but has not entered the session must observe closed.
+	session.closeActivationAdmission()
 	delete(m.sessions, sessionID)
 	for i, id := range m.sessionOrder {
 		if id == sessionID {
@@ -268,20 +271,27 @@ func (m *Manager) ActivateSessionContext(ctx context.Context, sessionID string, 
 
 // Cleanup stops and removes all sessions.
 func (m *Manager) Cleanup() {
-	m.mu.Lock()
-	sessions := make([]*Session, 0, len(m.sessions))
-	for _, session := range m.sessions {
-		sessions = append(sessions, session)
-	}
-	m.sessions = make(map[string]*Session)
-	m.sessionOrder = make([]string, 0)
-	m.mu.Unlock()
+	sessions := m.detachAllSessions()
 
 	m.config.Logger.Info("Cleaning up all terminal sessions", "count", len(sessions))
 	for _, session := range sessions {
 		m.config.Logger.Debug("Cleaning up session", "sessionID", session.ID)
 		session.cleanup()
 	}
+}
+
+func (m *Manager) detachAllSessions() []*Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		session.closeActivationAdmission()
+		sessions = append(sessions, session)
+	}
+	m.sessions = make(map[string]*Session)
+	m.sessionOrder = make([]string, 0)
+	return sessions
 }
 
 // ClearSessionHistory clears the history ring buffer for a specific session.
