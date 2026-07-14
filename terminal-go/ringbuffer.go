@@ -20,11 +20,13 @@ type RingBufferStats struct {
 
 // TerminalRingBuffer stores fixed-size chunks of terminal output in FIFO order.
 type TerminalRingBuffer struct {
-	chunks []TerminalDataChunk
-	head   int
-	tail   int
-	size   int
-	full   bool
+	chunks        []TerminalDataChunk
+	head          int
+	tail          int
+	size          int
+	initialChunks int
+	maxChunks     int
+	full          bool
 
 	totalBytes   int64
 	writeCount   int64
@@ -43,21 +45,32 @@ func NewTerminalRingBuffer(size int) *TerminalRingBuffer {
 // NewTerminalRingBufferWithByteLimit creates a chunk-bounded ring buffer with
 // an optional retained-byte limit. A zero byte limit preserves legacy behavior.
 func NewTerminalRingBufferWithByteLimit(size int, maxBytes int64) *TerminalRingBuffer {
+	return NewTerminalRingBufferWithLimits(size, size, maxBytes)
+}
+
+// NewTerminalRingBufferWithLimits creates a buffer that grows its chunk slots
+// on demand up to maxChunks while retaining the configured byte bound.
+func NewTerminalRingBufferWithLimits(size int, maxChunks int, maxBytes int64) *TerminalRingBuffer {
 	if size <= 0 {
 		size = 2048
+	}
+	if maxChunks < size {
+		maxChunks = size
 	}
 	if maxBytes < 0 {
 		maxBytes = 0
 	}
 
 	return &TerminalRingBuffer{
-		chunks:       make([]TerminalDataChunk, size),
-		size:         size,
-		head:         0,
-		tail:         0,
-		full:         false,
-		nextSequence: 1,
-		maxBytes:     maxBytes,
+		chunks:        make([]TerminalDataChunk, size),
+		size:          size,
+		initialChunks: size,
+		maxChunks:     maxChunks,
+		head:          0,
+		tail:          0,
+		full:          false,
+		nextSequence:  1,
+		maxBytes:      maxBytes,
 	}
 }
 
@@ -91,6 +104,9 @@ func (rb *TerminalRingBuffer) writeOwnedWithSequence(data []byte, sequence int64
 	// Keep whole chunks and evict from the oldest edge until both limits fit.
 	// A single chunk larger than maxBytes is retained by itself so callers never
 	// receive a byte-sliced ANSI/OSC sequence.
+	if rb.full && (rb.maxBytes <= 0 || atomic.LoadInt64(&rb.totalBytes)+int64(len(data)) <= rb.maxBytes) {
+		rb.growLocked()
+	}
 	for !rb.isEmpty() && (rb.full || (rb.maxBytes > 0 && int64(len(data)) <= rb.maxBytes && atomic.LoadInt64(&rb.totalBytes)+int64(len(data)) > rb.maxBytes)) {
 		rb.evictOldestLocked()
 	}
@@ -119,6 +135,26 @@ func (rb *TerminalRingBuffer) writeOwnedWithSequence(data []byte, sequence int64
 	rb.full = rb.head == rb.tail
 
 	return nil
+}
+
+func (rb *TerminalRingBuffer) growLocked() {
+	if !rb.full || rb.size >= rb.maxChunks {
+		return
+	}
+	usedChunks := rb.getUsedChunks()
+	nextSize := rb.size * 2
+	if nextSize > rb.maxChunks {
+		nextSize = rb.maxChunks
+	}
+	next := make([]TerminalDataChunk, nextSize)
+	for index := 0; index < usedChunks; index++ {
+		next[index] = rb.chunks[(rb.tail+index)%rb.size]
+	}
+	rb.chunks = next
+	rb.size = nextSize
+	rb.tail = 0
+	rb.head = usedChunks
+	rb.full = usedChunks == nextSize
 }
 
 func (rb *TerminalRingBuffer) evictOldestLocked() {
@@ -352,8 +388,11 @@ func (rb *TerminalRingBuffer) Clear() {
 	rb.mutex.Lock()
 	defer rb.mutex.Unlock()
 
-	for i := 0; i < rb.size; i++ {
-		rb.chunks[i] = TerminalDataChunk{}
+	if rb.size != rb.initialChunks {
+		rb.chunks = make([]TerminalDataChunk, rb.initialChunks)
+		rb.size = rb.initialChunks
+	} else {
+		clear(rb.chunks)
 	}
 
 	rb.head = 0

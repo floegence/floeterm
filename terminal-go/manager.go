@@ -78,7 +78,7 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		connections:       make(map[string]*ConnectionInfo),
 		ctx:               ctx,
 		cancel:            cancel,
-		ringBuffer:        NewTerminalRingBufferWithByteLimit(sessionCfg.historyBufferSize, sessionCfg.historyBufferMaxBytes),
+		ringBuffer:        NewTerminalRingBufferWithLimits(sessionCfg.historyBufferSize, sessionCfg.historyBufferMaxChunks, sessionCfg.historyBufferMaxBytes),
 		historyGeneration: 1,
 		currentWorkingDir: workingDir,
 		inputWindow:       sessionCfg.inputWindow,

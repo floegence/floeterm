@@ -122,6 +122,75 @@ func TestRingBufferByteAndChunkLimitsCompose(t *testing.T) {
 	}
 }
 
+func TestRingBufferGrowsChunkSlotsWithinByteLimit(t *testing.T) {
+	buffer := NewTerminalRingBufferWithLimits(2, 8, 8)
+	for _, value := range []string{"a", "b", "c", "d", "e", "f"} {
+		if err := buffer.Write([]byte(value)); err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+	}
+
+	chunks := buffer.ReadAllChunks()
+	if len(chunks) != 6 {
+		t.Fatalf("len(chunks)=%d, want 6", len(chunks))
+	}
+	for index, chunk := range chunks {
+		if got, want := chunk.Sequence, int64(index+1); got != want {
+			t.Fatalf("chunk[%d].Sequence=%d, want %d", index, got, want)
+		}
+	}
+	stats := buffer.GetStats()
+	if stats.TotalChunks != 8 || stats.TotalBytes != 6 {
+		t.Fatalf("stats=%+v, want 8 slots and 6 bytes", stats)
+	}
+}
+
+func TestRingBufferGrowthStillEnforcesByteAndMaxChunkLimits(t *testing.T) {
+	buffer := NewTerminalRingBufferWithLimits(2, 4, 3)
+	for _, value := range []string{"a", "b", "c", "d", "e"} {
+		_ = buffer.Write([]byte(value))
+	}
+
+	chunks := buffer.ReadAllChunks()
+	if len(chunks) != 3 || string(chunks[0].Data) != "c" || string(chunks[2].Data) != "e" {
+		t.Fatalf("unexpected retained chunks: %+v", chunks)
+	}
+	stats := buffer.GetStats()
+	if stats.TotalChunks != 4 || stats.TotalBytes != 3 {
+		t.Fatalf("stats=%+v, want 4 slots and 3 bytes", stats)
+	}
+}
+
+func TestRingBufferClearShrinksDynamicSlotsToInitialCapacity(t *testing.T) {
+	buffer := NewTerminalRingBufferWithLimits(2, 8, 8)
+	for _, value := range []string{"a", "b", "c", "d", "e"} {
+		_ = buffer.Write([]byte(value))
+	}
+	if got := buffer.GetStats().TotalChunks; got != 8 {
+		t.Fatalf("TotalChunks=%d before clear, want 8", got)
+	}
+
+	buffer.Clear()
+	stats := buffer.GetStats()
+	if stats.TotalChunks != 2 || stats.UsedChunks != 0 || stats.TotalBytes != 0 {
+		t.Fatalf("stats after clear=%+v, want initial empty capacity", stats)
+	}
+}
+
+func TestRingBufferLegacyByteLimitConstructorKeepsFixedCapacity(t *testing.T) {
+	buffer := NewTerminalRingBufferWithByteLimit(2, 8)
+	for _, value := range []string{"a", "b", "c"} {
+		_ = buffer.Write([]byte(value))
+	}
+	chunks := buffer.ReadAllChunks()
+	if len(chunks) != 2 || string(chunks[0].Data) != "b" || string(chunks[1].Data) != "c" {
+		t.Fatalf("unexpected fixed-capacity chunks: %+v", chunks)
+	}
+	if got := buffer.GetStats().TotalChunks; got != 2 {
+		t.Fatalf("TotalChunks=%d, want fixed capacity 2", got)
+	}
+}
+
 func TestRingBufferRetainsSingleOversizedChunkWithoutSlicing(t *testing.T) {
 	buffer := NewTerminalRingBufferWithByteLimit(4, 3)
 	_ = buffer.Write([]byte("one"))

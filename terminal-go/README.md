@@ -66,6 +66,7 @@ Retained history can be bounded by both chunk count and bytes without limiting t
 ```go
 manager := terminal.NewManager(terminal.ManagerConfig{
     HistoryBufferSize:     2048,
+    HistoryBufferMaxChunks: 8192,
     HistoryBufferMaxBytes: 8 * 1024 * 1024,
 })
 
@@ -74,7 +75,7 @@ _ = diagnostics.SessionCount
 _ = diagnostics.HistoryBytes
 ```
 
-`HistoryBufferMaxBytes` set to zero preserves the existing chunk-only behavior. A single oversized chunk is retained whole rather than slicing an ANSI or OSC sequence. Diagnostics are observational and never reject session creation.
+`HistoryBufferSize` is the initial allocation. `HistoryBufferMaxChunks` may be larger to let the buffer grow on demand without charging dormant or small-history sessions for the maximum slot array. It defaults to `HistoryBufferSize`, preserving fixed-capacity behavior. `HistoryBufferMaxBytes` set to zero preserves chunk-only retention. A single oversized chunk is retained whole rather than slicing an ANSI or OSC sequence. Diagnostics are observational and never reject session creation.
 
 ## Command lifecycle shell integration
 

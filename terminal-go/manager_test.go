@@ -111,3 +111,42 @@ func TestManagerDoesNotLimitSessionCountAndReportsDiagnostics(t *testing.T) {
 		t.Fatalf("session history entries=%d, want 100", len(diagnostics.SessionHistoryBytes))
 	}
 }
+
+func TestManagerConfigGrowsHistorySlotsOnlyWhenConfigured(t *testing.T) {
+	manager := NewManager(ManagerConfig{
+		Logger:                 NopLogger{},
+		HistoryBufferSize:      2,
+		HistoryBufferMaxChunks: 8,
+		HistoryBufferMaxBytes:  8,
+	})
+	session, err := manager.CreateSession("test", t.TempDir())
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	for _, value := range []string{"a", "b", "c", "d", "e"} {
+		if err := session.ringBuffer.Write([]byte(value)); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+	if got := session.ringBuffer.GetStats().TotalChunks; got != 8 {
+		t.Fatalf("TotalChunks=%d, want 8", got)
+	}
+
+	fixedManager := NewManager(ManagerConfig{
+		Logger:                NopLogger{},
+		HistoryBufferSize:     2,
+		HistoryBufferMaxBytes: 8,
+	})
+	fixedSession, err := fixedManager.CreateSession("fixed", t.TempDir())
+	if err != nil {
+		t.Fatalf("CreateSession(fixed) error = %v", err)
+	}
+	for _, value := range []string{"a", "b", "c"} {
+		if err := fixedSession.ringBuffer.Write([]byte(value)); err != nil {
+			t.Fatalf("Write(fixed) error = %v", err)
+		}
+	}
+	if got := fixedSession.ringBuffer.GetStats().TotalChunks; got != 2 {
+		t.Fatalf("fixed TotalChunks=%d, want 2", got)
+	}
+}
