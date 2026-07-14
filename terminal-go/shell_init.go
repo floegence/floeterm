@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,8 +83,15 @@ func (w DefaultShellInitWriter) ShouldEnsureShellInit(pathPrepend string) bool {
 }
 
 func (w DefaultShellInitWriter) EnsureShellInitFiles(pathPrepend string) error {
+	return w.EnsureShellInitFilesContext(context.Background(), pathPrepend)
+}
+
+func (w DefaultShellInitWriter) EnsureShellInitFilesContext(ctx context.Context, pathPrepend string) error {
 	if !w.ShouldEnsureShellInit(pathPrepend) {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	paths := newShellInitPaths(w.BaseDir)
@@ -95,16 +103,16 @@ func (w DefaultShellInitWriter) EnsureShellInitFiles(pathPrepend string) error {
 		return fmt.Errorf("failed to create zsh init directory: %w", err)
 	}
 
-	if err := writeFile(paths.BashRC(), bashInitScript(w.EnableCommandLifecycle)); err != nil {
+	if err := writeFileContext(ctx, paths.BashRC(), bashInitScript(w.EnableCommandLifecycle)); err != nil {
 		return err
 	}
-	if err := writeFile(paths.ZshRC(), zshInitScript(w.EnableCommandLifecycle)); err != nil {
+	if err := writeFileContext(ctx, paths.ZshRC(), zshInitScript(w.EnableCommandLifecycle)); err != nil {
 		return err
 	}
-	if err := writeFile(paths.FishConfig(), fishInitScript(w.EnableCommandLifecycle)); err != nil {
+	if err := writeFileContext(ctx, paths.FishConfig(), fishInitScript(w.EnableCommandLifecycle)); err != nil {
 		return err
 	}
-	if err := writeFile(paths.PosixRC(), posixInitScript()); err != nil {
+	if err := writeFileContext(ctx, paths.PosixRC(), posixInitScript()); err != nil {
 		return err
 	}
 
@@ -112,6 +120,13 @@ func (w DefaultShellInitWriter) EnsureShellInitFiles(pathPrepend string) error {
 }
 
 func writeFile(path string, content string) error {
+	return writeFileContext(context.Background(), path, content)
+}
+
+func writeFileContext(ctx context.Context, path string, content string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("failed to write %s: %w", filepath.Base(path), err)
 	}

@@ -116,6 +116,14 @@ type TerminalManager interface {
 	Cleanup()
 }
 
+// ContextTerminalManager extends TerminalManager with caller-cancellable
+// activation waits. Cancelling the caller does not cancel a shared session
+// activation that another caller may still need.
+type ContextTerminalManager interface {
+	TerminalManager
+	ActivateSessionContext(ctx context.Context, sessionID string, cols, rows int) error
+}
+
 // Session represents a persistent terminal session backed by a PTY.
 type Session struct {
 	ID         string
@@ -127,6 +135,8 @@ type Session struct {
 	Cmd        *exec.Cmd
 
 	isActive bool
+	closed   bool
+	cleaned  bool
 	mu       sync.RWMutex
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -149,6 +159,8 @@ type Session struct {
 
 	lastAppliedCols int
 	lastAppliedRows int
+	startPTYProcess func(*exec.Cmd, *pty.Winsize) (*os.File, error)
+	waitProcess     func(*exec.Cmd) error
 	setPTYSize      func(*os.File, *pty.Winsize) error
 	resizeQueued    bool
 	resizeRunning   bool
@@ -157,7 +169,9 @@ type Session struct {
 	eventHandler TerminalEventHandler
 
 	procWaitDone chan struct{}
+	readerDone   chan struct{}
 	procWaitErr  error
+	activation   *sessionActivation
 
 	onExit func(sessionID string)
 

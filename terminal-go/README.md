@@ -22,6 +22,11 @@ func main() {
 }
 ```
 
+Use `ActivateSessionContext` in request-scoped attach paths. Concurrent callers
+join one session-owned activation. Cancelling one caller stops only that wait;
+`DeleteSession`, `Close`, and `Cleanup` cancel the shared activation and reject
+any late PTY result without blocking on shell preparation.
+
 ## Bounded history replay
 
 Use `GetHistoryPage` when forwarding terminal history over transports with frame or payload limits:
@@ -92,7 +97,7 @@ Custom `ShellInitWriter` implementations that also need to run without a PATH pr
 
 ## Notes
 - Implement `TerminalEventHandler` to receive output and lifecycle events.
-- `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession`.
+- `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession` or the caller-cancellable `ActivateSessionContext`.
 - Configure defaults via `ManagerConfig` (history buffer size, env, and filters). The legacy resize suppression duration fields are deprecated; resize never drops terminal history.
 - PTYs start at the effective attached viewport, preserve their last size after the final detach, and skip redundant same-size resizes.
 - Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and `OSC 7 file://...`) and ignores generic title-only OSC updates.

@@ -243,6 +243,13 @@ func (m *Manager) RenameSession(sessionID, newName string) error {
 
 // ActivateSession starts a PTY for a dormant session.
 func (m *Manager) ActivateSession(sessionID string, cols, rows int) error {
+	return m.ActivateSessionContext(context.Background(), sessionID, cols, rows)
+}
+
+// ActivateSessionContext starts a PTY for a dormant session while allowing the
+// caller to stop waiting. The session owns the shared activation operation, so
+// one cancelled caller cannot abort activation for another caller.
+func (m *Manager) ActivateSessionContext(ctx context.Context, sessionID string, cols, rows int) error {
 	m.mu.RLock()
 	session, exists := m.sessions[sessionID]
 	m.mu.RUnlock()
@@ -251,7 +258,7 @@ func (m *Manager) ActivateSession(sessionID string, cols, rows int) error {
 	}
 
 	// startPTY is internally synchronized and will no-op when already active.
-	if err := session.startPTY(cols, rows); err != nil {
+	if err := session.startPTYContext(ctx, cols, rows); err != nil {
 		return fmt.Errorf("failed to activate session: %w", err)
 	}
 

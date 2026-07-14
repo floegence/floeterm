@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -13,15 +14,33 @@ type ShellResolver interface {
 	ResolveShell(logger Logger) string
 }
 
+// ContextShellResolver optionally makes shell resolution observe a session
+// activation cancellation.
+type ContextShellResolver interface {
+	ResolveShellContext(ctx context.Context, logger Logger) (string, error)
+}
+
 // ShellArgsProvider returns extra argv and env variables for a shell invocation.
 // The pathPrepend is computed by the EnvProvider and may be used to inject PATH.
 type ShellArgsProvider interface {
 	GetShellArgs(shellPath string, pathPrepend string) (args []string, env []string)
 }
 
+// ContextShellArgsProvider optionally makes shell argument construction observe
+// a session activation cancellation.
+type ContextShellArgsProvider interface {
+	GetShellArgsContext(ctx context.Context, shellPath string, pathPrepend string) (args []string, env []string, err error)
+}
+
 // ShellInitWriter allows writing shell init files for PATH injection when needed.
 type ShellInitWriter interface {
 	EnsureShellInitFiles(pathPrepend string) error
+}
+
+// ContextShellInitWriter optionally makes shell initialization observe a
+// session activation cancellation.
+type ContextShellInitWriter interface {
+	EnsureShellInitFilesContext(ctx context.Context, pathPrepend string) error
 }
 
 // ShellInitRequirement lets a writer request initialization even when the
@@ -54,6 +73,13 @@ func (DefaultShellResolver) ResolveShell(logger Logger) string {
 
 	logger.Warn("No suitable shell found, using /bin/sh")
 	return "/bin/sh"
+}
+
+func (r DefaultShellResolver) ResolveShellContext(ctx context.Context, logger Logger) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return r.ResolveShell(logger), nil
 }
 
 func resolveShellFromPasswd(logger Logger) string {
@@ -155,4 +181,12 @@ func (p DefaultShellArgsProvider) GetShellArgs(shellPath string, pathPrepend str
 		env = append(env, "ENV="+rcFile)
 		return []string{}, env
 	}
+}
+
+func (p DefaultShellArgsProvider) GetShellArgsContext(ctx context.Context, shellPath string, pathPrepend string) ([]string, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	args, env := p.GetShellArgs(shellPath, pathPrepend)
+	return args, env, nil
 }

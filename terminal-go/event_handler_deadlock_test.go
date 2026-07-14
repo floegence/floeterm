@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -134,5 +135,69 @@ func TestOnTerminalDataHandlerMayWriteWithoutDeadlock(t *testing.T) {
 	defer handler.errMu.Unlock()
 	if handler.err != nil {
 		t.Fatalf("WriteDataWithSource failed: %v", handler.err)
+	}
+}
+
+type deletingDataHandler struct {
+	manager *Manager
+	reaped  <-chan struct{}
+
+	once     sync.Once
+	result   chan error
+	duration chan time.Duration
+}
+
+func (h *deletingDataHandler) OnTerminalData(sessionID string, _ []byte, _ int64, _ bool, _ string) {
+	h.once.Do(func() {
+		<-h.reaped
+		started := time.Now()
+		h.result <- h.manager.DeleteSession(sessionID)
+		h.duration <- time.Since(started)
+	})
+}
+
+func (h *deletingDataHandler) OnTerminalNameChanged(string, string, string, string) {}
+func (h *deletingDataHandler) OnTerminalSessionCreated(*Session)                    {}
+func (h *deletingDataHandler) OnTerminalSessionClosed(string)                       {}
+func (h *deletingDataHandler) OnTerminalError(string, error)                        {}
+
+func TestOnTerminalDataHandlerMayDeleteNaturallyExitedSessionWithoutDrainDelay(t *testing.T) {
+	manager := NewManager(ManagerConfig{
+		Logger:            NopLogger{},
+		ShellResolver:     testShellResolver{shell: "/bin/sh"},
+		ShellArgsProvider: tailOutputShellArgsProvider{},
+	})
+	reaped := make(chan struct{})
+	handler := &deletingDataHandler{
+		manager:  manager,
+		reaped:   reaped,
+		result:   make(chan error, 1),
+		duration: make(chan time.Duration, 1),
+	}
+	manager.SetEventHandler(handler)
+
+	session, err := manager.CreateSession("test", "")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	session.waitProcess = func(cmd *exec.Cmd) error {
+		err := cmd.Wait()
+		close(reaped)
+		return err
+	}
+
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatalf("ActivateSession failed: %v", err)
+	}
+	select {
+	case err := <-handler.result:
+		if err != nil {
+			t.Fatalf("DeleteSession failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnTerminalData handler waited for PTY drain while deleting the session")
+	}
+	if duration := <-handler.duration; duration >= naturalExitPTYDrainTimeout/2 {
+		t.Fatalf("DeleteSession took %s, want less than %s", duration, naturalExitPTYDrainTimeout/2)
 	}
 }

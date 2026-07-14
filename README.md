@@ -86,7 +86,7 @@ npm i @floegence/floeterm-terminal-web
 
 | You need to... | floeterm gives you... |
 | --- | --- |
-| Start a session before layout is stable | Dormant-first session creation via `CreateSession`, then PTY activation with real `cols/rows` via `ActivateSession` or first attach |
+| Start a session before layout is stable | Dormant-first session creation via `CreateSession`, then shared PTY activation with real `cols/rows` via `ActivateSession`, `ActivateSessionContext`, or first attach |
 | Restore terminal output after reconnect or remount | History chunks, replay windows, and filtering that removes problematic terminal auto-responses |
 | Support touch devices and IME input | A browser input bridge that keeps composition and soft keyboard flows working with `ghostty-web` |
 | Reuse one session across multiple surfaces | Per-connection sizing on the backend plus focus-aware responsive resize options in the web layer |
@@ -155,7 +155,7 @@ await controller.mount(container);
 | Topic | Notes |
 | --- | --- |
 | Platform | `terminal-go` relies on a POSIX PTY and is tested on macOS/Linux. |
-| Lifecycle | `CreateSession` creates a dormant logical session. The first attach or an explicit `ActivateSession` should provide the real terminal viewport size. |
+| Lifecycle | `CreateSession` creates a dormant logical session. The first attach or an explicit activation should provide the real terminal viewport size. `ActivateSessionContext` lets a request stop waiting without cancelling another caller's shared activation; delete and cleanup cancel the session-owned activation. |
 | Working directory tracking | `terminal-go` follows explicit cwd OSC markers (`633;P;Cwd`, `1337;CurrentDir`, `OSC 7`) and buffers incomplete frames across PTY reads instead of guessing from generic terminal title changes. |
 | UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
 | Input model | `TerminalCore` handles one-time `ghostty-web` initialization internally and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
