@@ -161,6 +161,29 @@ func TestRingBufferGrowthStillEnforcesByteAndMaxChunkLimits(t *testing.T) {
 	}
 }
 
+func TestRingBufferGrowsAfterWrappedEvictionWithoutReordering(t *testing.T) {
+	buffer := NewTerminalRingBufferWithLimits(4, 8, 4)
+	for _, value := range []string{"a", "b", "c", "d", "e", "f"} {
+		_ = buffer.Write([]byte(value))
+	}
+	// The byte cap moved the retained window to c..f. Raising the test-only
+	// byte bound lets the next write grow from that wrapped full state.
+	buffer.mutex.Lock()
+	buffer.maxBytes = 8
+	buffer.mutex.Unlock()
+	_ = buffer.Write([]byte("g"))
+
+	chunks := buffer.ReadAllChunks()
+	if got := len(chunks); got != 5 {
+		t.Fatalf("len(chunks)=%d, want 5", got)
+	}
+	for index, want := range []string{"c", "d", "e", "f", "g"} {
+		if got := string(chunks[index].Data); got != want {
+			t.Fatalf("chunk[%d]=%q, want %q", index, got, want)
+		}
+	}
+}
+
 func TestRingBufferClearShrinksDynamicSlotsToInitialCapacity(t *testing.T) {
 	buffer := NewTerminalRingBufferWithLimits(2, 8, 8)
 	for _, value := range []string{"a", "b", "c", "d", "e"} {
