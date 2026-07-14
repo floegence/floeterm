@@ -101,6 +101,7 @@ Use `TerminalCore.writeHistory` for history batches. Its auto-response suppressi
 Adaptive host worksets can release inactive renderers without closing their PTY sessions:
 
 ```ts
+await output.pause();
 const snapshot = core.captureRestorableSnapshot({
   coveredThroughSequence: output.getSnapshot().coveredThroughSequence,
 });
@@ -109,7 +110,10 @@ const estimate = core.getResourceEstimate();
 core.dispose(); // The host-owned PTY and output coordinator remain alive.
 
 const restored = await nextCore.restoreSnapshot(snapshot);
+output.setActive(true);
 ```
+
+`pause()` stops new live writes, cancels retry or catch-up work, and resolves only after every writer that already entered the terminal parser has completed. Live output received while paused remains in the coordinator's bounded retained queue. Hosts must await this fence before capturing or disposing a core; if a host abandons hibernation, it should keep the core and call `setActive(true)`.
 
 Snapshots are versioned opaque values intended for memory-only storage. They are bounded to 2 MiB by default and include sequence coverage so the host can fetch only newer output. Floeterm does not write snapshots to persistent browser storage.
 

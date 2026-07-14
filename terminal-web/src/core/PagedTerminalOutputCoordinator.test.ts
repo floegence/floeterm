@@ -191,6 +191,90 @@ describe('PagedTerminalOutputCoordinator', () => {
     coordinator.dispose();
   });
 
+  it('pauses only after an in-flight writer reaches parser completion', async () => {
+    let completeWrite: (() => void) | undefined;
+    const writerCompletion = new Promise<void>(resolve => { completeWrite = resolve; });
+    const writes: string[] = [];
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({ coveredThroughSequence: 1 }),
+      write: async data => {
+        writes.push(decoder.decode(data));
+        await writerCompletion;
+      },
+    });
+    await coordinator.attach(1);
+    coordinator.pushLive(chunk(2, 'two'));
+    await vi.waitFor(() => expect(writes).toEqual(['two']));
+
+    let paused = false;
+    const pause = coordinator.pause().then(snapshot => {
+      paused = true;
+      return snapshot;
+    });
+    await Promise.resolve();
+    expect(paused).toBe(false);
+    coordinator.pushLive(chunk(3, 'three'));
+    expect(coordinator.getSnapshot().retainedLiveChunks).toBe(1);
+
+    completeWrite?.();
+    expect(await pause).toMatchObject({ active: false, coveredThroughSequence: 2 });
+    coordinator.setActive(true);
+    await vi.waitFor(() => expect(writes).toEqual(['two', 'three']));
+    coordinator.dispose();
+  });
+
+  it('pauses catch-up without waiting for a fetch that ignores abort', async () => {
+    let resolveCatchUp: ((value: PagedTerminalHistoryPage) => void) | undefined;
+    const catchUp = new Promise<PagedTerminalHistoryPage>(resolve => { resolveCatchUp = resolve; });
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({ coveredThroughSequence: 1 }))
+      .mockReturnValueOnce(catchUp)
+      .mockResolvedValueOnce(page({ coveredThroughSequence: 2 }));
+    const writes: string[] = [];
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+    });
+    await coordinator.attach(1);
+    coordinator.pushLive(chunk(3, 'three'));
+    await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(2));
+
+    await expect(coordinator.pause()).resolves.toMatchObject({ active: false });
+    resolveCatchUp?.(page({ chunks: [chunk(2, 'obsolete')], coveredThroughSequence: 2 }));
+    await Promise.resolve();
+    expect(writes).toEqual([]);
+
+    coordinator.setActive(true);
+    await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(writes).toEqual(['three']));
+    coordinator.dispose();
+  });
+
+  it('pauses a scheduled retry and resumes recovery when active again', async () => {
+    vi.useFakeTimers();
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({ coveredThroughSequence: 1 }))
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValueOnce(page({ coveredThroughSequence: 2 }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: () => {},
+      policy: { retryDelaysMs: [250] },
+    });
+    await coordinator.attach(1);
+    coordinator.pushLive(chunk(3));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().state).toBe('retry-wait'));
+
+    await expect(coordinator.pause()).resolves.toMatchObject({ active: false, retryScheduled: false });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+
+    coordinator.setActive(true);
+    await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().state).toBe('live'));
+    coordinator.dispose();
+  });
+
   it('catches up a live sequence gap without losing the triggering chunk', async () => {
     const writes: string[] = [];
     const fetchPage = vi.fn()

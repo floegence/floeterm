@@ -107,6 +107,7 @@ export interface PagedTerminalOutputCoordinatorOptions {
 export interface PagedTerminalOutputCoordinatorHandle {
   attach(startSequence?: number): Promise<void>;
   waitForBaseline(): Promise<PagedTerminalOutputSnapshot>;
+  pause(): Promise<PagedTerminalOutputSnapshot>;
   pushLive(chunk: TerminalOutputPipelineChunk): void;
   setActive(active: boolean): void;
   clear(startSequence?: number): void;
@@ -189,6 +190,9 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   private pendingLiveWrites: TaggedChunk[] = [];
   private liveWriteScheduled = false;
   private baselineWaiters: Array<(snapshot: PagedTerminalOutputSnapshot) => void> = [];
+  private activeWriters = 0;
+  private writerQuiescenceWaiters: Array<() => void> = [];
+  private pausedRecoveryPending = false;
 
   constructor(options: PagedTerminalOutputCoordinatorOptions) {
     this.options = options;
@@ -219,6 +223,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.retainedLiveBytes = 0;
     this.pendingLiveWrites = [];
     this.liveWriteScheduled = false;
+    this.pausedRecoveryPending = false;
     this.writeChain = Promise.resolve();
     this.baselineReady = false;
     this.coveredThroughSequence = Math.max(0, Math.floor(startSequence) - 1);
@@ -240,6 +245,23 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     return new Promise(resolve => this.baselineWaiters.push(resolve));
   }
 
+  async pause(): Promise<PagedTerminalOutputSnapshot> {
+    if (this.disposed) return this.getSnapshot();
+    this.active = false;
+    const recoveryPending = this.recoveryRunning
+      || this.state === 'initial-replay'
+      || this.state === 'catching-up'
+      || this.state === 'retry-wait';
+    if (recoveryPending) {
+      this.pausedRecoveryPending = true;
+      this.cancelRecovery(false);
+    }
+    this.emitState();
+    await this.writeChain;
+    await this.waitForWriterQuiescence();
+    return this.getSnapshot();
+  }
+
   pushLive(chunk: TerminalOutputPipelineChunk): void {
     if (this.disposed) return;
     const tagged: TaggedChunk = { ...chunk, source: 'live' };
@@ -254,7 +276,10 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     if (this.disposed) return;
     this.active = active;
     if (active) {
-      if (this.needsRebase) {
+      if (this.pausedRecoveryPending) {
+        this.pausedRecoveryPending = false;
+        void this.runRecovery();
+      } else if (this.needsRebase) {
 		if (!this.recoveryRunning) {
 			this.prepareRetainedLiveRebase();
 			void this.runRecovery();
@@ -274,6 +299,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.retainedLiveBytes = 0;
     this.pendingLiveWrites = [];
     this.liveWriteScheduled = false;
+    this.pausedRecoveryPending = false;
     this.writeChain = Promise.resolve();
     this.baselineReady = false;
     this.coveredThroughSequence = Math.max(0, Math.floor(startSequence) - 1);
@@ -318,6 +344,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.retainedLiveBytes = 0;
     this.pendingLiveWrites = [];
     this.liveWriteScheduled = false;
+    this.pausedRecoveryPending = false;
     this.setState('disposed');
     this.resolveBaselineWaiters();
   }
@@ -548,7 +575,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       }
       if (accepted.length === 0 || !this.isCurrent(generation)) return;
       const writer = source === 'history' ? (this.options.writeHistory ?? this.options.write) : this.options.write;
-      await writer(concatData(data), accepted);
+      await this.invokeWriter(writer, concatData(data), accepted);
       if (!this.isCurrent(generation)) return;
       for (const item of accepted) {
         const sequence = this.chunkSequence(item);
@@ -708,6 +735,28 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
         break;
       }
     }
+  }
+
+  private async invokeWriter(
+    writer: PagedTerminalOutputWriter,
+    data: Uint8Array,
+    chunks: readonly TerminalOutputPipelineChunk[],
+  ): Promise<void> {
+    this.activeWriters += 1;
+    try {
+      await writer(data, chunks);
+    } finally {
+      this.activeWriters -= 1;
+      if (this.activeWriters === 0) {
+        const waiters = this.writerQuiescenceWaiters.splice(0);
+        for (const resolve of waiters) resolve();
+      }
+    }
+  }
+
+  private waitForWriterQuiescence(): Promise<void> {
+    if (this.activeWriters === 0) return Promise.resolve();
+    return new Promise(resolve => this.writerQuiescenceWaiters.push(resolve));
   }
 
   private chunkSequence(chunk: TerminalOutputPipelineChunk): number | undefined {
