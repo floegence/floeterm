@@ -132,7 +132,11 @@ const setCanvasRect = (
   top: number,
   width: number,
   height: number,
+  clientWidth = width,
+  clientHeight = height,
 ) => {
+  Object.defineProperty(canvas, 'clientWidth', { value: clientWidth, configurable: true });
+  Object.defineProperty(canvas, 'clientHeight', { value: clientHeight, configurable: true });
   Object.defineProperty(canvas, 'getBoundingClientRect', {
     value: () => ({
       left,
@@ -145,35 +149,6 @@ const setCanvasRect = (
       y: top,
       toJSON: () => ({}),
     }),
-    configurable: true,
-  });
-};
-
-const setTextareaRectWithContainingBlockOffset = (
-  textarea: HTMLTextAreaElement,
-  offsetLeft: number,
-  offsetTop: number,
-) => {
-  Object.defineProperty(textarea, 'getBoundingClientRect', {
-    value: () => {
-      const styleLeft = Number.parseFloat(textarea.style.left) || 0;
-      const styleTop = Number.parseFloat(textarea.style.top) || 0;
-      const width = Number.parseFloat(textarea.style.width) || 0;
-      const height = Number.parseFloat(textarea.style.height) || 0;
-      const left = styleLeft + offsetLeft;
-      const top = styleTop + offsetTop;
-      return {
-        left,
-        top,
-        width,
-        height,
-        right: left + width,
-        bottom: top + height,
-        x: left,
-        y: top,
-        toJSON: () => ({}),
-      };
-    },
     configurable: true,
   });
 };
@@ -194,7 +169,7 @@ const initializeCore = async (
   await init;
 
   const terminal = (core as unknown as { terminal?: any | null }).terminal;
-  const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+  const textarea = terminal?.textarea as HTMLTextAreaElement | null;
   const canvas = terminal?.canvas as HTMLCanvasElement | null;
   expect(terminal).toBeTruthy();
   expect(textarea).toBeTruthy();
@@ -242,7 +217,8 @@ describe('TerminalCore mobile input integration', () => {
     await vi.runAllTimersAsync();
     await init;
 
-    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    const terminal = (core as unknown as { terminal?: { textarea?: HTMLTextAreaElement | null } | null }).terminal;
+    const textarea = terminal?.textarea ?? null;
     expect(textarea).toBeTruthy();
 
     textarea!.dispatchEvent(createInputEvent('beforeinput', {
@@ -270,7 +246,8 @@ describe('TerminalCore mobile input integration', () => {
     await vi.runAllTimersAsync();
     await init;
 
-    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    const terminal = (core as unknown as { terminal?: { textarea?: HTMLTextAreaElement | null } | null }).terminal;
+    const textarea = terminal?.textarea ?? null;
     expect(textarea).toBeTruthy();
 
     const keydown = new KeyboardEvent('keydown', {
@@ -305,7 +282,8 @@ describe('TerminalCore mobile input integration', () => {
     await vi.runAllTimersAsync();
     await init;
 
-    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    const terminal = (core as unknown as { terminal?: { textarea?: HTMLTextAreaElement | null } | null }).terminal;
+    const textarea = terminal?.textarea ?? null;
     expect(textarea).toBeTruthy();
 
     const keydown = new KeyboardEvent('keydown', {
@@ -340,7 +318,8 @@ describe('TerminalCore mobile input integration', () => {
     await vi.runAllTimersAsync();
     await init;
 
-    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    const terminal = (core as unknown as { terminal?: { textarea?: HTMLTextAreaElement | null } | null }).terminal;
+    const textarea = terminal?.textarea ?? null;
     expect(textarea).toBeTruthy();
 
     core.focus();
@@ -429,24 +408,36 @@ describe('TerminalCore mobile input integration', () => {
     expect(textarea.style.height).toBe('20px');
     expect(textarea.style.lineHeight).toBe('20px');
     expect(textarea.style.clipPath).toBe('none');
+    expect(textarea.parentElement).toBe(document.body);
 
     core.dispose();
   });
 
-  it('calibrates the IME anchor when fixed positioning is scoped by a containing block', async () => {
+  it('uses visible cell geometry when an ancestor transform scales the terminal', async () => {
     const { core, terminal, textarea, canvas } = await initializeCore();
-    setCanvasRect(canvas, 40, 60, 800, 400);
-    setTextareaRectWithContainingBlockOffset(textarea, 40, 60);
+    setCanvasRect(canvas, 40, 60, 360, 180, 800, 400);
     terminal.cursor = { x: 3, y: 2, visible: true };
 
     core.focus();
 
-    expect(textarea.style.left).toBe('30px');
-    expect(textarea.style.top).toBe('40px');
-    expect(textarea.getBoundingClientRect().left).toBe(70);
-    expect(textarea.getBoundingClientRect().top).toBe(100);
+    expect(textarea.style.left).toBe('53.5px');
+    expect(textarea.style.top).toBe('78px');
+    expect(textarea.style.width).toBe('4.5px');
+    expect(textarea.style.height).toBe('9px');
+    expect(textarea.style.lineHeight).toBe('9px');
+    expect(textarea.parentElement).toBe(document.body);
 
     core.dispose();
+  });
+
+  it('removes the portaled input element when the core is disposed', async () => {
+    const { core, textarea } = await initializeCore();
+
+    expect(document.body.contains(textarea)).toBe(true);
+
+    core.dispose();
+
+    expect(document.body.contains(textarea)).toBe(false);
   });
 
   it('uses active fabric geometry for the IME anchor instead of stale ghostty metrics', async () => {
@@ -525,11 +516,13 @@ describe('TerminalCore mobile input integration', () => {
     await vi.runAllTimersAsync();
     await init;
 
-    const terminal = (core as unknown as { terminal?: { selectionText: string } | null }).terminal;
+    const terminal = (core as unknown as {
+      terminal?: { selectionText: string; textarea?: HTMLTextAreaElement | null } | null;
+    }).terminal;
     expect(terminal).toBeTruthy();
     terminal!.selectionText = '  pnpm test\n';
 
-    const textarea = container.querySelector('textarea[aria-label="Terminal input"]') as HTMLTextAreaElement | null;
+    const textarea = terminal?.textarea ?? null;
     expect(textarea).toBeTruthy();
 
     const setData = vi.fn();

@@ -155,6 +155,16 @@ describe('TerminalInputBridge', () => {
     focusSpy.mockRestore();
   });
 
+  it('keeps a portaled terminal input inside the bridge ownership boundary', () => {
+    const { bridge, container, textarea } = setup();
+    document.body.appendChild(textarea);
+
+    expect(container.contains(textarea)).toBe(false);
+    expect(bridge.containsTarget(textarea)).toBe(true);
+
+    bridge.dispose();
+  });
+
   it('lets callers opt into native focus scrolling', () => {
     const { bridge } = setup();
     const focusCalls: Array<FocusOptions | undefined> = [];

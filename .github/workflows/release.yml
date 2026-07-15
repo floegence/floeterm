@@ -65,12 +65,14 @@ jobs:
       - name: Install
         if: steps.terminal_web_exists.outputs.exists != 'true'
         working-directory: terminal-web
-        run: npm ci
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
 
-      - name: Lint / Test / Build / Package Artifact
+      - name: Lint / Test / Browser / Build / Package Artifact
         if: steps.terminal_web_exists.outputs.exists != 'true'
         working-directory: terminal-web
-        run: npm run lint && npm test && npm run build && npm run check:package-artifact
+        run: npm run lint && npm test && npm run test:browser && npm run build && npm run check:package-artifact
 
       - name: Publish @floegence/floeterm-terminal-web (npm Trusted Publisher)
         if: steps.terminal_web_exists.outputs.exists != 'true'

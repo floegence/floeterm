@@ -426,7 +426,7 @@ export class TerminalInputBridge {
   }
 
   containsTarget(target: Node): boolean {
-    return this.container.contains(target);
+    return target === this.input || this.input.contains(target) || this.container.contains(target);
   }
 
   tryHandleDocumentCopyShortcut(event: KeyboardEvent): boolean {

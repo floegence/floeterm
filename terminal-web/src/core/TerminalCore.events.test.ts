@@ -27,8 +27,10 @@ vi.mock('ghostty-web', () => {
       addon.__terminal = this;
     }
 
-    open(_container: HTMLElement) {
-      // noop
+    open(container: HTMLElement) {
+      const textarea = document.createElement('textarea');
+      textarea.setAttribute('aria-label', 'Terminal input');
+      container.appendChild(textarea);
     }
 
     onData(_handler: (data: string) => void) {

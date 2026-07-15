@@ -30,7 +30,11 @@ vi.mock('ghostty-web', () => {
     }
 
     loadAddon(addon: { __terminal?: MockTerminal }) { addon.__terminal = this; }
-    open() {}
+    open(container: HTMLElement) {
+      const textarea = document.createElement('textarea');
+      textarea.setAttribute('aria-label', 'Terminal input');
+      container.appendChild(textarea);
+    }
     onData() { return { dispose: () => {} }; }
     onResize() { return { dispose: () => {} }; }
     write(_data: string | Uint8Array, callback?: () => void) { callback?.(); }

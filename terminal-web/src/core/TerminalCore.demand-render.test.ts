@@ -197,6 +197,9 @@ vi.mock('ghostty-web', () => {
     open(container: HTMLElement) {
       this.element = container;
       this.isOpen = true;
+      const textarea = document.createElement('textarea');
+      textarea.setAttribute('aria-label', 'Terminal input');
+      container.appendChild(textarea);
       this.renderer.render(this.wasmTerm, true, this.viewportY, this, this.scrollbarOpacity);
       this.startRenderLoop();
     }

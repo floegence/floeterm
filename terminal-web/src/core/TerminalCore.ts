@@ -614,6 +614,7 @@ export class TerminalCore {
   private fabricAttachSeq = 0;
   private cancelFabricAttachSchedule: ScheduledTurnCancel | null = null;
   private cancelInputRefocusSchedule: ScheduledTurnCancel | null = null;
+  private inputElement: HTMLTextAreaElement | null = null;
   private viewportHost: HTMLDivElement | null = null;
   private renderHost: HTMLDivElement | null = null;
 
@@ -823,6 +824,8 @@ export class TerminalCore {
     this.fabricView = null;
     this.terminal?.dispose();
     this.terminal = null;
+    this.inputElement?.remove();
+    this.inputElement = null;
     this.fitAddon = null;
     this.viewportHost?.remove();
     this.viewportHost = null;
@@ -913,6 +916,7 @@ export class TerminalCore {
     this.applyPresentationScaleStyles();
     this.installDemandRenderPatchBeforeOpen();
     this.terminal.open(this.renderHost ?? this.container);
+    this.mountInputElement();
     this.stopGhosttyRenderLoop();
     this.patchDemandRenderTriggersAfterOpen();
     this.patchSelectionManagerClipboardBehavior();
@@ -920,6 +924,21 @@ export class TerminalCore {
     this.setupInputBridge();
     this.applyRegisteredLinkProviders();
     void this.refreshFontMetricsAfterLoad('open');
+  }
+
+  private mountInputElement(): void {
+    const input = resolveTerminalInputElement(this.renderHost ?? this.container);
+    if (!input) {
+      throw new Error('ghostty-web terminal input element was not created');
+    }
+
+    const body = this.container.ownerDocument.body;
+    if (!body) {
+      throw new Error('Terminal input requires a document body');
+    }
+
+    body.appendChild(input);
+    this.inputElement = input;
   }
 
   private installFitAddonGeometryPatch(): void {
@@ -1074,7 +1093,7 @@ export class TerminalCore {
   }
 
   private syncImeInputAnchor(): void {
-    const input = resolveTerminalInputElement(this.container);
+    const input = this.inputElement;
     if (!input || this.shouldPreserveTransientInputPlacement(input)) {
       return;
     }
@@ -1086,18 +1105,40 @@ export class TerminalCore {
     }
 
     const canvasRect = geometry.canvas.getBoundingClientRect();
-    const left = Number(canvasRect.left) + cursor.x * geometry.cellWidth;
-    const top = Number(canvasRect.top) + cursor.y * geometry.cellHeight;
-    if (!Number.isFinite(left) || !Number.isFinite(top)) {
+    const canvasClientWidth = Number(geometry.canvas.clientWidth);
+    const canvasClientHeight = Number(geometry.canvas.clientHeight);
+    if (
+      !Number.isFinite(canvasClientWidth)
+      || !Number.isFinite(canvasClientHeight)
+      || canvasClientWidth <= 0
+      || canvasClientHeight <= 0
+    ) {
+      return;
+    }
+
+    const visibleScaleX = Number(canvasRect.width) / canvasClientWidth;
+    const visibleScaleY = Number(canvasRect.height) / canvasClientHeight;
+    const cellWidth = geometry.cellWidth * visibleScaleX;
+    const cellHeight = geometry.cellHeight * visibleScaleY;
+    const left = Number(canvasRect.left) + cursor.x * cellWidth;
+    const top = Number(canvasRect.top) + cursor.y * cellHeight;
+    if (
+      !Number.isFinite(left)
+      || !Number.isFinite(top)
+      || !Number.isFinite(cellWidth)
+      || !Number.isFinite(cellHeight)
+      || cellWidth <= 0
+      || cellHeight <= 0
+    ) {
       return;
     }
 
     input.style.position = 'fixed';
     input.style.left = formatCssPixelValue(left);
     input.style.top = formatCssPixelValue(top);
-    input.style.width = formatCssPixelValue(geometry.cellWidth);
-    input.style.height = formatCssPixelValue(geometry.cellHeight);
-    input.style.lineHeight = formatCssPixelValue(geometry.cellHeight);
+    input.style.width = formatCssPixelValue(cellWidth);
+    input.style.height = formatCssPixelValue(cellHeight);
+    input.style.lineHeight = formatCssPixelValue(cellHeight);
     input.style.padding = '0';
     input.style.border = 'none';
     input.style.margin = '0';
@@ -1108,44 +1149,10 @@ export class TerminalCore {
     input.style.clipPath = 'none';
     input.style.pointerEvents = 'none';
     input.style.zIndex = '0';
-    this.calibrateImeInputAnchorRect(input, left, top);
   }
 
   private shouldPreserveTransientInputPlacement(input: HTMLTextAreaElement): boolean {
     return input.style.pointerEvents === 'auto' || input.style.zIndex === '1000';
-  }
-
-  private calibrateImeInputAnchorRect(
-    input: HTMLTextAreaElement,
-    targetLeft: number,
-    targetTop: number,
-  ): void {
-    const rect = input.getBoundingClientRect();
-    if (
-      rect.width <= 0
-      || rect.height <= 0
-      || !Number.isFinite(rect.left)
-      || !Number.isFinite(rect.top)
-    ) {
-      return;
-    }
-
-    const deltaLeft = targetLeft - Number(rect.left);
-    const deltaTop = targetTop - Number(rect.top);
-    if (Math.abs(deltaLeft) < 0.5 && Math.abs(deltaTop) < 0.5) {
-      return;
-    }
-
-    const currentLeft = Number.parseFloat(input.style.left);
-    const currentTop = Number.parseFloat(input.style.top);
-    const nextLeft = (Number.isFinite(currentLeft) ? currentLeft : targetLeft) + deltaLeft;
-    const nextTop = (Number.isFinite(currentTop) ? currentTop : targetTop) + deltaTop;
-    if (Number.isFinite(nextLeft)) {
-      input.style.left = formatCssPixelValue(nextLeft);
-    }
-    if (Number.isFinite(nextTop)) {
-      input.style.top = formatCssPixelValue(nextTop);
-    }
   }
 
   private resolveImeInputAnchorGeometry(): terminal_input_anchor_geometry | null {
@@ -1176,9 +1183,8 @@ export class TerminalCore {
     const metrics = renderer?.getMetrics?.() ?? renderer?.metrics ?? {};
     const cols = Math.floor(Number(terminalAny?.cols));
     const rows = Math.floor(Number(terminalAny?.rows));
-    const canvasRect = canvas.getBoundingClientRect();
-    const fallbackCellWidth = cols > 0 ? Number(canvasRect.width) / cols : Number.NaN;
-    const fallbackCellHeight = rows > 0 ? Number(canvasRect.height) / rows : Number.NaN;
+    const fallbackCellWidth = cols > 0 ? Number(canvas.clientWidth) / cols : Number.NaN;
+    const fallbackCellHeight = rows > 0 ? Number(canvas.clientHeight) / rows : Number.NaN;
     const cellWidth = Number(metrics.width ?? renderer?.charWidth ?? fallbackCellWidth);
     const cellHeight = Number(metrics.height ?? renderer?.charHeight ?? fallbackCellHeight);
     if (!this.isUsableAnchorGeometry(cellWidth, cellHeight, cols, rows)) {
@@ -1734,7 +1740,7 @@ export class TerminalCore {
   private setupInputBridge(): void {
     this.disposeInputBridge();
 
-    const input = resolveTerminalInputElement(this.container);
+    const input = this.inputElement;
     if (!input) {
       this.logger.debug('[TerminalCore] No terminal input host found for input bridge');
       return;
@@ -3371,6 +3377,8 @@ export class TerminalCore {
     this.fabricView = null;
     this.terminal?.dispose();
     this.terminal = null;
+    this.inputElement?.remove();
+    this.inputElement = null;
     this.viewportHost = null;
     this.renderHost = null;
     this.registeredLinkProviders.clear();

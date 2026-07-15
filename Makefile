@@ -28,8 +28,10 @@ terminal-web-prepare:
 	@set -euo pipefail; \
 	echo "==> terminal-web npm ci"; \
 	(cd terminal-web && npm ci); \
-	echo "==> terminal-web lint/test/build/package artifact"; \
-	(cd terminal-web && npm run lint && npm test && npm run build && npm run check:package-artifact); \
+	echo "==> terminal-web Chromium runtime"; \
+	(cd terminal-web && npm exec playwright install chromium); \
+	echo "==> terminal-web lint/test/browser/build/package artifact"; \
+	(cd terminal-web && npm run lint && npm test && npm run test:browser && npm run build && npm run check:package-artifact); \
 	echo "==> terminal-web npm audit"; \
 	(cd terminal-web && npm audit --audit-level=low)
 

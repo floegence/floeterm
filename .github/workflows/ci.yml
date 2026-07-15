@@ -34,5 +34,11 @@ jobs:
             terminal-web/package-lock.json
             app/web/package-lock.json
 
+      - name: Install terminal browser test runtime
+        working-directory: terminal-web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
       - name: Run Checks
         run: make check
