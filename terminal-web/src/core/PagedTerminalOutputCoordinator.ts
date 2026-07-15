@@ -2,6 +2,7 @@ import type {
   TerminalOutputPipelineChunk,
   TerminalOutputPipelineScheduler,
 } from './TerminalOutputPipeline';
+import { scheduleUiTurn } from '../internal/scheduleUiTurn';
 
 export type PagedTerminalOutputState =
   | 'idle'
@@ -17,6 +18,7 @@ export interface PagedTerminalHistoryRequest {
   endSequence?: number;
   historyGeneration?: number;
   cursor?: string | number;
+  maxBytes?: number;
   signal: AbortSignal;
 }
 
@@ -33,6 +35,30 @@ export interface PagedTerminalHistoryPage {
   historyTruncated?: boolean;
   coveredBytes?: number;
   totalBytes?: number;
+}
+
+export interface PreparePagedTerminalHistoryOptions {
+  fetchPage(request: PagedTerminalHistoryRequest): Promise<PagedTerminalHistoryPage>;
+  startSequence?: number;
+  maxBytes?: number;
+  signal?: AbortSignal;
+  yieldControl?: () => void | Promise<void>;
+}
+
+export interface PreparedPagedTerminalHistory {
+  readonly chunks: readonly Readonly<TerminalOutputPipelineChunk>[];
+  readonly requestedStartSequence: number;
+  readonly firstRetainedSequence: number;
+  readonly coveredThroughSequence: number;
+  readonly snapshotEndSequence: number;
+  readonly historyGeneration: number;
+  readonly byteLength: number;
+  readonly pageCount: number;
+  readonly complete: boolean;
+}
+
+export interface PagedTerminalCompleteAttachOptions {
+  preparedHistory?: PreparedPagedTerminalHistory;
 }
 
 export type PagedTerminalHistoryTruncationReason =
@@ -119,8 +145,16 @@ export interface PagedTerminalOutputCoordinatorHandle {
 export interface AtomicPagedTerminalOutputCoordinatorHandle
   extends PagedTerminalOutputCoordinatorHandle {
   beginAttach(startSequence?: number): number;
-  completeAttach(attachGeneration: number, snapshotEndSequence?: number): Promise<void>;
-  attach(startSequence?: number, snapshotEndSequence?: number): Promise<void>;
+  completeAttach(
+    attachGeneration: number,
+    snapshotEndSequence?: number,
+    options?: PagedTerminalCompleteAttachOptions,
+  ): Promise<void>;
+  attach(
+    startSequence?: number,
+    snapshotEndSequence?: number,
+    options?: PagedTerminalCompleteAttachOptions,
+  ): Promise<void>;
 }
 
 type RecoveryKind = 'initial' | 'catch-up';
@@ -132,6 +166,8 @@ const DEFAULT_POLICY: PagedTerminalOutputPolicy = {
   retryDelaysMs: [250, 1000, 4000],
   maxWriteBatchBytes: 256 * 1024,
 };
+
+const DEFAULT_PREPARED_HISTORY_MAX_BYTES = 32 * 1024 * 1024;
 
 const normalizePositiveInteger = (value: number | undefined, fallback: number): number => (
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0
@@ -170,6 +206,258 @@ class HistoryContractError extends Error {
   }
 }
 
+const createAbortError = (): Error => {
+  if (typeof DOMException !== 'undefined') return new DOMException('Operation aborted', 'AbortError');
+  const error = new Error('Operation aborted');
+  error.name = 'AbortError';
+  return error;
+};
+
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted) throw createAbortError();
+};
+
+const waitForPreparedPage = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(createAbortError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(createAbortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+};
+
+const yieldHistoryPreparation = async (
+  signal: AbortSignal | undefined,
+  yieldControl: PreparePagedTerminalHistoryOptions['yieldControl'],
+): Promise<void> => {
+  throwIfAborted(signal);
+  if (yieldControl) {
+    await yieldControl();
+    throwIfAborted(signal);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const cancelTurn = scheduleUiTurn(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    });
+    const onAbort = () => {
+      cancelTurn();
+      reject(createAbortError());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+};
+
+const clonePreparedChunk = (
+  chunk: TerminalOutputPipelineChunk,
+): Readonly<TerminalOutputPipelineChunk> => {
+  const immutableData = new Uint8Array(chunk.data);
+  return Object.freeze({
+    get data() {
+      return new Uint8Array(immutableData);
+    },
+    ...(chunk.sequence !== undefined ? { sequence: chunk.sequence } : {}),
+    ...(chunk.timestampMs !== undefined ? { timestampMs: chunk.timestampMs } : {}),
+  });
+};
+
+export const preparePagedTerminalHistory = async (
+  options: PreparePagedTerminalHistoryOptions,
+): Promise<PreparedPagedTerminalHistory> => {
+  const requestedStartSequence = normalizeSequence(
+    options.startSequence ?? 1,
+    'startSequence',
+  )!;
+  const maxBytes = normalizePositiveInteger(
+    options.maxBytes,
+    DEFAULT_PREPARED_HISTORY_MAX_BYTES,
+  );
+  let startSequence = Math.max(1, requestedStartSequence);
+  let cursor: string | number | undefined;
+  let historyGeneration: number | undefined;
+  let snapshotEndSequence: number | undefined;
+  let firstRetainedSequence: number | undefined;
+  let coveredThroughSequence = Math.max(0, startSequence - 1);
+  let byteLength = 0;
+  let pageCount = 0;
+  let chunks: Readonly<TerminalOutputPipelineChunk>[] = [];
+  let rebaseAttempts = 0;
+  const requestSignal = options.signal ?? new AbortController().signal;
+
+  while (true) {
+    throwIfAborted(options.signal);
+    const page = await waitForPreparedPage(options.fetchPage({
+      startSequence,
+      endSequence: snapshotEndSequence,
+      historyGeneration,
+      cursor,
+      maxBytes: Math.max(1, maxBytes - byteLength),
+      signal: requestSignal,
+    }), options.signal);
+    throwIfAborted(options.signal);
+    pageCount += 1;
+
+    if (!Object.prototype.hasOwnProperty.call(page, 'coveredThroughSequence')) {
+      throw new HistoryContractError('history_contract_missing', 'coveredThroughSequence is required');
+    }
+    if (!Object.prototype.hasOwnProperty.call(page, 'snapshotEndSequence')) {
+      throw new HistoryContractError('history_contract_missing', 'snapshotEndSequence is required');
+    }
+    if (!Object.prototype.hasOwnProperty.call(page, 'historyGeneration')) {
+      throw new HistoryContractError('history_contract_missing', 'historyGeneration is required');
+    }
+    if (
+      !Object.prototype.hasOwnProperty.call(page, 'firstRetainedSequence')
+      && !Object.prototype.hasOwnProperty.call(page, 'firstAvailableSequence')
+    ) {
+      throw new HistoryContractError('history_contract_missing', 'firstRetainedSequence is required');
+    }
+
+    const pageCoverage = normalizeSequence(page.coveredThroughSequence, 'coveredThroughSequence')!;
+    const pageSnapshotEnd = normalizeSequence(page.snapshotEndSequence, 'snapshotEndSequence')!;
+    const pageGeneration = normalizeSequence(page.historyGeneration, 'historyGeneration')!;
+    const pageFirstRetained = normalizeSequence(
+      page.firstRetainedSequence ?? page.firstAvailableSequence,
+      'firstRetainedSequence',
+    )!;
+
+    const generationChanged = historyGeneration !== undefined && pageGeneration !== historyGeneration;
+    const snapshotChanged = snapshotEndSequence !== undefined && pageSnapshotEnd !== snapshotEndSequence;
+    const retentionAdvanced = firstRetainedSequence !== undefined
+      && pageFirstRetained > firstRetainedSequence;
+    if (
+      historyGeneration !== undefined
+      && (page.historyReset || page.historyTruncated || generationChanged || snapshotChanged || retentionAdvanced)
+    ) {
+      if (rebaseAttempts >= 2) {
+        throw new HistoryContractError(
+          'history_contract_invalid',
+          'terminal history changed repeatedly while preparing a stable snapshot',
+        );
+      }
+      rebaseAttempts += 1;
+      startSequence = Math.max(1, pageFirstRetained);
+      cursor = undefined;
+      historyGeneration = undefined;
+      snapshotEndSequence = undefined;
+      firstRetainedSequence = undefined;
+      coveredThroughSequence = startSequence - 1;
+      byteLength = 0;
+      chunks = [];
+      await yieldHistoryPreparation(options.signal, options.yieldControl);
+      continue;
+    }
+
+    if (pageCoverage < coveredThroughSequence) {
+      throw new HistoryContractError('history_contract_invalid', 'coveredThroughSequence regressed');
+    }
+    if (pageCoverage > pageSnapshotEnd) {
+      throw new HistoryContractError(
+        'history_contract_invalid',
+        'coveredThroughSequence exceeded snapshotEndSequence',
+      );
+    }
+    let previousChunkSequence = coveredThroughSequence;
+    for (const chunk of page.chunks) {
+      const sequence = normalizeSequence(chunk.sequence, 'chunk.sequence');
+      if (sequence! <= previousChunkSequence || sequence! > pageCoverage) {
+        throw new HistoryContractError(
+          'history_contract_invalid',
+          'prepared history chunks must have strictly increasing sequences within page coverage',
+        );
+      }
+      previousChunkSequence = sequence!;
+    }
+    if (
+      pageCoverage > Math.max(0, pageFirstRetained - 1)
+      && previousChunkSequence !== pageCoverage
+    ) {
+      throw new HistoryContractError(
+        'history_contract_invalid',
+        'prepared history page did not include its covered terminal sequence',
+      );
+    }
+
+    historyGeneration = pageGeneration;
+    snapshotEndSequence = pageSnapshotEnd;
+    firstRetainedSequence = pageFirstRetained;
+    if (pageFirstRetained > startSequence) {
+      coveredThroughSequence = Math.max(coveredThroughSequence, pageFirstRetained - 1);
+    }
+
+    const pageBytes = page.chunks.reduce((sum, chunk) => sum + chunk.data.byteLength, 0);
+    const remainingBytes = maxBytes - byteLength;
+    if (pageBytes <= remainingBytes) {
+      chunks.push(...page.chunks.map(clonePreparedChunk));
+      byteLength += pageBytes;
+      coveredThroughSequence = Math.max(coveredThroughSequence, pageCoverage);
+    } else {
+      for (const chunk of page.chunks) {
+        const sequence = normalizeSequence(chunk.sequence, 'chunk.sequence')!;
+        if (byteLength + chunk.data.byteLength > maxBytes) break;
+        chunks.push(clonePreparedChunk(chunk));
+        byteLength += chunk.data.byteLength;
+        coveredThroughSequence = Math.max(coveredThroughSequence, sequence);
+      }
+      return Object.freeze({
+        chunks: Object.freeze(chunks),
+        requestedStartSequence,
+        firstRetainedSequence,
+        coveredThroughSequence,
+        snapshotEndSequence,
+        historyGeneration,
+        byteLength,
+        pageCount,
+        complete: false,
+      });
+    }
+
+    if (!page.hasMore) {
+      return Object.freeze({
+        chunks: Object.freeze(chunks),
+        requestedStartSequence,
+        firstRetainedSequence,
+        coveredThroughSequence,
+        snapshotEndSequence,
+        historyGeneration,
+        byteLength,
+        pageCount,
+        complete: coveredThroughSequence >= snapshotEndSequence,
+      });
+    }
+    if (byteLength >= maxBytes) {
+      return Object.freeze({
+        chunks: Object.freeze(chunks),
+        requestedStartSequence,
+        firstRetainedSequence,
+        coveredThroughSequence,
+        snapshotEndSequence,
+        historyGeneration,
+        byteLength,
+        pageCount,
+        complete: false,
+      });
+    }
+    if (page.nextCursor === undefined) {
+      throw new HistoryContractError('history_contract_invalid', 'nextCursor is required when hasMore is true');
+    }
+    cursor = page.nextCursor;
+    startSequence = pageCoverage + 1;
+    await yieldHistoryPreparation(options.signal, options.yieldControl);
+  }
+};
+
 class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHandle {
   private readonly options: PagedTerminalOutputCoordinatorOptions;
   private readonly policy: PagedTerminalOutputPolicy;
@@ -203,6 +491,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   private writerQuiescenceWaiters: Array<() => void> = [];
   private pausedRecoveryPending = false;
   private droppedLiveThroughSequence = 0;
+  private preparedHistory: PreparedPagedTerminalHistory | null = null;
 
   constructor(options: PagedTerminalOutputCoordinatorOptions) {
     this.options = options;
@@ -225,9 +514,13 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     };
   }
 
-  async attach(startSequence = 1, snapshotEndSequence?: number): Promise<void> {
+  async attach(
+    startSequence = 1,
+    snapshotEndSequence?: number,
+    options?: PagedTerminalCompleteAttachOptions,
+  ): Promise<void> {
     const attachGeneration = this.beginAttach(startSequence);
-    await this.completeAttach(attachGeneration, snapshotEndSequence);
+    await this.completeAttach(attachGeneration, snapshotEndSequence, options);
   }
 
   beginAttach(startSequence = 1): number {
@@ -253,14 +546,20 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.failure = null;
     this.lastError = null;
     this.historyRebasePrepared = false;
+    this.preparedHistory = null;
     this.setState('idle');
     return this.generation;
   }
 
-  async completeAttach(attachGeneration: number, snapshotEndSequence?: number): Promise<void> {
+  async completeAttach(
+    attachGeneration: number,
+    snapshotEndSequence?: number,
+    options: PagedTerminalCompleteAttachOptions = {},
+  ): Promise<void> {
     if (this.disposed || !this.isCurrent(attachGeneration)) return;
     this.explicitAttachFence = snapshotEndSequence !== undefined;
     this.recoveryEndSequence = normalizeSequence(snapshotEndSequence, 'snapshotEndSequence', true);
+    this.preparedHistory = this.acceptPreparedHistory(options.preparedHistory);
     if (this.explicitAttachFence && this.recoveryEndSequence === 0) {
       if (this.needsRebase) {
         this.prepareRetainedLiveRebase();
@@ -351,6 +650,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.failure = null;
     this.lastError = null;
     this.historyRebasePrepared = false;
+    this.preparedHistory = null;
     this.setState('idle');
     this.resolveBaselineWaiters();
   }
@@ -388,6 +688,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.pendingLiveWrites = [];
     this.liveWriteScheduled = false;
     this.pausedRecoveryPending = false;
+    this.preparedHistory = null;
     this.setState('disposed');
     this.resolveBaselineWaiters();
   }
@@ -402,6 +703,68 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       : Math.max(0, firstRetainedSequence - 1);
     this.retryAttempt = 0;
     void this.runRecovery();
+  }
+
+  private acceptPreparedHistory(
+    preparedHistory: PreparedPagedTerminalHistory | undefined,
+  ): PreparedPagedTerminalHistory | null {
+    if (!preparedHistory || this.recoveryEndSequence === undefined) return null;
+    try {
+      const requestedStart = normalizeSequence(
+        preparedHistory.requestedStartSequence,
+        'preparedHistory.requestedStartSequence',
+      )!;
+      const firstRetained = normalizeSequence(
+        preparedHistory.firstRetainedSequence,
+        'preparedHistory.firstRetainedSequence',
+      )!;
+      const coveredThrough = normalizeSequence(
+        preparedHistory.coveredThroughSequence,
+        'preparedHistory.coveredThroughSequence',
+      )!;
+      const snapshotEnd = normalizeSequence(
+        preparedHistory.snapshotEndSequence,
+        'preparedHistory.snapshotEndSequence',
+      )!;
+      normalizeSequence(preparedHistory.historyGeneration, 'preparedHistory.historyGeneration');
+      normalizeSequence(preparedHistory.byteLength, 'preparedHistory.byteLength');
+      normalizeSequence(preparedHistory.pageCount, 'preparedHistory.pageCount');
+      const expectedStart = Math.max(1, this.recoveryStartSequence);
+      if (requestedStart > expectedStart) return null;
+      if (firstRetained > coveredThrough + 1) return null;
+      if (coveredThrough < expectedStart - 1 || coveredThrough > snapshotEnd) return null;
+      if (snapshotEnd > this.recoveryEndSequence || coveredThrough > this.recoveryEndSequence) return null;
+      if (!Array.isArray(preparedHistory.chunks)) return null;
+      let previousChunkSequence = Math.max(0, firstRetained - 1);
+      let preparedBytes = 0;
+      for (const chunk of preparedHistory.chunks) {
+        if (!(chunk.data instanceof Uint8Array)) return null;
+        const sequence = normalizeSequence(chunk.sequence, 'preparedHistory.chunk.sequence')!;
+        if (sequence <= previousChunkSequence || sequence > coveredThrough) return null;
+        previousChunkSequence = sequence;
+        preparedBytes += chunk.data.byteLength;
+      }
+      if (preparedBytes !== preparedHistory.byteLength) return null;
+      if (
+        coveredThrough >= Math.max(1, firstRetained)
+        && previousChunkSequence !== coveredThrough
+      ) return null;
+      if (preparedHistory.complete !== (coveredThrough >= snapshotEnd)) return null;
+      if (firstRetained > expectedStart) {
+        this.options.clear?.();
+        this.options.onHistoryTruncated?.('history-evicted');
+      }
+      return preparedHistory;
+    } catch {
+      return null;
+    }
+  }
+
+  private discardPreparedHistoryForFullRecovery(): void {
+    this.preparedHistory = null;
+    this.coveredThroughSequence = Math.max(0, this.recoveryStartSequence - 1);
+    this.scheduledThroughSequence = this.coveredThroughSequence;
+    this.historyRebasePrepared = false;
   }
 
   private async runRecovery(): Promise<void> {
@@ -420,13 +783,32 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       await this.writeChain;
       if (!this.isRecoveryCurrent(generation, recoverySerial, controller)) return;
 
-      const historyChunks: TaggedChunk[] = [];
+      const preparedHistory = this.preparedHistory;
+      const historyChunks: TaggedChunk[] = preparedHistory
+        ? preparedHistory.chunks.map(item => ({ ...item, data: new Uint8Array(item.data), source: 'history' as const }))
+        : [];
       let cursor: string | number | undefined;
-      let startSequence = this.recoveryStartSequence;
+      let startSequence = preparedHistory
+        ? Math.max(
+          1,
+          preparedHistory.coveredThroughSequence
+            + (preparedHistory.coveredThroughSequence < (this.recoveryEndSequence ?? 0) ? 1 : 0),
+        )
+        : this.recoveryStartSequence;
       let snapshotEnd = this.recoveryEndSequence;
-      let historyGeneration: number | undefined;
-      let coveredEnd = this.coveredThroughSequence;
-      let firstPage = true;
+      let historyGeneration: number | undefined = preparedHistory?.historyGeneration;
+      let coveredEnd = preparedHistory?.coveredThroughSequence ?? this.coveredThroughSequence;
+      let firstPage = preparedHistory === null;
+      const preparedBaseline = preparedHistory === null
+        ? undefined
+        : Math.max(
+          Math.max(1, this.recoveryStartSequence) - 1,
+          preparedHistory.firstRetainedSequence - 1,
+        );
+      if (preparedBaseline !== undefined) {
+        this.coveredThroughSequence = preparedBaseline;
+        this.scheduledThroughSequence = preparedBaseline;
+      }
 
       do {
         const page = await this.options.fetchPage({
@@ -445,21 +827,35 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           'firstRetainedSequence',
           true,
         );
+        if (
+          preparedHistory !== null
+          && (pageSnapshotEnd === undefined || pageGeneration === undefined || firstRetained === undefined)
+        ) {
+          this.discardPreparedHistoryForFullRecovery();
+          this.recoveryRunning = false;
+          await this.runRecovery();
+          return;
+        }
         const generationChanged = historyGeneration !== undefined
           && pageGeneration !== undefined
           && pageGeneration !== historyGeneration;
         const effectivePageStart = Math.max(1, startSequence);
         const retentionAdvanced = firstRetained !== undefined
-          && firstRetained > effectivePageStart;
+          && (
+            firstRetained > effectivePageStart
+            || (preparedHistory !== null && firstRetained > preparedHistory.firstRetainedSequence)
+          );
         const generationNeedsRebase = page.historyReset || generationChanged;
         const retentionNeedsRebase = page.historyTruncated || retentionAdvanced;
         const fencedRangeFullyEvicted = this.recoveryEndSequence !== undefined
           && firstRetained !== undefined
           && firstRetained > this.recoveryEndSequence;
         if (!this.historyRebasePrepared && (generationNeedsRebase || retentionNeedsRebase)) {
+          this.preparedHistory = null;
           if (fencedRangeFullyEvicted) {
             this.options.clear?.();
             this.options.onHistoryTruncated?.('history-evicted');
+            if (preparedHistory !== null) historyChunks.length = 0;
             if (generationNeedsRebase) {
               this.historyRebasePrepared = true;
               this.recoveryRunning = false;
@@ -477,7 +873,17 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           throw new HistoryContractError('history_contract_invalid', 'history generation reset persisted after rebase');
         }
 
-        const coverage = this.validatePage(page, coveredEnd);
+        let coverage: number;
+        try {
+          coverage = this.validatePage(page, coveredEnd);
+        } catch (error) {
+          if (preparedHistory === null) throw error;
+          this.preparedHistory = null;
+          this.prepareHistoryGenerationRebase(firstRetained);
+          this.recoveryRunning = false;
+          await this.runRecovery();
+          return;
+        }
         if (snapshotEnd !== undefined && coverage > snapshotEnd) {
           throw new HistoryContractError('history_contract_invalid', 'coveredThroughSequence exceeded the recovery fence');
         }
@@ -507,6 +913,13 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           this.historyRebasePrepared = false;
         } else {
           if (snapshotEnd !== undefined && pageSnapshotEnd !== undefined && pageSnapshotEnd !== snapshotEnd) {
+            if (preparedHistory !== null) {
+              this.preparedHistory = null;
+              this.prepareHistoryGenerationRebase(firstRetained);
+              this.recoveryRunning = false;
+              await this.runRecovery();
+              return;
+            }
             throw new HistoryContractError('history_contract_invalid', 'snapshotEndSequence changed during pagination');
           }
         }
@@ -574,6 +987,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       this.retryAttempt = 0;
       this.lastError = null;
       this.failure = null;
+      this.preparedHistory = null;
       this.setState('live');
       this.recoveryRunning = false;
       this.drainRetainedLive();

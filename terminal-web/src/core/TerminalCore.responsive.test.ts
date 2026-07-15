@@ -245,7 +245,9 @@ describe('TerminalCore responsive resize notifications', () => {
     const onResize = vi.fn();
     const core = new TerminalCore(container, {}, { onResize });
 
-    await core.initialize();
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
 
     expect(core.getDimensions()).toEqual({ cols: 120, rows: 30 });
     expect(onResize).toHaveBeenLastCalledWith({ cols: 120, rows: 30 });

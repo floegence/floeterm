@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createPagedTerminalOutputCoordinator,
+  preparePagedTerminalHistory,
   type PagedTerminalHistoryPage,
 } from './PagedTerminalOutputCoordinator';
 
@@ -22,6 +23,482 @@ afterEach(() => {
 });
 
 describe('PagedTerminalOutputCoordinator', () => {
+  it('prepares an immutable paged snapshot and yields between pages', async () => {
+    const source = chunk(1, 'one');
+    const yieldControl = vi.fn().mockResolvedValue(undefined);
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({
+        chunks: [source],
+        hasMore: true,
+        nextCursor: 2,
+        coveredThroughSequence: 1,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 7,
+      }))
+      .mockResolvedValueOnce(page({
+        chunks: [chunk(2, 'two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 7,
+      }));
+
+    const prepared = await preparePagedTerminalHistory({ fetchPage, yieldControl });
+    source.data[0] = 0;
+
+    expect(fetchPage.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      startSequence: 2,
+      endSequence: 2,
+      historyGeneration: 7,
+      cursor: 2,
+    }));
+    expect(yieldControl).toHaveBeenCalledTimes(1);
+    expect(prepared).toMatchObject({
+      requestedStartSequence: 1,
+      firstRetainedSequence: 1,
+      coveredThroughSequence: 2,
+      snapshotEndSequence: 2,
+      historyGeneration: 7,
+      byteLength: 6,
+      pageCount: 2,
+      complete: true,
+    });
+    expect(decoder.decode(prepared.chunks[0]?.data)).toBe('one');
+    const exposedBytes = prepared.chunks[0]?.data;
+    if (exposedBytes) exposedBytes[0] = 0;
+    expect(decoder.decode(prepared.chunks[0]?.data)).toBe('one');
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect(Object.isFrozen(prepared.chunks)).toBe(true);
+  });
+
+  it('stops at the byte budget without claiming unfetched coverage', async () => {
+    const fetchPage = vi.fn().mockResolvedValue(page({
+      chunks: [chunk(1, 'aa'), chunk(2, 'bb'), chunk(3, 'cc')],
+      coveredThroughSequence: 3,
+      snapshotEndSequence: 3,
+      firstRetainedSequence: 1,
+      historyGeneration: 1,
+    }));
+
+    const prepared = await preparePagedTerminalHistory({ fetchPage, maxBytes: 4 });
+
+    expect(fetchPage).toHaveBeenCalledWith(expect.objectContaining({ maxBytes: 4 }));
+    expect(prepared).toMatchObject({
+      coveredThroughSequence: 2,
+      byteLength: 4,
+      complete: false,
+    });
+    expect(prepared.chunks.map(item => item.sequence)).toEqual([1, 2]);
+  });
+
+  it('cancels history preparation between pages', async () => {
+    const controller = new AbortController();
+    const fetchPage = vi.fn().mockResolvedValue(page({
+      chunks: [chunk(1)],
+      hasMore: true,
+      nextCursor: 2,
+      coveredThroughSequence: 1,
+      snapshotEndSequence: 2,
+      firstRetainedSequence: 1,
+      historyGeneration: 1,
+    }));
+
+    await expect(preparePagedTerminalHistory({
+      fetchPage,
+      signal: controller.signal,
+      yieldControl: () => controller.abort(),
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels history preparation while a page adapter is still in flight', async () => {
+    const controller = new AbortController();
+    let resolvePage: ((value: PagedTerminalHistoryPage) => void) | undefined;
+    const pendingPage = new Promise<PagedTerminalHistoryPage>(resolve => {
+      resolvePage = resolve;
+    });
+    const fetchPage = vi.fn().mockReturnValue(pendingPage);
+
+    const preparing = preparePagedTerminalHistory({ fetchPage, signal: controller.signal });
+    expect(fetchPage.mock.calls[0]?.[0].signal).toBe(controller.signal);
+    controller.abort();
+    await expect(preparing).rejects.toMatchObject({ name: 'AbortError' });
+
+    resolvePage?.(page({
+      coveredThroughSequence: 0,
+      snapshotEndSequence: 0,
+      firstRetainedSequence: 0,
+      historyGeneration: 1,
+    }));
+    await Promise.resolve();
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('restarts preparation when the paged snapshot generation changes', async () => {
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({
+        chunks: [chunk(1, 'old')],
+        hasMore: true,
+        nextCursor: 2,
+        coveredThroughSequence: 1,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }))
+      .mockResolvedValueOnce(page({
+        coveredThroughSequence: 1,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 2,
+        historyGeneration: 2,
+        historyReset: true,
+      }))
+      .mockResolvedValueOnce(page({
+        chunks: [chunk(2, 'new-two'), chunk(3, 'new-three')],
+        coveredThroughSequence: 3,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 2,
+        historyGeneration: 2,
+      }));
+
+    const prepared = await preparePagedTerminalHistory({ fetchPage, yieldControl: () => {} });
+
+    expect(fetchPage.mock.calls[2]?.[0]).toEqual(expect.objectContaining({
+      startSequence: 2,
+      historyGeneration: undefined,
+      cursor: undefined,
+    }));
+    expect(prepared.chunks.map(item => decoder.decode(item.data))).toEqual(['new-two', 'new-three']);
+    expect(prepared).toMatchObject({
+      firstRetainedSequence: 2,
+      coveredThroughSequence: 3,
+      historyGeneration: 2,
+      complete: true,
+    });
+  });
+
+  it('replays a prepared seed once and fetches only the attach delta', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'one'), chunk(2, 'two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const writes: string[] = [];
+    const fetchPage = vi.fn().mockResolvedValue(page({
+      chunks: [chunk(3, 'three'), chunk(4, 'four')],
+      coveredThroughSequence: 4,
+      snapshotEndSequence: 4,
+      firstRetainedSequence: 1,
+      historyGeneration: 1,
+    }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+    });
+
+    await coordinator.attach(0, 4, { preparedHistory: prepared });
+
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(fetchPage).toHaveBeenCalledWith(expect.objectContaining({
+      startSequence: 3,
+      endSequence: 4,
+      historyGeneration: 1,
+    }));
+    expect(writes.join('')).toBe('onetwothreefour');
+    expect(coordinator.getSnapshot()).toMatchObject({
+      baselineReady: true,
+      coveredThroughSequence: 4,
+      failure: null,
+    });
+    coordinator.dispose();
+  });
+
+  it('validates an exact-boundary seed without replaying its final chunk twice', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'one'), chunk(2, 'two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const writes: string[] = [];
+    const fetchPage = vi.fn().mockResolvedValue(page({
+      chunks: [chunk(2, 'two')],
+      coveredThroughSequence: 2,
+      snapshotEndSequence: 2,
+      firstRetainedSequence: 1,
+      historyGeneration: 1,
+    }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+    });
+
+    await coordinator.attach(0, 2, { preparedHistory: prepared });
+
+    expect(fetchPage).toHaveBeenCalledWith(expect.objectContaining({
+      startSequence: 2,
+      endSequence: 2,
+      historyGeneration: 1,
+    }));
+    expect(writes.join('')).toBe('onetwo');
+    coordinator.dispose();
+  });
+
+  it('lets retained live output win once over overlapping prepared delta history', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'one'), chunk(2, 'two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const writes: string[] = [];
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({
+        chunks: [chunk(3, 'history-three')],
+        coveredThroughSequence: 3,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+    });
+
+    const attachGeneration = coordinator.beginAttach(0);
+    coordinator.pushLive(chunk(3, 'live-three'));
+    await coordinator.completeAttach(attachGeneration, 3, { preparedHistory: prepared });
+
+    expect(writes.join('')).toBe('onetwolive-three');
+    expect(coordinator.getSnapshot()).toMatchObject({
+      baselineReady: true,
+      coveredThroughSequence: 3,
+      retainedLiveChunks: 0,
+    });
+    coordinator.dispose();
+  });
+
+  it('discards a prepared seed and performs a full recovery after a generation reset', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'old-one'), chunk(2, 'old-two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const writes: string[] = [];
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({
+        coveredThroughSequence: 0,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 1,
+        historyGeneration: 2,
+        historyReset: true,
+      }))
+      .mockResolvedValueOnce(page({
+        chunks: [chunk(1, 'new-one'), chunk(2, 'new-two'), chunk(3, 'new-three')],
+        coveredThroughSequence: 3,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 1,
+        historyGeneration: 2,
+      }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+      clear: () => writes.push('[clear]'),
+    });
+
+    await coordinator.attach(0, 3, { preparedHistory: prepared });
+
+    expect(fetchPage.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      startSequence: 3,
+      historyGeneration: 1,
+    }));
+    expect(fetchPage.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      startSequence: 0,
+      historyGeneration: undefined,
+    }));
+    expect(writes.join('')).toBe('[clear]new-onenew-twonew-three');
+    expect(coordinator.getSnapshot()).toMatchObject({ baselineReady: true, failure: null });
+    coordinator.dispose();
+  });
+
+  it('discards a prepared seed when retention advances before attach', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'old-one'), chunk(2, 'old-two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const writes: string[] = [];
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 3,
+        historyGeneration: 1,
+        historyTruncated: true,
+      }))
+      .mockResolvedValueOnce(page({
+        chunks: [chunk(3, 'new-three')],
+        coveredThroughSequence: 3,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 3,
+        historyGeneration: 1,
+      }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+      clear: () => writes.push('[clear]'),
+    });
+
+    await coordinator.attach(0, 3, { preparedHistory: prepared });
+
+    expect(fetchPage.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      startSequence: 3,
+      historyGeneration: undefined,
+    }));
+    expect(writes.join('')).toBe('[clear]new-three');
+    expect(coordinator.getSnapshot()).toMatchObject({
+      baselineReady: true,
+      coveredThroughSequence: 3,
+      failure: null,
+    });
+    coordinator.dispose();
+  });
+
+  it('does not replay a prepared seed after retention fully evicts the attach fence', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'old-one'), chunk(2, 'old-two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const writes: string[] = [];
+    const fetchPage = vi.fn().mockResolvedValue(page({
+      coveredThroughSequence: 2,
+      snapshotEndSequence: 2,
+      firstRetainedSequence: 3,
+      historyGeneration: 1,
+      historyTruncated: true,
+    }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+      clear: () => writes.push('[clear]'),
+    });
+
+    await coordinator.attach(0, 2, { preparedHistory: prepared });
+
+    expect(writes.join('')).toBe('[clear]');
+    expect(coordinator.getSnapshot()).toMatchObject({
+      baselineReady: true,
+      coveredThroughSequence: 2,
+      failure: null,
+    });
+    coordinator.dispose();
+  });
+
+  it('falls back to full recovery when prepared validation metadata is missing', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'old-one'), chunk(2, 'old-two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const writes: string[] = [];
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(page({
+        chunks: [chunk(3, 'unvalidated-three')],
+        coveredThroughSequence: 3,
+      }))
+      .mockResolvedValueOnce(page({
+        chunks: [chunk(1, 'new-one'), chunk(2, 'new-two'), chunk(3, 'new-three')],
+        coveredThroughSequence: 3,
+        snapshotEndSequence: 3,
+        firstRetainedSequence: 1,
+        historyGeneration: 2,
+      }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+    });
+
+    await coordinator.attach(0, 3, { preparedHistory: prepared });
+
+    expect(fetchPage.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      startSequence: 0,
+      historyGeneration: undefined,
+    }));
+    expect(writes.join('')).toBe('new-onenew-twonew-three');
+    coordinator.dispose();
+  });
+
+  it('rejects a forged prepared coverage claim and performs normal recovery', async () => {
+    const generated = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'old-one'), chunk(2, 'old-two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const forged = {
+      ...generated,
+      chunks: [],
+      byteLength: 0,
+    };
+    const writes: string[] = [];
+    const fetchPage = vi.fn().mockResolvedValue(page({
+      chunks: [chunk(1, 'new-one'), chunk(2, 'new-two')],
+      coveredThroughSequence: 2,
+      snapshotEndSequence: 2,
+      firstRetainedSequence: 1,
+      historyGeneration: 2,
+    }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+    });
+
+    await coordinator.attach(0, 2, { preparedHistory: forged });
+
+    expect(fetchPage).toHaveBeenCalledWith(expect.objectContaining({
+      startSequence: 0,
+      historyGeneration: undefined,
+    }));
+    expect(writes.join('')).toBe('new-onenew-two');
+    coordinator.dispose();
+  });
+
   it('publishes baseline readiness only after the history writer completes', async () => {
     let completeWrite: (() => void) | undefined;
     const historyWrite = new Promise<void>(resolve => { completeWrite = resolve; });

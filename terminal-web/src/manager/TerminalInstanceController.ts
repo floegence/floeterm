@@ -4,7 +4,6 @@ import { createTerminalError } from '../utils/errors';
 import { getDefaultTerminalConfig, getThemeColors } from '../utils/config';
 import { createConsoleLogger, noopLogger } from '../utils/logger';
 import { concatChunks } from '../utils/history';
-import { terminalInitializationScheduler } from '../internal/TerminalInitializationScheduler';
 import {
   TerminalState,
   computeConnectionState,
@@ -81,7 +80,6 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   private connectionError: TerminalError | null = null;
   private retryCount = 0;
   private retryTimeout: ReturnType<typeof setTimeout> | null = null;
-  private initializeTimeout: ReturnType<typeof setTimeout> | null = null;
   private initializationAbortController: AbortController | null = null;
   private queueRetryTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -165,7 +163,6 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   }
 
   unmount(): void {
-    this.clearInitializeTimeout();
     this.initializationAbortController?.abort();
     this.initializationAbortController = null;
     this.cleanupTerminal();
@@ -177,7 +174,6 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       return;
     }
     this.disposed = true;
-    this.clearInitializeTimeout();
     this.initializationAbortController?.abort();
     this.initializationAbortController = null;
     this.clearRetryTimeout();
@@ -536,22 +532,10 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   }
 
   private scheduleInitialize(): void {
-    if (!this.options.isActive || !this.container || this.terminalCore || this.isInitializing || this.initializeTimeout) {
+    if (!this.options.isActive || !this.container || this.terminalCore || this.isInitializing) {
       return;
     }
-
-    this.initializeTimeout = this.scheduler.setTimer(() => {
-      this.initializeTimeout = null;
-      void this.initializeTerminal();
-    }, 100);
-  }
-
-  private clearInitializeTimeout(): void {
-    if (!this.initializeTimeout) {
-      return;
-    }
-    this.scheduler.clearTimer(this.initializeTimeout);
-    this.initializeTimeout = null;
+    void this.initializeTerminal();
   }
 
   private async initializeTerminal(): Promise<void> {
@@ -565,57 +549,57 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.setLoading('initializing_terminal', 'Initializing terminal...');
 
     try {
-      const permit = await terminalInitializationScheduler.acquire(abortController.signal);
-      if (!permit || abortController.signal.aborted || this.disposed || !this.container) {
+      const configOverrides = {
+        ...(this.options.config ?? {}),
+        sessionId: this.options.sessionId,
+        ...(this.options.fontSize ? { fontSize: this.options.fontSize } : {}),
+        ...(this.options.presentationScale ? { presentationScale: this.options.presentationScale } : {}),
+      };
+      const config = getDefaultTerminalConfig(this.options.themeName ?? 'dark', configOverrides);
+
+      const CoreCtor: TerminalCoreConstructor = this.options.coreConstructor ?? TerminalCore;
+      const terminalCore = new CoreCtor(
+        this.container,
+        config,
+        {
+          onData: data => this.handleUserInput(data),
+          onResize: size => void this.handleResize(size),
+          onStateChange: this.handleStateChange,
+          onError: this.handleError
+        },
+        this.logger ?? noopLogger
+      );
+      this.terminalCore = terminalCore;
+
+      await terminalCore.initialize({ priority: 'interactive', signal: abortController.signal });
+      if (
+        abortController.signal.aborted
+        || this.disposed
+        || !this.container
+        || this.terminalCore !== terminalCore
+      ) {
         return;
       }
+      if (this.isReplayActive) {
+        terminalCore.startHistoryReplay(30000);
+      }
 
-      try {
-        const configOverrides = {
-          ...(this.options.config ?? {}),
-          sessionId: this.options.sessionId,
-          ...(this.options.fontSize ? { fontSize: this.options.fontSize } : {}),
-          ...(this.options.presentationScale ? { presentationScale: this.options.presentationScale } : {}),
-        };
-        const config = getDefaultTerminalConfig(this.options.themeName ?? 'dark', configOverrides);
+      const sessionId = this.options.sessionId;
+      if (sessionId) {
+        const dimensions = terminalCore.getDimensions();
+        await this.options.transport.resize(sessionId, dimensions.cols, dimensions.rows);
+      }
 
-        const CoreCtor: TerminalCoreConstructor = this.options.coreConstructor ?? TerminalCore;
-        this.terminalCore = new CoreCtor(
-          this.container,
-          config,
-          {
-            onData: data => this.handleUserInput(data),
-            onResize: size => void this.handleResize(size),
-            onStateChange: this.handleStateChange,
-            onError: this.handleError
-          },
-          this.logger ?? noopLogger
-        );
+      void this.processDataQueue();
 
-        await this.terminalCore.initialize();
-        if (this.isReplayActive) {
-          this.terminalCore.startHistoryReplay(30000);
-        }
+      if (!this.isReplayActive || this.replayCompleteReceived) {
+        this.setLoading('ready', '');
+      } else {
+        this.setLoading('processing_history', 'Restoring terminal...');
+      }
 
-        const sessionId = this.options.sessionId;
-        if (sessionId) {
-          const dimensions = this.terminalCore.getDimensions();
-          await this.options.transport.resize(sessionId, dimensions.cols, dimensions.rows);
-        }
-
-        void this.processDataQueue();
-
-        if (!this.isReplayActive || this.replayCompleteReceived) {
-          this.setLoading('ready', '');
-        } else {
-          this.setLoading('processing_history', 'Restoring terminal...');
-        }
-
-        if (this.options.isActive && sessionId) {
-          await this.connectToSession();
-        }
-      } finally {
-        permit.release();
+      if (this.options.isActive && sessionId) {
+        await this.connectToSession();
       }
     } catch (error) {
       if (abortController.signal.aborted) {

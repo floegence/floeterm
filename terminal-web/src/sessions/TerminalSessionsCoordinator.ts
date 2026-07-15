@@ -12,6 +12,11 @@ export type TerminalSessionsCoordinatorOptions = {
 
 type sessions_listener = (sessions: TerminalSessionInfo[]) => void;
 
+type refresh_in_flight = {
+  mutationRevision: number;
+  promise: Promise<void>;
+};
+
 const normalizeSessions = (list: TerminalSessionInfo[]): TerminalSessionInfo[] => {
   const byId = new Map<string, TerminalSessionInfo>();
   for (const raw of list) {
@@ -53,9 +58,11 @@ export class TerminalSessionsCoordinator {
   private listeners = new Set<sessions_listener>();
 
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private refreshInFlight: Promise<void> | null = null;
+  private refreshInFlight: refresh_in_flight | null = null;
   private refreshSeq = 0;
   private lastAppliedRefreshSeq = 0;
+  private lastAppliedMutationRevision = -1;
+  private mutationRevision = 0;
 
   private pendingDeletions = new Set<string>();
   private disposed = false;
@@ -114,11 +121,24 @@ export class TerminalSessionsCoordinator {
     }
   }
 
-  private setSessions(next: TerminalSessionInfo[]): void {
-    if (this.disposed) return;
-    if (sessionsEqual(this.sessions, next)) return;
+  private setSessions(next: TerminalSessionInfo[]): boolean {
+    if (this.disposed) return false;
+    if (sessionsEqual(this.sessions, next)) return false;
     this.sessions = next;
     this.emit(next);
+    return true;
+  }
+
+  private applyLocalSessions(next: TerminalSessionInfo[]): boolean {
+    if (this.disposed) return false;
+    if (sessionsEqual(this.sessions, next)) return false;
+    this.mutationRevision += 1;
+    return this.setSessions(next);
+  }
+
+  private markLocalMutation(): void {
+    if (this.disposed) return;
+    this.mutationRevision += 1;
   }
 
   private ensurePolling(): void {
@@ -139,7 +159,7 @@ export class TerminalSessionsCoordinator {
     this.pollTimer = null;
   }
 
-  async refresh(): Promise<void> {
+  refresh(): Promise<void> {
     return this.runRefresh(false);
   }
 
@@ -149,14 +169,25 @@ export class TerminalSessionsCoordinator {
       return Promise.reject(new Error('Terminal transport does not support listSessions()'));
     }
 
-    if (!force && this.refreshInFlight) {
-      return this.refreshInFlight;
+    const mutationRevision = this.mutationRevision;
+    if (
+      !force
+      && this.refreshInFlight
+      && this.refreshInFlight.mutationRevision === mutationRevision
+    ) {
+      return this.refreshInFlight.promise;
     }
 
     const seq = ++this.refreshSeq;
     const promise = (async () => {
       const list = await this.transport.listSessions?.();
       if (this.disposed) return;
+      if (mutationRevision !== this.mutationRevision) {
+        if (this.lastAppliedMutationRevision !== this.mutationRevision) {
+          await this.runRefresh(false);
+        }
+        return;
+      }
       if (seq < this.lastAppliedRefreshSeq) return;
 
       const normalized = normalizeSessions(Array.isArray(list) ? list : []);
@@ -166,17 +197,45 @@ export class TerminalSessionsCoordinator {
 
       this.setSessions(filtered);
       this.lastAppliedRefreshSeq = seq;
+      this.lastAppliedMutationRevision = mutationRevision;
     })();
 
-    let inFlight: Promise<void>;
-    inFlight = promise.finally(() => {
+    let inFlight: refresh_in_flight;
+    const trackedPromise = promise.finally(() => {
       if (this.refreshInFlight === inFlight) {
         this.refreshInFlight = null;
       }
     });
+    inFlight = { mutationRevision, promise: trackedPromise };
 
     this.refreshInFlight = inFlight;
-    return inFlight;
+    return inFlight.promise;
+  }
+
+  upsertSession(session: TerminalSessionInfo): TerminalSessionInfo {
+    const id = String(session?.id ?? '').trim();
+    if (!id) {
+      throw new Error('Invalid terminal session: missing id');
+    }
+
+    const normalized = { ...session, id };
+    if (this.disposed) return normalized;
+
+    const merged = normalizeSessions([...this.sessions, normalized]);
+    const filtered = this.pendingDeletions.size > 0
+      ? merged.filter((item) => !this.pendingDeletions.has(item.id))
+      : merged;
+    this.applyLocalSessions(filtered);
+    return normalized;
+  }
+
+  removeSession(sessionId: string): boolean {
+    const id = String(sessionId ?? '').trim();
+    if (!id || this.disposed) return false;
+
+    const existed = this.sessions.some((session) => session.id === id);
+    this.applyLocalSessions(this.sessions.filter((session) => session.id !== id));
+    return existed;
   }
 
   async createSession(
@@ -195,13 +254,7 @@ export class TerminalSessionsCoordinator {
       throw new Error('Invalid createSession response: missing id');
     }
 
-    const merged = normalizeSessions([...this.sessions, { ...session, id }]);
-    const filtered = this.pendingDeletions.size > 0
-      ? merged.filter((s) => !this.pendingDeletions.has(s.id))
-      : merged;
-    this.setSessions(filtered);
-
-    return { ...session, id };
+    return this.upsertSession({ ...session, id });
   }
 
   updateSessionMeta(
@@ -237,7 +290,7 @@ export class TerminalSessionsCoordinator {
       };
     });
 
-    this.setSessions(next);
+    this.applyLocalSessions(next);
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -248,18 +301,23 @@ export class TerminalSessionsCoordinator {
     const id = String(sessionId ?? '').trim();
     if (!id) return;
 
-    this.pendingDeletions.add(id);
-    this.setSessions(this.sessions.filter((s) => s.id !== id));
+    if (!this.pendingDeletions.has(id)) {
+      this.pendingDeletions.add(id);
+      this.markLocalMutation();
+    }
+    this.applyLocalSessions(this.sessions.filter((s) => s.id !== id));
 
     try {
       await this.transport.deleteSession(id);
       this.pendingDeletions.delete(id);
+      this.markLocalMutation();
 
       // Best-effort reconcile to reflect any server-side changes (ordering, active flags, etc.).
       void this.refresh().catch(() => undefined);
     } catch (error) {
       // Remove the pending marker first so refresh can re-include the session if it still exists.
       this.pendingDeletions.delete(id);
+      this.markLocalMutation();
 
       try {
         await this.runRefresh(true);

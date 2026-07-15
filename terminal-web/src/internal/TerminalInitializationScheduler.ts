@@ -1,4 +1,5 @@
 import { scheduleNextFrame, type ScheduleTurn } from './scheduleUiTurn';
+import type { TerminalInitializationPriority } from '../types';
 
 export type TerminalInitializationPermit = {
   release(): void;
@@ -6,55 +7,90 @@ export type TerminalInitializationPermit = {
 
 type TerminalInitializationWaiter = {
   resolve: (permit: TerminalInitializationPermit | null) => void;
-  signal?: AbortSignal;
-  onAbort: () => void;
+  priority: TerminalInitializationPriority;
+  active: boolean;
 };
 
+export type TerminalInitializationRequest = Readonly<{
+  permit: Promise<TerminalInitializationPermit | null>;
+  promote: () => void;
+  cancel: () => void;
+}>;
+
+export type TerminalInitializationSchedulerSnapshot = Readonly<{
+  active: number;
+  activeBackground: number;
+  queued: number;
+  queuedInteractive: number;
+  queuedBackground: number;
+  maxConcurrent: number;
+  maxBackgroundConcurrent: number;
+}>;
+
 const DEFAULT_MAX_CONCURRENT_INITIALIZERS = 3;
+const DEFAULT_MAX_BACKGROUND_INITIALIZERS = 1;
 
 // Terminal initialization is CPU and WebGL-resource heavy. A small global gate
 // keeps large live grids responsive while every mounted terminal still becomes
 // a real, live terminal instead of a snapshot or paused placeholder.
 export class TerminalInitializationScheduler {
-  private readonly queue: TerminalInitializationWaiter[] = [];
+  private readonly interactiveQueue: TerminalInitializationWaiter[] = [];
+  private readonly backgroundQueue: TerminalInitializationWaiter[] = [];
   private activeCount = 0;
+  private activeBackgroundCount = 0;
   private drainScheduled = false;
 
   constructor(
     private readonly maxConcurrent = DEFAULT_MAX_CONCURRENT_INITIALIZERS,
     private readonly scheduleTurn: ScheduleTurn = scheduleNextFrame,
+    private readonly maxBackgroundConcurrent = DEFAULT_MAX_BACKGROUND_INITIALIZERS,
   ) {}
 
-  acquire(signal?: AbortSignal): Promise<TerminalInitializationPermit | null> {
-    if (signal?.aborted) {
-      return Promise.resolve(null);
-    }
-
-    return new Promise(resolve => {
-      const waiter: TerminalInitializationWaiter = {
-        resolve,
-        signal,
-        onAbort: () => {
-          const index = this.queue.indexOf(waiter);
-          if (index >= 0) {
-            this.queue.splice(index, 1);
-          }
-          resolve(null);
-        },
-      };
-
-      signal?.addEventListener('abort', waiter.onAbort, { once: true });
-      this.queue.push(waiter);
+  request(priority: TerminalInitializationPriority = 'interactive'): TerminalInitializationRequest {
+    let waiter!: TerminalInitializationWaiter;
+    const permit = new Promise<TerminalInitializationPermit | null>(resolve => {
+      waiter = { resolve, priority, active: true };
+      this.queueFor(priority).push(waiter);
       this.scheduleDrain();
     });
+
+    return {
+      permit,
+      promote: () => {
+        if (!waiter.active || waiter.priority === 'interactive') return;
+        const index = this.backgroundQueue.indexOf(waiter);
+        if (index < 0) return;
+        this.backgroundQueue.splice(index, 1);
+        waiter.priority = 'interactive';
+        this.interactiveQueue.push(waiter);
+        this.scheduleDrain();
+      },
+      cancel: () => {
+        if (!waiter.active) return;
+        const queue = this.queueFor(waiter.priority);
+        const index = queue.indexOf(waiter);
+        if (index < 0) return;
+        queue.splice(index, 1);
+        waiter.active = false;
+        waiter.resolve(null);
+      },
+    };
   }
 
-  getSnapshot(): { active: number; queued: number; maxConcurrent: number } {
+  getSnapshot(): TerminalInitializationSchedulerSnapshot {
     return {
       active: this.activeCount,
-      queued: this.queue.length,
+      activeBackground: this.activeBackgroundCount,
+      queued: this.interactiveQueue.length + this.backgroundQueue.length,
+      queuedInteractive: this.interactiveQueue.length,
+      queuedBackground: this.backgroundQueue.length,
       maxConcurrent: this.maxConcurrent,
+      maxBackgroundConcurrent: this.maxBackgroundConcurrent,
     };
+  }
+
+  private queueFor(priority: TerminalInitializationPriority): TerminalInitializationWaiter[] {
+    return priority === 'background' ? this.backgroundQueue : this.interactiveQueue;
   }
 
   private scheduleDrain(): void {
@@ -70,19 +106,21 @@ export class TerminalInitializationScheduler {
   }
 
   private drain(): void {
-    while (this.activeCount < this.maxConcurrent && this.queue.length > 0) {
-      const waiter = this.queue.shift();
+    while (this.activeCount < this.maxConcurrent) {
+      const waiter = this.interactiveQueue.shift()
+        ?? (this.activeBackgroundCount < this.maxBackgroundConcurrent
+          ? this.backgroundQueue.shift()
+          : undefined);
       if (!waiter) {
+        break;
+      }
+      if (!waiter.active) {
         continue;
       }
 
-      waiter.signal?.removeEventListener('abort', waiter.onAbort);
-      if (waiter.signal?.aborted) {
-        waiter.resolve(null);
-        continue;
-      }
-
+      waiter.active = false;
       this.activeCount += 1;
+      if (waiter.priority === 'background') this.activeBackgroundCount += 1;
       let released = false;
       waiter.resolve({
         release: () => {
@@ -91,7 +129,12 @@ export class TerminalInitializationScheduler {
           }
           released = true;
           this.activeCount = Math.max(0, this.activeCount - 1);
-          this.scheduleDrain();
+          if (waiter.priority === 'background') {
+            this.activeBackgroundCount = Math.max(0, this.activeBackgroundCount - 1);
+          }
+          if (this.interactiveQueue.length > 0 || this.backgroundQueue.length > 0) {
+            this.scheduleDrain();
+          }
         },
       });
     }
@@ -99,3 +142,7 @@ export class TerminalInitializationScheduler {
 }
 
 export const terminalInitializationScheduler = new TerminalInitializationScheduler();
+
+export const getTerminalInitializationSchedulerStats = (): TerminalInitializationSchedulerSnapshot => (
+  terminalInitializationScheduler.getSnapshot()
+);

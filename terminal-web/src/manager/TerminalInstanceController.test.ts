@@ -9,6 +9,7 @@ import {
   type TerminalEventHandlers,
   type TerminalEventSource,
   type TerminalFocusOptions,
+  type TerminalInitializationOptions,
   type TerminalInstanceOptions,
   type TerminalInstanceSnapshot,
   type TerminalTransport,
@@ -20,6 +21,12 @@ type MockCoreOptions = {
 };
 
 const coreInstances: MockCore[] = [];
+
+const flushPromises = async () => {
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
+};
 
 class MockCore implements TerminalCoreLike {
   state = TerminalState.READY;
@@ -256,14 +263,15 @@ describe('TerminalInstanceController', () => {
     controller.dispose();
   });
 
-  it('does not initialize while inactive, then attaches when activated', async () => {
+  it('does not initialize while inactive, then initializes immediately when activated', async () => {
     const { controller, transport } = await mountController({ isActive: false, autoRunTimers: false });
 
     await vi.advanceTimersByTimeAsync(500);
     expect(coreInstances).toHaveLength(0);
 
     controller.updateOptions({ isActive: true });
-    await vi.advanceTimersByTimeAsync(150);
+    expect(coreInstances).toHaveLength(1);
+    await vi.runAllTimersAsync();
     await Promise.resolve();
 
     expect(coreInstances).toHaveLength(1);
@@ -293,13 +301,42 @@ describe('TerminalInstanceController', () => {
     controller.dispose();
   });
 
-  it('cancels delayed initialization when disposed before the mount timer fires', async () => {
-    const { controller, events } = await mountController({ autoRunTimers: false });
+  it('passes interactive priority and aborts in-flight initialization when disposed', async () => {
+    let initializationOptions: TerminalInitializationOptions | undefined;
+    class BlockingCore extends MockCore {
+      override initialize(options?: TerminalInitializationOptions): Promise<void> {
+        initializationOptions = options;
+        return new Promise((_resolve, reject) => {
+          const signal = options?.signal;
+          const rejectAbort = () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          };
+          if (signal?.aborted) {
+            rejectAbort();
+            return;
+          }
+          signal?.addEventListener('abort', rejectAbort, { once: true });
+        });
+      }
+    }
+    const { controller, events, transport } = await mountController({
+      autoRunTimers: false,
+      coreConstructor: BlockingCore,
+    });
+
+    expect(coreInstances).toHaveLength(1);
+    expect(initializationOptions?.priority).toBe('interactive');
+    expect(initializationOptions?.signal?.aborted).toBe(false);
 
     controller.dispose();
-    await vi.advanceTimersByTimeAsync(500);
+    await Promise.resolve();
+    await Promise.resolve();
 
-    expect(coreInstances).toHaveLength(0);
+    expect(initializationOptions?.signal?.aborted).toBe(true);
+    expect(coreInstances[0]?.disposed).toBe(true);
+    expect(transport.attach).not.toHaveBeenCalled();
     expect(events.getUnsubscribe('s1')).toHaveBeenCalledTimes(1);
   });
 
@@ -309,8 +346,7 @@ describe('TerminalInstanceController', () => {
       .mockResolvedValueOnce(undefined);
     const transport = makeTransport({ attach });
     const { controller } = await mountController({ transport, autoRunTimers: false });
-    await vi.advanceTimersByTimeAsync(150);
-    await Promise.resolve();
+    await flushPromises();
 
     expect(controller.getSnapshot().connection.state).toBe('failed');
     expect(controller.getSnapshot().connection.error?.message).toContain('offline');

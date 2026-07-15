@@ -1,4 +1,4 @@
-export { TerminalCore } from './core/TerminalCore';
+export { TerminalCore, preloadTerminalResources } from './core/TerminalCore';
 export { TerminalState } from './types';
 export {
   createTerminalInstance,
@@ -8,8 +8,12 @@ export {
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
 } from './core/TerminalRenderScheduler';
+export { getTerminalInitializationSchedulerStats } from './internal/TerminalInitializationScheduler';
 export { createTerminalOutputPipeline } from './core/TerminalOutputPipeline';
-export { createPagedTerminalOutputCoordinator } from './core/PagedTerminalOutputCoordinator';
+export {
+  createPagedTerminalOutputCoordinator,
+  preparePagedTerminalHistory,
+} from './core/PagedTerminalOutputCoordinator';
 export {
   getTerminalFabricDiagnostics,
   resetTerminalFabricDiagnostics,
@@ -17,6 +21,7 @@ export {
 export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator';
 export type { TerminalRenderSchedulerStats } from './core/TerminalRenderScheduler';
+export type { TerminalInitializationSchedulerSnapshot } from './internal/TerminalInitializationScheduler';
 export type {
   TerminalOutputPipelineCatchUpReason,
   TerminalOutputPipelineCatchUpRequest,
@@ -31,6 +36,7 @@ export type {
 } from './core/TerminalOutputPipeline';
 export type {
   AtomicPagedTerminalOutputCoordinatorHandle,
+  PagedTerminalCompleteAttachOptions,
   PagedTerminalHistoryPage,
   PagedTerminalHistoryRequest,
   PagedTerminalHistoryTruncationReason,
@@ -42,6 +48,8 @@ export type {
   PagedTerminalOutputScheduler,
   PagedTerminalOutputSnapshot,
   PagedTerminalOutputState,
+  PreparedPagedTerminalHistory,
+  PreparePagedTerminalHistoryOptions,
 } from './core/PagedTerminalOutputCoordinator';
 export type {
   TerminalFabricBackend,
@@ -64,8 +72,11 @@ export type {
   TerminalRestorableSnapshot,
   TerminalRestorableSnapshotOptions,
   TerminalResourceEstimate,
+  TerminalResourcePreloadOptions,
   TerminalEventHandlers,
   TerminalFocusOptions,
+  TerminalInitializationOptions,
+  TerminalInitializationPriority,
   TerminalInstanceController,
   TerminalInstanceListener,
   TerminalInstanceMutableOptions,

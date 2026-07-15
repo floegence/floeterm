@@ -51,6 +51,17 @@ const core = new TerminalCore(
 await core.initialize();
 ```
 
+Hosts can preload the dynamic Ghostty module, WASM, and renderer resources before a terminal surface is visible without creating a `TerminalCore`:
+
+```ts
+import { preloadTerminalResources } from '@floegence/floeterm-terminal-web';
+
+await preloadTerminalResources({ signal });
+await core.initialize({ priority: 'interactive', signal });
+```
+
+Resource loading is single-flight and retryable after a real import or WASM initialization failure. Caller cancellation only stops that caller from waiting; it does not interrupt shared resource initialization. Core initialization is globally bounded, gives queued interactive work priority over background work, and shares the actual ready promise across duplicate calls.
+
 ## Notes
 
 - You must provide a `TerminalTransport` and `TerminalEventSource` for the managed controller.
@@ -95,6 +106,26 @@ If a page reports `historyReset` or changes `historyGeneration` while catch-up i
 `baselineReady` becomes true only after the complete fixed history snapshot has been source-sequence merged with retained live output and the final history writer completion has fired. After that fence, catch-up retries preserve baseline readiness and do not need to block input. Structured failures distinguish initial replay from background catch-up and expose stable codes without requiring error-string parsing.
 
 Use `TerminalCore.writeHistory` for history batches. Its auto-response suppression is scoped to that parser write and ends at its completion callback, so later live output and user input use normal terminal behavior.
+
+Running sessions can prepare bounded history before a visible terminal exists. Preparation does not create a Core, attach a session, resize a PTY, or subscribe to live output:
+
+```ts
+const preparedHistory = await preparePagedTerminalHistory({
+  fetchPage: request => transport.historyPage(sessionId, request),
+  maxBytes: 4 * 1024 * 1024,
+  signal,
+});
+
+const attachGeneration = output.beginAttach(0);
+const attach = await transport.attachWithHistoryBoundary(sessionId, cols, rows);
+await output.completeAttach(attachGeneration, attach.historyBoundarySequence, {
+  preparedHistory,
+});
+```
+
+Prepared history is renderer-neutral and pins `historyGeneration`, `firstRetainedSequence`, and `snapshotEndSequence`. The visible attach validates those boundaries, replays the seed once, and fetches only the missing delta. A generation reset, retention advance, stale fence, or malformed seed discards it and falls back to the normal full recovery path.
+
+`preparePagedTerminalHistory` requires those three metadata fields on every prepared page and passes the remaining retained-byte budget as `request.maxBytes` so transports can bound each page as well. The helper always enforces its retained seed budget after a page returns; adapters should honor the request hint to keep peak response memory bounded too.
 
 ## Restorable In-Memory Snapshots
 

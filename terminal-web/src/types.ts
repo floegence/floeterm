@@ -214,10 +214,22 @@ export interface TerminalEventHandlers {
   onError?: (error: Error) => void;
 }
 
+export type TerminalInitializationPriority = 'interactive' | 'background';
+
+export interface TerminalInitializationOptions {
+  priority?: TerminalInitializationPriority;
+  signal?: AbortSignal;
+}
+
+export interface TerminalResourcePreloadOptions {
+  signal?: AbortSignal;
+  logger?: Logger;
+}
+
 // TerminalCoreLike describes the subset of TerminalCore behaviour the managed controller needs.
 // It allows injecting a lightweight implementation for tests or non-browser runtimes.
 export interface TerminalCoreLike {
-  initialize(): Promise<void>;
+  initialize(options?: TerminalInitializationOptions): Promise<void>;
   dispose(): void;
   write(data: string | Uint8Array, callback?: () => void): void;
   writeHistory?(data: string | Uint8Array, callback?: () => void): void;

@@ -31,10 +31,17 @@ import {
   type TerminalRestorableSnapshotOptions,
   type TerminalResourceEstimate,
   type TerminalTouchScrollRuntime,
+  type TerminalInitializationOptions,
+  type TerminalResourcePreloadOptions,
   type TerminalVisualSuspendHandle,
   type TerminalVisualSuspendOptions,
   type TerminalVisualSuspendReason,
 } from '../types';
+import {
+  terminalInitializationScheduler,
+  type TerminalInitializationRequest,
+} from '../internal/TerminalInitializationScheduler';
+import { loadBeamtermModule } from '../fabric/BeamtermFabricRenderer';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
 import { terminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler';
 import { scheduleUiTurn, type ScheduledTurnCancel } from '../internal/scheduleUiTurn';
@@ -305,32 +312,69 @@ const getPerfProbe = (): floeterm_perf_probe | undefined => {
 // Dynamic imports avoid SSR issues and keep the bundle flexible.
 let TerminalCtor: typeof import('ghostty-web').Terminal | null = null;
 let FitAddonCtor: typeof import('ghostty-web').FitAddon | null = null;
-let ghosttyInit: typeof import('ghostty-web').init | null = null;
-let ghosttyInitPromise: Promise<void> | null = null;
+let ghosttyResourcesPromise: Promise<void> | null = null;
 
-const loadGhosttyModules = async (logger: Logger): Promise<void> => {
+const abortError = (): Error => {
+  if (typeof DOMException !== 'undefined') return new DOMException('Operation aborted', 'AbortError');
+  const error = new Error('Operation aborted');
+  error.name = 'AbortError';
+  return error;
+};
+
+const waitWithAbort = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+};
+
+const loadGhosttyModules = async (logger: Logger, signal?: AbortSignal): Promise<void> => {
   if (typeof window === 'undefined') {
     throw new Error('ghostty-web 只能在浏览器环境中加载');
   }
 
-  if (TerminalCtor && FitAddonCtor && ghosttyInit) {
+  if (TerminalCtor && FitAddonCtor) {
     return;
   }
 
-  const { Terminal, FitAddon, init } = await import('ghostty-web');
-  TerminalCtor = Terminal;
-  FitAddonCtor = FitAddon;
-  ghosttyInit = init;
-
-  if (!ghosttyInitPromise) {
+  if (!ghosttyResourcesPromise) {
     logger.debug('[TerminalCore] Initializing ghostty-web WASM');
-    ghosttyInitPromise = init().catch((error: unknown) => {
-      ghosttyInitPromise = null;
+    ghosttyResourcesPromise = (async () => {
+      const { Terminal, FitAddon, init } = await import('ghostty-web');
+      await init();
+      TerminalCtor = Terminal;
+      FitAddonCtor = FitAddon;
+    })().catch((error: unknown) => {
+      TerminalCtor = null;
+      FitAddonCtor = null;
+      ghosttyResourcesPromise = null;
       throw error;
     });
   }
 
-  await ghosttyInitPromise;
+  await waitWithAbort(ghosttyResourcesPromise, signal);
+};
+
+export const preloadTerminalResources = async (
+  options: TerminalResourcePreloadOptions = {},
+): Promise<void> => {
+  const resources = Promise.all([
+    loadGhosttyModules(options.logger ?? noopLogger),
+    loadBeamtermModule(),
+  ]).then(() => undefined);
+  await waitWithAbort(resources, options.signal);
 };
 
 const mapThemeToGhostty = (theme: Record<string, unknown> | undefined): Record<string, string> => {
@@ -642,6 +686,14 @@ export class TerminalCore {
   private presentationScaleRaf: number | null = null;
   private state: TerminalState = TerminalState.IDLE;
   private isDisposed = false;
+  private initializationOperation: {
+    request: TerminalInitializationRequest;
+    lifecycleAbortController: AbortController;
+    promise: Promise<void>;
+    started: boolean;
+    cancelled: boolean;
+    waiters: number;
+  } | null = null;
 
   private isReplayingHistory = false;
   private historyWriteDepth = 0;
@@ -724,38 +776,122 @@ export class TerminalCore {
   }
 
   // initialize creates the ghostty-web terminal instance and binds addons.
-  async initialize(): Promise<void> {
+  async initialize(options: TerminalInitializationOptions = {}): Promise<void> {
     if (this.isDisposed) {
       throw new Error('Cannot initialize a disposed TerminalCore');
     }
 
-    if (this.terminal || this.state === TerminalState.INITIALIZING) {
-      return;
+    if (this.terminal && this.isReady()) {
+      return Promise.resolve();
     }
 
-    this.setState(TerminalState.INITIALIZING);
-    await loadGhosttyModules(this.logger);
-    await this.createTerminalInstance();
-    await this.loadAddons();
-    await this.openTerminal();
-    this.setupEventListeners();
-    this.setupResponsiveListeners();
-    this.startSizeWatching();
+    const priority = options.priority ?? 'interactive';
+    let operation = this.initializationOperation;
+    if (operation) {
+      if (priority === 'interactive') operation.request.promote();
+      return this.waitForInitialization(operation, options.signal);
+    }
 
-    this.setState(TerminalState.READY);
-    this.performResize('post_init');
-    this.forceFullRender();
-
-    setTimeout(() => {
-      if (!this.isReady()) {
+    try {
+      this.setState(TerminalState.INITIALIZING);
+    } catch (error) {
+      this.state = TerminalState.IDLE;
+      throw error;
+    }
+    const request = terminalInitializationScheduler.request(priority);
+    const lifecycleAbortController = new AbortController();
+    operation = {
+      request,
+      lifecycleAbortController,
+      started: false,
+      cancelled: false,
+      waiters: 0,
+      promise: Promise.resolve(),
+    };
+    operation.promise = (async () => {
+      const permit = await request.permit;
+      if (!permit) {
+        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        if (this.initializationOperation === operation) this.setState(TerminalState.IDLE);
         return;
       }
-      // Defer the initial fit slightly to ensure the container has stable layout and fonts are ready.
-      this.performResize('post_init');
-    }, 100);
+      operation!.started = true;
+      try {
+        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        await loadGhosttyModules(this.logger, lifecycleAbortController.signal);
+        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        await this.createTerminalInstance(lifecycleAbortController.signal);
+        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        await this.loadAddons();
+        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        await this.openTerminal(lifecycleAbortController.signal);
+        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        this.setupEventListeners();
+        this.setupResponsiveListeners();
+        this.startSizeWatching();
+
+        this.setState(TerminalState.READY);
+        this.performResize('post_init');
+        this.forceFullRender();
+
+        setTimeout(() => {
+          if (!this.isReady()) return;
+          this.performResize('post_init');
+        }, 100);
+      } catch (error) {
+        this.cleanupFailedInitialization();
+        if (!this.isDisposed) this.setState(TerminalState.IDLE);
+        throw error;
+      } finally {
+        permit.release();
+      }
+    })().finally(() => {
+      if (this.initializationOperation === operation) this.initializationOperation = null;
+    });
+    this.initializationOperation = operation;
+    return this.waitForInitialization(operation, options.signal);
   }
 
-  private async createTerminalInstance(): Promise<void> {
+  private waitForInitialization(
+    operation: NonNullable<TerminalCore['initializationOperation']>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    operation.waiters += 1;
+    let settled = false;
+    const releaseWaiter = () => {
+      if (settled) return;
+      settled = true;
+      operation.waiters = Math.max(0, operation.waiters - 1);
+      if (operation.waiters === 0 && !operation.started && !operation.cancelled) {
+        operation.cancelled = true;
+        operation.request.cancel();
+        if (this.initializationOperation === operation) {
+          this.initializationOperation = null;
+          if (!this.isDisposed) this.setState(TerminalState.IDLE);
+        }
+      }
+    };
+    return waitWithAbort(operation.promise, signal).finally(releaseWaiter);
+  }
+
+  private cleanupFailedInitialization(): void {
+    this.unbindResponsiveListeners?.();
+    this.unbindResponsiveListeners = null;
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.disposeInputBridge();
+    this.disposeTerminalEventListeners();
+    this.fabricView?.dispose();
+    this.fabricView = null;
+    this.terminal?.dispose();
+    this.terminal = null;
+    this.fitAddon = null;
+    this.viewportHost?.remove();
+    this.viewportHost = null;
+    this.renderHost = null;
+  }
+
+  private async createTerminalInstance(signal?: AbortSignal): Promise<void> {
     if (!TerminalCtor) {
       throw new Error('ghostty-web module not loaded');
     }
@@ -787,10 +923,13 @@ export class TerminalCore {
     this.themeColorTranslator = null;
     this.logicalFontSize = TerminalCore.normalizeFontSize(finalConfig.fontSize);
     this.presentationScale = TerminalCore.normalizePresentationScale(finalConfig.presentationScale);
-    await this.waitForTerminalFontReady(
-      typeof finalConfig.fontFamily === 'string' ? finalConfig.fontFamily : undefined,
-      this.resolveEffectiveFontSize(),
-      'initial',
+    await waitWithAbort(
+      this.waitForTerminalFontReady(
+        typeof finalConfig.fontFamily === 'string' ? finalConfig.fontFamily : undefined,
+        this.resolveEffectiveFontSize(),
+        'initial',
+      ),
+      signal,
     );
     const initialDimensions = this.fixedDimensions;
     this.terminal = new TerminalCtor({
@@ -823,13 +962,13 @@ export class TerminalCore {
     this.installFitAddonGeometryPatch();
   }
 
-  private async openTerminal(): Promise<void> {
+  private async openTerminal(signal?: AbortSignal): Promise<void> {
     if (!this.terminal) {
       throw new Error('Terminal instance not created');
     }
 
-    await this.waitForDOMAndFonts();
-    await this.ensureContainerReady();
+    await waitWithAbort(this.waitForDOMAndFonts(), signal);
+    await waitWithAbort(this.ensureContainerReady(), signal);
     this.ensurePresentationHosts();
     this.applyPresentationScaleStyles();
     this.installDemandRenderPatchBeforeOpen();
@@ -3243,6 +3382,8 @@ export class TerminalCore {
 
   dispose(): void {
     this.isDisposed = true;
+    this.initializationOperation?.lifecycleAbortController.abort();
+    this.initializationOperation?.request.cancel();
     if (this.focusResizeRaf !== null) {
       cancelAnimationFrame(this.focusResizeRaf);
       this.focusResizeRaf = null;

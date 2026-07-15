@@ -1,80 +1,163 @@
 import { describe, expect, it } from 'vitest';
+import type { TerminalInitializationPriority } from '../types';
 import { TerminalInitializationScheduler } from './TerminalInitializationScheduler';
 
 describe('TerminalInitializationScheduler', () => {
-  it('limits concurrent terminal initialization and drains queued work by turn', async () => {
+  const createHarness = (maxConcurrent = 3, maxBackgroundConcurrent = 1) => {
     const turns: Array<() => void> = [];
-    const scheduler = new TerminalInitializationScheduler(2, callback => {
+    const scheduler = new TerminalInitializationScheduler(maxConcurrent, callback => {
       turns.push(callback);
+    }, maxBackgroundConcurrent);
+    return {
+      scheduler,
+      runTurn: () => turns.shift()?.(),
+      turns,
+    };
+  };
+
+  it('prioritizes interactive work while limiting total and background concurrency', async () => {
+    const harness = createHarness(3, 1);
+    const backgroundOne = harness.scheduler.request('background');
+    const backgroundTwo = harness.scheduler.request('background');
+    const interactiveOne = harness.scheduler.request('interactive');
+    const interactiveTwo = harness.scheduler.request('interactive');
+
+    expect(harness.scheduler.getSnapshot()).toEqual({
+      active: 0,
+      activeBackground: 0,
+      queued: 4,
+      queuedInteractive: 2,
+      queuedBackground: 2,
+      maxConcurrent: 3,
+      maxBackgroundConcurrent: 1,
     });
 
-    const requests = [
-      scheduler.acquire(),
-      scheduler.acquire(),
-      scheduler.acquire(),
-      scheduler.acquire(),
-    ];
+    harness.runTurn();
 
-    expect(scheduler.getSnapshot()).toEqual({ active: 0, queued: 4, maxConcurrent: 2 });
-    turns.shift()?.();
-
-    const first = await requests[0];
-    const second = await requests[1];
-    expect(first).not.toBeNull();
-    expect(second).not.toBeNull();
-    expect(scheduler.getSnapshot()).toEqual({ active: 2, queued: 2, maxConcurrent: 2 });
-
-    let thirdResolved = false;
-    requests[2].then(() => {
-      thirdResolved = true;
+    const firstInteractivePermit = await interactiveOne.permit;
+    const secondInteractivePermit = await interactiveTwo.permit;
+    const firstBackgroundPermit = await backgroundOne.permit;
+    let secondBackgroundResolved = false;
+    backgroundTwo.permit.then(() => {
+      secondBackgroundResolved = true;
     });
     await Promise.resolve();
-    expect(thirdResolved).toBe(false);
 
-    first?.release();
-    expect(scheduler.getSnapshot()).toEqual({ active: 1, queued: 2, maxConcurrent: 2 });
-    turns.shift()?.();
+    expect(secondBackgroundResolved).toBe(false);
+    expect(harness.scheduler.getSnapshot()).toEqual({
+      active: 3,
+      activeBackground: 1,
+      queued: 1,
+      queuedInteractive: 0,
+      queuedBackground: 1,
+      maxConcurrent: 3,
+      maxBackgroundConcurrent: 1,
+    });
 
-    const third = await requests[2];
-    expect(third).not.toBeNull();
-    expect(scheduler.getSnapshot()).toEqual({ active: 2, queued: 1, maxConcurrent: 2 });
+    firstInteractivePermit?.release();
+    harness.runTurn();
+    await Promise.resolve();
+    expect(secondBackgroundResolved).toBe(false);
 
-    second?.release();
-    third?.release();
-    turns.shift()?.();
+    firstBackgroundPermit?.release();
+    harness.runTurn();
+    const secondBackgroundPermit = await backgroundTwo.permit;
+    expect(secondBackgroundPermit).not.toBeNull();
+    expect(harness.scheduler.getSnapshot().activeBackground).toBe(1);
 
-    const fourth = await requests[3];
-    expect(fourth).not.toBeNull();
-    expect(scheduler.getSnapshot()).toEqual({ active: 1, queued: 0, maxConcurrent: 2 });
-    fourth?.release();
-    turns.shift()?.();
-    expect(scheduler.getSnapshot()).toEqual({ active: 0, queued: 0, maxConcurrent: 2 });
+    secondInteractivePermit?.release();
+    secondBackgroundPermit?.release();
+    harness.runTurn();
+    expect(harness.scheduler.getSnapshot().active).toBe(0);
   });
 
-  it('removes aborted queued initializations without consuming a permit', async () => {
-    const turns: Array<() => void> = [];
-    const scheduler = new TerminalInitializationScheduler(1, callback => {
-      turns.push(callback);
+  it.each(['interactive', 'background'] as const)('keeps %s requests FIFO', async (priority) => {
+    const harness = createHarness(1, 1);
+    const order: number[] = [];
+    const requests = [1, 2, 3].map(index => {
+      const request = harness.scheduler.request(priority);
+      request.permit.then(permit => {
+        if (permit) order.push(index);
+      });
+      return request;
     });
-    const first = scheduler.acquire();
-    const controller = new AbortController();
-    const second = scheduler.acquire(controller.signal);
-    const third = scheduler.acquire();
 
-    turns.shift()?.();
-    const firstPermit = await first;
-    expect(firstPermit).not.toBeNull();
-    expect(scheduler.getSnapshot()).toEqual({ active: 1, queued: 2, maxConcurrent: 1 });
-
-    controller.abort();
-    expect(await second).toBeNull();
-    expect(scheduler.getSnapshot()).toEqual({ active: 1, queued: 1, maxConcurrent: 1 });
+    harness.runTurn();
+    const firstPermit = await requests[0]!.permit;
+    expect(order).toEqual([1]);
 
     firstPermit?.release();
-    turns.shift()?.();
+    harness.runTurn();
+    const secondPermit = await requests[1]!.permit;
+    expect(order).toEqual([1, 2]);
 
-    const thirdPermit = await third;
-    expect(thirdPermit).not.toBeNull();
-    expect(scheduler.getSnapshot()).toEqual({ active: 1, queued: 0, maxConcurrent: 1 });
+    secondPermit?.release();
+    harness.runTurn();
+    const thirdPermit = await requests[2]!.permit;
+    expect(order).toEqual([1, 2, 3]);
+
+    thirdPermit?.release();
+    harness.runTurn();
+  });
+
+  it('promotes queued background work ahead of the background queue', async () => {
+    const harness = createHarness(1, 1);
+    const blocker = harness.scheduler.request('interactive');
+    const backgroundOne = harness.scheduler.request('background');
+    const backgroundTwo = harness.scheduler.request('background');
+
+    harness.runTurn();
+    const blockerPermit = await blocker.permit;
+    backgroundTwo.promote();
+
+    expect(harness.scheduler.getSnapshot()).toMatchObject({
+      active: 1,
+      queuedInteractive: 1,
+      queuedBackground: 1,
+    });
+
+    blockerPermit?.release();
+    harness.runTurn();
+    const promotedPermit = await backgroundTwo.permit;
+    let firstBackgroundResolved = false;
+    backgroundOne.permit.then(() => {
+      firstBackgroundResolved = true;
+    });
+    await Promise.resolve();
+
+    expect(promotedPermit).not.toBeNull();
+    expect(firstBackgroundResolved).toBe(false);
+    expect(harness.scheduler.getSnapshot().activeBackground).toBe(0);
+
+    promotedPermit?.release();
+    harness.runTurn();
+    const firstBackgroundPermit = await backgroundOne.permit;
+    firstBackgroundPermit?.release();
+    harness.runTurn();
+  });
+
+  it.each(['interactive', 'background'] as const)('cancels queued %s work without consuming capacity', async (priority: TerminalInitializationPriority) => {
+    const harness = createHarness(1, 1);
+    const blocker = harness.scheduler.request('interactive');
+    const cancelled = harness.scheduler.request(priority);
+    const survivor = harness.scheduler.request('interactive');
+
+    harness.runTurn();
+    const blockerPermit = await blocker.permit;
+    cancelled.cancel();
+
+    expect(await cancelled.permit).toBeNull();
+    expect(harness.scheduler.getSnapshot().queued).toBe(1);
+
+    blockerPermit?.release();
+    harness.runTurn();
+    const survivorPermit = await survivor.permit;
+    expect(survivorPermit).not.toBeNull();
+    expect(harness.scheduler.getSnapshot().active).toBe(1);
+
+    survivorPermit?.release();
+    survivorPermit?.release();
+    harness.runTurn();
+    expect(harness.scheduler.getSnapshot().active).toBe(0);
   });
 });

@@ -6,10 +6,14 @@ import {
   createTerminalInstance,
   createTerminalOutputPipeline,
   createPagedTerminalOutputCoordinator,
+  getTerminalInitializationSchedulerStats,
   getTerminalRenderSchedulerStats,
+  preloadTerminalResources,
+  preparePagedTerminalHistory,
   resetTerminalRenderSchedulerStats,
   type AtomicPagedTerminalOutputCoordinatorHandle,
   type PagedTerminalOutputCoordinatorHandle,
+  type PreparedPagedTerminalHistory,
   type TerminalAppearance,
   type TerminalDataChunk,
   type TerminalDataEvent,
@@ -36,7 +40,13 @@ describe('public framework-neutral API', () => {
     expect(createTerminalInstance).toBeTypeOf('function');
     expect(createTerminalOutputPipeline).toBeTypeOf('function');
     expect(createPagedTerminalOutputCoordinator).toBeTypeOf('function');
+    expect(preloadTerminalResources).toBeTypeOf('function');
+    expect(preparePagedTerminalHistory).toBeTypeOf('function');
     expect(TerminalState.IDLE).toBe('idle');
+    expect(getTerminalInitializationSchedulerStats()).toMatchObject({
+      active: expect.any(Number),
+      activeBackground: expect.any(Number),
+    });
     expect(getTerminalRenderSchedulerStats()).toEqual(expect.objectContaining({ scheduled: expect.any(Number) }));
     resetTerminalRenderSchedulerStats();
   });
@@ -114,6 +124,16 @@ describe('public framework-neutral API', () => {
       estimatedBytes: 0,
       rendererType: 'canvas',
     };
+    const preparedHistory: Promise<PreparedPagedTerminalHistory> = preparePagedTerminalHistory({
+      fetchPage: async () => ({
+        chunks: [pipelineChunk],
+        hasMore: false,
+        coveredThroughSequence: 1,
+        snapshotEndSequence: 1,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
 
     const controller: TerminalInstanceController = createTerminalInstance({
       sessionId: session.id,
@@ -135,6 +155,7 @@ describe('public framework-neutral API', () => {
     expect(touchScroll.scrollLines(1)).toBe(true);
     expect(restorableSnapshot.coveredThroughSequence).toBe(1);
     expect(resourceEstimate.rendererType).toBe('canvas');
+    expect(preparedHistory).toBeInstanceOf(Promise);
 
     pipeline.dispose();
     controller.dispose();
@@ -174,9 +195,16 @@ describe('public framework-neutral API', () => {
       }),
       write: () => {},
     });
+    const legacyAtomicHandle: AtomicPagedTerminalOutputCoordinatorHandle = {
+      ...legacyHandle,
+      beginAttach: () => 1,
+      completeAttach: async (_generation: number, _snapshotEndSequence?: number) => {},
+      attach: async (_startSequence?: number, _snapshotEndSequence?: number) => {},
+    };
 
     expect('beginAttach' in legacyHandle).toBe(false);
     expect(atomicHandle.beginAttach).toBeTypeOf('function');
+    expect(legacyAtomicHandle.beginAttach()).toBe(1);
     atomicHandle.dispose();
   });
 });

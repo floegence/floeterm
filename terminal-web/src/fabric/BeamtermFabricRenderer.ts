@@ -27,6 +27,9 @@ export const loadBeamtermModule = async (): Promise<BeamtermModule> => {
     beamtermModulePromise = import('@beamterm/renderer').then(async module => {
       await module.main();
       return module;
+    }).catch((error: unknown) => {
+      beamtermModulePromise = null;
+      throw error;
     });
   }
   return beamtermModulePromise;
