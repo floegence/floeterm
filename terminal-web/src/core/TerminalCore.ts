@@ -1,5 +1,5 @@
-import { filterXtermAutoResponses } from '../utils/xtermAutoResponseFilter';
-import { createConsoleLogger, noopLogger } from '../utils/logger';
+import { filterXtermAutoResponses } from '../utils/xtermAutoResponseFilter.js';
+import { createConsoleLogger, noopLogger } from '../utils/logger.js';
 import {
   cursorToFabricCursor,
   mapGhosttyRowToFabricCells,
@@ -8,9 +8,9 @@ import {
   themeToFabricTheme,
   type TerminalFabricRowRenderHints,
   type TerminalLiveFabricViewHandle,
-} from '../fabric/TerminalLiveFabric';
-import { terminalFabricCoordinator } from '../fabric/TerminalFabricCoordinator';
-import type { TerminalFabricFrame } from '../fabric/types';
+} from '../fabric/TerminalLiveFabric.js';
+import { terminalFabricCoordinator } from '../fabric/TerminalFabricCoordinator.js';
+import type { TerminalFabricFrame } from '../fabric/types.js';
 import {
   TerminalState,
   type Logger,
@@ -36,15 +36,15 @@ import {
   type TerminalVisualSuspendHandle,
   type TerminalVisualSuspendOptions,
   type TerminalVisualSuspendReason,
-} from '../types';
+} from '../types.js';
 import {
   terminalInitializationScheduler,
   type TerminalInitializationRequest,
-} from '../internal/TerminalInitializationScheduler';
-import { loadBeamtermModule } from '../fabric/BeamtermFabricRenderer';
-import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge';
-import { terminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler';
-import { scheduleUiTurn, type ScheduledTurnCancel } from '../internal/scheduleUiTurn';
+} from '../internal/TerminalInitializationScheduler.js';
+import { loadBeamtermModule } from '../fabric/BeamtermFabricRenderer.js';
+import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge.js';
+import { terminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler.js';
+import { scheduleUiTurn, type ScheduledTurnCancel } from '../internal/scheduleUiTurn.js';
 
 type terminal_search_match = {
   row: number;

@@ -1,9 +1,9 @@
-import { TerminalCore } from '../core/TerminalCore';
-import { SequenceBuffer } from '../internal/SequenceBuffer';
-import { createTerminalError } from '../utils/errors';
-import { getDefaultTerminalConfig, getThemeColors } from '../utils/config';
-import { createConsoleLogger, noopLogger } from '../utils/logger';
-import { concatChunks } from '../utils/history';
+import { TerminalCore } from '../core/TerminalCore.js';
+import { SequenceBuffer } from '../internal/SequenceBuffer.js';
+import { createTerminalError } from '../utils/errors.js';
+import { getDefaultTerminalConfig, getThemeColors } from '../utils/config.js';
+import { createConsoleLogger, noopLogger } from '../utils/logger.js';
+import { concatChunks } from '../utils/history.js';
 import {
   TerminalState,
   computeConnectionState,
@@ -26,7 +26,7 @@ import {
   type TerminalManagerActions,
   type TerminalManagerAppearance,
   type TerminalManagerState,
-} from '../types';
+} from '../types.js';
 
 enum ConnectionState {
   IDLE = 'idle',

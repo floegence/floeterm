@@ -5,7 +5,7 @@ import type {
   TerminalFabricFrameReason,
   TerminalFabricRenderPath,
   TerminalFabricStats,
-} from './types';
+} from './types.js';
 
 const createEmptyStats = (): TerminalFabricStats => ({
   backend: 'main_thread_canvas_live',

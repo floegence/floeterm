@@ -67,10 +67,10 @@ jobs:
         working-directory: terminal-web
         run: npm ci
 
-      - name: Lint / Test / Build
+      - name: Lint / Test / Build / Package Artifact
         if: steps.terminal_web_exists.outputs.exists != 'true'
         working-directory: terminal-web
-        run: npm run lint && npm test && npm run build
+        run: npm run lint && npm test && npm run build && npm run check:package-artifact
 
       - name: Publish @floegence/floeterm-terminal-web (npm Trusted Publisher)
         if: steps.terminal_web_exists.outputs.exists != 'true'

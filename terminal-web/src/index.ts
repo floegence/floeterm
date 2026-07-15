@@ -1,27 +1,27 @@
-export { TerminalCore, preloadTerminalResources } from './core/TerminalCore';
-export { TerminalState } from './types';
+export { TerminalCore, preloadTerminalResources } from './core/TerminalCore.js';
+export { TerminalState } from './types.js';
 export {
   createTerminalInstance,
   FrameworkNeutralTerminalInstanceController,
-} from './manager/TerminalInstanceController';
+} from './manager/TerminalInstanceController.js';
 export {
   getTerminalRenderSchedulerStats,
   resetTerminalRenderSchedulerStats,
-} from './core/TerminalRenderScheduler';
-export { getTerminalInitializationSchedulerStats } from './internal/TerminalInitializationScheduler';
-export { createTerminalOutputPipeline } from './core/TerminalOutputPipeline';
+} from './core/TerminalRenderScheduler.js';
+export { getTerminalInitializationSchedulerStats } from './internal/TerminalInitializationScheduler.js';
+export { createTerminalOutputPipeline } from './core/TerminalOutputPipeline.js';
 export {
   createPagedTerminalOutputCoordinator,
   preparePagedTerminalHistory,
-} from './core/PagedTerminalOutputCoordinator';
+} from './core/PagedTerminalOutputCoordinator.js';
 export {
   getTerminalFabricDiagnostics,
   resetTerminalFabricDiagnostics,
-} from './fabric/TerminalFabricCoordinator';
-export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator';
-export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator';
-export type { TerminalRenderSchedulerStats } from './core/TerminalRenderScheduler';
-export type { TerminalInitializationSchedulerSnapshot } from './internal/TerminalInitializationScheduler';
+} from './fabric/TerminalFabricCoordinator.js';
+export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator.js';
+export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator.js';
+export type { TerminalRenderSchedulerStats } from './core/TerminalRenderScheduler.js';
+export type { TerminalInitializationSchedulerSnapshot } from './internal/TerminalInitializationScheduler.js';
 export type {
   TerminalOutputPipelineCatchUpReason,
   TerminalOutputPipelineCatchUpRequest,
@@ -33,7 +33,7 @@ export type {
   TerminalOutputPipelineResetOptions,
   TerminalOutputPipelineScheduler,
   TerminalOutputPipelineStats,
-} from './core/TerminalOutputPipeline';
+} from './core/TerminalOutputPipeline.js';
 export type {
   AtomicPagedTerminalOutputCoordinatorHandle,
   PagedTerminalCompleteAttachOptions,
@@ -50,13 +50,13 @@ export type {
   PagedTerminalOutputState,
   PreparedPagedTerminalHistory,
   PreparePagedTerminalHistoryOptions,
-} from './core/PagedTerminalOutputCoordinator';
+} from './core/PagedTerminalOutputCoordinator.js';
 export type {
   TerminalFabricBackend,
   TerminalFabricDiagnostics,
   TerminalFabricRenderPath,
   TerminalFabricStats,
-} from './fabric/types';
+} from './fabric/types.js';
 
 export type {
   Logger,
@@ -105,7 +105,7 @@ export type {
   TerminalVisualSuspendOptions,
   TerminalVisualSuspendReason,
   TerminalThemeName
-} from './types';
+} from './types.js';
 
-export { getThemeColors, getDefaultTerminalConfig } from './utils/config';
-export { filterXtermAutoResponses } from './utils/xtermAutoResponseFilter';
+export { getThemeColors, getDefaultTerminalConfig } from './utils/config.js';
+export { filterXtermAutoResponses } from './utils/xtermAutoResponseFilter.js';

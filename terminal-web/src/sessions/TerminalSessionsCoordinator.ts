@@ -1,5 +1,5 @@
-import type { Logger, TerminalSessionInfo, TerminalTransport } from '../types';
-import { noopLogger } from '../utils/logger';
+import type { Logger, TerminalSessionInfo, TerminalTransport } from '../types.js';
+import { noopLogger } from '../utils/logger.js';
 
 export type TerminalSessionsCoordinatorOptions = {
   transport: TerminalTransport;

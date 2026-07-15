@@ -1,8 +1,8 @@
 import type {
   TerminalOutputPipelineChunk,
   TerminalOutputPipelineScheduler,
-} from './TerminalOutputPipeline';
-import { scheduleUiTurn } from '../internal/scheduleUiTurn';
+} from './TerminalOutputPipeline.js';
+import { scheduleUiTurn } from '../internal/scheduleUiTurn.js';
 
 export type PagedTerminalOutputState =
   | 'idle'

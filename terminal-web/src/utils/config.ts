@@ -1,4 +1,4 @@
-import type { TerminalConfig, TerminalThemeName } from '../types';
+import type { TerminalConfig, TerminalThemeName } from '../types.js';
 
 const SELECTION_BACKGROUND = '#f5e6b3';
 const SELECTION_FOREGROUND = '#1f2328';

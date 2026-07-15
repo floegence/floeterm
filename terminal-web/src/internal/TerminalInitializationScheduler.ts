@@ -1,5 +1,5 @@
-import { scheduleNextFrame, type ScheduleTurn } from './scheduleUiTurn';
-import type { TerminalInitializationPriority } from '../types';
+import { scheduleNextFrame, type ScheduleTurn } from './scheduleUiTurn.js';
+import type { TerminalInitializationPriority } from '../types.js';
 
 export type TerminalInitializationPermit = {
   release(): void;

@@ -1,4 +1,4 @@
-import type { Logger } from '../types';
+import type { Logger } from '../types.js';
 
 export const createConsoleLogger = (): Logger => ({
   debug: (message, meta) => console.debug(message, meta ?? {}),

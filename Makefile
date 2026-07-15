@@ -28,8 +28,8 @@ terminal-web-prepare:
 	@set -euo pipefail; \
 	echo "==> terminal-web npm ci"; \
 	(cd terminal-web && npm ci); \
-	echo "==> terminal-web lint/test/build"; \
-	(cd terminal-web && npm run lint && npm test && npm run build); \
+	echo "==> terminal-web lint/test/build/package artifact"; \
+	(cd terminal-web && npm run lint && npm test && npm run build && npm run check:package-artifact); \
 	echo "==> terminal-web npm audit"; \
 	(cd terminal-web && npm audit --audit-level=low)
 

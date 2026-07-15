@@ -3,8 +3,8 @@ import type {
   TerminalCopySelectionResult,
   TerminalCopySelectionSource,
   TerminalFocusOptions,
-} from '../types';
-import { noopLogger } from '../utils/logger';
+} from '../types.js';
+import { noopLogger } from '../utils/logger.js';
 
 type input_suppression_token =
   | { kind: 'linebreak' }

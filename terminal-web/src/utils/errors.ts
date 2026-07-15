@@ -1,4 +1,4 @@
-import type { TerminalError } from '../types';
+import type { TerminalError } from '../types.js';
 
 export const createTerminalError = (type: TerminalError['type'], error: unknown): TerminalError => {
   const message = error instanceof Error ? error.message : String(error);

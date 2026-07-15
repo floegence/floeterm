@@ -8,8 +8,8 @@ import type {
   TerminalFabricRenderer,
   TerminalFabricRendererTarget,
   TerminalFabricTheme,
-} from './types';
-import { terminalFabricCoordinator } from './TerminalFabricCoordinator';
+} from './types.js';
+import { terminalFabricCoordinator } from './TerminalFabricCoordinator.js';
 
 export type BeamtermModule = typeof import('@beamterm/renderer');
 export type BeamtermRendererInstance = InstanceType<BeamtermModule['BeamtermRenderer']>;

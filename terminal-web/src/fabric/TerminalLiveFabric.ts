@@ -1,9 +1,9 @@
-import type { Logger } from '../types';
-import { BeamtermFabricRenderer } from './BeamtermFabricRenderer';
+import type { Logger } from '../types.js';
+import { BeamtermFabricRenderer } from './BeamtermFabricRenderer.js';
 import {
   getTerminalFabricDiagnostics,
   terminalFabricCoordinator,
-} from './TerminalFabricCoordinator';
+} from './TerminalFabricCoordinator.js';
 import type {
   TerminalFabricCell,
   TerminalFabricColor,
@@ -12,7 +12,7 @@ import type {
   TerminalFabricFrameReason,
   TerminalFabricRenderer,
   TerminalFabricTheme,
-} from './types';
+} from './types.js';
 
 type GhosttyCellLike = {
   codepoint?: number;

@@ -1,4 +1,4 @@
-import { concatChunks } from '../utils/history';
+import { concatChunks } from '../utils/history.js';
 
 export type TerminalOutputPipelineCatchUpReason =
   | 'sequence-gap'

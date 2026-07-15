@@ -1,4 +1,4 @@
-import type { Logger } from '../types';
+import type { Logger } from '../types.js';
 
 export type TerminalFabricBackend = 'beamterm_webgl2' | 'main_thread_canvas_live';
 export type TerminalFabricRenderPath = 'main_thread_webgl2' | 'canvas_live_fallback';

@@ -1,4 +1,4 @@
-import type { TerminalDataChunk } from '../types';
+import type { TerminalDataChunk } from '../types.js';
 
 interface SequenceBufferConfig {
   maxPendingChunks: number;

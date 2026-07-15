@@ -1,6 +1,6 @@
 {
   "name": "@floegence/floeterm-terminal-web",
-  "version": "0.5.20",
+  "version": "0.5.21",
   "description": "Framework-neutral ghostty-web (xterm.js API-compatible) integration with terminal core, session, and data flow utilities.",
   "license": "MIT",
   "publishConfig": {
@@ -34,9 +34,10 @@
   ],
   "scripts": {
     "build": "node -e \"const fs=require('fs'); fs.rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node -e \"const fs=require('fs'); if (fs.existsSync('src/styles')) fs.cpSync('src/styles', 'dist/styles', { recursive: true })\"",
+    "check:package-artifact": "node scripts/check-package-artifact.mjs",
     "test": "vitest run",
     "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run lint && npm test && npm run build"
+    "prepublishOnly": "npm run lint && npm test && npm run build && npm run check:package-artifact"
   },
   "keywords": [
     "terminal",
