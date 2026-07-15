@@ -10,8 +10,13 @@ import type {
   TerminalFabricTheme,
 } from './types.js';
 import { terminalFabricCoordinator } from './TerminalFabricCoordinator.js';
+import {
+  loadBeamtermModule,
+  type BeamtermModule,
+} from '../internal/BeamtermResourceLoader.js';
 
-export type BeamtermModule = typeof import('@beamterm/renderer');
+export { loadBeamtermModule } from '../internal/BeamtermResourceLoader.js';
+export type { BeamtermModule } from '../internal/BeamtermResourceLoader.js';
 export type BeamtermRendererInstance = InstanceType<BeamtermModule['BeamtermRenderer']>;
 type BeamtermCellStyle = InstanceType<BeamtermModule['CellStyle']>;
 type BeamtermCell = InstanceType<BeamtermModule['Cell']>;
@@ -19,21 +24,6 @@ type BeamtermCell = InstanceType<BeamtermModule['Cell']>;
 const DEFAULT_BACKGROUND = 0x000000;
 const DEFAULT_FOREGROUND = 0xffffff;
 const MAX_STYLE_CACHE_ENTRIES = 4096;
-
-let beamtermModulePromise: Promise<BeamtermModule> | null = null;
-
-export const loadBeamtermModule = async (): Promise<BeamtermModule> => {
-  if (!beamtermModulePromise) {
-    beamtermModulePromise = import('@beamterm/renderer').then(async module => {
-      await module.main();
-      return module;
-    }).catch((error: unknown) => {
-      beamtermModulePromise = null;
-      throw error;
-    });
-  }
-  return beamtermModulePromise;
-};
 
 export const parseHexColor = (value: string | undefined, fallback: number): number => {
   if (!value) {

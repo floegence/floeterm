@@ -54,13 +54,22 @@ await core.initialize();
 Hosts can preload the dynamic Ghostty module, WASM, and renderer resources before a terminal surface is visible without creating a `TerminalCore`:
 
 ```ts
-import { preloadTerminalResources } from '@floegence/floeterm-terminal-web';
+import { preloadTerminalResources } from '@floegence/floeterm-terminal-web/preload';
 
 await preloadTerminalResources({ signal });
 await core.initialize({ priority: 'interactive', signal });
 ```
 
 Resource loading is single-flight and retryable after a real import or WASM initialization failure. Caller cancellation only stops that caller from waiting; it does not interrupt shared resource initialization. Core initialization is globally bounded, gives queued interactive work priority over background work, and shares the actual ready promise across duplicate calls.
+
+Use the lightweight subpath exports when the host needs session metadata or renderer-neutral history before loading the full terminal feature:
+
+```ts
+import { TerminalSessionsCoordinator } from '@floegence/floeterm-terminal-web/sessions';
+import { preparePagedTerminalHistory } from '@floegence/floeterm-terminal-web/history';
+```
+
+`TerminalSessionsCoordinator` treats `pollMs: 0` as a real periodic-poll disable. Subscribing still performs one best-effort initial reconcile, and explicit `refresh()` calls remain available to a host-owned lifecycle coordinator.
 
 ## Notes
 
@@ -121,9 +130,14 @@ const attach = await transport.attachWithHistoryBoundary(sessionId, cols, rows);
 await output.completeAttach(attachGeneration, attach.historyBoundarySequence, {
   preparedHistory,
 });
+
+const baseline = await output.waitForBaseline();
+if (baseline.preparedHistoryOutcome?.status === 'accepted') {
+  console.log('prepared history used', { rebased: baseline.preparedHistoryOutcome.rebased });
+}
 ```
 
-Prepared history is renderer-neutral and pins `historyGeneration`, `firstRetainedSequence`, and `snapshotEndSequence`. The visible attach validates those boundaries, replays the seed once, and fetches only the missing delta. A generation reset, retention advance, stale fence, or malformed seed discards it and falls back to the normal full recovery path.
+Prepared history is renderer-neutral and pins `historyGeneration`, `firstRetainedSequence`, and `snapshotEndSequence`. The visible attach validates those boundaries, replays the seed once, and fetches only the missing delta. A generation reset, retention advance, stale fence, or malformed seed discards it and falls back to the normal full recovery path. The baseline snapshot reports `accepted`, `rejected`, or `not-provided` plus a `rebased` flag, so hosts do not need to infer seed use from fetched byte counts.
 
 `preparePagedTerminalHistory` requires those three metadata fields on every prepared page and passes the remaining retained-byte budget as `request.maxBytes` so transports can bound each page as well. The helper always enforces its retained seed budget after a page returns; adapters should honor the request hint to keep peak response memory bounded too.
 

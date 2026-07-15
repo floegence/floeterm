@@ -250,24 +250,73 @@ describe('TerminalSessionsCoordinator', () => {
     const transport = makeTransport({ listSessions });
     const coordinator = new TerminalSessionsCoordinator({ transport, pollMs: 50 });
 
-    const snapshots: string[][] = [];
-    const unsub = coordinator.subscribe((sessions) => {
-      snapshots.push(sessions.map((s) => s.id));
+    try {
+      const snapshots: string[][] = [];
+      const unsub = coordinator.subscribe((sessions) => {
+        snapshots.push(sessions.map((s) => s.id));
+      });
+
+      await flushPromises();
+      expect(coordinator.getSnapshot().map((s) => s.id)).toEqual(['s1']);
+
+      await vi.advanceTimersByTimeAsync(120);
+      await flushPromises();
+      expect(coordinator.getSnapshot().map((s) => s.id)).toEqual([]);
+
+      unsub();
+      await vi.advanceTimersByTimeAsync(120);
+      expect(listSessions).toHaveBeenCalledTimes(3);
+      expect(snapshots.length).toBeGreaterThanOrEqual(3);
+    } finally {
+      coordinator.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('disables interval polling with pollMs zero while preserving initial and explicit refreshes', async () => {
+    vi.useFakeTimers();
+    const listSessions = vi.fn().mockResolvedValue([]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }),
+      pollMs: 0,
     });
 
-    // Best-effort initial refresh triggered by subscribe().
-    await flushPromises();
-    expect(coordinator.getSnapshot().map((s) => s.id)).toEqual(['s1']);
+    try {
+      const unsubscribe = coordinator.subscribe(() => undefined);
+      await flushPromises();
+      expect(listSessions).toHaveBeenCalledTimes(1);
 
-    // Advance enough time for at least one poll tick that runs after the initial refresh settles.
-    await vi.advanceTimersByTimeAsync(120);
-    await flushPromises();
-    expect(coordinator.getSnapshot().map((s) => s.id)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushPromises();
+      expect(listSessions).toHaveBeenCalledTimes(1);
 
-    unsub();
-    vi.useRealTimers();
+      await coordinator.refresh();
+      expect(listSessions).toHaveBeenCalledTimes(2);
+      unsubscribe();
+    } finally {
+      coordinator.dispose();
+      vi.useRealTimers();
+    }
+  });
 
-    // The listener is invoked at least for: immediate snapshot, first refresh, and a poll tick.
-    expect(snapshots.length).toBeGreaterThanOrEqual(3);
+  it('keeps the ten-second polling default when pollMs is omitted', async () => {
+    vi.useFakeTimers();
+    const listSessions = vi.fn().mockResolvedValue([]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }),
+    });
+
+    try {
+      coordinator.subscribe(() => undefined);
+      await flushPromises();
+      expect(listSessions).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await flushPromises();
+      expect(listSessions).toHaveBeenCalledTimes(2);
+    } finally {
+      coordinator.dispose();
+      vi.useRealTimers();
+    }
   });
 });

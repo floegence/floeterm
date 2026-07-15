@@ -214,6 +214,7 @@ describe('PagedTerminalOutputCoordinator', () => {
       baselineReady: true,
       coveredThroughSequence: 4,
       failure: null,
+      preparedHistoryOutcome: { status: 'accepted', rebased: false },
     });
     coordinator.dispose();
   });
@@ -285,6 +286,7 @@ describe('PagedTerminalOutputCoordinator', () => {
       baselineReady: true,
       coveredThroughSequence: 3,
       retainedLiveChunks: 0,
+      preparedHistoryOutcome: { status: 'accepted', rebased: false },
     });
     coordinator.dispose();
   });
@@ -333,7 +335,11 @@ describe('PagedTerminalOutputCoordinator', () => {
       historyGeneration: undefined,
     }));
     expect(writes.join('')).toBe('[clear]new-onenew-twonew-three');
-    expect(coordinator.getSnapshot()).toMatchObject({ baselineReady: true, failure: null });
+    expect(coordinator.getSnapshot()).toMatchObject({
+      baselineReady: true,
+      failure: null,
+      preparedHistoryOutcome: { status: 'rejected', rebased: true },
+    });
     coordinator.dispose();
   });
 
@@ -381,6 +387,7 @@ describe('PagedTerminalOutputCoordinator', () => {
       baselineReady: true,
       coveredThroughSequence: 3,
       failure: null,
+      preparedHistoryOutcome: { status: 'rejected', rebased: true },
     });
     coordinator.dispose();
   });
@@ -417,6 +424,7 @@ describe('PagedTerminalOutputCoordinator', () => {
       baselineReady: true,
       coveredThroughSequence: 2,
       failure: null,
+      preparedHistoryOutcome: { status: 'rejected', rebased: true },
     });
     coordinator.dispose();
   });
@@ -457,6 +465,10 @@ describe('PagedTerminalOutputCoordinator', () => {
       historyGeneration: undefined,
     }));
     expect(writes.join('')).toBe('new-onenew-twonew-three');
+    expect(coordinator.getSnapshot().preparedHistoryOutcome).toEqual({
+      status: 'rejected',
+      rebased: true,
+    });
     coordinator.dispose();
   });
 
@@ -496,6 +508,72 @@ describe('PagedTerminalOutputCoordinator', () => {
       historyGeneration: undefined,
     }));
     expect(writes.join('')).toBe('new-onenew-two');
+    expect(coordinator.getSnapshot().preparedHistoryOutcome).toEqual({
+      status: 'rejected',
+      rebased: false,
+    });
+    coordinator.dispose();
+  });
+
+  it('reports an accepted seed even when the attach delta is larger than the seed', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'a')],
+        coveredThroughSequence: 1,
+        snapshotEndSequence: 1,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+    });
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({
+        chunks: [chunk(2, 'much-larger-delta')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+      write: () => undefined,
+      writeHistory: () => undefined,
+    });
+
+    await coordinator.attach(0, 2, { preparedHistory: prepared });
+
+    expect(coordinator.getSnapshot().preparedHistoryOutcome).toEqual({
+      status: 'accepted',
+      rebased: false,
+    });
+    coordinator.dispose();
+  });
+
+  it('reports an accepted rebased seed when retained history already starts after the request', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        chunks: [chunk(2, 'two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 2,
+        historyGeneration: 1,
+      }),
+    });
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({
+        chunks: [chunk(2, 'two')],
+        coveredThroughSequence: 2,
+        snapshotEndSequence: 2,
+        firstRetainedSequence: 2,
+        historyGeneration: 1,
+      }),
+      write: () => undefined,
+      writeHistory: () => undefined,
+    });
+
+    await coordinator.attach(0, 2, { preparedHistory: prepared });
+
+    expect(coordinator.getSnapshot().preparedHistoryOutcome).toEqual({
+      status: 'accepted',
+      rebased: true,
+    });
     coordinator.dispose();
   });
 

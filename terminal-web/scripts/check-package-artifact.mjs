@@ -58,7 +58,16 @@ try {
   await run(process.execPath, [
     '--input-type=module',
     '--eval',
-    "const api = await import('@floegence/floeterm-terminal-web'); if (typeof api.TerminalCore !== 'function') throw new Error('TerminalCore export is unavailable');",
+    [
+      "const api = await import('@floegence/floeterm-terminal-web')",
+      "const sessions = await import('@floegence/floeterm-terminal-web/sessions')",
+      "const history = await import('@floegence/floeterm-terminal-web/history')",
+      "const preload = await import('@floegence/floeterm-terminal-web/preload')",
+      "if (typeof api.TerminalCore !== 'function') throw new Error('TerminalCore export is unavailable')",
+      "if (typeof sessions.TerminalSessionsCoordinator !== 'function') throw new Error('sessions export is unavailable')",
+      "if (typeof history.preparePagedTerminalHistory !== 'function') throw new Error('history export is unavailable')",
+      "if (typeof preload.preloadTerminalResources !== 'function') throw new Error('preload export is unavailable')",
+    ].join('; '),
   ], temporaryRoot);
 
   await run(process.execPath, ['-e', "require('fs').mkdirSync(process.argv[1])", consumerRoot], temporaryRoot);
@@ -75,15 +84,27 @@ try {
   await writeFile(path.join(consumerRoot, 'index.mts'), `
 import {
   TerminalCore,
-  preparePagedTerminalHistory,
-  preloadTerminalResources,
-  type PreparedPagedTerminalHistory,
   type TerminalInitializationPriority,
 } from '@floegence/floeterm-terminal-web';
+import {
+  TerminalSessionsCoordinator,
+  type TerminalSessionInfo,
+  type TerminalTransport,
+} from '@floegence/floeterm-terminal-web/sessions';
+import {
+  preparePagedTerminalHistory,
+  type PagedTerminalPreparedHistoryOutcome,
+  type PreparedPagedTerminalHistory,
+} from '@floegence/floeterm-terminal-web/history';
+import { preloadTerminalResources } from '@floegence/floeterm-terminal-web/preload';
 
 const priority: TerminalInitializationPriority = 'interactive';
 const prepared: PreparedPagedTerminalHistory | undefined = undefined;
-void [TerminalCore, preparePagedTerminalHistory, preloadTerminalResources, priority, prepared];
+const outcome: PagedTerminalPreparedHistoryOutcome | undefined = undefined;
+const transport = undefined as unknown as TerminalTransport;
+const session = undefined as unknown as TerminalSessionInfo;
+const coordinator = new TerminalSessionsCoordinator({ transport, pollMs: 0 });
+void [TerminalCore, preparePagedTerminalHistory, preloadTerminalResources, priority, prepared, outcome, session, coordinator];
 `);
 
   await run(process.execPath, [

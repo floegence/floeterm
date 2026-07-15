@@ -32,7 +32,6 @@ import {
   type TerminalResourceEstimate,
   type TerminalTouchScrollRuntime,
   type TerminalInitializationOptions,
-  type TerminalResourcePreloadOptions,
   type TerminalVisualSuspendHandle,
   type TerminalVisualSuspendOptions,
   type TerminalVisualSuspendReason,
@@ -41,7 +40,12 @@ import {
   terminalInitializationScheduler,
   type TerminalInitializationRequest,
 } from '../internal/TerminalInitializationScheduler.js';
-import { loadBeamtermModule } from '../fabric/BeamtermFabricRenderer.js';
+import {
+  getGhosttyFitAddonConstructor,
+  getGhosttyTerminalConstructor,
+  loadGhosttyModules,
+  waitWithAbort,
+} from '../internal/TerminalResourceLoader.js';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge.js';
 import { terminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler.js';
 import { scheduleUiTurn, type ScheduledTurnCancel } from '../internal/scheduleUiTurn.js';
@@ -309,73 +313,7 @@ const getPerfProbe = (): floeterm_perf_probe | undefined => {
   return (window as Window & { __floetermPerfProbe?: floeterm_perf_probe }).__floetermPerfProbe;
 };
 
-// Dynamic imports avoid SSR issues and keep the bundle flexible.
-let TerminalCtor: typeof import('ghostty-web').Terminal | null = null;
-let FitAddonCtor: typeof import('ghostty-web').FitAddon | null = null;
-let ghosttyResourcesPromise: Promise<void> | null = null;
-
-const abortError = (): Error => {
-  if (typeof DOMException !== 'undefined') return new DOMException('Operation aborted', 'AbortError');
-  const error = new Error('Operation aborted');
-  error.name = 'AbortError';
-  return error;
-};
-
-const waitWithAbort = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(abortError());
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(abortError());
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      value => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      error => {
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      },
-    );
-  });
-};
-
-const loadGhosttyModules = async (logger: Logger, signal?: AbortSignal): Promise<void> => {
-  if (typeof window === 'undefined') {
-    throw new Error('ghostty-web 只能在浏览器环境中加载');
-  }
-
-  if (TerminalCtor && FitAddonCtor) {
-    return;
-  }
-
-  if (!ghosttyResourcesPromise) {
-    logger.debug('[TerminalCore] Initializing ghostty-web WASM');
-    ghosttyResourcesPromise = (async () => {
-      const { Terminal, FitAddon, init } = await import('ghostty-web');
-      await init();
-      TerminalCtor = Terminal;
-      FitAddonCtor = FitAddon;
-    })().catch((error: unknown) => {
-      TerminalCtor = null;
-      FitAddonCtor = null;
-      ghosttyResourcesPromise = null;
-      throw error;
-    });
-  }
-
-  await waitWithAbort(ghosttyResourcesPromise, signal);
-};
-
-export const preloadTerminalResources = async (
-  options: TerminalResourcePreloadOptions = {},
-): Promise<void> => {
-  const resources = Promise.all([
-    loadGhosttyModules(options.logger ?? noopLogger),
-    loadBeamtermModule(),
-  ]).then(() => undefined);
-  await waitWithAbort(resources, options.signal);
-};
+export { preloadTerminalResources } from '../internal/TerminalResourceLoader.js';
 
 const mapThemeToGhostty = (theme: Record<string, unknown> | undefined): Record<string, string> => {
   if (!theme) {
@@ -892,6 +830,7 @@ export class TerminalCore {
   }
 
   private async createTerminalInstance(signal?: AbortSignal): Promise<void> {
+    const TerminalCtor = getGhosttyTerminalConstructor();
     if (!TerminalCtor) {
       throw new Error('ghostty-web module not loaded');
     }
@@ -953,6 +892,7 @@ export class TerminalCore {
       throw new Error('Terminal instance not created');
     }
 
+    const FitAddonCtor = getGhosttyFitAddonConstructor();
     if (!FitAddonCtor) {
       throw new Error('Required ghostty-web addons not loaded');
     }

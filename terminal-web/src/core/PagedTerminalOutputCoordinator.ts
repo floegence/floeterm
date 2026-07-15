@@ -61,6 +61,16 @@ export interface PagedTerminalCompleteAttachOptions {
   preparedHistory?: PreparedPagedTerminalHistory;
 }
 
+export type PagedTerminalPreparedHistoryStatus =
+  | 'not-provided'
+  | 'accepted'
+  | 'rejected';
+
+export interface PagedTerminalPreparedHistoryOutcome {
+  readonly status: PagedTerminalPreparedHistoryStatus;
+  readonly rebased: boolean;
+}
+
 export type PagedTerminalHistoryTruncationReason =
   | 'history-evicted'
   | 'retained-live-overflow';
@@ -110,6 +120,7 @@ export interface PagedTerminalOutputSnapshot {
   lastError: unknown;
   attachGeneration: number;
   disposed: boolean;
+  preparedHistoryOutcome?: PagedTerminalPreparedHistoryOutcome;
 }
 
 type PagedTerminalOutputWriter = (
@@ -492,6 +503,10 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   private pausedRecoveryPending = false;
   private droppedLiveThroughSequence = 0;
   private preparedHistory: PreparedPagedTerminalHistory | null = null;
+  private preparedHistoryOutcome: PagedTerminalPreparedHistoryOutcome = {
+    status: 'not-provided',
+    rebased: false,
+  };
 
   constructor(options: PagedTerminalOutputCoordinatorOptions) {
     this.options = options;
@@ -547,6 +562,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.lastError = null;
     this.historyRebasePrepared = false;
     this.preparedHistory = null;
+    this.preparedHistoryOutcome = { status: 'not-provided', rebased: false };
     this.setState('idle');
     return this.generation;
   }
@@ -559,7 +575,16 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     if (this.disposed || !this.isCurrent(attachGeneration)) return;
     this.explicitAttachFence = snapshotEndSequence !== undefined;
     this.recoveryEndSequence = normalizeSequence(snapshotEndSequence, 'snapshotEndSequence', true);
+    this.preparedHistoryOutcome = options.preparedHistory
+      ? { status: 'rejected', rebased: false }
+      : { status: 'not-provided', rebased: false };
     this.preparedHistory = this.acceptPreparedHistory(options.preparedHistory);
+    if (this.preparedHistory) {
+      this.preparedHistoryOutcome = {
+        ...this.preparedHistoryOutcome,
+        status: 'accepted',
+      };
+    }
     if (this.explicitAttachFence && this.recoveryEndSequence === 0) {
       if (this.needsRebase) {
         this.prepareRetainedLiveRebase();
@@ -651,6 +676,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     this.lastError = null;
     this.historyRebasePrepared = false;
     this.preparedHistory = null;
+    this.preparedHistoryOutcome = { status: 'not-provided', rebased: false };
     this.setState('idle');
     this.resolveBaselineWaiters();
   }
@@ -676,6 +702,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       lastError: this.lastError,
       attachGeneration: this.generation,
       disposed: this.disposed,
+      preparedHistoryOutcome: { ...this.preparedHistoryOutcome },
     };
   }
 
@@ -751,6 +778,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       ) return null;
       if (preparedHistory.complete !== (coveredThrough >= snapshotEnd)) return null;
       if (firstRetained > expectedStart) {
+        this.markPreparedHistoryRebased(false);
         this.options.clear?.();
         this.options.onHistoryTruncated?.('history-evicted');
       }
@@ -761,6 +789,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   }
 
   private discardPreparedHistoryForFullRecovery(): void {
+    this.markPreparedHistoryRebased(true);
     this.preparedHistory = null;
     this.coveredThroughSequence = Math.max(0, this.recoveryStartSequence - 1);
     this.scheduledThroughSequence = this.coveredThroughSequence;
@@ -851,6 +880,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           && firstRetained !== undefined
           && firstRetained > this.recoveryEndSequence;
         if (!this.historyRebasePrepared && (generationNeedsRebase || retentionNeedsRebase)) {
+          this.markPreparedHistoryRebased(preparedHistory !== null);
           this.preparedHistory = null;
           if (fencedRangeFullyEvicted) {
             this.options.clear?.();
@@ -878,6 +908,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           coverage = this.validatePage(page, coveredEnd);
         } catch (error) {
           if (preparedHistory === null) throw error;
+          this.markPreparedHistoryRebased(true);
           this.preparedHistory = null;
           this.prepareHistoryGenerationRebase(firstRetained);
           this.recoveryRunning = false;
@@ -914,6 +945,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
         } else {
           if (snapshotEnd !== undefined && pageSnapshotEnd !== undefined && pageSnapshotEnd !== snapshotEnd) {
             if (preparedHistory !== null) {
+              this.markPreparedHistoryRebased(true);
               this.preparedHistory = null;
               this.prepareHistoryGenerationRebase(firstRetained);
               this.recoveryRunning = false;
@@ -1139,6 +1171,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
   }
 
   private prepareRetainedLiveRebase(): void {
+    this.markPreparedHistoryRebased(false);
     this.needsRebase = false;
     this.historyRebasePrepared = false;
     this.recoveryKind = this.baselineReady ? 'catch-up' : 'initial';
@@ -1168,6 +1201,14 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       this.coveredThroughSequence = firstRetainedSequence - 1;
       this.scheduledThroughSequence = this.coveredThroughSequence;
     }
+  }
+
+  private markPreparedHistoryRebased(discard: boolean): void {
+    if (this.preparedHistoryOutcome.status === 'not-provided') return;
+    this.preparedHistoryOutcome = {
+      status: discard ? 'rejected' : this.preparedHistoryOutcome.status,
+      rebased: true,
+    };
   }
 
   private canRenderLive(): boolean {

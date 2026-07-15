@@ -69,7 +69,11 @@ export class TerminalSessionsCoordinator {
 
   constructor(opts: TerminalSessionsCoordinatorOptions) {
     this.transport = opts.transport;
-    this.pollMs = typeof opts.pollMs === 'number' && opts.pollMs > 0 ? opts.pollMs : 10_000;
+    this.pollMs = opts.pollMs === 0
+      ? 0
+      : typeof opts.pollMs === 'number' && opts.pollMs > 0
+        ? opts.pollMs
+        : 10_000;
     this.logger = opts.logger ?? noopLogger;
   }
 

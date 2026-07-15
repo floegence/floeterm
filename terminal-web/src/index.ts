@@ -1,4 +1,5 @@
-export { TerminalCore, preloadTerminalResources } from './core/TerminalCore.js';
+export { TerminalCore } from './core/TerminalCore.js';
+export { preloadTerminalResources } from './internal/TerminalResourceLoader.js';
 export { TerminalState } from './types.js';
 export {
   createTerminalInstance,
@@ -48,6 +49,8 @@ export type {
   PagedTerminalOutputScheduler,
   PagedTerminalOutputSnapshot,
   PagedTerminalOutputState,
+  PagedTerminalPreparedHistoryOutcome,
+  PagedTerminalPreparedHistoryStatus,
   PreparedPagedTerminalHistory,
   PreparePagedTerminalHistoryOptions,
 } from './core/PagedTerminalOutputCoordinator.js';
