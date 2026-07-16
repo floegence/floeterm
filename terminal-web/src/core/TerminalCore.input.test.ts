@@ -13,6 +13,7 @@ vi.mock('ghostty-web', () => {
     element: HTMLElement | null = null;
     canvas: HTMLCanvasElement | null = null;
     textarea: HTMLTextAreaElement | null = null;
+    dataHandler: ((data: string) => void) | null = null;
     cursor = { x: 0, y: 0, visible: true };
     scrollHandler: (() => void) | null = null;
     renderer: any;
@@ -49,25 +50,35 @@ vi.mock('ghostty-web', () => {
     }
 
     open(container: HTMLElement) {
-      const inputHost = document.createElement('div');
-      inputHost.tabIndex = 0;
-      inputHost.setAttribute('contenteditable', 'true');
-      inputHost.setAttribute('aria-label', 'Terminal input');
-      inputHost.setAttribute('role', 'textbox');
-      container.appendChild(inputHost);
-      this.element = inputHost;
+      container.tabIndex = 0;
+      container.setAttribute('contenteditable', 'true');
+      container.setAttribute('aria-label', 'Terminal input');
+      container.setAttribute('role', 'textbox');
+      this.element = container;
       const canvas = document.createElement('canvas');
-      inputHost.appendChild(canvas);
+      container.appendChild(canvas);
       this.canvas = canvas;
       const textarea = document.createElement('textarea');
       textarea.setAttribute('aria-label', 'Terminal input');
-      inputHost.appendChild(textarea);
+      container.appendChild(textarea);
       this.textarea = textarea;
-      container.tabIndex = 0;
+      container.addEventListener('keydown', (event) => {
+        let data = '';
+        if (event.key === 'Enter') data = '\r';
+        if (event.key === 'Backspace') data = '\x7f';
+        if (event.ctrlKey && event.code === 'KeyC') data = '\x03';
+        if (!data) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.dataHandler?.(data);
+      });
     }
 
-    onData(_handler: (data: string) => void) {
-      return { dispose: () => {} };
+    onData(handler: (data: string) => void) {
+      this.dataHandler = handler;
+      return { dispose: () => {
+        if (this.dataHandler === handler) this.dataHandler = null;
+      } };
     }
 
     onResize(_handler: (size: { cols: number; rows: number }) => void) {
@@ -603,11 +614,13 @@ describe('TerminalCore mobile input integration', () => {
     await vi.runAllTimersAsync();
     await init;
 
-    const terminal = (core as unknown as { terminal?: { selectionText: string } | null }).terminal;
+    const terminal = (core as unknown as {
+      terminal?: { element: HTMLElement; selectionText: string } | null;
+    }).terminal;
     expect(terminal).toBeTruthy();
     terminal!.selectionText = 'pnpm test';
 
-    container.dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
+    terminal!.element.dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
 
     const event = new KeyboardEvent('keydown', {
       key: 'c',

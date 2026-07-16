@@ -912,22 +912,22 @@ export class TerminalCore {
 
     await waitWithAbort(this.waitForDOMAndFonts(), signal);
     await waitWithAbort(this.ensureContainerReady(), signal);
-    this.ensurePresentationHosts();
+    const renderHost = this.ensurePresentationHosts();
     this.applyPresentationScaleStyles();
     this.installDemandRenderPatchBeforeOpen();
-    this.terminal.open(this.renderHost ?? this.container);
-    this.mountInputElement();
+    this.terminal.open(renderHost);
+    this.mountInputElement(renderHost);
     this.stopGhosttyRenderLoop();
     this.patchDemandRenderTriggersAfterOpen();
     this.patchSelectionManagerClipboardBehavior();
     this.patchSelectionManagerRenderingBehavior();
-    this.setupInputBridge();
+    this.setupInputBridge(renderHost);
     this.applyRegisteredLinkProviders();
     void this.refreshFontMetricsAfterLoad('open');
   }
 
-  private mountInputElement(): void {
-    const input = resolveTerminalInputElement(this.renderHost ?? this.container);
+  private mountInputElement(renderHost: HTMLDivElement): void {
+    const input = resolveTerminalInputElement(renderHost);
     if (!input) {
       throw new Error('ghostty-web terminal input element was not created');
     }
@@ -1581,9 +1581,12 @@ export class TerminalCore {
     };
   }
 
-  private ensurePresentationHosts(): void {
+  private ensurePresentationHosts(): HTMLDivElement {
     if (this.viewportHost && this.renderHost) {
-      return;
+      return this.renderHost;
+    }
+    if (this.viewportHost || this.renderHost) {
+      throw new Error('Terminal presentation host state is inconsistent');
     }
 
     const viewportHost = document.createElement('div');
@@ -1603,6 +1606,7 @@ export class TerminalCore {
     this.container.replaceChildren(viewportHost);
     this.viewportHost = viewportHost;
     this.renderHost = renderHost;
+    return renderHost;
   }
 
   private applyPresentationScaleStyles(): void {
@@ -1737,26 +1741,25 @@ export class TerminalCore {
     });
   }
 
-  private setupInputBridge(): void {
+  private setupInputBridge(inputHost: HTMLDivElement): void {
     this.disposeInputBridge();
 
     const input = this.inputElement;
     if (!input) {
-      this.logger.debug('[TerminalCore] No terminal input host found for input bridge');
-      return;
+      throw new Error('Terminal input element was not mounted');
     }
 
-    this.inputBridge = new TerminalInputBridge(
-      this.container,
-      input,
-      (data: string) => {
+    this.inputBridge = new TerminalInputBridge({
+      inputHost,
+      inputElement: input,
+      onData: (data: string) => {
         this.eventHandlers.onData?.(data);
       },
-      this.logger,
-      () => this.hasSelection(),
-      (source, clipboardData) => this.performSelectionCopy(source, clipboardData),
-      () => this.syncImeInputAnchor(),
-    );
+      logger: this.logger,
+      hasSelection: () => this.hasSelection(),
+      copySelection: (source, clipboardData) => this.performSelectionCopy(source, clipboardData),
+      syncInputGeometry: () => this.syncImeInputAnchor(),
+    });
     this.syncImeInputAnchor();
     if (this.isContainerFocused()) {
       this.scheduleInputSurfaceRefocus();

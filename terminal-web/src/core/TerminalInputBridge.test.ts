@@ -39,19 +39,21 @@ describe('TerminalInputBridge', () => {
       textLength: selectionText.length,
       source: 'command',
     });
-    const bridge = new TerminalInputBridge(
-      container,
-      textarea,
+    const inputHost = terminalInputHost ?? container;
+    const bridge = new TerminalInputBridge({
+      inputHost,
+      inputElement: textarea,
       onData,
-      undefined,
-      () => selectionText.length > 0,
+      hasSelection: () => selectionText.length > 0,
       copySelection,
-    );
-    return { bridge, container, textarea, terminalInputHost, onData, copySelection };
+    });
+    return { bridge, container, inputHost, textarea, terminalInputHost, onData, copySelection };
   };
 
   it('sends plain text from beforeinput without waiting for keydown', () => {
     const { textarea, onData } = setup();
+    const targetListener = vi.fn();
+    textarea.addEventListener('beforeinput', targetListener);
 
     textarea.dispatchEvent(createInputEvent('beforeinput', {
       data: 'a',
@@ -60,6 +62,7 @@ describe('TerminalInputBridge', () => {
 
     expect(onData).toHaveBeenCalledTimes(1);
     expect(onData).toHaveBeenLastCalledWith('a');
+    expect(targetListener).not.toHaveBeenCalled();
   });
 
   it('falls back to input value when beforeinput is unavailable', () => {
@@ -73,10 +76,10 @@ describe('TerminalInputBridge', () => {
     expect(textarea.value).toBe('');
   });
 
-  it('forwards special keys to the terminal container and suppresses duplicated beforeinput', () => {
-    const { container, textarea, onData } = setup();
+  it('forwards special keys to the terminal input host and suppresses duplicated beforeinput', () => {
+    const { inputHost, textarea, onData } = setup();
 
-    container.addEventListener('keydown', (event) => {
+    inputHost.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         onData('\r');
         event.preventDefault();
@@ -214,9 +217,13 @@ describe('TerminalInputBridge', () => {
         focusCalls.push(options);
         originalFocus.call(this);
       });
-    const { bridge: firstBridge, container, textarea, terminalInputHost } = setup('', { terminalInputHost: true });
+    const { bridge: firstBridge, inputHost, textarea, terminalInputHost } = setup('', { terminalInputHost: true });
     expect(terminalInputHost).toBeTruthy();
-    const secondBridge = new TerminalInputBridge(container, textarea, vi.fn());
+    const secondBridge = new TerminalInputBridge({
+      inputHost,
+      inputElement: textarea,
+      onData: vi.fn(),
+    });
 
     terminalInputHost!.focus();
     firstBridge.dispose();
@@ -280,14 +287,43 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('does not hijack Cmd/Ctrl+C when the terminal has no selection', async () => {
-    const { container, textarea, copySelection } = setup('');
-    const forwarded = vi.fn((event: KeyboardEvent) => event.target === container);
-    container.addEventListener('keydown', forwarded);
+  it('routes Ctrl+C to the terminal input host when the terminal has no selection', async () => {
+    const { inputHost, textarea, onData, copySelection } = setup('');
+    inputHost.addEventListener('keydown', (event) => {
+      if (event.ctrlKey && event.code === 'KeyC') {
+        onData('\x03');
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
 
-    activateTerminal(container);
+    activateTerminal(inputHost);
     const event = new KeyboardEvent('keydown', {
       key: 'c',
+      code: 'KeyC',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    textarea.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenCalledWith('\x03');
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('does not convert Cmd+C into terminal input when the terminal has no selection', async () => {
+    const { inputHost, textarea, onData, copySelection } = setup('');
+    const forwarded = vi.fn((event: KeyboardEvent) => event.target === inputHost);
+    inputHost.addEventListener('keydown', forwarded);
+
+    activateTerminal(inputHost);
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      code: 'KeyC',
       metaKey: true,
       bubbles: true,
       cancelable: true,
@@ -297,7 +333,8 @@ describe('TerminalInputBridge', () => {
     await Promise.resolve();
 
     expect(copySelection).not.toHaveBeenCalled();
-    expect(forwarded.mock.calls.filter(([forwardedEvent]) => forwardedEvent.target === container)).toHaveLength(1);
+    expect(onData).not.toHaveBeenCalled();
+    expect(forwarded.mock.calls.filter(([forwardedEvent]) => forwardedEvent.target === inputHost)).toHaveLength(1);
     expect(event.defaultPrevented).toBe(false);
   });
 

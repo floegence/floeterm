@@ -13,6 +13,17 @@ const writeTerminal = (core: TerminalCore, data: string): Promise<void> => (
   new Promise<void>((resolve) => core.write(data, resolve))
 );
 
+const createInputEvent = (
+  inputType: string,
+  data: string | null = null,
+): InputEvent => {
+  const event = new Event('beforeinput', { bubbles: true, cancelable: true }) as InputEvent;
+  Object.defineProperty(event, 'inputType', { value: inputType });
+  Object.defineProperty(event, 'data', { value: data });
+  Object.defineProperty(event, 'isComposing', { value: false });
+  return event;
+};
+
 describe('TerminalCore transformed-host input integration', () => {
   let core: TerminalCore | null = null;
 
@@ -128,12 +139,60 @@ describe('TerminalCore transformed-host input integration', () => {
       height: canvas.height,
     }).toEqual(canvasSizeBefore);
 
+    const dispatchKeydown = (init: KeyboardEventInit): KeyboardEvent => {
+      const event = new KeyboardEvent('keydown', {
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      });
+      textarea.dispatchEvent(event);
+      return event;
+    };
+
+    const ctrlC = dispatchKeydown({ key: 'c', code: 'KeyC', ctrlKey: true });
+    const arrowUp = dispatchKeydown({ key: 'ArrowUp', code: 'ArrowUp' });
+    const escape = dispatchKeydown({ key: 'Escape', code: 'Escape' });
+    const tab = dispatchKeydown({ key: 'Tab', code: 'Tab' });
+    const enter = dispatchKeydown({ key: 'Enter', code: 'Enter' });
+    textarea.dispatchEvent(createInputEvent('insertLineBreak'));
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    const backspace = dispatchKeydown({ key: 'Backspace', code: 'Backspace' });
+    textarea.dispatchEvent(createInputEvent('deleteContentBackward'));
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    textarea.value = 'x';
+    textarea.dispatchEvent(createInputEvent('insertText', 'x'));
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    const cmdC = dispatchKeydown({ key: 'c', code: 'KeyC', metaKey: true });
+
+    expect([ctrlC, arrowUp, escape, tab, enter, backspace].every((event) => event.defaultPrevented)).toBe(true);
+    expect(cmdC.defaultPrevented).toBe(false);
+    expect(onData.mock.calls.map(([data]) => data)).toEqual([
+      '\x03',
+      '\x1b[A',
+      '\x1b',
+      '\t',
+      '\r',
+      '\x7f',
+      'x',
+    ]);
+
+    onData.mockClear();
+    expect(core.findNext('Tasks')).toBe(true);
+    expect(core.hasSelection()).toBe(true);
+    const selectionCopy = dispatchKeydown({ key: 'c', code: 'KeyC', ctrlKey: true });
+    await Promise.resolve();
+    expect(selectionCopy.defaultPrevented).toBe(true);
+    expect(onData).not.toHaveBeenCalled();
+    core.clearSearch();
+
     textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     textarea.value = '你';
     textarea.dispatchEvent(new CompositionEvent('compositionend', {
       bubbles: true,
       data: '你',
     }));
+    textarea.dispatchEvent(createInputEvent('insertText', '你'));
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
     expect(onData).toHaveBeenCalledTimes(1);
     expect(onData).toHaveBeenLastCalledWith('你');
 

@@ -216,7 +216,7 @@ With `copyOnSelect: false`, `TerminalCore` keeps selection explicit:
 
 - `core.hasSelection()` reports whether the terminal currently owns a copyable selection.
 - `core.copySelection()` writes the current terminal selection to the clipboard.
-- `Cmd+C` / `Ctrl+C` only claims the shortcut when the terminal currently has a selection. Otherwise the shortcut falls through unchanged.
+- `Cmd+C` / `Ctrl+C` copies only when the terminal currently has a selection. Without a selection, `Ctrl+C` remains terminal input and produces the standard interrupt control byte; `Cmd+C` is not converted into terminal input.
 
 The managed controller exposes the same helpers through `controller.actions`.
 

@@ -52,12 +52,6 @@ const createSuppressionTokenFromKeydown = (event: KeyboardEvent): input_suppress
   return null;
 };
 
-const mapKeydownToTerminalData = (event: KeyboardEvent): string | null => {
-  if (event.key === 'Enter') return '\r';
-  if (event.key === 'Backspace') return '\x7f';
-  return null;
-};
-
 const normalizeTerminalFocusOptions = (options?: TerminalFocusOptions | FocusOptions): FocusOptions => ({
   ...options,
   preventScroll: options?.preventScroll ?? true,
@@ -137,15 +131,25 @@ const matchesInputSuppression = (token: input_suppression_token, value: string):
 const mapBeforeInputToTerminalData = (event: InputEvent): string | null => {
   switch (event.inputType) {
     case 'insertText':
-      return String(event.data ?? '');
+    case 'insertReplacementText': {
+      const data = String(event.data ?? '');
+      return data.length > 0 ? data.replace(/\n/g, '\r') : null;
+    }
     case 'insertLineBreak':
     case 'insertParagraph':
       return '\r';
     case 'deleteContentBackward':
       return '\x7f';
+    case 'deleteContentForward':
+      return '\x1b[3~';
     default:
       return null;
   }
+};
+
+const consumeBrowserInputEvent = (event: InputEvent): void => {
+  event.preventDefault();
+  event.stopImmediatePropagation();
 };
 
 const cloneKeyboardEventInit = (event: KeyboardEvent): KeyboardEventInit => ({
@@ -181,17 +185,35 @@ type terminal_document_shortcut_coordinator = {
 
 const documentShortcutCoordinators = new WeakMap<Document, terminal_document_shortcut_coordinator>();
 
-export const resolveTerminalInputElement = (container: HTMLElement): HTMLTextAreaElement | null => {
-  const direct = container.querySelector(TERMINAL_INPUT_SELECTOR);
-  if (direct instanceof HTMLTextAreaElement) {
-    return direct;
-  }
+export const resolveTerminalInputElement = (inputHost: HTMLElement): HTMLTextAreaElement | null => {
+  const inputElement = inputHost.querySelector(TERMINAL_INPUT_SELECTOR);
+  return inputElement instanceof HTMLTextAreaElement ? inputElement : null;
+};
 
-  const fallback = container.querySelector('textarea');
-  return fallback instanceof HTMLTextAreaElement ? fallback : null;
+type terminal_input_bridge_options = {
+  inputHost: HTMLElement;
+  inputElement: HTMLTextAreaElement;
+  onData: (data: string) => void;
+  logger?: Logger;
+  hasSelection?: () => boolean;
+  copySelection?: (
+    source: TerminalCopySelectionSource,
+    clipboardData?: DataTransfer | null,
+  ) => Promise<TerminalCopySelectionResult> | TerminalCopySelectionResult;
+  syncInputGeometry?: () => void;
 };
 
 export class TerminalInputBridge {
+  private readonly inputHost: HTMLElement;
+  private readonly inputElement: HTMLTextAreaElement;
+  private readonly onData: (data: string) => void;
+  private readonly logger: Logger;
+  private readonly hasSelection: () => boolean;
+  private readonly copySelection: (
+    source: TerminalCopySelectionSource,
+    clipboardData?: DataTransfer | null,
+  ) => Promise<TerminalCopySelectionResult> | TerminalCopySelectionResult;
+  private readonly syncInputGeometry: () => void;
   private isComposing = false;
   private ignoreNextInput = false;
   private suppressionToken: input_suppression_token | null = null;
@@ -224,41 +246,38 @@ export class TerminalInputBridge {
     this.clearInputValue();
   };
 
-  private readonly containerFocusInListener = (event: FocusEvent) => {
-    this.handleContainerFocusIn(event);
+  private readonly inputHostFocusInListener = (event: FocusEvent) => {
+    this.handleInputHostFocusIn(event);
   };
 
-  private readonly containerPointerDownListener = () => {
+  private readonly inputHostPointerDownListener = () => {
     this.scheduleInputFocusClaim();
   };
 
   private inputFocusClaimTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(
-    private readonly container: HTMLElement,
-    private readonly input: HTMLTextAreaElement,
-    private readonly onData: (data: string) => void,
-    private readonly logger: Logger = noopLogger,
-    private readonly hasSelection: () => boolean = () => false,
-    private readonly copySelection: (
-      source: TerminalCopySelectionSource,
-      clipboardData?: DataTransfer | null,
-    ) => Promise<TerminalCopySelectionResult> | TerminalCopySelectionResult = async (source) => ({
+  constructor(options: terminal_input_bridge_options) {
+    this.inputHost = options.inputHost;
+    this.inputElement = options.inputElement;
+    this.onData = options.onData;
+    this.logger = options.logger ?? noopLogger;
+    this.hasSelection = options.hasSelection ?? (() => false);
+    this.copySelection = options.copySelection ?? (async (source) => ({
       copied: false,
       reason: 'empty_selection',
       source,
-    }),
-    private readonly syncInputGeometry: () => void = () => {},
-  ) {
-    this.input.setAttribute('inputmode', 'text');
-    this.input.setAttribute('enterkeyhint', 'enter');
-    this.unregisterDocumentShortcutBridge = registerDocumentShortcutBridge(this.container.ownerDocument, this);
+    }));
+    this.syncInputGeometry = options.syncInputGeometry ?? (() => {});
+
+    this.inputElement.setAttribute('inputmode', 'text');
+    this.inputElement.setAttribute('enterkeyhint', 'enter');
+    this.unregisterDocumentShortcutBridge = registerDocumentShortcutBridge(this.inputHost.ownerDocument, this);
     this.attach();
   }
 
   focus(options?: TerminalFocusOptions): void {
     this.syncInputGeometry();
-    focusTerminalElement(this.input, options);
+    focusTerminalElement(this.inputElement, options);
   }
 
   dispose(): void {
@@ -268,31 +287,33 @@ export class TerminalInputBridge {
     this.restoreTerminalFocusHost = null;
     this.patchedTerminalFocusHost = null;
     this.unregisterDocumentShortcutBridge();
-    this.input.removeEventListener('keydown', this.keydownListener);
-    this.input.removeEventListener('beforeinput', this.beforeInputListener as EventListener);
-    this.input.removeEventListener('input', this.inputListener);
-    this.input.removeEventListener('compositionstart', this.compositionStartListener);
-    this.input.removeEventListener('compositionend', this.compositionEndListener as EventListener);
-    this.input.removeEventListener('focus', this.focusListener);
-    this.container.removeEventListener('focusin', this.containerFocusInListener);
-    this.container.removeEventListener('pointerdown', this.containerPointerDownListener, true);
+    this.inputElement.removeEventListener('keydown', this.keydownListener);
+    this.inputElement.removeEventListener('beforeinput', this.beforeInputListener as EventListener, true);
+    this.inputElement.removeEventListener('input', this.inputListener);
+    this.inputElement.removeEventListener('compositionstart', this.compositionStartListener);
+    this.inputElement.removeEventListener('compositionend', this.compositionEndListener as EventListener);
+    this.inputElement.removeEventListener('focus', this.focusListener);
+    this.inputHost.removeEventListener('focusin', this.inputHostFocusInListener);
+    this.inputHost.removeEventListener('pointerdown', this.inputHostPointerDownListener, true);
   }
 
   private attach(): void {
     this.patchTerminalFocusHost();
-    this.input.addEventListener('keydown', this.keydownListener);
-    this.input.addEventListener('beforeinput', this.beforeInputListener as EventListener);
-    this.input.addEventListener('input', this.inputListener);
-    this.input.addEventListener('compositionstart', this.compositionStartListener);
-    this.input.addEventListener('compositionend', this.compositionEndListener as EventListener);
-    this.input.addEventListener('focus', this.focusListener);
-    this.container.addEventListener('focusin', this.containerFocusInListener);
-    this.container.addEventListener('pointerdown', this.containerPointerDownListener, true);
+    this.inputElement.addEventListener('keydown', this.keydownListener);
+    // The bridge owns mapped browser text input before ghostty's retained
+    // textarea listener; physical key encoding remains on the input host.
+    this.inputElement.addEventListener('beforeinput', this.beforeInputListener as EventListener, true);
+    this.inputElement.addEventListener('input', this.inputListener);
+    this.inputElement.addEventListener('compositionstart', this.compositionStartListener);
+    this.inputElement.addEventListener('compositionend', this.compositionEndListener as EventListener);
+    this.inputElement.addEventListener('focus', this.focusListener);
+    this.inputHost.addEventListener('focusin', this.inputHostFocusInListener);
+    this.inputHost.addEventListener('pointerdown', this.inputHostPointerDownListener, true);
   }
 
-  private handleContainerFocusIn(event: FocusEvent): void {
+  private handleInputHostFocusIn(event: FocusEvent): void {
     const target = event.target;
-    if (!(target instanceof HTMLElement) || target === this.input) {
+    if (!(target instanceof HTMLElement) || target === this.inputElement) {
       return;
     }
 
@@ -307,8 +328,8 @@ export class TerminalInputBridge {
     this.clearInputFocusClaimTimer();
     this.inputFocusClaimTimer = setTimeout(() => {
       this.inputFocusClaimTimer = null;
-      const active = this.container.ownerDocument.activeElement;
-      if (!(active instanceof HTMLElement) || active === this.input) {
+      const active = this.inputHost.ownerDocument.activeElement;
+      if (!(active instanceof HTMLElement) || active === this.inputElement) {
         return;
       }
       if (!this.isTerminalOwnedEditableTarget(active)) {
@@ -333,14 +354,9 @@ export class TerminalInputBridge {
     }
 
     const forwarded = new KeyboardEvent('keydown', cloneKeyboardEventInit(event));
-    const notCancelled = this.container.dispatchEvent(forwarded);
-    const keydownData = mapKeydownToTerminalData(event);
+    const notCancelled = this.inputHost.dispatchEvent(forwarded);
     this.suppressionToken = createSuppressionTokenFromKeydown(event);
     this.scheduleEphemeralStateReset();
-
-    if (keydownData && notCancelled) {
-      this.emitData(keydownData);
-    }
 
     if (!notCancelled || this.suppressionToken) {
       event.preventDefault();
@@ -359,7 +375,15 @@ export class TerminalInputBridge {
       this.suppressionToken = null;
       this.ignoreNextInput = true;
       this.scheduleEphemeralStateReset();
-      event.preventDefault();
+      consumeBrowserInputEvent(event);
+      return;
+    }
+
+    if (this.ignoreNextInput) {
+      this.clearEphemeralStateResetTimer();
+      this.ignoreNextInput = false;
+      this.scheduleEphemeralStateReset();
+      consumeBrowserInputEvent(event);
       return;
     }
 
@@ -371,7 +395,7 @@ export class TerminalInputBridge {
     this.ignoreNextInput = true;
     this.scheduleEphemeralStateReset();
     this.emitData(data);
-    event.preventDefault();
+    consumeBrowserInputEvent(event);
   }
 
   private handleInput(): void {
@@ -380,7 +404,7 @@ export class TerminalInputBridge {
       return;
     }
 
-    const value = this.input.value;
+    const value = this.inputElement.value;
 
     if (this.suppressionToken && matchesInputSuppression(this.suppressionToken, value)) {
       this.clearEphemeralStateResetTimer();
@@ -415,7 +439,7 @@ export class TerminalInputBridge {
     this.syncInputGeometry();
     this.isComposing = false;
 
-    const data = String(event.data ?? this.input.value ?? '');
+    const data = String(event.data ?? this.inputElement.value ?? '');
     if (data.length > 0) {
       this.emitData(data);
     }
@@ -426,7 +450,9 @@ export class TerminalInputBridge {
   }
 
   containsTarget(target: Node): boolean {
-    return target === this.input || this.input.contains(target) || this.container.contains(target);
+    return target === this.inputElement
+      || this.inputElement.contains(target)
+      || this.inputHost.contains(target);
   }
 
   tryHandleDocumentCopyShortcut(event: KeyboardEvent): boolean {
@@ -480,11 +506,11 @@ export class TerminalInputBridge {
   }
 
   private isTerminalOwnedEditableTarget(target: HTMLElement): boolean {
-    if (target === this.input || target === this.container) {
+    if (target === this.inputElement || target === this.inputHost) {
       return true;
     }
 
-    if (!this.container.contains(target)) {
+    if (!this.inputHost.contains(target)) {
       return false;
     }
 
@@ -495,9 +521,9 @@ export class TerminalInputBridge {
   }
 
   private patchTerminalFocusHost(): void {
-    const host = this.container.matches(TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR)
-      ? this.container
-      : this.container.querySelector(TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR);
+    const host = this.inputHost.matches(TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR)
+      ? this.inputHost
+      : null;
     if (!(host instanceof HTMLElement) || this.patchedTerminalFocusHost === host) {
       return;
     }
@@ -514,13 +540,13 @@ export class TerminalInputBridge {
   }
 
   private clearInputValue(): void {
-    if (this.input.value.length === 0) {
+    if (this.inputElement.value.length === 0) {
       return;
     }
 
-    this.input.value = '';
+    this.inputElement.value = '';
     try {
-      this.input.setSelectionRange(0, 0);
+      this.inputElement.setSelectionRange(0, 0);
     } catch {
       this.logger.debug('[TerminalInputBridge] Failed to reset selection range');
     }
