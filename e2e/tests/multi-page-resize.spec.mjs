@@ -172,6 +172,10 @@ test('keeps one session correct while two independent pages resize and stream ou
     await page.waitForFunction(marker => window.__floetermPerfHarness.getStreamDiagnostics().tail.includes(marker), outputMarker);
     await secondPage.bringToFront();
     await secondPage.waitForFunction(marker => window.__floetermPerfHarness.getStreamDiagnostics().tail.includes(marker), outputMarker);
+    await Promise.all([page, secondPage].map(target => target.waitForFunction(
+      marker => window.__floetermPerfHarness.serialize().includes(marker),
+      outputMarker,
+    )));
     const streamed = await Promise.all([readPageState(page), readPageState(secondPage)]);
     expect(streamed[0].stream).toEqual(streamed[1].stream);
     expect(streamed[0].stream.sequenceGaps).toBe(0);
