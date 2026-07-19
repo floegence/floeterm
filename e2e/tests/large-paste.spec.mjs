@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import { expect, test } from '@playwright/test';
 
+import { captureBrowserFailures } from '../support/browserFailures.mjs';
+
 const PASTE_BYTES = 2 * 1024 * 1024;
 const PASTE_PATTERN = 'A中文😀\n';
 const PASTE_PATTERN_BYTES = Buffer.byteLength(PASTE_PATTERN);
@@ -12,19 +14,8 @@ const buildExpectedPaste = () => {
   return PASTE_PATTERN.repeat(repetitions) + 'X'.repeat(remainder);
 };
 
-const captureConsoleErrors = page => {
-  const errors = [];
-  page.on('console', message => {
-    if (message.type() === 'error' || message.type() === 'warning') {
-      errors.push(`${message.type()}:${message.text()}`);
-    }
-  });
-  page.on('pageerror', error => errors.push(`pageerror:${error.message}`));
-  return errors;
-};
-
 test('preserves a 2 MiB Unicode native paste through the live protocol and real PTY', async ({ page, request }) => {
-  const consoleErrors = captureConsoleErrors(page);
+  const consoleErrors = captureBrowserFailures(page);
   const createResponse = await request.post('/api/sessions', {
     data: { name: `large-paste-${Date.now()}`, workingDir: '' },
   });

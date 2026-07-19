@@ -1,15 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const captureConsoleErrors = page => {
-  const errors = [];
-  page.on('console', message => {
-    if (message.type() !== 'error' && message.type() !== 'warning') return;
-    const text = message.text();
-    errors.push(`${message.type()}:${text}`);
-  });
-  page.on('pageerror', error => errors.push(`pageerror:${error.message}`));
-  return errors;
-};
+import { captureBrowserFailures } from '../support/browserFailures.mjs';
 
 const createSession = async request => {
   const response = await request.post('/api/sessions', {
@@ -114,8 +105,8 @@ const expectConverged = async (firstPage, secondPage) => {
 test('keeps one session correct while two independent pages resize and stream output', async ({ context, page, request }) => {
   const session = await createSession(request);
   const secondPage = await context.newPage();
-  const firstErrors = captureConsoleErrors(page);
-  const secondErrors = captureConsoleErrors(secondPage);
+  const firstErrors = captureBrowserFailures(page);
+  const secondErrors = captureBrowserFailures(secondPage);
 
   try {
     await Promise.all([

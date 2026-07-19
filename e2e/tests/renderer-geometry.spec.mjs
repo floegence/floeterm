@@ -1,16 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
 
-const captureBrowserFailures = page => {
-  const failures = [];
-  page.on('console', message => {
-    if (message.type() === 'error' || message.type() === 'warning') {
-      failures.push(`console:${message.type()}:${message.text()}`);
-    }
-  });
-  page.on('pageerror', error => failures.push(`pageerror:${error.message}`));
-  return failures;
-};
+import { captureBrowserFailures } from '../support/browserFailures.mjs';
 
 const inkRowRuns = imageBuffer => {
   const image = PNG.sync.read(imageBuffer);
@@ -82,13 +73,15 @@ const expectTypographicGeometry = geometry => {
   expect(geometry.rows).toBe(geometry.expectedRows);
 };
 
-const expectSeparatedRows = (pixels, minimumRuns) => {
+const expectSeparatedRows = (pixels, minimumRuns, cellHeight) => {
   expect(pixels.runs.length, JSON.stringify(pixels)).toBeGreaterThanOrEqual(minimumRuns);
-  for (const [previous, next] of pixels.runs.slice(0, minimumRuns).slice(1).map((run, index) => [
-    pixels.runs[index],
-    run,
-  ])) {
-    expect(next.start - previous.end - 1).toBeGreaterThanOrEqual(2);
+  const lineRuns = pixels.runs.slice(0, minimumRuns);
+  for (const [index, run] of lineRuns.entries()) {
+    expect(run.start, JSON.stringify({ pixels, cellHeight })).toBeGreaterThanOrEqual(index * cellHeight);
+    expect(run.end, JSON.stringify({ pixels, cellHeight })).toBeLessThan((index + 1) * cellHeight);
+    if (index > 0) {
+      expect(run.start - lineRuns[index - 1].end - 1).toBeGreaterThanOrEqual(1);
+    }
   }
 };
 
@@ -150,7 +143,7 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
 
   const screenshot = await canvas.screenshot({ animations: 'disabled' });
   await testInfo.attach('renderer-geometry.png', { body: screenshot, contentType: 'image/png' });
-  expectSeparatedRows(inkRowRuns(screenshot), marker.length);
+  expectSeparatedRows(inkRowRuns(screenshot), marker.length, geometry.expectedCellHeight);
 
   await page.setViewportSize({ width: 1024, height: 720 });
   await page.evaluate(() => window.__floetermPerfHarness.forceResize());
@@ -162,7 +155,7 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
   expectTypographicGeometry(resizedGeometry);
   const resizedScreenshot = await canvas.screenshot({ animations: 'disabled' });
   await testInfo.attach('renderer-geometry-resized.png', { body: resizedScreenshot, contentType: 'image/png' });
-  expectSeparatedRows(inkRowRuns(resizedScreenshot), marker.length);
+  expectSeparatedRows(inkRowRuns(resizedScreenshot), marker.length, resizedGeometry.expectedCellHeight);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(failures).toEqual([]);
 });

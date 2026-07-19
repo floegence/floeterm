@@ -1,6 +1,9 @@
 import { defineConfig } from '@playwright/test';
 
 const port = 8282;
+const chromiumArgs = process.env.CI
+  ? ['--enable-unsafe-swiftshader', '--use-angle=swiftshader']
+  : [];
 
 export default defineConfig({
   testDir: './tests',
@@ -16,6 +19,9 @@ export default defineConfig({
     deviceScaleFactor: 1,
     screenshot: 'off',
     trace: 'off',
+    launchOptions: {
+      args: chromiumArgs,
+    },
   },
   webServer: {
     command: `cd ../app/backend && go run ./cmd/floeterm -addr 127.0.0.1:${port} -static ../web/dist -log-level warn -performance-diagnostics`,

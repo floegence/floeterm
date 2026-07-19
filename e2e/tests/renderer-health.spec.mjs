@@ -1,15 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const captureBrowserFailures = page => {
-  const failures = [];
-  page.on('console', message => {
-    if (message.type() === 'error' || message.type() === 'warning') {
-      failures.push(`console:${message.type()}:${message.text()}`);
-    }
-  });
-  page.on('pageerror', error => failures.push(`pageerror:${error.message}`));
-  return failures;
-};
+import { captureBrowserFailures } from '../support/browserFailures.mjs';
 
 test('renders dynamic-atlas glyphs through the owned WebGL2 backend without warnings', async ({ page }) => {
   const failures = captureBrowserFailures(page);

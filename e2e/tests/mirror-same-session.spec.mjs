@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
 
+import { captureBrowserFailures } from '../support/browserFailures.mjs';
+
 const readMirror = page => page.evaluate(() => {
   const harness = window.__floetermMirrorHarness;
   if (!harness) return null;
@@ -21,18 +23,6 @@ const readRuntime = page => page.evaluate(async () => {
   if (!response.ok) throw new Error(`runtime diagnostics returned ${response.status}`);
   return response.json();
 });
-
-const captureConsoleErrors = page => {
-  const consoleErrors = [];
-  page.on('console', message => {
-    if (message.type() === 'error' || message.type() === 'warning') {
-      const text = message.text();
-      consoleErrors.push(`${message.type()}:${text}`);
-    }
-  });
-  page.on('pageerror', error => consoleErrors.push(`pageerror:${error.message}`));
-  return consoleErrors;
-};
 
 const openMirror = async page => {
   await page.goto('/?mode=mirror&perf_probe=1');
@@ -95,7 +85,7 @@ const inkRowRuns = (view, maxRows = 12) => {
 };
 
 test('keeps independent viewport sizes on one shared terminal grid and screen state', async ({ page }) => {
-  const consoleErrors = captureConsoleErrors(page);
+  const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
   const initial = await readMirror(page);
@@ -163,7 +153,7 @@ test('keeps independent viewport sizes on one shared terminal grid and screen st
 });
 
 test('applies the minimum live-view dimensions to the shared PTY', async ({ page }) => {
-  const consoleErrors = captureConsoleErrors(page);
+  const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
   const sizeMarker = 'MIRROR_E2E_STTY';
@@ -184,7 +174,7 @@ test('applies the minimum live-view dimensions to the shared PTY', async ({ page
 });
 
 test('repaints the complete shared screen after one view is hidden, restored, and resized', async ({ page }, testInfo) => {
-  const consoleErrors = captureConsoleErrors(page);
+  const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
   const markers = [
@@ -235,7 +225,7 @@ test('repaints the complete shared screen after one view is hidden, restored, an
 });
 
 test('keeps long wrapped output and terminal state identical across different viewport widths', async ({ page }) => {
-  const consoleErrors = captureConsoleErrors(page);
+  const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
   const initial = await readMirror(page);
@@ -265,7 +255,7 @@ test('keeps long wrapped output and terminal state identical across different vi
 });
 
 test('keeps both views usable through input, reconnect, resize, and session restart', async ({ page }) => {
-  const consoleErrors = captureConsoleErrors(page);
+  const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
   const firstMarker = 'MIRROR_E2E_FIRST_INPUT';
