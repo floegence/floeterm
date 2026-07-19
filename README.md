@@ -162,7 +162,7 @@ await controller.mount(container);
 | UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
 | Input model | `TerminalCore` handles one-time `ghostty-web` initialization internally and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
 | Extension points | `TerminalCore` exposes link providers, shell bell/title callbacks, buffer line reads, touch-scroll helpers, and explicit runtime font updates so downstream apps do not need `any`-based terminal mutations. |
-| Reference transport | The sample app uses HTTP APIs for control operations and WebSocket streaming for terminal output. |
+| Reference transport | The sample app uses HTTP APIs for control operations and one bidirectional binary WebSocket for live terminal input, resize, and output. |
 
 ## 🛠 Development
 

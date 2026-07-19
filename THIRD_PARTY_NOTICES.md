@@ -20,7 +20,7 @@ For authoritative license texts and copyright notices, refer to each upstream pr
 
 ## npm Packages
 
-- @floegence/beamterm-renderer 1.0.1-rc.4 (License: MIT; FloeTerm-maintained Beamterm distribution)
+- @floegence/beamterm-renderer 1.0.1 (License: MIT; FloeTerm-maintained Beamterm distribution)
 
 - @asamuzakjp/css-color@3.2.0 (License: MIT)
 - @babel/code-frame@7.28.6 (License: MIT)

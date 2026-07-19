@@ -1,6 +1,6 @@
 [package]
 name = "floegence-beamterm-renderer"
-version = "1.0.1-rc.6"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.90.0"
 license = "MIT"
