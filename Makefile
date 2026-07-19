@@ -59,6 +59,8 @@ e2e-check: app-web-prepare
 	@set -euo pipefail; \
 	echo "==> e2e npm ci"; \
 	(cd e2e && npm ci); \
+	echo "==> e2e Chromium runtime"; \
+	(cd e2e && npm exec playwright install chromium); \
 	echo "==> e2e unit and browser tests"; \
 	if [[ -n "$${CI:-}" ]]; then \
 		(cd e2e && xvfb-run -a npm test); \

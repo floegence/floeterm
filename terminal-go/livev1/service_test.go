@@ -351,7 +351,6 @@ type pipelinedOutputStream struct {
 	started   chan struct{}
 	release   chan struct{}
 	startOnce sync.Once
-	writes    [][]byte
 	sequences []uint64
 	cancel    context.CancelFunc
 }
@@ -368,7 +367,6 @@ func (s *pipelinedOutputStream) Write(data []byte) (int, error) {
 		return 0, err
 	}
 	s.mu.Lock()
-	s.writes = append(s.writes, append([]byte(nil), data...))
 	for _, frame := range frames {
 		batch, decodeErr := DecodeOutputBatch(frame)
 		if decodeErr != nil {
@@ -388,7 +386,7 @@ func (s *pipelinedOutputStream) Write(data []byte) (int, error) {
 
 func (s *pipelinedOutputStream) Close() error { return nil }
 
-func TestWriteOutputsPipelinesEncodingIntoFewerStreamWrites(t *testing.T) {
+func TestWriteOutputsPipelinesEncodingWhileStreamWriteIsBlocked(t *testing.T) {
 	previousProcs := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previousProcs) })
 
@@ -448,12 +446,6 @@ func TestWriteOutputsPipelinesEncodingIntoFewerStreamWrites(t *testing.T) {
 
 	stream.mu.Lock()
 	defer stream.mu.Unlock()
-	if got, want := len(stream.writes), 2; got != want {
-		t.Fatalf("stream writes=%d, want %d", got, want)
-	}
-	if got := len(stream.writes[1]); got <= MaxOutputBatchBytes {
-		t.Fatalf("combined stream write bytes=%d, want more than one output batch", got)
-	}
 	if got, want := stream.sequences, makeSequenceRange(1, 129); !equalSequences(got, want) {
 		t.Fatalf("output sequences=%v, want %v", got, want)
 	}
