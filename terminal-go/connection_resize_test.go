@@ -284,6 +284,7 @@ func TestApplyConnectionSizeReturnsOnlyAfterThePTYResizeCompletes(t *testing.T) 
 }
 
 func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testing.T) {
+	resizeCalls := 0
 	session := &Session{
 		ID:       "geometry-generation",
 		PTY:      &os.File{},
@@ -296,6 +297,7 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 		lastAppliedRows:    30,
 		geometryGeneration: 7,
 		setPTYSize: func(_ *os.File, _ *pty.Winsize) error {
+			resizeCalls++
 			return nil
 		},
 		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
@@ -308,6 +310,9 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 	if geometry.Generation != 8 || geometry.Cols != 80 || geometry.Rows != 40 {
 		t.Fatalf("changed geometry = %+v", geometry)
 	}
+	if resizeCalls != 1 {
+		t.Fatalf("changed geometry resize calls = %d", resizeCalls)
+	}
 
 	geometry, err = session.ApplyConnectionSize("wide", 160, 40)
 	if err != nil {
@@ -315,5 +320,8 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 	}
 	if geometry.Generation != 8 || geometry.Cols != 80 || geometry.Rows != 40 {
 		t.Fatalf("unchanged geometry advanced generation: %+v", geometry)
+	}
+	if resizeCalls != 2 {
+		t.Fatalf("explicit unchanged resize was not reapplied: calls=%d", resizeCalls)
 	}
 }

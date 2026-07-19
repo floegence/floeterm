@@ -55,6 +55,7 @@ type FloetermPerfHarness = {
 type FloetermMirrorViewHarness = FloetermPerfHarness & {
   label: string;
   forceResize(): void;
+  synchronizeSize(): Promise<void>;
   getStreamDiagnostics(): {
     dataEvents: number;
     firstSequence: number;
@@ -614,6 +615,10 @@ const MirrorTerminalConnection = (props: {
     getSnapshot: () => terminal.snapshot(),
     getFabricDiagnostics: () => getTerminalFabricDiagnostics(),
     forceResize: () => terminal.actions().forceResize(),
+    synchronizeSize: async () => {
+      const dimensions = terminal.snapshot().state.dimensions;
+      await props.runtime.transport.resize(props.sessionId, dimensions.cols, dimensions.rows);
+    },
     getGeometryDiagnostics: () => ({ ...geometryDiagnostics }),
     getRenderDiagnostics: () => ({ ...renderDiagnostics }),
     resetRenderDiagnostics: () => { renderDiagnostics = { count: 0, lastRenderAtMs: 0 }; },

@@ -241,15 +241,19 @@ func TestServicePublishesUnsolicitedGeometryChanges(t *testing.T) {
 	writeBytes(t, client, mustEncode(t, attachBytes, err))
 	_ = readFrameForTest(t, client)
 
-	if !backend.emitGeometry(EffectiveGeometry{Generation: 2, OutputSequenceBoundary: 4, Cols: 80, Rows: 24}) {
-		t.Fatal("geometry change rejected")
-	}
+	emitted := make(chan bool, 1)
+	go func() {
+		emitted <- backend.emitGeometry(EffectiveGeometry{Generation: 2, OutputSequenceBoundary: 4, Cols: 80, Rows: 24})
+	}()
 	geometry, err := DecodeGeometryChanged(readFrameForTest(t, client))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if geometry.Generation != 2 || geometry.OutputSequenceBoundary != 4 || geometry.Cols != 80 || geometry.Rows != 24 {
 		t.Fatalf("geometry = %+v", geometry)
+	}
+	if !<-emitted {
+		t.Fatal("geometry change rejected")
 	}
 }
 

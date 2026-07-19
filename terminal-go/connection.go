@@ -113,7 +113,7 @@ func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (Term
 		s.mu.Unlock()
 		return geometry, nil
 	}
-	if err := s.reconcilePTYSizeLocked("connection-applied"); err != nil {
+	if err := s.reconcilePTYSizeLocked("connection-applied", true); err != nil {
 		conn.Cols = previousCols
 		conn.Rows = previousRows
 		s.mu.Unlock()
@@ -190,12 +190,12 @@ func (s *Session) effectiveGeometryLocked() TerminalGeometry {
 	}
 }
 
-func (s *Session) reconcilePTYSizeLocked(reason string) error {
+func (s *Session) reconcilePTYSizeLocked(reason string, force bool) error {
 	cols, rows, ok := s.getMinimumTerminalSizeLocked()
 	if !ok {
 		return nil
 	}
-	return s.applyPTYSizeLocked(cols, rows, reason)
+	return s.applyPTYSizeLocked(cols, rows, reason, force)
 }
 
 func (s *Session) schedulePTYSizeReconcileLocked(reason string) {
@@ -261,17 +261,18 @@ func (s *Session) runPTYSizeReconciler() {
 func (s *Session) resizePTYToMinimumSize() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.reconcilePTYSizeLocked("connection-reconcile")
+	return s.reconcilePTYSizeLocked("connection-reconcile", false)
 }
 
-func (s *Session) applyPTYSizeLocked(cols, rows int, reason string) error {
+func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) error {
 	if s.PTY == nil {
 		return fmt.Errorf("PTY not available")
 	}
 	if err := validateTerminalSize(cols, rows); err != nil {
 		return err
 	}
-	if s.lastAppliedCols == cols && s.lastAppliedRows == rows {
+	changed := s.lastAppliedCols != cols || s.lastAppliedRows != rows
+	if !changed && !force {
 		if s.geometryGeneration == 0 {
 			s.geometryGeneration = 1
 		}
@@ -286,11 +287,13 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string) error {
 	if err := setSize(s.PTY, buildWinSize(cols, rows)); err != nil {
 		return fmt.Errorf("failed to resize PTY: %w", err)
 	}
-	s.lastAppliedCols = cols
-	s.lastAppliedRows = rows
-	s.geometryGeneration++
-	if s.geometryGeneration == 0 {
-		s.geometryGeneration = 1
+	if changed {
+		s.lastAppliedCols = cols
+		s.lastAppliedRows = rows
+		s.geometryGeneration++
+		if s.geometryGeneration == 0 {
+			s.geometryGeneration = 1
+		}
 	}
 	s.config.logger.Debug("PTY resized", "sessionID", s.ID, "cols", cols, "rows", rows, "reason", reason)
 	return nil
@@ -305,7 +308,7 @@ func (s *Session) ResizePTY(cols, rows int) error {
 		return err
 	}
 	if len(s.connections) > 0 {
-		return s.reconcilePTYSizeLocked("legacy-resize-with-connections")
+		return s.reconcilePTYSizeLocked("legacy-resize-with-connections", true)
 	}
-	return s.applyPTYSizeLocked(cols, rows, "legacy-resize")
+	return s.applyPTYSizeLocked(cols, rows, "legacy-resize", true)
 }

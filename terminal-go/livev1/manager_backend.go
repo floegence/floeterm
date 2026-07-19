@@ -47,9 +47,6 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 	if b.activate == nil {
 		return Attached{}, nil, ErrActivationFailed
 	}
-	if err := b.activate(ctx, request.SessionID, int(request.Cols), int(request.Rows)); err != nil {
-		return Attached{}, nil, fmt.Errorf("%w: %v", ErrActivationFailed, err)
-	}
 	attachment, err := session.AttachLiveConnection(
 		request.ConnectionID,
 		request.AttachGeneration,
@@ -90,6 +87,16 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		}
 		return Attached{}, nil, err
 	}
+	if err := b.activate(ctx, request.SessionID, int(request.Cols), int(request.Rows)); err != nil {
+		attachment.Detach()
+		return Attached{}, nil, fmt.Errorf("%w: %v", ErrActivationFailed, err)
+	}
+	geometry, err := session.ApplyConnectionSize(request.ConnectionID, int(request.Cols), int(request.Rows))
+	if err != nil {
+		attachment.Detach()
+		return Attached{}, nil, err
+	}
+	attachment.Geometry = geometry
 	return Attached{
 		HistoryBoundarySequence: uint64(attachment.HistoryBoundarySequence),
 		HistoryGeneration:       uint64(attachment.HistoryGeneration),

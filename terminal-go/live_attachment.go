@@ -68,7 +68,7 @@ func (s *Session) AttachLiveConnection(
 		Rows:     rows,
 	}
 	if s.isActive {
-		if err := s.reconcilePTYSizeLocked("live-connection-attached"); err != nil {
+		if err := s.reconcilePTYSizeLocked("live-connection-attached", false); err != nil {
 			if exists {
 				s.liveAttachments[connectionID] = previous
 			} else {
@@ -118,7 +118,7 @@ func (s *Session) AttachLiveConnection(
 				delete(s.liveAttachments, connectionID)
 				delete(s.connections, connectionID)
 				if s.isActive && len(s.connections) > 0 {
-					if err := s.reconcilePTYSizeLocked("live-connection-detached"); err != nil {
+					if err := s.reconcilePTYSizeLocked("live-connection-detached", false); err != nil {
 						s.config.logger.Warn("Failed to reconcile PTY after live detach", "sessionID", s.ID, "error", err)
 					}
 				}

@@ -13,6 +13,7 @@ const readMirror = page => page.evaluate(() => {
       info: view.getTerminalInfo(),
       viewport: view.getSnapshot().state.dimensions,
       connected: view.getSnapshot().connection.isConnected,
+      geometry: view.getGeometryDiagnostics(),
       serialized: view.serialize(),
     })),
   };
@@ -31,6 +32,22 @@ const openMirror = async page => {
     return harness?.getViews().length === 2
       && harness.getViews().every(view => view.getSnapshot().connection.isConnected && view.getTerminalInfo());
   });
+};
+
+const expectMirrorGeometryConverged = async page => {
+  await expect.poll(async () => {
+    const state = await readMirror(page);
+    if (!state || state.views.length !== 2) return false;
+    const expectedRows = Math.min(...state.views.map(view => view.viewport.rows));
+    const expectedCols = Math.min(...state.views.map(view => view.viewport.cols));
+    return state.views.every(view => (
+      view.info?.rows === expectedRows
+      && view.info?.cols === expectedCols
+      && view.geometry.generation > 0
+      && view.geometry.rows === expectedRows
+      && view.geometry.cols === expectedCols
+    ));
+  }).toBe(true);
 };
 
 const captureMirrorPixels = async (page, mirrorState) => {
@@ -156,10 +173,27 @@ test('applies the minimum live-view dimensions to the shared PTY', async ({ page
   const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
+  const readyMarker = 'MIRROR_E2E_SHELL_READY';
+  const readyMarkerHex = Buffer.from(`${readyMarker}\n`).toString('hex');
+  await page.evaluate(markerHex => {
+    window.__floetermMirrorHarness.getViews()[0].sendInput(
+      `python3 -c "import os;os.write(1,bytes.fromhex('${markerHex}'))"\r`,
+    );
+  }, readyMarkerHex);
+  await page.waitForFunction(marker => (
+    window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes(marker))
+  ), readyMarker);
+  await page.evaluate(async () => {
+    await Promise.all(window.__floetermMirrorHarness.getViews().map(view => view.synchronizeSize()));
+  });
+  await expectMirrorGeometryConverged(page);
+
   const sizeMarker = 'MIRROR_E2E_STTY';
-  await page.evaluate(marker => {
-    window.__floetermMirrorHarness.getViews()[1].sendInput(`printf '${marker} '; stty size\r`);
-  }, sizeMarker);
+  const sizeMarkerHex = Buffer.from(sizeMarker).toString('hex');
+  await page.evaluate(({ markerHex }) => {
+    const command = `python3 -c "import os;s=os.get_terminal_size(0);os.write(1,bytes.fromhex('${markerHex}')+f' {s.lines} {s.columns}\\n'.encode())"`;
+    window.__floetermMirrorHarness.getViews()[1].sendInput(`${command}\r`);
+  }, { markerHex: sizeMarkerHex });
   await page.waitForFunction(marker => (
     window.__floetermMirrorHarness.getViews().every(view => new RegExp(`${marker} \\d+ \\d+`).test(view.serialize()))
   ), sizeMarker);
@@ -168,8 +202,9 @@ test('applies the minimum live-view dimensions to the shared PTY', async ({ page
   expect(match).not.toBeNull();
   const expectedRows = Math.min(...sizeState.views.map(view => view.viewport.rows));
   const expectedCols = Math.min(...sizeState.views.map(view => view.viewport.cols));
-  expect(Number(match[1])).toBe(expectedRows);
-  expect(Number(match[2])).toBe(expectedCols);
+  const diagnostics = JSON.stringify({ expectedRows, expectedCols, sizeState }, null, 2);
+  expect(Number(match[1]), diagnostics).toBe(expectedRows);
+  expect(Number(match[2]), diagnostics).toBe(expectedCols);
   expect(consoleErrors).toEqual([]);
 });
 
