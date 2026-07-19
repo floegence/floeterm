@@ -3,7 +3,7 @@ import { PNG } from 'pngjs';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
 
-const inkRowRuns = imageBuffer => {
+const inkRows = imageBuffer => {
   const image = PNG.sync.read(imageBuffer);
   const colorCounts = new Map();
   for (let offset = 0; offset < image.data.length; offset += 4) {
@@ -26,13 +26,7 @@ const inkRowRuns = imageBuffer => {
     if (inkPixels >= 3) occupied.push(y);
   }
 
-  const runs = [];
-  for (const y of occupied) {
-    const previous = runs.at(-1);
-    if (!previous || y > previous.end + 1) runs.push({ start: y, end: y });
-    else previous.end = y;
-  }
-  return { width: image.width, height: image.height, runs };
+  return { width: image.width, height: image.height, occupied };
 };
 
 const readRendererGeometry = page => page.evaluate(() => {
@@ -73,14 +67,16 @@ const expectTypographicGeometry = geometry => {
   expect(geometry.rows).toBe(geometry.expectedRows);
 };
 
-const expectSeparatedRows = (pixels, minimumRuns, cellHeight) => {
-  expect(pixels.runs.length, JSON.stringify(pixels)).toBeGreaterThanOrEqual(minimumRuns);
-  const lineRuns = pixels.runs.slice(0, minimumRuns);
-  for (const [index, run] of lineRuns.entries()) {
-    expect(run.start, JSON.stringify({ pixels, cellHeight })).toBeGreaterThanOrEqual(index * cellHeight);
-    expect(run.end, JSON.stringify({ pixels, cellHeight })).toBeLessThan((index + 1) * cellHeight);
+const expectSeparatedRows = (pixels, minimumRows, cellHeight) => {
+  const lineInk = Array.from({ length: minimumRows }, (_, index) => pixels.occupied.filter(
+    y => y >= index * cellHeight && y < (index + 1) * cellHeight,
+  ));
+  for (const [index, occupied] of lineInk.entries()) {
+    expect(occupied.length, JSON.stringify({ pixels, cellHeight })).toBeGreaterThan(0);
     if (index > 0) {
-      expect(run.start - lineRuns[index - 1].end - 1).toBeGreaterThanOrEqual(1);
+      const previousEnd = lineInk[index - 1].at(-1);
+      const currentStart = occupied[0];
+      expect(currentStart - previousEnd - 1).toBeGreaterThanOrEqual(1);
     }
   }
 };
@@ -143,7 +139,7 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
 
   const screenshot = await canvas.screenshot({ animations: 'disabled' });
   await testInfo.attach('renderer-geometry.png', { body: screenshot, contentType: 'image/png' });
-  expectSeparatedRows(inkRowRuns(screenshot), marker.length, geometry.expectedCellHeight);
+  expectSeparatedRows(inkRows(screenshot), marker.length, geometry.expectedCellHeight);
 
   await page.setViewportSize({ width: 1024, height: 720 });
   await page.evaluate(() => window.__floetermPerfHarness.forceResize());
@@ -155,7 +151,7 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
   expectTypographicGeometry(resizedGeometry);
   const resizedScreenshot = await canvas.screenshot({ animations: 'disabled' });
   await testInfo.attach('renderer-geometry-resized.png', { body: resizedScreenshot, contentType: 'image/png' });
-  expectSeparatedRows(inkRowRuns(resizedScreenshot), marker.length, resizedGeometry.expectedCellHeight);
+  expectSeparatedRows(inkRows(resizedScreenshot), marker.length, resizedGeometry.expectedCellHeight);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(failures).toEqual([]);
 });
