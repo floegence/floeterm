@@ -6,12 +6,43 @@ import type { TerminalEventHandlers, TerminalLink, TerminalLinkProvider } from '
 
 const fitSpy = vi.fn();
 
+class MockLinkDetector {
+  readonly providers: TerminalLinkProvider[] = [];
+
+  constructor(readonly terminal: unknown) {}
+
+  registerProvider(provider: TerminalLinkProvider) {
+    this.providers.push(provider);
+  }
+}
+
+class MockOSC8LinkProvider implements TerminalLinkProvider {
+  readonly kind = 'osc8';
+
+  constructor(readonly terminal: unknown) {}
+
+  provideLinks(_y: number, callback: (links: TerminalLink[] | undefined) => void) {
+    callback(undefined);
+  }
+}
+
+class MockUrlRegexProvider implements TerminalLinkProvider {
+  readonly kind = 'url';
+
+  constructor(readonly terminal: unknown) {}
+
+  provideLinks(_y: number, callback: (links: TerminalLink[] | undefined) => void) {
+    callback(undefined);
+  }
+}
+
 vi.mock('ghostty-web', () => {
   class MockTerminal {
     cols: number;
     rows: number;
     options: any;
     buffer: any;
+    linkDetector: MockLinkDetector | null = null;
     registeredLinkProviders: TerminalLinkProvider[] = [];
     private bellHandlers = new Set<() => void>();
     private titleHandlers = new Set<(title: string) => void>();
@@ -31,6 +62,10 @@ vi.mock('ghostty-web', () => {
       const textarea = document.createElement('textarea');
       textarea.setAttribute('aria-label', 'Terminal input');
       container.appendChild(textarea);
+      this.linkDetector = new MockLinkDetector(this);
+      this.linkDetector.registerProvider({
+        provideLinks: (_y, callback) => callback(undefined),
+      });
     }
 
     onData(_handler: (data: string) => void) {
@@ -61,6 +96,7 @@ vi.mock('ghostty-web', () => {
 
     registerLinkProvider(provider: TerminalLinkProvider) {
       this.registeredLinkProviders.push(provider);
+      this.linkDetector?.registerProvider(provider);
     }
 
     emitBell() {
@@ -95,7 +131,14 @@ vi.mock('ghostty-web', () => {
 
   const init = vi.fn().mockResolvedValue(undefined);
 
-  return { Terminal: MockTerminal, FitAddon: MockFitAddon, init };
+  return {
+    Terminal: MockTerminal,
+    FitAddon: MockFitAddon,
+    LinkDetector: MockLinkDetector,
+    OSC8LinkProvider: MockOSC8LinkProvider,
+    UrlRegexProvider: MockUrlRegexProvider,
+    init,
+  };
 });
 
 class MockResizeObserver {
@@ -151,6 +194,11 @@ describe('TerminalCore extended events and link APIs', () => {
 
     const terminal = (core as unknown as { terminal?: { registeredLinkProviders?: TerminalLinkProvider[] } | null }).terminal;
     expect(terminal?.registeredLinkProviders).toEqual([providerA]);
+
+    const detectorProviders = (terminal as unknown as { linkDetector?: MockLinkDetector | null })
+      ?.linkDetector?.providers;
+    expect(detectorProviders?.map(provider => (provider as { kind?: string }).kind ?? 'consumer'))
+      .toEqual(['osc8', 'url', 'consumer']);
 
     core.registerLinkProvider(providerA);
     core.registerLinkProvider(providerB);

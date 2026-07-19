@@ -46,6 +46,9 @@ class MockTerminal {
 vi.mock('ghostty-web', () => ({
   Terminal: MockTerminal,
   FitAddon: class { fit() {} },
+  LinkDetector: class { registerProvider() {} },
+  OSC8LinkProvider: class {},
+  UrlRegexProvider: class {},
   init: vi.fn().mockResolvedValue(undefined),
 }));
 

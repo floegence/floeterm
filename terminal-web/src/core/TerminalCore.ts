@@ -41,10 +41,15 @@ import {
 } from '../internal/TerminalInitializationScheduler.js';
 import {
   getGhosttyFitAddonConstructor,
+  getGhosttyLinkConstructors,
   getGhosttyTerminalConstructor,
   loadGhosttyModules,
   waitWithAbort,
 } from '../internal/TerminalResourceLoader.js';
+import {
+  createUnicodeSafeUrlProviderTerminal,
+  type UrlProviderTerminal,
+} from '../internal/UnicodeSafeUrlProvider.js';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge.js';
 import { terminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler.js';
 import { scheduleUiTurn, type ScheduledTurnCancel } from '../internal/scheduleUiTurn.js';
@@ -917,6 +922,7 @@ export class TerminalCore {
     this.applyPresentationScaleStyles();
     this.installDemandRenderPatchBeforeOpen();
     this.terminal.open(renderHost);
+    this.installLinkDetector();
     if (this.config.rendererType === 'webgl') {
       const canvas = (this.terminal as unknown as { renderer?: { getCanvas?: () => HTMLCanvasElement | null } })
         .renderer?.getCanvas?.();
@@ -945,6 +951,24 @@ export class TerminalCore {
 
     body.appendChild(input);
     this.inputElement = input;
+  }
+
+  private installLinkDetector(): void {
+    if (!this.terminal) {
+      throw new Error('Terminal instance not created');
+    }
+
+    const {
+      LinkDetector,
+      OSC8LinkProvider,
+      UrlRegexProvider,
+    } = getGhosttyLinkConstructors();
+    const detector = new LinkDetector(this.terminal);
+    detector.registerProvider(new OSC8LinkProvider(this.terminal));
+    detector.registerProvider(new UrlRegexProvider(
+      createUnicodeSafeUrlProviderTerminal(this.terminal as UrlProviderTerminal),
+    ));
+    (this.terminal as unknown as { linkDetector: import('ghostty-web').LinkDetector }).linkDetector = detector;
   }
 
   private installFitAddonGeometryPatch(): void {

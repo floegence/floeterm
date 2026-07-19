@@ -48,7 +48,14 @@ vi.mock('ghostty-web', () => {
     fit() {}
   }
 
-  return { Terminal: MockTerminal, FitAddon: MockFitAddon, init: moduleState.init };
+  return {
+    Terminal: MockTerminal,
+    FitAddon: MockFitAddon,
+    LinkDetector: class { registerProvider() {} },
+    OSC8LinkProvider: class {},
+    UrlRegexProvider: class {},
+    init: moduleState.init,
+  };
 });
 
 class MockResizeObserver {
