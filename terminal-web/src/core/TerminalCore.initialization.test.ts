@@ -11,7 +11,7 @@ const moduleState = vi.hoisted(() => ({
   constructorFailures: 0,
 }));
 
-vi.mock('@beamterm/renderer', () => ({
+vi.mock('@floegence/beamterm-renderer', () => ({
   main: moduleState.rendererMain,
 }));
 

@@ -1,0 +1,16 @@
+{
+  "name": "@floegence/floeterm-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test unit/*.test.mjs",
+    "test:e2e": "npm --prefix ../app/web run build && playwright test",
+    "perf:standalone": "node performance/runStandalonePerformance.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.57.0",
+    "pngjs": "7.0.0"
+  }
+}

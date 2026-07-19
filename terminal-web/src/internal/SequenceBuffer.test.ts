@@ -30,15 +30,15 @@ describe('SequenceBuffer', () => {
     expect(ready.map(chunk => chunk.sequence)).toEqual([1, 2]);
   });
 
-  it('returns far-ahead chunks immediately and resets expectation', () => {
-    const buffer = new SequenceBuffer({ maxSequenceGap: 1 });
+  it('retains far-ahead chunks until every preceding sequence arrives', () => {
+    const buffer = new SequenceBuffer();
     buffer.reset(1);
 
-    const ready = buffer.push(makeChunk(5, 'e'));
-    expect(ready.map(chunk => chunk.sequence)).toEqual([5]);
-
-    const next = buffer.push(makeChunk(6, 'f'));
-    expect(next.map(chunk => chunk.sequence)).toEqual([6]);
+    expect(buffer.push(makeChunk(5, 'e'))).toEqual([]);
+    expect(buffer.push(makeChunk(1, 'a')).map(chunk => chunk.sequence)).toEqual([1]);
+    expect(buffer.push(makeChunk(2, 'b')).map(chunk => chunk.sequence)).toEqual([2]);
+    expect(buffer.push(makeChunk(3, 'c')).map(chunk => chunk.sequence)).toEqual([3]);
+    expect(buffer.push(makeChunk(4, 'd')).map(chunk => chunk.sequence)).toEqual([4, 5]);
   });
 
   it('accepts non-sequenced chunks', () => {
@@ -47,22 +47,41 @@ describe('SequenceBuffer', () => {
     expect(ready.map(chunk => chunk.sequence)).toEqual([0]);
   });
 
-  it('flushes stalled gaps to avoid blocking forever', () => {
-    const buffer = new SequenceBuffer({ maxStallMs: 10 });
+  it('does not use elapsed time to infer a missing sequence', () => {
+    const buffer = new SequenceBuffer();
     buffer.reset(1);
 
     expect(buffer.push(makeChunk(2, 'b'), 0)).toEqual([]);
-    expect(buffer.push(makeChunk(3, 'c'), 11).map(chunk => chunk.sequence)).toEqual([2, 3]);
+    expect(buffer.push(makeChunk(3, 'c'), 60_000)).toEqual([]);
+    expect(buffer.push(makeChunk(1, 'a'), 60_001).map(chunk => chunk.sequence)).toEqual([1, 2, 3]);
   });
 
-  it('flushes pending chunks across gaps when replay is complete', () => {
-    const buffer = new SequenceBuffer();
+  it('reports a replay boundary gap instead of skipping it', () => {
+    const buffer = new SequenceBuffer({ maxPendingChunks: 4, maxPendingBytes: 1024 });
     buffer.reset(1);
 
     expect(buffer.push(makeChunk(2, 'b'))).toEqual([]);
     expect(buffer.push(makeChunk(4, 'd'))).toEqual([]);
 
-    expect(buffer.flushPending().map(chunk => chunk.sequence)).toEqual([2, 4]);
-    expect(buffer.push(makeChunk(5, 'e')).map(chunk => chunk.sequence)).toEqual([5]);
+    expect(() => buffer.assertCoveredThrough(4)).toThrow(/missing terminal output sequence 1/i);
+    expect(buffer.flushPending()).toEqual([]);
+  });
+
+  it('accepts explicit history coverage and releases buffered live output', () => {
+    const buffer = new SequenceBuffer();
+    buffer.reset(1);
+
+    expect(buffer.push(makeChunk(5, 'live'))).toEqual([]);
+    expect(buffer.coverThrough(4).map(chunk => chunk.sequence)).toEqual([5]);
+    expect(() => buffer.assertCoveredThrough(5)).not.toThrow();
+  });
+
+  it('rejects pending output that exceeds the explicit memory bound', () => {
+    const buffer = new SequenceBuffer({ maxPendingChunks: 2, maxPendingBytes: 2 });
+    buffer.reset(1);
+
+    expect(buffer.push(makeChunk(2, 'b'))).toEqual([]);
+    expect(buffer.push(makeChunk(3, 'c'))).toEqual([]);
+    expect(() => buffer.push(makeChunk(4, 'd'))).toThrow(/queue limit/i);
   });
 });

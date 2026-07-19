@@ -2,7 +2,6 @@ import { filterXtermAutoResponses } from '../utils/xtermAutoResponseFilter.js';
 import { createConsoleLogger, noopLogger } from '../utils/logger.js';
 import {
   cursorToFabricCursor,
-  mapGhosttyRowToFabricCells,
   renderReasonFromForce,
   terminalLiveFabric,
   themeToFabricTheme,
@@ -74,7 +73,9 @@ type terminal_selection_manager = {
 };
 
 type floeterm_perf_probe = {
+  onTerminalInput?: (bytes: number) => void;
   onTerminalWrite?: (bytes: number) => void;
+  onTerminalWriteProfile?: (profile: { totalMs: number; parseMs: number; snapshotMs: number }) => void;
   onTerminalRender?: (durationMs: number) => void;
 };
 
@@ -916,6 +917,11 @@ export class TerminalCore {
     this.applyPresentationScaleStyles();
     this.installDemandRenderPatchBeforeOpen();
     this.terminal.open(renderHost);
+    if (this.config.rendererType === 'webgl') {
+      const canvas = (this.terminal as unknown as { renderer?: { getCanvas?: () => HTMLCanvasElement | null } })
+        .renderer?.getCanvas?.();
+      if (canvas) canvas.style.opacity = '0';
+    }
     this.mountInputElement(renderHost);
     this.stopGhosttyRenderLoop();
     this.patchDemandRenderTriggersAfterOpen();
@@ -1463,13 +1469,13 @@ export class TerminalCore {
     if (!fabricRenderer?.isActive()) {
       return false;
     }
-    fabricRenderer.writeRow(row, mapGhosttyRowToFabricCells(
+    fabricRenderer.writeRow(
       renderer,
       row,
       cells,
       cols,
       this.resolveFabricRowRenderHints(renderer),
-    ), cols);
+    );
     return true;
   }
 
@@ -1702,6 +1708,7 @@ export class TerminalCore {
       forwardWheel: event => {
         this.container.dispatchEvent(new WheelEvent(event.type, event));
       },
+      onRendererError: error => this.handleRendererFailure(error),
     });
     this.fabricView.renderer.setAppearance({ theme, fontFamily, fontSize });
     this.performResize('force');
@@ -1728,7 +1735,7 @@ export class TerminalCore {
         if (this.isDisposed || seq !== this.fabricAttachSeq) {
           return;
         }
-        this.logger.warn('[TerminalCore] Beamterm live fabric attach failed; keeping ghostty canvas live', { error });
+        this.handleRendererFailure(error);
       });
     };
 
@@ -1739,6 +1746,15 @@ export class TerminalCore {
       }
       this.cancelFabricAttachSchedule = scheduleUiTurn(attach);
     });
+  }
+
+  private handleRendererFailure(value: unknown): void {
+    if (this.isDisposed) return;
+    const error = value instanceof Error ? value : new Error(String(value));
+    this.cancelDemandRender();
+    this.logger.error('[TerminalCore] Beamterm WebGL2 renderer failed', { error });
+    this.setState(TerminalState.ERROR);
+    this.eventHandlers.onError?.(error);
   }
 
   private setupInputBridge(inputHost: HTMLDivElement): void {
@@ -1753,6 +1769,7 @@ export class TerminalCore {
       inputHost,
       inputElement: input,
       onData: (data: string) => {
+        getPerfProbe()?.onTerminalInput?.(data.length);
         this.eventHandlers.onData?.(data);
       },
       logger: this.logger,
@@ -1888,6 +1905,7 @@ export class TerminalCore {
             return;
           }
         }
+        getPerfProbe()?.onTerminalInput?.(filtered.length);
         this.eventHandlers.onData?.(filtered);
       });
       this.trackTerminalEventDisposable(disposable);
@@ -2083,15 +2101,33 @@ export class TerminalCore {
     const startSeq = this.resizeNotifySeq;
     const before = this.lastNotifiedSize;
     const changed = this.terminal.cols !== dims.cols || this.terminal.rows !== dims.rows;
+    const reportHostDimensions = this.responsive.reportHostDimensionsWithFixedGrid;
 
-    if (changed) {
-      try {
+    const previousSuppression = this.suppressResizeNotifications;
+    if (reportHostDimensions && changed) {
+      this.suppressResizeNotifications = true;
+    }
+    try {
+      if (changed) {
         this.terminal.resize(dims.cols, dims.rows);
-        this.resizeFabricToHost();
-        this.syncImeInputAnchor();
-      } catch (error) {
-        this.logger.debug('[TerminalCore] Fixed-dimension resize failed', { error });
       }
+      this.resizeFabricToHost();
+      this.syncImeInputAnchor();
+    } catch (error) {
+      this.logger.debug('[TerminalCore] Fixed-dimension resize failed', { error });
+    } finally {
+      this.suppressResizeNotifications = previousSuppression;
+    }
+
+    if (reportHostDimensions) {
+      const hostDimensions = this.proposeFitDimensions();
+      if (!hostDimensions) {
+        return;
+      }
+      const force = reason === 'focus' && this.responsive.emitResizeOnFocus
+        && Boolean(before) && before!.cols === hostDimensions.cols && before!.rows === hostDimensions.rows;
+      this.emitResize(hostDimensions, { source: 'core', force });
+      return;
     }
 
     // Some ghostty-web builds may not emit onResize for programmatic resize().
@@ -2192,30 +2228,64 @@ export class TerminalCore {
   }
 
   write(data: string | Uint8Array, callback?: () => void): void {
+    this.writeWithRenderMode(data, callback, false);
+  }
+
+  writeFrame(data: string | Uint8Array, callback?: () => void): void {
+    this.writeWithRenderMode(data, callback, true);
+  }
+
+  private writeWithRenderMode(
+    data: string | Uint8Array,
+    callback: (() => void) | undefined,
+    renderInCurrentFrame: boolean,
+  ): void {
     if (!this.terminal || !this.isReady()) {
       callback?.();
       return;
     }
 
     try {
-      getPerfProbe()?.onTerminalWrite?.(typeof data === 'string' ? data.length : data.byteLength);
+      const probe = getPerfProbe();
+      probe?.onTerminalWrite?.(typeof data === 'string' ? data.length : data.byteLength);
+      const profileStartedAt = performance.now();
+      let snapshotMs = 0;
+      let parseMs = 0;
+      const beforeSnapshotStartedAt = performance.now();
       const beforeWrite = this.captureRenderSnapshot();
+      snapshotMs += performance.now() - beforeSnapshotStartedAt;
       const shouldForce = this.needsFullRenderOnNextWrite;
-
-      if (callback || shouldForce) {
-        this.terminal.write(data as string | Uint8Array, () => {
-          const shouldForceAfterWrite = shouldForce || this.shouldForceFullRenderAfterWrite(beforeWrite);
-          if (shouldForceAfterWrite) {
-            this.needsFullRenderOnNextWrite = false;
-          }
+      const render = () => {
+        const afterSnapshotStartedAt = performance.now();
+        const shouldForceAfterWrite = shouldForce || this.shouldForceFullRenderAfterWrite(beforeWrite);
+        snapshotMs += performance.now() - afterSnapshotStartedAt;
+        if (shouldForceAfterWrite) {
+          this.needsFullRenderOnNextWrite = false;
+        }
+        if (renderInCurrentFrame) {
+          this.cancelDemandRender();
+          this.renderDemandFrame(shouldForceAfterWrite);
+        } else {
           this.requestDemandRender(shouldForceAfterWrite);
-          callback?.();
+        }
+        callback?.();
+        probe?.onTerminalWriteProfile?.({
+          totalMs: performance.now() - profileStartedAt,
+          parseMs,
+          snapshotMs,
         });
+      };
+
+      const parseStartedAt = performance.now();
+      if (callback || shouldForce) {
+        this.terminal.write(data as string | Uint8Array, render);
+        parseMs += performance.now() - parseStartedAt;
         return;
       }
 
       this.terminal.write(data as string | Uint8Array);
-      this.requestDemandRender(this.shouldForceFullRenderAfterWrite(beforeWrite));
+      parseMs += performance.now() - parseStartedAt;
+      render();
     } catch (error) {
       this.logger.error('[TerminalCore] Write failed', { error });
       callback?.();
@@ -2301,6 +2371,7 @@ export class TerminalCore {
     }
 
     this.startHistoryReplay();
+    this.needsFullRenderOnNextWrite = true;
     return new Promise(resolve => {
       this.write(snapshot.data, () => {
         this.endHistoryReplay();
@@ -2585,6 +2656,7 @@ export class TerminalCore {
           terminal.input(text, true);
           return;
         }
+        getPerfProbe()?.onTerminalInput?.(text.length);
         this.eventHandlers.onData?.(text);
       },
     };
@@ -3168,7 +3240,7 @@ export class TerminalCore {
   forceResize(): void {
     this.flushPendingPresentationScale();
     this.performResize('force');
-    this.forceFullRender();
+    this.requestDemandRender(true);
   }
 
   setFixedDimensions(dimensions: TerminalDimensions | null): void {
@@ -3434,6 +3506,7 @@ export class TerminalCore {
       fitOnFocus: Boolean(raw.fitOnFocus),
       emitResizeOnFocus: Boolean(raw.emitResizeOnFocus),
       notifyResizeOnlyWhenFocused: Boolean(raw.notifyResizeOnlyWhenFocused),
+      reportHostDimensionsWithFixedGrid: Boolean(raw.reportHostDimensionsWithFixedGrid),
     };
   }
 
@@ -3605,7 +3678,12 @@ export class TerminalCore {
     if (!host) {
       return;
     }
-    this.fabricView?.renderer.resize(host.clientWidth, host.clientHeight);
+    const width = host.clientWidth;
+    const height = host.clientHeight;
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+    this.fabricView?.renderer.resize(width, height);
     this.syncGhosttyInputGeometryToFabric();
   }
 
@@ -3694,7 +3772,9 @@ export class TerminalCore {
         terminalAny.cursorMoveEmitter?.fire?.();
       }
       this.syncImeInputAnchor();
-      getPerfProbe()?.onTerminalRender?.(performance.now() - startedAt);
+      const durationMs = performance.now() - startedAt;
+      getPerfProbe()?.onTerminalRender?.(durationMs);
+      this.eventHandlers.onRender?.(durationMs);
     } catch (error) {
       this.logger.debug('[TerminalCore] Force render failed', { error });
     }

@@ -2,6 +2,8 @@
 
 Framework-neutral ghostty-web (xterm.js API-compatible) integration with terminal core, session, and data flow utilities.
 
+The WebGL2 backend is the exact version of `@floegence/beamterm-renderer` declared by this package. Renderer initialization failures are explicit and retry the same backend; terminal-web never silently falls back to a second renderer.
+
 ## Install
 
 ```bash
@@ -189,6 +191,24 @@ const core = new TerminalCore(container, {
 core.setFixedDimensions(null);
 core.forceResize();
 ```
+
+Interactive views of one shared PTY can keep independent viewport measurements while rendering the server-confirmed terminal grid:
+
+```ts
+const controller = createTerminalInstance({
+  sessionId,
+  transport,
+  eventSource,
+  isActive: true,
+  config: {
+    responsive: {
+      reportHostDimensionsWithFixedGrid: true,
+    },
+  },
+});
+```
+
+The live transport applies `ATTACHED`, `GEOMETRY_CHANGED`, `RESIZE_APPLIED`, and `OUTPUT_BATCH` geometry monotonically. Container resize notifications still report each view's own capacity to the server.
 
 Hosts with overlay scrollbars can remove the default ghostty-web scrollbar reserve:
 

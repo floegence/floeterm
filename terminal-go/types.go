@@ -59,6 +59,9 @@ type TerminalSessionInfo struct {
 // session-count limit or changing session lifecycle behavior.
 type ManagerDiagnostics struct {
 	SessionCount        int
+	ActiveSessionCount  int
+	ConnectionCount     int
+	LiveAttachmentCount int
 	HistoryBytes        int64
 	SessionHistoryBytes map[string]int64
 }
@@ -73,11 +76,44 @@ type ConnectionInfo struct {
 
 // TerminalEventHandler receives session lifecycle and output events.
 type TerminalEventHandler interface {
-	OnTerminalData(sessionID string, data []byte, sequenceNumber int64, isEcho bool, originalSource string)
+	OnTerminalData(sessionID string, event TerminalOutputEvent)
 	OnTerminalNameChanged(sessionID string, oldName string, newName string, workingDir string)
 	OnTerminalSessionCreated(session *Session)
 	OnTerminalSessionClosed(sessionID string)
 	OnTerminalError(sessionID string, err error)
+}
+
+// TerminalGeometry identifies one applied PTY grid size.
+type TerminalGeometry struct {
+	Generation             uint64
+	OutputSequenceBoundary int64
+	Cols                   int
+	Rows                   int
+}
+
+// TerminalOutputEvent is committed once and shared by live output and history.
+type TerminalOutputEvent struct {
+	Data        []byte
+	Sequence    int64
+	TimestampMs int64
+	Geometry    TerminalGeometry
+}
+
+// LiveSubscriber receives exact output for one attached connection.
+type LiveSubscriber struct {
+	OnOutput        func(TerminalOutputEvent) bool
+	OnGeometry      func(TerminalGeometry) bool
+	OnSessionClosed func()
+	OnSuperseded    func()
+}
+
+// LiveConnectionAttachment describes the atomic history/live handoff.
+type LiveConnectionAttachment struct {
+	HistoryBoundarySequence int64
+	HistoryGeneration       int64
+	HistoryStartSequence    int64
+	Geometry                TerminalGeometry
+	Detach                  func()
 }
 
 // TerminalSession defines the operations for a persistent terminal session.
@@ -141,30 +177,27 @@ type Session struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 
-	connections map[string]*ConnectionInfo
-	ringBuffer  *TerminalRingBuffer
+	connections     map[string]*ConnectionInfo
+	ringBuffer      *TerminalRingBuffer
+	liveAttachments map[string]liveAttachment
 
-	lastInputSource string
-	lastInputTime   time.Time
-	lastInputHash   [32]byte
-	lastInputLen    int
-	inputWindow     time.Duration
-
-	sequenceNumber    int64
-	committedSequence int64
-	historyGeneration int64
+	sequenceNumber       int64
+	committedSequence    int64
+	historyGeneration    int64
+	historyStartSequence int64
 
 	currentWorkingDir string
 	workdirPending    []byte
 
-	lastAppliedCols int
-	lastAppliedRows int
-	startPTYProcess func(*exec.Cmd, *pty.Winsize) (*os.File, error)
-	waitProcess     func(*exec.Cmd) error
-	setPTYSize      func(*os.File, *pty.Winsize) error
-	resizeQueued    bool
-	resizeRunning   bool
-	resizeReason    string
+	lastAppliedCols    int
+	lastAppliedRows    int
+	geometryGeneration uint64
+	startPTYProcess    func(*exec.Cmd, *pty.Winsize) (*os.File, error)
+	waitProcess        func(*exec.Cmd) error
+	setPTYSize         func(*os.File, *pty.Winsize) error
+	resizeQueued       bool
+	resizeRunning      bool
+	resizeReason       string
 
 	eventHandler TerminalEventHandler
 

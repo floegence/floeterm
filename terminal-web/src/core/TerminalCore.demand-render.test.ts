@@ -375,6 +375,42 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('reports each completed demand render to the host', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const onRender = vi.fn();
+    const core = new TerminalCore(container, {}, { onRender });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    onRender.mockClear();
+
+    core.write('visible');
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(onRender).toHaveBeenCalledTimes(1);
+    expect(onRender).toHaveBeenCalledWith(expect.any(Number));
+    expect(onRender.mock.calls[0]![0]).toBeGreaterThanOrEqual(0);
+
+    core.dispose();
+  });
+
+  it('parses and renders frame-owned output without scheduling another RAF', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+
+    core.writeFrame('visible-now');
+
+    expect(terminal.writes).toEqual(['visible-now']);
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    core.dispose();
+  });
+
   it('forces a full repaint when terminal output scrolls the viewport', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
@@ -482,6 +518,64 @@ describe('TerminalCore demand rendering', () => {
     expect(terminal.fitSpy).toHaveBeenCalledTimes(fitCountBeforeDispose);
     expect(terminal.renderSpy).toHaveBeenCalledTimes(renderCountBeforeDispose);
 
+    core.dispose();
+  });
+
+  it('coalesces repeated forced resize renders into one scheduled frame', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+    terminal.fitSpy.mockClear();
+
+    core.forceResize();
+    core.forceResize();
+    core.forceResize();
+
+    expect(terminal.fitSpy).toHaveBeenCalledTimes(3);
+    expect(terminal.renderSpy).not.toHaveBeenCalled();
+
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(true);
+
+    core.dispose();
+  });
+
+  it('resizes the WebGL host even when the shared fixed grid is unchanged', async () => {
+    const core = await createWebGLCore();
+    const host = (core as any).renderHost as HTMLElement;
+    Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(host, 'clientHeight', { value: 400, configurable: true });
+    core.setFixedDimensions(core.getDimensions());
+    await vi.runOnlyPendingTimersAsync();
+    mockFabric.renderer.resize.mockClear();
+
+    core.forceResize();
+
+    expect(mockFabric.renderer.resize).toHaveBeenCalledTimes(1);
+
+    core.dispose();
+  });
+
+  it('preserves the WebGL surface while a fixed-grid view has no visible host size', async () => {
+    const core = await createWebGLCore();
+    const host = (core as any).renderHost as HTMLElement;
+    core.setFixedDimensions(core.getDimensions());
+    await vi.runOnlyPendingTimersAsync();
+    mockFabric.renderer.resize.mockClear();
+    Object.defineProperty(host, 'clientWidth', { value: 0, configurable: true });
+    Object.defineProperty(host, 'clientHeight', { value: 0, configurable: true });
+
+    core.forceResize();
+
+    expect(mockFabric.renderer.resize).not.toHaveBeenCalled();
+
+    Object.defineProperty(host, 'clientWidth', { value: 640, configurable: true });
+    Object.defineProperty(host, 'clientHeight', { value: 320, configurable: true });
+    core.forceResize();
+
+    expect(mockFabric.renderer.resize).toHaveBeenCalledWith(640, 320);
     core.dispose();
   });
 
@@ -632,17 +726,46 @@ describe('TerminalCore demand rendering', () => {
     expect(mockFabric.writeRow).toHaveBeenCalledTimes(2);
     expect(mockFabric.writeRow).toHaveBeenNthCalledWith(
       1,
+      terminal.renderer,
       0,
       expect.arrayContaining([
-        expect.objectContaining({ symbol: 'A' }),
-        expect.objectContaining({ symbol: 'B' }),
+        expect.objectContaining({ codepoint: 65 }),
+        expect.objectContaining({ codepoint: 66 }),
       ]),
       2,
+      expect.objectContaining({ selection: null }),
     );
     expect(mockFabric.finishFrame).toHaveBeenCalledWith(expect.any(Object));
 
     core.dispose();
     expect(mockFabric.dispose).toHaveBeenCalled();
+  });
+
+  it('surfaces Beamterm initialization failure as an explicit terminal error', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const onError = vi.fn();
+    const onStateChange = vi.fn();
+    const core = new TerminalCore(
+      container,
+      { rendererType: 'webgl', sessionId: 'session-error' },
+      { onError, onStateChange },
+    );
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    mockFabric.attachView.mockRejectedValueOnce(new Error('WebGL2 unavailable'));
+
+    core.setConnected(true);
+    await vi.runAllTimersAsync();
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'WebGL2 unavailable' }));
+    expect(onStateChange).toHaveBeenLastCalledWith('error');
+    expect(mockState.lastTerminal.ghosttyCanvas.style.opacity).toBe('0');
+
+    core.dispose();
   });
 
   it('keeps Beamterm live fabric as the display owner during selection', async () => {
@@ -666,12 +789,12 @@ describe('TerminalCore demand rendering', () => {
     terminal.renderer.render(terminal.wasmTerm, false, terminal.viewportY, terminal, terminal.scrollbarOpacity);
 
     expect(mockFabric.writeRow).toHaveBeenCalledTimes(1);
-    expect(mockFabric.writeRow.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        fg: { r: 31, g: 35, b: 40 },
-        bg: { r: 245, g: 230, b: 179 },
+    expect(mockFabric.writeRow.mock.calls[0]?.[4]).toEqual(expect.objectContaining({
+      selection: expect.objectContaining({
+        foreground: { r: 31, g: 35, b: 40 },
+        background: { r: 245, g: 230, b: 179 },
       }),
-    ]));
+    }));
     expect(terminal.renderLineSpy).not.toHaveBeenCalled();
 
     core.dispose();
@@ -689,14 +812,18 @@ describe('TerminalCore demand rendering', () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(mockFabric.writeRow).toHaveBeenCalledWith(
+      terminal.renderer,
       0,
       expect.arrayContaining([
-        expect.objectContaining({
-          fg: { r: 31, g: 35, b: 40 },
-          bg: { r: 245, g: 230, b: 179 },
-        }),
+        expect.objectContaining({ codepoint: 65 }),
       ]),
       2,
+      expect.objectContaining({
+        selection: expect.objectContaining({
+          foreground: { r: 31, g: 35, b: 40 },
+          background: { r: 245, g: 230, b: 179 },
+        }),
+      }),
     );
 
     core.dispose();

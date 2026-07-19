@@ -5,14 +5,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 	terminal "github.com/floegence/floeterm/terminal-go"
+	"github.com/floegence/floeterm/terminal-go/livev1"
 )
 
 type fixedShellResolver struct {
@@ -27,546 +28,425 @@ type fixedShellArgsProvider struct {
 
 func (p fixedShellArgsProvider) GetShellArgs(string, string) ([]string, []string) { return p.args, nil }
 
-type logEntry struct {
-	level string
-	msg   string
-	kv    []any
+func newTestServer(t *testing.T) (*Server, *httptest.Server) {
+	t.Helper()
+	srv := New(Config{
+		ManagerConfig: terminal.ManagerConfig{
+			Logger:            terminal.NopLogger{},
+			ShellResolver:     fixedShellResolver{shell: "/bin/sh"},
+			ShellArgsProvider: fixedShellArgsProvider{args: []string{"-c", "cat"}},
+		},
+	})
+	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		httpSrv.Close()
+		srv.Close()
+	})
+	return srv, httpSrv
 }
 
-type recordingLogger struct {
-	mu      sync.Mutex
-	entries []logEntry
+func createTestSession(t *testing.T, baseURL string) apiSessionInfo {
+	t.Helper()
+	resp, err := http.Post(baseURL+"/api/sessions", "application/json", bytes.NewBufferString(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create status=%d", resp.StatusCode)
+	}
+	var created apiSessionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	return created
 }
 
-func (l *recordingLogger) Debug(msg string, kv ...any) { l.add("debug", msg, kv...) }
-func (l *recordingLogger) Info(msg string, kv ...any)  { l.add("info", msg, kv...) }
-func (l *recordingLogger) Warn(msg string, kv ...any)  { l.add("warn", msg, kv...) }
-func (l *recordingLogger) Error(msg string, kv ...any) { l.add("error", msg, kv...) }
-
-func (l *recordingLogger) add(level, msg string, kv ...any) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.entries = append(l.entries, logEntry{level: level, msg: msg, kv: append([]any(nil), kv...)})
+func readLiveFrame(t *testing.T, ctx context.Context, conn *websocket.Conn) livev1.Frame {
+	t.Helper()
+	messageType, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read websocket: %v", err)
+	}
+	if messageType != websocket.MessageBinary {
+		t.Fatalf("message type=%v, want binary", messageType)
+	}
+	decoder := livev1.NewDecoder()
+	frames, err := decoder.Push(data)
+	if err != nil || len(frames) != 1 {
+		t.Fatalf("decode frames=%d err=%v", len(frames), err)
+	}
+	return frames[0]
 }
 
-func (l *recordingLogger) hasKV(level, msg string, key string, value string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, entry := range l.entries {
-		if entry.level != level || entry.msg != msg {
+func attachLiveTestConnection(
+	t *testing.T,
+	ctx context.Context,
+	baseURL string,
+	sessionID string,
+	connectionID string,
+) *websocket.Conn {
+	t.Helper()
+	conn, _, err := websocket.Dial(ctx, "ws"+baseURL[len("http"):]+"/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attach, err := livev1.EncodeAttach(livev1.Attach{
+		AttachGeneration: 1,
+		Cols:             80,
+		Rows:             24,
+		SessionID:        sessionID,
+		ConnectionID:     connectionID,
+	})
+	if err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "attach encode failed")
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, attach); err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "attach write failed")
+		t.Fatal(err)
+	}
+	if _, err := livev1.DecodeAttached(readLiveFrame(t, ctx, conn)); err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "attach decode failed")
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func readOutputContaining(t *testing.T, ctx context.Context, conn *websocket.Conn, marker []byte) livev1.OutputRecord {
+	t.Helper()
+	for {
+		frame := readLiveFrame(t, ctx, conn)
+		if frame.Type != livev1.FrameOutputBatch {
 			continue
 		}
-		for i := 0; i+1 < len(entry.kv); i += 2 {
-			k, ok := entry.kv[i].(string)
-			if !ok || k != key {
+		batch, err := livev1.DecodeOutputBatch(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range batch.Records {
+			if bytes.Contains(record.Data, marker) {
+				return record
+			}
+		}
+	}
+}
+
+func TestServerEndToEndBinaryLiveEchoAndResize(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	created := createTestSession(t, httpSrv.URL)
+	if created.IsActive {
+		t.Fatal("new session must remain dormant before live attach")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + httpSrv.URL[len("http"):] + "/ws"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	attach, err := livev1.EncodeAttach(livev1.Attach{
+		AttachGeneration: 1,
+		Cols:             80,
+		Rows:             24,
+		SessionID:        created.ID,
+		ConnectionID:     "c1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, attach); err != nil {
+		t.Fatal(err)
+	}
+	attached, err := livev1.DecodeAttached(readLiveFrame(t, ctx, conn))
+	if err != nil || attached.HistoryGeneration == 0 {
+		t.Fatalf("attached=%+v err=%v", attached, err)
+	}
+
+	input, err := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("hello\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		frame := readLiveFrame(t, ctx, conn)
+		if frame.Type != livev1.FrameOutputBatch {
+			continue
+		}
+		batch, err := livev1.DecodeOutputBatch(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, record := range batch.Records {
+			found = found || bytes.Contains(record.Data, []byte("hello"))
+		}
+		if found {
+			break
+		}
+	}
+
+	resize, err := livev1.EncodeResize(livev1.Resize{Sequence: 1, Cols: 120, Rows: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, resize); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		frame := readLiveFrame(t, ctx, conn)
+		if frame.Type != livev1.FrameResizeApplied {
+			continue
+		}
+		applied, err := livev1.DecodeResizeApplied(frame)
+		if err != nil || applied.Sequence != 1 {
+			t.Fatalf("resize applied=%+v err=%v", applied, err)
+		}
+		break
+	}
+}
+
+func TestServerKeepsDistinctLiveConnectionsOnTheSameSessionUsable(t *testing.T) {
+	srv, httpSrv := newTestServer(t)
+	created := createTestSession(t, httpSrv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	first := attachLiveTestConnection(t, ctx, httpSrv.URL, created.ID, "page-a")
+	defer first.Close(websocket.StatusNormalClosure, "done")
+	second := attachLiveTestConnection(t, ctx, httpSrv.URL, created.ID, "page-b")
+	defer second.Close(websocket.StatusNormalClosure, "done")
+
+	input, err := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("MULTI_PAGE_ONE\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Write(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	firstRecord := readOutputContaining(t, ctx, first, []byte("MULTI_PAGE_ONE"))
+	secondRecord := readOutputContaining(t, ctx, second, []byte("MULTI_PAGE_ONE"))
+	if firstRecord.Sequence != secondRecord.Sequence || !bytes.Equal(firstRecord.Data, secondRecord.Data) {
+		t.Fatalf("multi-page output diverged: first=%+v second=%+v", firstRecord, secondRecord)
+	}
+	for index, connection := range []*websocket.Conn{first, second} {
+		resize, err := livev1.EncodeResize(livev1.Resize{
+			Sequence: 1,
+			Cols:     uint32(100 + index*20),
+			Rows:     uint32(30 + index*10),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := connection.Write(ctx, websocket.MessageBinary, resize); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			frame := readLiveFrame(t, ctx, connection)
+			if frame.Type != livev1.FrameResizeApplied {
 				continue
 			}
-			if v, ok := entry.kv[i+1].(string); ok && v == value {
-				return true
+			applied, err := livev1.DecodeResizeApplied(frame)
+			if err != nil || applied.Sequence != 1 {
+				t.Fatalf("page %d resize acknowledgement=%+v err=%v", index+1, applied, err)
 			}
+			break
 		}
 	}
-	return false
-}
-
-func TestServer_EndToEndWebsocketEcho(t *testing.T) {
-	srv := New(Config{
-		ManagerConfig: terminal.ManagerConfig{
-			Logger:                        terminal.NopLogger{},
-			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
-			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
-			InitialResizeSuppressDuration: time.Millisecond,
-			ResizeSuppressDuration:        time.Millisecond,
-		},
-	})
-	t.Cleanup(srv.Close)
-
-	httpSrv := httptest.NewServer(srv.Handler())
-	t.Cleanup(httpSrv.Close)
-
-	// Create session.
-	createReqBody := bytes.NewBufferString(`{}`)
-	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
-	if err != nil {
-		t.Fatalf("create session request failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected create status: %d", resp.StatusCode)
+	if got := srv.manager.GetDiagnostics().ConnectionCount; got != 2 {
+		t.Fatalf("multi-page connection count=%d, want 2", got)
 	}
 
-	var created apiSessionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create response failed: %v", err)
+	if err := first.Close(websocket.StatusNormalClosure, "page closed"); err != nil {
+		t.Fatal(err)
 	}
-	if created.ID == "" {
-		t.Fatalf("expected non-empty session id")
-	}
-	if created.IsActive {
-		t.Fatalf("expected created session to remain dormant until attach")
-	}
-
-	// Subscribe websocket for output events.
-	wsURL := "ws" + httpSrv.URL[len("http"):] + "/ws?sessionId=" + created.ID
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	wsConn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial failed: %v", err)
-	}
-	defer wsConn.Close(websocket.StatusNormalClosure, "done")
-
-	// Attach connection (enables better resize coordination).
-	attachBody := bytes.NewBufferString(`{"connId":"c1","cols":80,"rows":24}`)
-	attachResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/attach", "application/json", attachBody)
-	if err != nil {
-		t.Fatalf("attach failed: %v", err)
-	}
-	attachResp.Body.Close()
-	if attachResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("unexpected attach status: %d", attachResp.StatusCode)
-	}
-
-	// Send input which cat will echo back.
-	inputBody := bytes.NewBufferString(`{"connId":"c1","input":"hello\\n"}`)
-	inputResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/input", "application/json", inputBody)
-	if err != nil {
-		t.Fatalf("send input failed: %v", err)
-	}
-	inputResp.Body.Close()
-	if inputResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("unexpected input status: %d", inputResp.StatusCode)
-	}
-
-	// Expect at least one data event containing "hello".
-	for {
-		_, msg, err := wsConn.Read(ctx)
-		if err != nil {
-			t.Fatalf("websocket read failed: %v", err)
-		}
-
-		var evt wsEvent
-		if err := json.Unmarshal(msg, &evt); err != nil {
-			t.Fatalf("invalid websocket json: %v", err)
-		}
-		if evt.Type != "data" {
-			continue
-		}
-		data, err := base64.StdEncoding.DecodeString(evt.DataBase64)
-		if err != nil {
-			t.Fatalf("decode data failed: %v", err)
-		}
-		if bytes.Contains(data, []byte("hello")) {
-			return
-		}
-	}
-}
-
-func TestServer_WebsocketReplaysHistoryBeforeReplayComplete(t *testing.T) {
-	srv := New(Config{
-		ManagerConfig: terminal.ManagerConfig{
-			Logger:                        terminal.NopLogger{},
-			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
-			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
-			InitialResizeSuppressDuration: time.Millisecond,
-			ResizeSuppressDuration:        time.Millisecond,
-		},
-	})
-	t.Cleanup(srv.Close)
-
-	httpSrv := httptest.NewServer(srv.Handler())
-	t.Cleanup(httpSrv.Close)
-
-	createReqBody := bytes.NewBufferString(`{}`)
-	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
-	if err != nil {
-		t.Fatalf("create session request failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected create status: %d", resp.StatusCode)
-	}
-
-	var created apiSessionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create response failed: %v", err)
-	}
-
-	attachBody := bytes.NewBufferString(`{"connId":"c1","cols":80,"rows":24}`)
-	attachResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/attach", "application/json", attachBody)
-	if err != nil {
-		t.Fatalf("attach failed: %v", err)
-	}
-	attachResp.Body.Close()
-	if attachResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("unexpected attach status: %d", attachResp.StatusCode)
-	}
-
-	time.Sleep(20 * time.Millisecond)
-
-	inputBody := bytes.NewBufferString(`{"connId":"c1","input":"replay-line\\n"}`)
-	inputResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/input", "application/json", inputBody)
-	if err != nil {
-		t.Fatalf("send input failed: %v", err)
-	}
-	inputResp.Body.Close()
-	if inputResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("unexpected input status: %d", inputResp.StatusCode)
-	}
-
-	waitForHistoryContaining(t, httpSrv.URL, created.ID, []byte("replay-line"), 2*time.Second)
-
-	wsURL := "ws" + httpSrv.URL[len("http"):] + "/ws?sessionId=" + created.ID
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	wsConn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial failed: %v", err)
-	}
-	defer wsConn.Close(websocket.StatusNormalClosure, "done")
-
-	var sawReplayData bool
-	var maxReplaySeq int64
-	for {
-		_, msg, err := wsConn.Read(ctx)
-		if err != nil {
-			t.Fatalf("websocket read failed: %v", err)
-		}
-
-		var evt wsEvent
-		if err := json.Unmarshal(msg, &evt); err != nil {
-			t.Fatalf("invalid websocket json: %v", err)
-		}
-
-		switch evt.Type {
-		case "data":
-			data, err := base64.StdEncoding.DecodeString(evt.DataBase64)
-			if err != nil {
-				t.Fatalf("decode data failed: %v", err)
-			}
-			if bytes.Contains(data, []byte("replay-line")) {
-				sawReplayData = true
-			}
-			if evt.Sequence > maxReplaySeq {
-				maxReplaySeq = evt.Sequence
-			}
-		case "replay-complete":
-			if !sawReplayData {
-				t.Fatal("replay-complete arrived before replayed history data")
-			}
-			if evt.Sequence < maxReplaySeq {
-				t.Fatalf("replay-complete sequence %d is behind replayed data %d", evt.Sequence, maxReplaySeq)
-			}
-			return
-		}
-	}
-}
-
-func waitForHistoryContaining(t *testing.T, baseURL, sessionID string, expected []byte, timeout time.Duration) []historyChunk {
-	t.Helper()
-
-	deadline := time.Now().Add(timeout)
-	var lastChunks []historyChunk
+	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(baseURL + "/api/sessions/" + sessionID + "/history?startSeq=1&endSeq=-1")
-		if err != nil {
-			t.Fatalf("history request failed: %v", err)
+		if srv.manager.GetDiagnostics().LiveAttachmentCount == 1 {
+			break
 		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			t.Fatalf("unexpected history status: %d", resp.StatusCode)
-		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := srv.manager.GetDiagnostics().LiveAttachmentCount; got != 1 {
+		t.Fatalf("live attachments after one page closed=%d, want 1", got)
+	}
 
-		var chunks []historyChunk
-		if err := json.NewDecoder(resp.Body).Decode(&chunks); err != nil {
-			resp.Body.Close()
-			t.Fatalf("decode history failed: %v", err)
+	input, err = livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("MULTI_PAGE_TWO\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Write(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	_ = readOutputContaining(t, ctx, second, []byte("MULTI_PAGE_TWO"))
+}
+
+func TestServerRemovesLegacyLiveHTTPEndpoints(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	created := createTestSession(t, httpSrv.URL)
+	for _, action := range []string{"attach", "resize", "input"} {
+		resp, err := http.Post(
+			httpSrv.URL+"/api/sessions/"+created.ID+"/"+action,
+			"application/json",
+			bytes.NewBufferString(`{}`),
+		)
+		if err != nil {
+			t.Fatal(err)
 		}
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s status=%d, want 404", action, resp.StatusCode)
+		}
+	}
+}
 
-		lastChunks = chunks
-		for _, chunk := range chunks {
+func TestPerformanceDiagnosticsRequireExplicitServerOptIn(t *testing.T) {
+	_, defaultServer := newTestServer(t)
+	resp, err := http.Get(defaultServer.URL + "/api/performance/runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("default diagnostics status=%d, want 404", resp.StatusCode)
+	}
+	resp, err = http.Get(defaultServer.URL + "/api/performance/goroutines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("default goroutine diagnostics status=%d, want 404", resp.StatusCode)
+	}
+
+	srv := New(Config{
+		EnablePerformanceDiagnostics: true,
+		ManagerConfig: terminal.ManagerConfig{
+			Logger:            terminal.NopLogger{},
+			ShellResolver:     fixedShellResolver{shell: "/bin/sh"},
+			ShellArgsProvider: fixedShellArgsProvider{args: []string{"-c", "cat"}},
+		},
+	})
+	httpSrv := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		httpSrv.Close()
+		srv.Close()
+	})
+	createTestSession(t, httpSrv.URL)
+
+	resp, err = http.Get(httpSrv.URL + "/api/performance/runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enabled diagnostics status=%d, want 200", resp.StatusCode)
+	}
+	var diagnostics map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&diagnostics); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"goroutines", "heap_bytes", "session_count", "connection_count", "live_attachment_count"} {
+		if _, ok := diagnostics[key]; !ok {
+			t.Fatalf("diagnostics omitted %q: %#v", key, diagnostics)
+		}
+	}
+
+	profileResponse, err := http.Get(httpSrv.URL + "/api/performance/goroutines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer profileResponse.Body.Close()
+	if profileResponse.StatusCode != http.StatusOK {
+		t.Fatalf("goroutine diagnostics status=%d, want 200", profileResponse.StatusCode)
+	}
+	if !profileResponse.Close {
+		t.Fatal("goroutine diagnostics must close its intrusive profiling connection")
+	}
+	profile, err := io.ReadAll(profileResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(profile, []byte("goroutine ")) {
+		t.Fatalf("goroutine diagnostics omitted stack profile: %q", profile)
+	}
+}
+
+func TestServerHistoryRemainsControlPlaneAfterLiveDisconnect(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	created := createTestSession(t, httpSrv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+httpSrv.URL[len("http"):]+"/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attach, _ := livev1.EncodeAttach(livev1.Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: created.ID, ConnectionID: "c1"})
+	if err := conn.Write(ctx, websocket.MessageBinary, attach); err != nil {
+		t.Fatal(err)
+	}
+	_ = readLiveFrame(t, ctx, conn)
+	input, _ := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("history-line\n")})
+	if err := conn.Write(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		frame := readLiveFrame(t, ctx, conn)
+		if frame.Type != livev1.FrameOutputBatch {
+			continue
+		}
+		batch, _ := livev1.DecodeOutputBatch(frame)
+		seen := false
+		for _, record := range batch.Records {
+			seen = seen || bytes.Contains(record.Data, []byte("history-line"))
+		}
+		if seen {
+			break
+		}
+	}
+	_ = conn.Close(websocket.StatusNormalClosure, "done")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(httpSrv.URL + "/api/sessions/" + created.ID + "/history?startSeq=1&endSeq=-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var page historyPageResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		for _, chunk := range page.Chunks {
 			data, err := base64.StdEncoding.DecodeString(chunk.DataBase64)
 			if err != nil {
-				t.Fatalf("decode history chunk failed: %v", err)
+				t.Fatal(err)
 			}
-			if bytes.Contains(data, expected) {
-				return chunks
+			if bytes.Contains(data, []byte("history-line")) {
+				return
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-
-	t.Fatalf("timeout waiting for history containing %q; last chunk count %d", string(expected), len(lastChunks))
-	return nil
+	t.Fatal("history did not retain live output")
 }
 
-func TestServer_WebsocketDisconnectRemovesConnection(t *testing.T) {
-	logger := &recordingLogger{}
-	srv := New(Config{
-		ManagerConfig: terminal.ManagerConfig{
-			Logger:                        logger,
-			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
-			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
-			InitialResizeSuppressDuration: time.Millisecond,
-			ResizeSuppressDuration:        time.Millisecond,
-		},
-	})
-	t.Cleanup(srv.Close)
-
-	httpSrv := httptest.NewServer(srv.Handler())
-	t.Cleanup(httpSrv.Close)
-
-	createReqBody := bytes.NewBufferString(`{}`)
-	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
+func TestServerJSONBodyLimitReturns413(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	oversized := append([]byte(`{"name":"`), bytes.Repeat([]byte("a"), int(maxJSONBodyBytesDefault)+1)...)
+	oversized = append(oversized, []byte(`"}`)...)
+	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", bytes.NewReader(oversized))
 	if err != nil {
-		t.Fatalf("create session request failed: %v", err)
+		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected create status: %d", resp.StatusCode)
-	}
-
-	var created apiSessionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create response failed: %v", err)
-	}
-
-	attachBody := bytes.NewBufferString(`{"connId":"c1","cols":80,"rows":24}`)
-	attachResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/attach", "application/json", attachBody)
-	if err != nil {
-		t.Fatalf("attach failed: %v", err)
-	}
-	attachResp.Body.Close()
-	if attachResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("unexpected attach status: %d", attachResp.StatusCode)
-	}
-
-	wsURL := "ws" + httpSrv.URL[len("http"):] + "/ws?sessionId=" + created.ID + "&connId=c1"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	wsConn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial failed: %v", err)
-	}
-	_ = wsConn.Close(websocket.StatusNormalClosure, "done")
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if logger.hasKV("debug", "Removed connection", "connectionID", "c1") {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("expected connection to be removed on websocket disconnect")
-}
-
-func TestServer_WebsocketDisconnectRefCount(t *testing.T) {
-	logger := &recordingLogger{}
-	srv := New(Config{
-		ManagerConfig: terminal.ManagerConfig{
-			Logger:                        logger,
-			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
-			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
-			InitialResizeSuppressDuration: time.Millisecond,
-			ResizeSuppressDuration:        time.Millisecond,
-		},
-	})
-	t.Cleanup(srv.Close)
-
-	httpSrv := httptest.NewServer(srv.Handler())
-	t.Cleanup(httpSrv.Close)
-
-	createReqBody := bytes.NewBufferString(`{}`)
-	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
-	if err != nil {
-		t.Fatalf("create session request failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected create status: %d", resp.StatusCode)
-	}
-
-	var created apiSessionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create response failed: %v", err)
-	}
-
-	attachBody := bytes.NewBufferString(`{"connId":"c1","cols":80,"rows":24}`)
-	attachResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/attach", "application/json", attachBody)
-	if err != nil {
-		t.Fatalf("attach failed: %v", err)
-	}
-	attachResp.Body.Close()
-	if attachResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("unexpected attach status: %d", attachResp.StatusCode)
-	}
-
-	wsURL := "ws" + httpSrv.URL[len("http"):] + "/ws?sessionId=" + created.ID + "&connId=c1"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	wsConn1, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial failed: %v", err)
-	}
-	wsConn2, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("websocket dial failed: %v", err)
-	}
-
-	_ = wsConn1.Close(websocket.StatusNormalClosure, "done")
-	time.Sleep(50 * time.Millisecond)
-	if logger.hasKV("debug", "Removed connection", "connectionID", "c1") {
-		t.Fatalf("did not expect connection to be removed while another websocket is still connected")
-	}
-
-	_ = wsConn2.Close(websocket.StatusNormalClosure, "done")
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if logger.hasKV("debug", "Removed connection", "connectionID", "c1") {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("expected connection to be removed after last websocket disconnect")
-}
-
-func TestServer_ResizeRejectsOversizedDims(t *testing.T) {
-	srv := New(Config{
-		ManagerConfig: terminal.ManagerConfig{
-			Logger:                        terminal.NopLogger{},
-			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
-			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
-			InitialResizeSuppressDuration: time.Millisecond,
-			ResizeSuppressDuration:        time.Millisecond,
-		},
-	})
-	t.Cleanup(srv.Close)
-
-	httpSrv := httptest.NewServer(srv.Handler())
-	t.Cleanup(httpSrv.Close)
-
-	createReqBody := bytes.NewBufferString(`{}`)
-	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
-	if err != nil {
-		t.Fatalf("create session request failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected create status: %d", resp.StatusCode)
-	}
-
-	var created apiSessionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create response failed: %v", err)
-	}
-
-	resizeBody := bytes.NewBufferString(`{"connId":"c1","cols":10000,"rows":24}`)
-	resizeResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/resize", "application/json", resizeBody)
-	if err != nil {
-		t.Fatalf("resize failed: %v", err)
-	}
-	resizeResp.Body.Close()
-	if resizeResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 for oversized resize, got: %d", resizeResp.StatusCode)
-	}
-}
-
-func TestServer_InputRejectsOversizedPayload(t *testing.T) {
-	srv := New(Config{
-		ManagerConfig: terminal.ManagerConfig{
-			Logger:                        terminal.NopLogger{},
-			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
-			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
-			InitialResizeSuppressDuration: time.Millisecond,
-			ResizeSuppressDuration:        time.Millisecond,
-		},
-	})
-	t.Cleanup(srv.Close)
-
-	httpSrv := httptest.NewServer(srv.Handler())
-	t.Cleanup(httpSrv.Close)
-
-	createReqBody := bytes.NewBufferString(`{}`)
-	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
-	if err != nil {
-		t.Fatalf("create session request failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected create status: %d", resp.StatusCode)
-	}
-
-	var created apiSessionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create response failed: %v", err)
-	}
-
-	attachBody := bytes.NewBufferString(`{"connId":"c1","cols":80,"rows":24}`)
-	attachResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/attach", "application/json", attachBody)
-	if err != nil {
-		t.Fatalf("attach failed: %v", err)
-	}
-	attachResp.Body.Close()
-	if attachResp.StatusCode != http.StatusNoContent {
-		t.Fatalf("unexpected attach status: %d", attachResp.StatusCode)
-	}
-
-	oversized := bytes.Repeat([]byte("a"), maxInputBytes+1)
-	inputBody := bytes.NewBufferString(`{"connId":"c1","input":"` + string(oversized) + `"}`)
-	inputResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/input", "application/json", inputBody)
-	if err != nil {
-		t.Fatalf("send input failed: %v", err)
-	}
-	inputResp.Body.Close()
-	if inputResp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 for oversized input, got: %d", inputResp.StatusCode)
-	}
-}
-
-func TestServer_JSONBodyLimitReturns413(t *testing.T) {
-	srv := New(Config{
-		ManagerConfig: terminal.ManagerConfig{
-			Logger:                        terminal.NopLogger{},
-			ShellResolver:                 fixedShellResolver{shell: "/bin/sh"},
-			ShellArgsProvider:             fixedShellArgsProvider{args: []string{"-c", "cat"}},
-			InitialResizeSuppressDuration: time.Millisecond,
-			ResizeSuppressDuration:        time.Millisecond,
-		},
-	})
-	t.Cleanup(srv.Close)
-
-	httpSrv := httptest.NewServer(srv.Handler())
-	t.Cleanup(httpSrv.Close)
-
-	createReqBody := bytes.NewBufferString(`{}`)
-	resp, err := http.Post(httpSrv.URL+"/api/sessions", "application/json", createReqBody)
-	if err != nil {
-		t.Fatalf("create session request failed: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected create status: %d", resp.StatusCode)
-	}
-
-	var created apiSessionInfo
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode create response failed: %v", err)
-	}
-
-	hugeName := bytes.Repeat([]byte("x"), int(maxJSONBodyBytesDefault)+1024)
-	renameBody := bytes.NewBufferString(`{"newName":"` + string(hugeName) + `"}`)
-	renameResp, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/rename", "application/json", renameBody)
-	if err != nil {
-		t.Fatalf("rename failed: %v", err)
-	}
-	renameResp.Body.Close()
-	if renameResp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413 for oversized json body, got: %d", renameResp.StatusCode)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d, want 413", resp.StatusCode)
 	}
 }

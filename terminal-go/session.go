@@ -2,9 +2,9 @@ package terminal
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -258,11 +258,17 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	if err != nil {
 		return fmt.Errorf("failed to start PTY: %w", err)
 	}
+	outputMonitor, err := newPTYOutputMonitor(ptmx)
+	if err != nil {
+		s.closeUnclaimedPTY(cmd, ptmx)
+		return fmt.Errorf("failed to initialize PTY output monitor: %w", err)
+	}
 
 	s.mu.Lock()
 	if s.activation != activation || s.closed || sessionContextDone(activation.ctx) || s.isActive {
 		active := s.isActive
 		s.mu.Unlock()
+		_ = outputMonitor.Close()
 		s.closeUnclaimedPTY(cmd, ptmx)
 		if active {
 			return nil
@@ -274,6 +280,11 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	s.isActive = true
 	s.lastAppliedCols = cols
 	s.lastAppliedRows = rows
+	if s.geometryGeneration == 0 {
+		s.geometryGeneration = 1
+	} else {
+		s.geometryGeneration++
+	}
 	s.LastActive = time.Now()
 	s.procWaitDone = make(chan struct{})
 	s.readerDone = make(chan struct{})
@@ -288,7 +299,7 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	// Publish activation success before process observation can report a natural
 	// exit and close the session.
 	activation.complete(nil)
-	go s.readPTYOutput(ptmx, readerDone)
+	go s.readPTYOutput(ptmx, outputMonitor, done, readerDone)
 	go s.waitProcessExit(cmd, ptmx, readerDone, done)
 
 	s.config.logger.Info("Started PTY session", "sessionID", s.ID, "cols", cols, "rows", rows)
@@ -420,9 +431,15 @@ func (s *Session) cleanup() {
 	for connID := range s.connections {
 		delete(s.connections, connID)
 	}
+	liveSubscribers := s.detachLiveSubscribersForClose()
 	s.mu.Unlock()
 
 	activation.complete(errSessionClosed)
+	for _, subscriber := range liveSubscribers {
+		if subscriber.OnSessionClosed != nil {
+			subscriber.OnSessionClosed()
+		}
+	}
 	if ptyFile != nil {
 		_ = ptyFile.Close()
 	}
@@ -546,59 +563,220 @@ func (s *Session) ClearHistory() error {
 	if s.historyGeneration <= 0 {
 		s.historyGeneration = 1
 	}
+	s.historyStartSequence = s.committedSequence + 1
 
 	s.config.logger.Info("Terminal history cleared", "sessionID", s.ID)
 	return nil
 }
 
-// broadcastData sends output to the event handler with metadata.
-func (s *Session) broadcastData(data []byte, seqNum int64) {
+// broadcastData sends committed output without holding session locks.
+func (s *Session) broadcastData(event TerminalOutputEvent, subscribers []LiveSubscriber) {
 	// Never call external handlers while holding session locks. Handlers may
 	// synchronously call back into this Session/Manager and would deadlock.
 	s.mu.RLock()
 	handler := s.eventHandler
 	sessionID := s.ID
-	lastInputSource := s.lastInputSource
-	lastInputTime := s.lastInputTime
 	s.mu.RUnlock()
 
-	isEcho := false
-	originalSource := ""
-	if lastInputSource != "" && time.Since(lastInputTime) < 100*time.Millisecond {
-		isEcho = true
-		originalSource = lastInputSource
-	}
-
 	if handler != nil {
-		handler.OnTerminalData(sessionID, data, seqNum, isEcho, originalSource)
-		return
+		handler.OnTerminalData(sessionID, event)
 	}
-
-	s.config.logger.Warn("No event handler for terminal data", "sessionID", sessionID)
+	for _, subscriber := range subscribers {
+		if subscriber.OnOutput != nil {
+			subscriber.OnOutput(event)
+		}
+	}
 }
 
-func (s *Session) readPTYOutput(ptyFile *os.File, done chan struct{}) {
+func (s *Session) readPTYOutput(
+	ptyFile *os.File,
+	monitor ptyOutputMonitor,
+	processDone <-chan struct{},
+	done chan struct{},
+) {
 	if done != nil {
 		defer close(done)
 	}
 	s.config.logger.Info("Starting PTY output reader", "sessionID", s.ID)
 
-	buffer := make([]byte, 4096)
+	if ptyFile == nil {
+		s.config.logger.Warn("PTY is nil", "sessionID", s.ID)
+		return
+	}
+	if monitor == nil {
+		s.config.logger.Error("PTY output monitor is nil", "sessionID", s.ID)
+		return
+	}
+	monitorWatcherDone := make(chan struct{})
+	if processDone != nil {
+		go func() {
+			select {
+			case <-processDone:
+				_ = monitor.Close()
+			case <-monitorWatcherDone:
+			}
+		}()
+	}
+	defer close(monitorWatcherDone)
+	defer monitor.Close()
+
+	reads := make(chan ptyReadResult, 32)
+	go readPTYPacketsWithPending(ptyFile, reads, monitor.PendingBytes, processDone)
+	buffer := make([]byte, 32*1024)
+	var pending *ptyReadResult
 	for {
-		if ptyFile == nil {
-			s.config.logger.Warn("PTY is nil", "sessionID", s.ID)
-			return
+		var first ptyReadResult
+		if pending != nil {
+			first = *pending
+			pending = nil
+		} else {
+			var ok bool
+			first, ok = <-reads
+			if !ok {
+				return
+			}
 		}
 
-		n, err := ptyFile.Read(buffer)
+		n, nextPending, err := collectAvailablePTYBurst(first, reads, buffer)
+		pending = nextPending
 		if n > 0 {
-			raw := make([]byte, n)
-			copy(raw, buffer[:n])
+			raw := append([]byte(nil), buffer[:n]...)
 			s.processRawPTYData(raw)
 		}
 		if err != nil {
 			s.config.logger.Debug("PTY read finished", "sessionID", s.ID, "error", err)
 			return
+		}
+	}
+}
+
+type ptyReadResult struct {
+	data []byte
+	err  error
+}
+
+func readPTYPackets(reader io.Reader, reads chan<- ptyReadResult) {
+	readPTYPacketsWithPending(reader, reads, func() (int, error) { return 0, nil }, nil)
+}
+
+func readPTYPacketsWithPending(
+	reader io.Reader,
+	reads chan<- ptyReadResult,
+	pendingBytes func() (int, error),
+	processDone <-chan struct{},
+) {
+	defer close(reads)
+	buffer := make([]byte, 32*1024)
+	coalesce := false
+	for {
+		n, err := reader.Read(buffer)
+		total := n
+		morePending := false
+		if total > 0 && err == nil {
+			if coalesce {
+				for total < len(buffer) {
+					available, availableErr := currentPendingBytes(pendingBytes, processDone)
+					if availableErr != nil {
+						err = availableErr
+						break
+					}
+					if available <= 0 {
+						break
+					}
+					readSize := min(available, len(buffer)-total)
+					read, readErr := reader.Read(buffer[total : total+readSize])
+					total += read
+					if readErr != nil {
+						err = readErr
+						break
+					}
+					if read == 0 {
+						err = io.ErrNoProgress
+						break
+					}
+				}
+			}
+			if err == nil {
+				available, availableErr := currentPendingBytes(pendingBytes, processDone)
+				if availableErr != nil {
+					err = availableErr
+				} else {
+					morePending = available > 0
+				}
+			}
+		}
+		if total > 0 {
+			reads <- ptyReadResult{
+				data: append([]byte(nil), buffer[:total]...),
+				err:  err,
+			}
+		} else if err != nil {
+			reads <- ptyReadResult{err: err}
+		} else {
+			reads <- ptyReadResult{err: io.ErrNoProgress}
+			return
+		}
+		if err != nil {
+			return
+		}
+		coalesce = morePending
+	}
+}
+
+func currentPendingBytes(
+	pendingBytes func() (int, error),
+	processDone <-chan struct{},
+) (int, error) {
+	available, err := pendingBytes()
+	if err == nil {
+		return available, nil
+	}
+	if processDone != nil {
+		select {
+		case <-processDone:
+			return 0, nil
+		default:
+		}
+	}
+	return 0, err
+}
+
+type ptyOutputMonitor interface {
+	PendingBytes() (int, error)
+	Close() error
+}
+
+func collectAvailablePTYBurst(
+	first ptyReadResult,
+	reads <-chan ptyReadResult,
+	buffer []byte,
+) (int, *ptyReadResult, error) {
+	total := 0
+	current := first
+	for {
+		if len(current.data) > 0 {
+			n := copy(buffer[total:], current.data)
+			total += n
+			if n < len(current.data) {
+				current.data = current.data[n:]
+				return total, &current, nil
+			}
+		}
+		if current.err != nil {
+			return total, nil, current.err
+		}
+		if total == len(buffer) {
+			return total, nil, nil
+		}
+
+		select {
+		case next, ok := <-reads:
+			if !ok {
+				return total, nil, io.EOF
+			}
+			current = next
+		default:
+			return total, nil, nil
 		}
 	}
 }
@@ -618,27 +796,32 @@ func (s *Session) processRawPTYData(data []byte) {
 			s.committedSequence = seqNum
 		}
 	}
+	subscribers := make([]LiveSubscriber, 0, len(s.liveAttachments))
+	for _, attachment := range s.liveAttachments {
+		subscribers = append(subscribers, attachment.subscriber)
+	}
+	geometry := s.effectiveGeometryLocked()
 
 	s.mu.Unlock()
 
-	s.broadcastData(data, seqNum)
+	s.broadcastData(TerminalOutputEvent{
+		Data:        data,
+		Sequence:    seqNum,
+		TimestampMs: timestamp,
+		Geometry:    geometry,
+	}, subscribers)
 
 	s.checkWorkingDirectoryChange(data)
 }
 
-// WriteDataWithSource writes input to the PTY with basic deduplication.
+// WriteDataWithSource writes each accepted input exactly once to the PTY.
 func (s *Session) WriteDataWithSource(data []byte, sourceConnID string) error {
+	_ = sourceConnID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.PTY == nil {
 		return fmt.Errorf("PTY not available")
-	}
-
-	sum := sha256.Sum256(data)
-	if s.lastInputLen == len(data) && s.lastInputHash == sum && time.Since(s.lastInputTime) < s.inputWindow {
-		s.config.logger.Debug("Ignoring duplicate input", "sessionID", s.ID, "dataLength", len(data))
-		return nil
 	}
 
 	if _, err := s.PTY.Write(data); err != nil {
@@ -647,10 +830,6 @@ func (s *Session) WriteDataWithSource(data []byte, sourceConnID string) error {
 	}
 
 	s.LastActive = time.Now()
-	s.lastInputSource = sourceConnID
-	s.lastInputTime = time.Now()
-	s.lastInputHash = sum
-	s.lastInputLen = len(data)
 
 	return nil
 }

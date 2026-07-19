@@ -108,17 +108,22 @@ describe('TerminalCore search scanning', () => {
     expect(estimate.estimatedBytes).toBeGreaterThan(estimate.bufferBytes);
   });
 
-  it('restores compatible snapshots and rejects incompatible versions', async () => {
+  it('restores compatible snapshots with an explicit full repaint and rejects incompatible versions', async () => {
     const core = new TerminalCore(document.createElement('div'));
     (core as any).terminal = makeFakeTerminal(['alpha']);
     (core as any).state = TerminalState.READY;
-    const write = vi.fn((_data: string | Uint8Array, callback?: () => void) => callback?.());
+    let fullRepaintRequiredAtWrite = false;
+    const write = vi.fn((_data: string | Uint8Array, callback?: () => void) => {
+      fullRepaintRequiredAtWrite = (core as any).needsFullRenderOnNextWrite;
+      callback?.();
+    });
     (core as any).write = write;
     const snapshot = core.captureRestorableSnapshot({ coveredThroughSequence: 2 });
 
     expect(snapshot).not.toBeNull();
     await expect(core.restoreSnapshot(snapshot!)).resolves.toBe(true);
     expect(write).toHaveBeenCalledWith(snapshot?.data, expect.any(Function));
+    expect(fullRepaintRequiredAtWrite).toBe(true);
     await expect(core.restoreSnapshot({ ...snapshot!, version: 2 as 1 })).resolves.toBe(false);
   });
 });

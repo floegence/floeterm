@@ -3,7 +3,7 @@ import {
   resetTerminalFabricDiagnostics,
   resetTerminalRenderSchedulerStats,
 } from '@floegence/floeterm-terminal-web';
-import { createEventSource, createTransport, getOrCreateConnId, type AppTerminalTransport } from './terminalApi';
+import { createTerminalRuntime, getOrCreateConnId, type AppTerminalTransport } from './terminalApi';
 
 const SESSION_STORAGE_KEY = 'floeterm_session_id';
 const GRID_SIZE_STORAGE_KEY = 'floeterm_grid_size';
@@ -17,9 +17,9 @@ export const GRID_STREAM_START_BASE_DELAY_MS = 240;
 export const GRID_STREAM_START_STAGGER_MS = 32;
 export const GRID_STREAM_START_STAGGER_WINDOW_MS = 760;
 
-export type DemoMode = 'single' | 'grid';
+export type DemoMode = 'single' | 'mirror' | 'grid';
 export type GridCount = typeof GRID_COUNTS[number];
-export type DemoEventSource = ReturnType<typeof createEventSource>;
+export type DemoEventSource = ReturnType<typeof createTerminalRuntime>['eventSource'];
 
 export type GridSession = {
   id: string;
@@ -40,6 +40,18 @@ type GridRuntimeState = {
 
 type DemoSessionInfo = Awaited<ReturnType<AppTerminalTransport['listSessions']>>[number];
 
+export const resolveRequestedSingleSession = (
+  sessions: DemoSessionInfo[],
+  requestedSessionId: string,
+): DemoSessionInfo | null => {
+  if (!requestedSessionId) return null;
+  const requested = sessions.find(item => item.id === requestedSessionId);
+  if (!requested) {
+    throw new Error(`requested terminal session ${requestedSessionId} was not found`);
+  }
+  return requested;
+};
+
 type PendingGridRequest = {
   count: GridCount;
   force: boolean;
@@ -52,6 +64,8 @@ export type FloetermDemoRuntime = {
   mode: Accessor<DemoMode>;
   gridCount: Accessor<GridCount>;
   singleSessionId: Accessor<string>;
+  singleSessionExternallyManaged: Accessor<boolean>;
+  canRestartSingleSession: Accessor<boolean>;
   singleBusy: Accessor<boolean>;
   singleError: Accessor<string>;
   gridSessions: Accessor<GridSession[]>;
@@ -104,14 +118,16 @@ export const formatNumber = (value: number, digits = 1): string => {
   return value.toFixed(digits);
 };
 
-export const isDemoMode = (value: string): value is DemoMode => value === 'single' || value === 'grid';
+export const isDemoMode = (value: string): value is DemoMode => (
+  value === 'single' || value === 'mirror' || value === 'grid'
+);
 
 export const readStoredGridCount = (): GridCount => {
   const stored = Number(window.localStorage.getItem(GRID_SIZE_STORAGE_KEY));
   return GRID_COUNTS.includes(stored as GridCount) ? stored as GridCount : DEFAULT_GRID_COUNT;
 };
 
-export const resolveInitialDemoState = (): { mode: DemoMode; gridCount: GridCount } => {
+export const resolveInitialDemoState = (): { mode: DemoMode; gridCount: GridCount; requestedSessionId: string } => {
   const params = new URLSearchParams(window.location.search);
   const requestedMode = params.get('mode') ?? '';
   const requestedCount = Number(params.get('count') ?? params.get('grid') ?? '');
@@ -126,7 +142,8 @@ export const resolveInitialDemoState = (): { mode: DemoMode; gridCount: GridCoun
     : perfMode
       ? PERF_GRID_COUNT
       : readStoredGridCount();
-  return { mode, gridCount };
+  const requestedSessionId = mode === 'grid' ? '' : (params.get('session') ?? '').trim();
+  return { mode, gridCount, requestedSessionId };
 };
 
 export const updateDemoModeSearchParams = (nextMode: DemoMode, nextGridCount?: GridCount): void => {
@@ -229,9 +246,10 @@ const pickReusableGridSessions = (
 
 export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
   const connId = getOrCreateConnId();
-  const transport = createTransport(connId);
-  const eventSource = createEventSource(connId);
+  const { transport, eventSource } = createTerminalRuntime(connId);
   const initial = resolveInitialDemoState();
+  const singleSessionExternallyManaged = () => initial.requestedSessionId.length > 0;
+  const canRestartSingleSession = () => !singleSessionExternallyManaged();
 
   const [mode, setMode] = createSignal<DemoMode>(initial.mode);
   const [gridCount, setGridCount] = createSignal<GridCount>(initial.gridCount);
@@ -314,7 +332,7 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
     }
 
     const epoch = singleEpoch;
-    const isCurrent = () => modeValue === 'single' && singleEpoch === epoch;
+    const isCurrent = () => modeValue !== 'grid' && singleEpoch === epoch;
     const assertCurrent = () => {
       if (!isCurrent()) {
         throw createStaleRuntimeError();
@@ -327,10 +345,17 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
       let createdSessionId = '';
       try {
         assertCurrent();
-        const name = singleSessionName(connId);
-        const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY) ?? '';
         const list = await transport.listSessions();
         assertCurrent();
+
+        if (singleSessionExternallyManaged()) {
+          const requested = resolveRequestedSingleSession(list, initial.requestedSessionId)!;
+          setSingleSessionId(requested.id);
+          return;
+        }
+
+        const name = singleSessionName(connId);
+        const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY) ?? '';
 
         let chosen = '';
         if (singleSessionIdValue && list.some(item => item.id === singleSessionIdValue && item.name === name)) {
@@ -385,8 +410,11 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
   };
 
   const restartSingleSession = async () => {
+    if (singleSessionExternallyManaged()) {
+      return;
+    }
     const epoch = singleEpoch;
-    const isCurrent = () => modeValue === 'single' && singleEpoch === epoch;
+    const isCurrent = () => modeValue !== 'grid' && singleEpoch === epoch;
     const assertCurrent = () => {
       if (!isCurrent()) {
         throw createStaleRuntimeError();
@@ -541,8 +569,9 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
       return;
     }
 
+    const previousMode = modeValue;
     modeValue = nextMode;
-    if (nextMode === 'single') {
+    if (previousMode === 'grid' && nextMode !== 'grid') {
       gridEpoch += 1;
       pendingGridRequest = null;
       batch(() => {
@@ -561,7 +590,7 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
           setGridError(error instanceof Error ? error.message : String(error));
         }
       });
-    } else {
+    } else if (previousMode !== 'grid' && nextMode === 'grid') {
       singleEpoch += 1;
       setSingleBusy(false);
       setSingleError('');
@@ -571,7 +600,10 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
       if (!currentSingleSessionId || stored === currentSingleSessionId) {
         window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
       }
-      void cleanupOwnedSingleSessions(() => modeValue === 'grid').catch(error => {
+      const cleanupSingle = singleSessionExternallyManaged()
+        ? Promise.resolve()
+        : cleanupOwnedSingleSessions(() => modeValue === 'grid');
+      void cleanupSingle.catch(error => {
         if (!isAbortError(error) && modeValue === 'grid') {
           setGridError(error instanceof Error ? error.message : String(error));
         }
@@ -605,7 +637,7 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
   };
 
   createEffect(() => {
-    if (mode() === 'single') {
+    if (mode() !== 'grid') {
       void ensureSingleSession();
     }
   });
@@ -633,6 +665,8 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
     mode,
     gridCount,
     singleSessionId,
+    singleSessionExternallyManaged,
+    canRestartSingleSession,
     singleBusy,
     singleError,
     gridSessions,

@@ -9,12 +9,18 @@ Data sources:
 License identifiers are best-effort and derived from upstream metadata / LICENSE files.
 For authoritative license texts and copyright notices, refer to each upstream project.
 
+## Embedded Source
+
+- Beamterm renderer, tag `beamterm-v1.0.0`, commit `fd8066e840ebf4d7ad26dbfcc0ac5f4b7b34b7e3` (License: MIT; provenance and license: `beamterm-renderer/UPSTREAM.md`, `beamterm-renderer/LICENSE`)
+
 ## Go Modules
 
 - github.com/coder/websocket v1.8.14 (License: ISC; File: LICENSE.txt)
 - github.com/creack/pty v1.1.24 (License: MIT; File: LICENSE)
 
 ## npm Packages
+
+- @floegence/beamterm-renderer 1.0.1-rc.4 (License: MIT; FloeTerm-maintained Beamterm distribution)
 
 - @asamuzakjp/css-color@3.2.0 (License: MIT)
 - @babel/code-frame@7.28.6 (License: MIT)

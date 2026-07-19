@@ -13,7 +13,6 @@ type ManagerConfig struct {
 	HistoryBufferSize      int
 	HistoryBufferMaxChunks int
 	HistoryBufferMaxBytes  int64
-	InputWindow            time.Duration
 	// Deprecated: terminal output is no longer dropped during initial resize.
 	InitialResizeSuppressDuration time.Duration
 	// Deprecated: terminal output is no longer dropped during resize.
@@ -73,9 +72,6 @@ func (cfg ManagerConfig) applyDefaults() ManagerConfig {
 	if cfg.HistoryBufferMaxChunks < cfg.HistoryBufferSize {
 		cfg.HistoryBufferMaxChunks = cfg.HistoryBufferSize
 	}
-	if cfg.InputWindow <= 0 {
-		cfg.InputWindow = 10 * time.Millisecond
-	}
 	if cfg.InitialResizeSuppressDuration <= 0 {
 		cfg.InitialResizeSuppressDuration = 500 * time.Millisecond
 	}
@@ -99,7 +95,6 @@ type sessionConfig struct {
 	historyBufferSize      int
 	historyBufferMaxChunks int
 	historyBufferMaxBytes  int64
-	inputWindow            time.Duration
 	terminalEnv            TerminalEnv
 }
 
@@ -115,7 +110,6 @@ func newSessionConfig(cfg ManagerConfig) sessionConfig {
 		historyBufferSize:      cfg.HistoryBufferSize,
 		historyBufferMaxChunks: cfg.HistoryBufferMaxChunks,
 		historyBufferMaxBytes:  cfg.HistoryBufferMaxBytes,
-		inputWindow:            cfg.InputWindow,
 		terminalEnv:            cfg.TerminalEnv,
 	}
 }

@@ -1,17 +1,27 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
+	"runtime"
+	"runtime/pprof"
 	"strings"
-	"time"
 
 	terminal "github.com/floegence/floeterm/terminal-go"
 )
+
+type performanceRuntimeResponse struct {
+	Goroutines          int    `json:"goroutines"`
+	HeapBytes           uint64 `json:"heap_bytes"`
+	SessionCount        int    `json:"session_count"`
+	ActiveSessionCount  int    `json:"active_session_count"`
+	ConnectionCount     int    `json:"connection_count"`
+	LiveAttachmentCount int    `json:"live_attachment_count"`
+}
 
 type apiSessionInfo struct {
 	ID             string `json:"id"`
@@ -31,21 +41,23 @@ type renameSessionRequest struct {
 	NewName string `json:"newName"`
 }
 
-type attachRequest struct {
-	ConnID string `json:"connId"`
-	Cols   int    `json:"cols"`
-	Rows   int    `json:"rows"`
-}
-
-type inputRequest struct {
-	ConnID string `json:"connId"`
-	Input  string `json:"input"`
-}
-
 type historyChunk struct {
 	Sequence    int64  `json:"sequence"`
 	DataBase64  string `json:"data"`
 	TimestampMs int64  `json:"timestampMs"`
+}
+
+type historyPageResponse struct {
+	Chunks                 []historyChunk `json:"chunks"`
+	FirstRetainedSequence  int64          `json:"firstRetainedSequence"`
+	NextStartSequence      int64          `json:"nextStartSequence"`
+	HasMore                bool           `json:"hasMore"`
+	CoveredThroughSequence int64          `json:"coveredThroughSequence"`
+	SnapshotEndSequence    int64          `json:"snapshotEndSequence"`
+	HistoryGeneration      int64          `json:"historyGeneration"`
+	HistoryReset           bool           `json:"historyReset"`
+	HistoryTruncated       bool           `json:"historyTruncated"`
+	TotalBytes             int64          `json:"totalBytes"`
 }
 
 type sessionStatsResponse struct {
@@ -54,17 +66,6 @@ type sessionStatsResponse struct {
 
 type historyStats struct {
 	TotalBytes int64 `json:"totalBytes"`
-}
-
-func previewForLog(input string, maxRunes int) (preview string, truncated bool) {
-	if maxRunes <= 0 {
-		return strconv.QuoteToASCII(""), len(input) > 0
-	}
-	runes := []rune(input)
-	if len(runes) <= maxRunes {
-		return strconv.QuoteToASCII(input), false
-	}
-	return strconv.QuoteToASCII(string(runes[:maxRunes])), true
 }
 
 func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
@@ -76,6 +77,45 @@ func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
 		LastActiveAtMs: info.LastActive,
 		IsActive:       info.IsActive,
 	}
+}
+
+func (s *Server) handlePerformanceRuntime(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	diagnostics := s.manager.GetDiagnostics()
+	w.Header().Set("Connection", "close")
+	writeJSON(w, http.StatusOK, performanceRuntimeResponse{
+		Goroutines:          runtime.NumGoroutine(),
+		HeapBytes:           memory.HeapAlloc,
+		SessionCount:        diagnostics.SessionCount,
+		ActiveSessionCount:  diagnostics.ActiveSessionCount,
+		ConnectionCount:     diagnostics.ConnectionCount,
+		LiveAttachmentCount: diagnostics.LiveAttachmentCount,
+	})
+}
+
+func (s *Server) handlePerformanceGoroutines(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	profile := pprof.Lookup("goroutine")
+	if profile == nil {
+		http.Error(w, "goroutine profile unavailable", http.StatusInternalServerError)
+		return
+	}
+	var output bytes.Buffer
+	if err := profile.WriteTo(&output, 2); err != nil {
+		http.Error(w, "goroutine profile unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Connection", "close")
+	_, _ = w.Write(output.Bytes())
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -172,154 +212,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 
-	case "attach":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var req attachRequest
-		if err := readJSON(w, r, &req, maxJSONBodyBytesDefault); err != nil {
-			var httpErr *httpError
-			if errors.As(err, &httpErr) {
-				http.Error(w, httpErr.message, httpErr.status)
-				return
-			}
-			http.Error(w, "invalid payload", http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(req.ConnID) == "" {
-			http.Error(w, "connId is required", http.StatusBadRequest)
-			return
-		}
-		cols, rows := req.Cols, req.Rows
-		if cols <= 0 {
-			cols = 80
-		}
-		if rows <= 0 {
-			rows = 24
-		}
-		if !validateDims(cols, rows) {
-			http.Error(w, "invalid cols/rows", http.StatusBadRequest)
-			return
-		}
-
-		session, ok := s.manager.GetSession(sessionID)
-		if !ok {
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
-		if !session.IsActive() {
-			session.AddConnection(req.ConnID, cols, rows)
-			if err := s.manager.ActivateSession(sessionID, cols, rows); err != nil {
-				session.RemoveConnection(req.ConnID)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		session.AddConnection(req.ConnID, cols, rows)
-		w.WriteHeader(http.StatusNoContent)
-		return
-
-	case "resize":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var req attachRequest
-		if err := readJSON(w, r, &req, maxJSONBodyBytesDefault); err != nil {
-			var httpErr *httpError
-			if errors.As(err, &httpErr) {
-				http.Error(w, httpErr.message, httpErr.status)
-				return
-			}
-			http.Error(w, "invalid payload", http.StatusBadRequest)
-			return
-		}
-		if req.Cols <= 0 || req.Rows <= 0 || !validateDims(req.Cols, req.Rows) {
-			http.Error(w, "invalid cols/rows", http.StatusBadRequest)
-			return
-		}
-
-		session, ok := s.manager.GetSession(sessionID)
-		if !ok {
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
-
-		if strings.TrimSpace(req.ConnID) != "" {
-			session.UpdateConnectionSize(req.ConnID, req.Cols, req.Rows)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		if err := session.ResizePTY(req.Cols, req.Rows); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return
-
-	case "input":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		start := time.Now()
-		slowTimer := time.AfterFunc(2*time.Second, func() {
-			s.logger.Warn("API input request is taking long", "sessionID", sessionID, "remoteAddr", r.RemoteAddr, "contentLength", r.ContentLength)
-		})
-		defer slowTimer.Stop()
-
-		s.logger.Debug("API input request begin", "sessionID", sessionID, "remoteAddr", r.RemoteAddr, "contentLength", r.ContentLength)
-
-		var req inputRequest
-		if err := readJSON(w, r, &req, maxJSONBodyBytesDefault); err != nil {
-			var httpErr *httpError
-			if errors.As(err, &httpErr) {
-				http.Error(w, httpErr.message, httpErr.status)
-				return
-			}
-			s.logger.Warn("API input request invalid payload", "sessionID", sessionID, "remoteAddr", r.RemoteAddr, "error", err)
-			http.Error(w, "invalid payload", http.StatusBadRequest)
-			return
-		}
-		if len(req.Input) > maxInputBytes {
-			http.Error(w, "input too large", http.StatusBadRequest)
-			return
-		}
-		if !s.inputLimiter.Allow(clientKey(r, sessionID, req.ConnID), len(req.Input), time.Now()) {
-			http.Error(w, "rate limited", http.StatusTooManyRequests)
-			return
-		}
-
-		preview, truncated := previewForLog(req.Input, 120)
-		s.logger.Debug(
-			"API input request parsed",
-			"sessionID", sessionID,
-			"connId", req.ConnID,
-			"inputLength", len(req.Input),
-			"inputPreview", preview,
-			"previewTruncated", truncated,
-		)
-
-		session, ok := s.manager.GetSession(sessionID)
-		if !ok {
-			s.logger.Warn("API input session not found", "sessionID", sessionID, "connId", req.ConnID)
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
-		if err := session.WriteDataWithSource([]byte(req.Input), req.ConnID); err != nil {
-			s.logger.Error("API input write failed", "sessionID", sessionID, "connId", req.ConnID, "inputLength", len(req.Input), "error", err, "durationMs", time.Since(start).Milliseconds())
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		s.logger.Debug("API input request ok", "sessionID", sessionID, "connId", req.ConnID, "durationMs", time.Since(start).Milliseconds())
-		w.WriteHeader(http.StatusNoContent)
-		return
-
 	case "history":
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -335,6 +227,16 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		historyGeneration, err := parseIntQuery(r.URL.Query(), "historyGeneration", 0)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		maxBytes, err := parseIntQuery(r.URL.Query(), "maxBytes", defaultHistoryPageBytes)
+		if err != nil || maxBytes <= 0 || maxBytes > maxHistoryPageBytes {
+			http.Error(w, "invalid maxBytes", http.StatusBadRequest)
+			return
+		}
 
 		session, ok := s.manager.GetSession(sessionID)
 		if !ok {
@@ -342,17 +244,20 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		chunks, err := session.GetHistoryFromSequence(startSeq)
+		page, err := session.GetHistoryPage(terminal.HistoryPageOptions{
+			StartSeq:          startSeq,
+			EndSeq:            endSeq,
+			HistoryGeneration: historyGeneration,
+			LimitChunks:       maxHistoryPageChunks,
+			MaxBytes:          int(maxBytes),
+		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		out := make([]historyChunk, 0, len(chunks))
-		for _, chunk := range chunks {
-			if endSeq > 0 && chunk.Sequence > endSeq {
-				break
-			}
+		out := make([]historyChunk, 0, len(page.Chunks))
+		for _, chunk := range page.Chunks {
 			out = append(out, historyChunk{
 				Sequence:    chunk.Sequence,
 				DataBase64:  base64.StdEncoding.EncodeToString(chunk.Data),
@@ -360,7 +265,18 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		writeJSON(w, http.StatusOK, out)
+		writeJSON(w, http.StatusOK, historyPageResponse{
+			Chunks:                 out,
+			FirstRetainedSequence:  page.FirstRetainedSequence,
+			NextStartSequence:      page.NextStartSeq,
+			HasMore:                page.HasMore,
+			CoveredThroughSequence: page.CoveredThroughSequence,
+			SnapshotEndSequence:    page.SnapshotEndSequence,
+			HistoryGeneration:      page.HistoryGeneration,
+			HistoryReset:           page.HistoryReset,
+			HistoryTruncated:       page.HistoryTruncated,
+			TotalBytes:             page.TotalBytes,
+		})
 		return
 
 	case "stats":

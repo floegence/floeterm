@@ -15,7 +15,54 @@ permissions:
   id-token: write
 
 jobs:
+  npm-publish-beamterm-renderer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Ensure npm supports trusted publishing (OIDC)
+        run: |
+          set -euo pipefail
+          npm i -g npm@^11.5.1
+          npm --version
+
+      - name: Install pinned renderer build tool
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.13.1
+
+      - name: Check if @floegence/beamterm-renderer is already published
+        id: renderer_exists
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./beamterm-renderer/package.json').version")"
+          if npm view "@floegence/beamterm-renderer@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test / Rust Check / Build / Package Artifact
+        if: steps.renderer_exists.outputs.exists != 'true'
+        working-directory: beamterm-renderer
+        run: npm run check
+
+      - name: Publish @floegence/beamterm-renderer (npm Trusted Publisher)
+        if: steps.renderer_exists.outputs.exists != 'true'
+        working-directory: beamterm-renderer
+        run: npm publish --access public
+
   npm-publish-terminal-web:
+    needs: npm-publish-beamterm-renderer
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -48,6 +95,16 @@ jobs:
           echo "tag=$TAG_VERSION pkg=$PKG_VERSION"
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "Tag version ($TAG_VERSION) does not match terminal-web package version ($PKG_VERSION)" >&2
+            exit 1
+          fi
+
+      - name: Verify terminal-web pins the released renderer
+        run: |
+          set -euo pipefail
+          RENDERER_VERSION="$(node -p "require('./beamterm-renderer/package.json').version")"
+          PINNED_VERSION="$(node -p "require('./terminal-web/package.json').dependencies['@floegence/beamterm-renderer']")"
+          if [ "$PINNED_VERSION" != "$RENDERER_VERSION" ]; then
+            echo "terminal-web renderer pin ($PINNED_VERSION) does not match renderer package version ($RENDERER_VERSION)" >&2
             exit 1
           fi
 

@@ -29,6 +29,12 @@ export interface TerminalResponsiveConfig {
    * This avoids inactive/hidden terminals overriding remote cols/rows.
    */
   notifyResizeOnlyWhenFocused?: boolean;
+
+  /**
+   * Keep rendering at server-confirmed fixed dimensions while reporting the
+   * host's independently measured capacity through onResize.
+   */
+  reportHostDimensionsWithFixedGrid?: boolean;
 }
 
 export type TerminalDimensions = {
@@ -212,6 +218,7 @@ export interface TerminalEventHandlers {
   onTitleChange?: (title: string) => void;
   onStateChange?: (state: TerminalState) => void;
   onError?: (error: Error) => void;
+  onRender?: (durationMs: number) => void;
 }
 
 export type TerminalInitializationPriority = 'interactive' | 'background';
@@ -232,6 +239,7 @@ export interface TerminalCoreLike {
   initialize(options?: TerminalInitializationOptions): Promise<void>;
   dispose(): void;
   write(data: string | Uint8Array, callback?: () => void): void;
+  writeFrame(data: string | Uint8Array, callback?: () => void): void;
   writeHistory?(data: string | Uint8Array, callback?: () => void): void;
   clear(): void;
   serialize(): string;
@@ -298,8 +306,7 @@ export interface TerminalDataEvent {
   data: Uint8Array;
   sequence?: number;
   timestampMs?: number;
-  echoOfInput?: boolean;
-  originalSource?: string;
+  liveBatchSize?: number;
   error?: string;
 }
 
@@ -326,6 +333,50 @@ export interface TerminalTransport {
   renameSession?(sessionId: TerminalID, newName: string): Promise<void>;
 }
 
+export interface TerminalAtomicAttachResult {
+  historyBoundarySequence: number;
+  historyGeneration: number;
+  historyStartSequence: number;
+  geometryGeneration: number;
+  cols: number;
+  rows: number;
+}
+
+export interface TerminalGeometryEvent {
+  sessionId: TerminalID;
+  generation: number;
+  outputSequenceBoundary: number;
+  cols: number;
+  rows: number;
+}
+
+export interface TerminalHistoryPage {
+  chunks: TerminalDataChunk[];
+  firstRetainedSequence: number;
+  nextStartSequence: number;
+  hasMore: boolean;
+  coveredThroughSequence: number;
+  snapshotEndSequence: number;
+  historyGeneration: number;
+  historyReset: boolean;
+  historyTruncated: boolean;
+  totalBytes: number;
+}
+
+export interface TerminalAtomicTransport extends TerminalTransport {
+  attachWithHistoryBoundary(
+    sessionId: TerminalID,
+    cols: number,
+    rows: number,
+  ): Promise<TerminalAtomicAttachResult>;
+  historyPage(
+    sessionId: TerminalID,
+    startSequence: number,
+    endSequence: number,
+    historyGeneration: number,
+  ): Promise<TerminalHistoryPage>;
+}
+
 // TerminalEventSource exposes streaming event subscriptions.
 export interface TerminalEventSource {
   onTerminalData(
@@ -334,6 +385,7 @@ export interface TerminalEventSource {
     options?: TerminalDataSubscriptionOptions
   ): () => void;
   onTerminalNameUpdate?(sessionId: TerminalID, handler: (event: TerminalNameUpdateEvent) => void): () => void;
+  onTerminalGeometry?(sessionId: TerminalID, handler: (event: TerminalGeometryEvent) => void): () => void;
   onSessionDeleted?(sessionId: TerminalID, handler: () => void): () => void;
 }
 
@@ -422,6 +474,7 @@ export interface TerminalManagerOptions {
   logger?: Logger;
   onResize?: (cols: number, rows: number) => void;
   onError?: (error: Error) => void;
+  onRender?: (durationMs: number) => void;
   config?: TerminalConfig;
   coreConstructor?: TerminalCoreConstructor;
   scheduler?: TerminalInstanceScheduler;

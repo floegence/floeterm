@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { TerminalFabricCoordinator } from './TerminalFabricCoordinator';
 
 describe('TerminalFabricCoordinator', () => {
-  it('tracks renderer counts, frame timings, and fallback diagnostics', () => {
+  it('tracks renderer counts, frame timings, and explicit renderer errors', () => {
     const coordinator = new TerminalFabricCoordinator();
 
     coordinator.setRendererState({
@@ -31,11 +31,11 @@ describe('TerminalFabricCoordinator', () => {
       beamtermLoaded: true,
     });
 
-    coordinator.noteFallback(new Error('lost context'));
+    coordinator.noteRendererError(new Error('lost context'));
     expect(coordinator.getDiagnostics()).toMatchObject({
-      backend: 'main_thread_canvas_live',
-      renderPath: 'canvas_live_fallback',
-      fallbackCount: 1,
+      backend: 'beamterm_webgl2',
+      renderPath: 'main_thread_webgl2',
+      fallbackCount: 0,
       lastError: 'lost context',
     });
   });

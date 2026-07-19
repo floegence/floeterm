@@ -6,6 +6,8 @@ dist/
 build/
 out/
 coverage/
+playwright-report/
+test-results/
 target/
 .cache/
 .next/

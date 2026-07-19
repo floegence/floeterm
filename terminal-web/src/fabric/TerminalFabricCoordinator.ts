@@ -8,8 +8,8 @@ import type {
 } from './types.js';
 
 const createEmptyStats = (): TerminalFabricStats => ({
-  backend: 'main_thread_canvas_live',
-  renderPath: 'canvas_live_fallback',
+  backend: 'beamterm_webgl2',
+  renderPath: 'main_thread_webgl2',
   activeRendererCount: 0,
   visibleViewCount: 0,
   offscreenViewCount: 0,
@@ -62,11 +62,8 @@ export class TerminalFabricCoordinator {
     this.stats.coalescedFrameCount += 1;
   }
 
-  noteFallback(error: unknown): void {
-    this.stats.fallbackCount += 1;
-    this.stats.backend = 'main_thread_canvas_live';
-    this.stats.renderPath = 'canvas_live_fallback';
-    this.lastError = error instanceof Error ? error.message : String(error ?? 'unknown fallback');
+  noteRendererError(error: unknown): void {
+    this.lastError = error instanceof Error ? error.message : String(error ?? 'unknown renderer error');
   }
 
   noteContextRestore(): void {

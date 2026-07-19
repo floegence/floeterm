@@ -14,13 +14,15 @@ const parsePort = (value: string | undefined, fallback: number): number => {
 const backendOrigin = env.FLOETERM_BACKEND_ORIGIN ?? 'http://localhost:8080';
 const backendWsOrigin = backendOrigin.replace(/^http/, 'ws');
 const terminalWebSrc = decodeURIComponent(new URL('../../terminal-web/src/index.ts', import.meta.url).pathname);
+const terminalWebLiveSrc = decodeURIComponent(new URL('../../terminal-web/src/entries/live.ts', import.meta.url).pathname);
 
 export default defineConfig({
   plugins: [wasm(), solid()],
   resolve: {
-    alias: {
-      '@floegence/floeterm-terminal-web': terminalWebSrc,
-    },
+    alias: [
+      { find: '@floegence/floeterm-terminal-web/live', replacement: terminalWebLiveSrc },
+      { find: '@floegence/floeterm-terminal-web', replacement: terminalWebSrc },
+    ],
   },
   server: {
     host: true,

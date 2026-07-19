@@ -7,6 +7,9 @@ import type {
   TerminalFabricGeometry,
   TerminalFabricRenderer,
   TerminalFabricRendererTarget,
+  TerminalFabricRowRenderHints,
+  TerminalFabricSourceCell,
+  TerminalFabricSourceRenderer,
   TerminalFabricTheme,
 } from './types.js';
 import { terminalFabricCoordinator } from './TerminalFabricCoordinator.js';
@@ -20,6 +23,30 @@ export type { BeamtermModule } from '../internal/BeamtermResourceLoader.js';
 export type BeamtermRendererInstance = InstanceType<BeamtermModule['BeamtermRenderer']>;
 type BeamtermCellStyle = InstanceType<BeamtermModule['CellStyle']>;
 type BeamtermCell = InstanceType<BeamtermModule['Cell']>;
+type BeamtermBatch = ReturnType<BeamtermRendererInstance['batch']>;
+
+type SourceGridCoverage = {
+  cols: number;
+  rows: number;
+};
+
+type ResolvedFabricCell = {
+  symbol: string;
+  width: number;
+  styleKey: string;
+  style: BeamtermCellStyle | null;
+  simple: boolean;
+  blank: boolean;
+};
+
+const createResolvedFabricCell = (): ResolvedFabricCell => ({
+  symbol: ' ',
+  width: 1,
+  styleKey: '',
+  style: null,
+  simple: true,
+  blank: true,
+});
 
 const DEFAULT_BACKGROUND = 0x000000;
 const DEFAULT_FOREGROUND = 0xffffff;
@@ -45,23 +72,6 @@ export const parseHexColor = (value: string | undefined, fallback: number): numb
 export const formatHexColor = (value: number): string => {
   const normalized = Number.isFinite(value) ? Math.max(0, Math.min(0xffffff, Math.trunc(value))) : 0;
   return `#${normalized.toString(16).padStart(6, '0')}`;
-};
-
-export const normalizeCanvasSelector = (canvas: HTMLCanvasElement): string => {
-  if (!canvas.id) {
-    canvas.id = `floeterm-beamterm-${Math.random().toString(36).slice(2)}`;
-  }
-  return `#${escapeCssIdentifier(canvas.id)}`;
-};
-
-const escapeCssIdentifier = (value: string): string => {
-  const cssGlobal = globalThis as typeof globalThis & {
-    CSS?: { escape?: (raw: string) => string };
-  };
-  if (typeof cssGlobal.CSS?.escape === 'function') {
-    return cssGlobal.CSS.escape(value);
-  }
-  return value.replace(/[^a-zA-Z0-9_-]/g, match => `\\${match}`);
 };
 
 export const createStyle = (
@@ -119,11 +129,11 @@ export const hasWebGL2 = (): boolean => {
 
 export const createBeamtermRenderer = (
   module: BeamtermModule,
-  selector: string,
+  canvas: HTMLCanvasElement,
   fontFamilies: string[],
   fontSize: number,
-): BeamtermRendererInstance => module.BeamtermRenderer.withDynamicAtlas(
-  selector,
+): BeamtermRendererInstance => module.BeamtermRenderer.withDynamicAtlasCanvas(
+  canvas,
   fontFamilies,
   fontSize,
   false,
@@ -141,6 +151,7 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
 
   private module: BeamtermModule | null = null;
   private renderer: BeamtermRendererInstance | null = null;
+  private frameBatch: BeamtermBatch | null = null;
   private target: TerminalFabricRendererTarget | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private visible = true;
@@ -157,6 +168,11 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
   private geometry: TerminalFabricGeometry | null = null;
   private surfaceBackgroundCss: string | null = null;
   private hostInlineBackgroundColor: string | null = null;
+  private sourceGridCoverage: SourceGridCoverage | null = null;
+  private surfaceCoverageKey = '';
+  private pendingFullClearCoverage: SourceGridCoverage | null = null;
+  private readonly resolvedCell = createResolvedFabricCell();
+  private readonly resolvedLookahead = createResolvedFabricCell();
 
   async initialize(target: TerminalFabricRendererTarget): Promise<void> {
     this.target = target;
@@ -170,8 +186,8 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
       const webgl2Supported = hasWebGL2();
       terminalFabricCoordinator.setRendererState({
         webgl2Supported,
-        backend: webgl2Supported ? 'beamterm_webgl2' : 'main_thread_canvas_live',
-        renderPath: webgl2Supported ? 'main_thread_webgl2' : 'canvas_live_fallback',
+        backend: 'beamterm_webgl2',
+        renderPath: 'main_thread_webgl2',
       });
       if (!webgl2Supported) {
         throw new Error('WebGL2 is not available for Beamterm');
@@ -205,10 +221,10 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
 
       this.canvas = canvas;
       this.syncBackgroundSurface();
-      const selector = normalizeCanvasSelector(canvas);
       this.fontFamilies = normalizeFontFamilies(target.fontFamily);
       this.fontSize = target.fontSize;
-      this.renderer = createBeamtermRenderer(this.module, selector, this.fontFamilies, this.fontSize);
+      this.renderer = createBeamtermRenderer(this.module, canvas, this.fontFamilies, this.fontSize);
+      this.renderer.setCanvasPaddingColor(this.currentTheme.background);
       this.installEventForwarding(canvas);
       this.resize(host.clientWidth, host.clientHeight);
       this.initialized = true;
@@ -225,9 +241,7 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
       this.canvas = null;
       canvas?.remove();
       this.restoreBackgroundSurface();
-      if (ghosttyCanvas) {
-        ghosttyCanvas.style.opacity = '';
-      }
+      terminalFabricCoordinator.noteRendererError(error);
       throw error;
     }
   }
@@ -244,30 +258,98 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     if (!this.renderer || !this.visible) {
       return;
     }
+    if (options.theme.background !== this.currentTheme.background) {
+      this.renderer.setCanvasPaddingColor(options.theme.background);
+    }
     this.currentTheme = options.theme;
     this.syncBackgroundSurface();
     this.lastRenderedRows = 0;
     this.lastDirtyCells = 0;
+    this.frameBatch?.free();
+    this.frameBatch = this.renderer.batch();
     if (frame.forceAll) {
-      const batch = this.renderer.batch();
-      batch.clear(options.theme.background);
+      this.pendingFullClearCoverage = { cols: options.cols, rows: options.rows };
+    } else {
+      this.pendingFullClearCoverage = null;
+      this.paintOutsideSourceGrid(this.frameBatch, options.cols, options.rows, options.theme.background);
     }
   }
 
-  writeRow(row: number, cells: TerminalFabricCell[], cols: number): void {
-    if (!this.renderer || !this.module || !this.visible) {
+  writeRow(
+    sourceRenderer: TerminalFabricSourceRenderer,
+    row: number,
+    cells: readonly TerminalFabricSourceCell[],
+    cols: number,
+    hints: TerminalFabricRowRenderHints = {},
+  ): void {
+    const batch = this.frameBatch;
+    if (!batch || !this.module || !this.visible) {
       return;
     }
-    const batch = this.renderer.batch();
-    for (let col = 0; col < cols; col += 1) {
-      const current = cells[col];
-      if (!current) {
+    if (this.pendingFullClearCoverage) {
+      const coverage = this.pendingFullClearCoverage;
+      this.pendingFullClearCoverage = null;
+      batch.clear(this.currentTheme.background);
+      this.recordSurfaceCoverage(coverage.cols, coverage.rows, this.currentTheme.background);
+    }
+
+    let col = 0;
+    while (col < cols) {
+      resolveSourceCell(
+        this.module,
+        sourceRenderer,
+        cells[col] ?? {},
+        row,
+        col,
+        hints,
+        this.currentTheme,
+        this.styleCache,
+        this.resolvedCell,
+      );
+      const current = this.resolvedCell;
+      if (!current.style) {
+        col += 1;
         continue;
       }
-      const style = createStyle(this.module, current, this.currentTheme, this.styleCache);
-      const text = current.attrs.invisible ? ' ' : current.symbol || ' ';
-      batch.cell(col, row, createCell(this.module, text, style));
-      this.lastDirtyCells += 1;
+
+      if (!current.simple) {
+        batch.cell(col, row, createCell(this.module, current.symbol, current.style));
+        const renderedWidth = Math.max(1, Math.min(cols - col, Math.floor(current.width)));
+        this.lastDirtyCells += renderedWidth;
+        col += renderedWidth;
+        continue;
+      }
+
+      const runStart = col;
+      const runStyleKey = current.styleKey;
+      const runStyle = current.style;
+      const blankRun = current.blank;
+      let text = blankRun ? '' : current.symbol;
+      col += 1;
+      while (col < cols) {
+        resolveSourceCell(
+          this.module,
+          sourceRenderer,
+          cells[col] ?? {},
+          row,
+          col,
+          hints,
+          this.currentTheme,
+          this.styleCache,
+          this.resolvedLookahead,
+        );
+        const next = this.resolvedLookahead;
+        if (!next.simple || next.blank !== blankRun || next.styleKey !== runStyleKey) break;
+        if (!blankRun) text += next.symbol;
+        col += 1;
+      }
+      const runLength = col - runStart;
+      if (blankRun) {
+        batch.fill(runStart, row, runLength, 1, createCell(this.module, ' ', runStyle));
+      } else {
+        batch.text(runStart, row, text, runStyle);
+      }
+      this.lastDirtyCells += runLength;
     }
     this.lastRenderedRows += 1;
   }
@@ -280,20 +362,26 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
         dirtyCells: 0,
       };
     }
-    if (cursor?.visible && this.module) {
-      const batch = this.renderer.batch();
+    const batch = this.frameBatch;
+    if (cursor?.visible && this.module && batch) {
       batch.cell(
         Math.max(0, cursor.x),
         Math.max(0, cursor.y),
         createCell(this.module, ' ', this.module.style().fg(this.currentTheme.background).bg(this.currentTheme.foreground)),
       );
     }
-    this.renderer.render();
-    return {
-      rendered: true,
-      renderedRows: this.lastRenderedRows,
-      dirtyCells: this.lastDirtyCells,
-    };
+    try {
+      this.renderer.render();
+      return {
+        rendered: true,
+        renderedRows: this.lastRenderedRows,
+        dirtyCells: this.lastDirtyCells,
+      };
+    } finally {
+      batch?.free();
+      this.frameBatch = null;
+      this.pendingFullClearCoverage = null;
+    }
   }
 
   resize(width: number, height: number): void {
@@ -305,6 +393,21 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     this.canvas.style.width = `${cssWidth}px`;
     this.canvas.style.height = `${cssHeight}px`;
     this.renderer.resize(cssWidth, cssHeight);
+    this.surfaceCoverageKey = '';
+    if (this.sourceGridCoverage && this.module) {
+      const batch = this.renderer.batch();
+      try {
+        this.paintOutsideSourceGrid(
+          batch,
+          this.sourceGridCoverage.cols,
+          this.sourceGridCoverage.rows,
+          this.currentTheme.background,
+        );
+      } finally {
+        batch.free();
+      }
+    }
+    this.renderer.render();
     this.geometry = readBeamtermGeometry(this.renderer, this.canvas, cssWidth, cssHeight);
   }
 
@@ -319,6 +422,7 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
         foreground: parseHexColor(appearance.theme.foreground, this.currentTheme.foreground),
       };
       this.syncBackgroundSurface();
+      this.renderer?.setCanvasPaddingColor(this.currentTheme.background);
       this.styleCache.clear();
     }
     if (!this.renderer || (!appearance.fontFamily && typeof appearance.fontSize !== 'number')) {
@@ -326,11 +430,16 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     }
     const family = appearance.fontFamily ? normalizeFontFamilies(appearance.fontFamily) : this.fontFamilies;
     const size = typeof appearance.fontSize === 'number' ? appearance.fontSize : this.fontSize;
+    const familyChanged = family.length !== this.fontFamilies.length
+      || family.some((value, index) => value !== this.fontFamilies[index]);
+    if (!familyChanged && size === this.fontSize) {
+      return;
+    }
     try {
+      this.renderer.replaceWithDynamicAtlas(family, size);
       this.fontFamilies = family;
       this.fontSize = size;
       this.styleCache.clear();
-      this.renderer.replaceWithDynamicAtlas(family, size);
       if (this.geometry) {
         this.resize(this.geometry.width, this.geometry.height);
       }
@@ -367,20 +476,21 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     if (!this.initialized && !this.renderer && !this.canvas) {
       return;
     }
+    this.frameBatch?.free();
+    this.frameBatch = null;
     this.renderer?.free();
     this.renderer = null;
     this.module = null;
     this.initialized = false;
     this.geometry = null;
+    this.sourceGridCoverage = null;
+    this.surfaceCoverageKey = '';
+    this.pendingFullClearCoverage = null;
     const wasVisible = this.visible;
     this.visible = false;
     this.styleCache.clear();
     this.canvas?.remove();
     this.canvas = null;
-    const ghosttyCanvas = this.target?.getGhosttyCanvas();
-    if (ghosttyCanvas) {
-      ghosttyCanvas.style.opacity = '';
-    }
     this.restoreBackgroundSurface();
     terminalFabricCoordinator.incrementRendererCounts({
       active: -1,
@@ -404,6 +514,56 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     }
   }
 
+  private paintOutsideSourceGrid(
+    batch: BeamtermBatch,
+    sourceCols: number,
+    sourceRows: number,
+    background: number,
+  ): void {
+    if (!this.renderer || !this.module) {
+      return;
+    }
+
+    const terminalSize = this.renderer.terminalSize();
+    const rendererCols = Math.max(0, Math.floor(terminalSize.cols));
+    const rendererRows = Math.max(0, Math.floor(terminalSize.rows));
+    terminalSize.free();
+    const cols = Math.max(0, Math.min(rendererCols, Math.floor(sourceCols)));
+    const rows = Math.max(0, Math.min(rendererRows, Math.floor(sourceRows)));
+    const coverageKey = `${rendererCols}:${rendererRows}:${cols}:${rows}:${background}`;
+    this.sourceGridCoverage = { cols, rows };
+    if (coverageKey === this.surfaceCoverageKey) {
+      return;
+    }
+    this.surfaceCoverageKey = coverageKey;
+
+    const backgroundCell = createCell(
+      this.module,
+      ' ',
+      this.module.style().fg(background).bg(background),
+    );
+    if (cols < rendererCols && rows > 0) {
+      batch.fill(cols, 0, rendererCols - cols, rows, backgroundCell);
+    }
+    if (rows < rendererRows) {
+      batch.fill(0, rows, rendererCols, rendererRows - rows, backgroundCell);
+    }
+  }
+
+  private recordSurfaceCoverage(sourceCols: number, sourceRows: number, background: number): void {
+    if (!this.renderer) {
+      return;
+    }
+    const terminalSize = this.renderer.terminalSize();
+    const rendererCols = Math.max(0, Math.floor(terminalSize.cols));
+    const rendererRows = Math.max(0, Math.floor(terminalSize.rows));
+    terminalSize.free();
+    const cols = Math.max(0, Math.min(rendererCols, Math.floor(sourceCols)));
+    const rows = Math.max(0, Math.min(rendererRows, Math.floor(sourceRows)));
+    this.sourceGridCoverage = { cols, rows };
+    this.surfaceCoverageKey = `${rendererCols}:${rendererRows}:${cols}:${rows}:${background}`;
+  }
+
   private restoreBackgroundSurface(): void {
     if (this.target?.container && this.hostInlineBackgroundColor !== null) {
       this.target.container.style.backgroundColor = this.hostInlineBackgroundColor;
@@ -415,13 +575,133 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
   private installEventForwarding(canvas: HTMLCanvasElement): void {
     canvas.addEventListener('webglcontextlost', event => {
       event.preventDefault();
-      terminalFabricCoordinator.noteFallback('Beamterm WebGL2 context lost');
+      const error = new Error('Beamterm WebGL2 context lost');
+      terminalFabricCoordinator.noteRendererError(error);
+      this.target?.onRendererError(error);
     });
     canvas.addEventListener('webglcontextrestored', () => {
       terminalFabricCoordinator.noteContextRestore();
     });
   }
 }
+
+const resolveSourceCell = (
+  module: BeamtermModule,
+  sourceRenderer: TerminalFabricSourceRenderer,
+  cell: TerminalFabricSourceCell,
+  row: number,
+  col: number,
+  hints: TerminalFabricRowRenderHints,
+  theme: TerminalFabricTheme,
+  cache: Map<string, BeamtermCellStyle>,
+  target: ResolvedFabricCell,
+): void => {
+  const flags = Number(cell.flags ?? 0);
+  const selected = isCellInSelection(row, col, hints.selection);
+  const hovered = isCellHovered(row, col, cell, hints.hover);
+  const inverse = !selected && (flags & 16) !== 0;
+  const foreground = inverse
+    ? theme.background
+    : selected
+      ? packColor(hints.selection!.foreground.r, hints.selection!.foreground.g, hints.selection!.foreground.b, theme.foreground)
+      : packColor(cell.fg_r, cell.fg_g, cell.fg_b, theme.foreground);
+  const background = inverse
+    ? theme.foreground
+    : selected
+      ? packColor(hints.selection!.background.r, hints.selection!.background.g, hints.selection!.background.b, theme.background)
+      : packColor(cell.bg_r, cell.bg_g, cell.bg_b, theme.background);
+  const bold = (flags & 1) !== 0;
+  const italic = (flags & 2) !== 0;
+  const underline = (flags & 4) !== 0 || hovered;
+  const strikethrough = (flags & 8) !== 0;
+  const styleKey = [
+    foreground,
+    background,
+    bold ? 1 : 0,
+    italic ? 1 : 0,
+    underline ? 1 : 0,
+    strikethrough ? 1 : 0,
+  ].join(':');
+  let style = cache.get(styleKey);
+  if (!style) {
+    style = module.style().fg(foreground).bg(background);
+    if (bold) style = style.bold();
+    if (italic) style = style.italic();
+    if (underline) style = style.underline();
+    if (strikethrough) style = style.strikethrough();
+    if (cache.size >= MAX_STYLE_CACHE_ENTRIES) cache.clear();
+    cache.set(styleKey, style);
+  }
+
+  const graphemeLength = Number(cell.grapheme_len ?? 0);
+  const invisible = (flags & 32) !== 0;
+  const symbol = invisible ? ' ' : resolveSourceSymbol(sourceRenderer, cell, row, col);
+  const width = Number(cell.width ?? 1) || 1;
+  target.symbol = symbol;
+  target.width = width;
+  target.styleKey = styleKey;
+  target.style = style;
+  target.simple = graphemeLength <= 0 && width === 1;
+  target.blank = symbol === ' ';
+};
+
+const resolveSourceSymbol = (
+  renderer: TerminalFabricSourceRenderer,
+  cell: TerminalFabricSourceCell,
+  row: number,
+  col: number,
+): string => {
+  if ((cell.grapheme_len ?? 0) > 0) {
+    const grapheme = renderer.currentBuffer?.getGraphemeString?.(row, col);
+    if (grapheme) return grapheme;
+  }
+  const codepoint = Number(cell.codepoint ?? 32);
+  if (!Number.isFinite(codepoint) || codepoint <= 0) return ' ';
+  try {
+    return String.fromCodePoint(codepoint);
+  } catch {
+    return ' ';
+  }
+};
+
+const packColor = (red: unknown, green: unknown, blue: unknown, fallback: number): number => {
+  const r = Number(red);
+  const g = Number(green);
+  const b = Number(blue);
+  if (![r, g, b].every(value => Number.isInteger(value) && value >= 0 && value <= 255)) return fallback;
+  return (r << 16) | (g << 8) | b;
+};
+
+const isCellInSelection = (
+  row: number,
+  col: number,
+  selection: TerminalFabricRowRenderHints['selection'],
+): boolean => {
+  if (!selection) return false;
+  if (selection.startRow === selection.endRow) {
+    return row === selection.startRow && col >= selection.startCol && col <= selection.endCol;
+  }
+  if (row === selection.startRow) return col >= selection.startCol;
+  if (row === selection.endRow) return col <= selection.endCol;
+  return row > selection.startRow && row < selection.endRow;
+};
+
+const isCellHovered = (
+  row: number,
+  col: number,
+  cell: TerminalFabricSourceCell,
+  hover: TerminalFabricRowRenderHints['hover'],
+): boolean => {
+  if (!hover) return false;
+  const hoverId = Number(hover.hyperlinkId ?? 0);
+  if (hoverId > 0 && Number(cell.hyperlink_id ?? 0) === hoverId) return true;
+  const range = hover.range;
+  if (!range) return false;
+  if (row === range.startY && row === range.endY) return col >= range.startX && col <= range.endX;
+  if (row === range.startY) return col >= range.startX;
+  if (row === range.endY) return col <= range.endX;
+  return row > range.startY && row < range.endY;
+};
 
 export const sameRenderableStyle = (left: TerminalFabricCell, right: TerminalFabricCell): boolean => (
   left.fg.r === right.fg.r

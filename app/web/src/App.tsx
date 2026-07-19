@@ -11,7 +11,7 @@ import {
   TerminalState,
   type TerminalThemeName,
 } from '@floegence/floeterm-terminal-web';
-import { type AppTerminalTransport } from './terminalApi';
+import { createTerminalRuntime, type AppTerminalTransport } from './terminalApi';
 import {
   buildLiveGridCommand,
   createFloetermDemoRuntime,
@@ -30,6 +30,53 @@ import {
 
 const THEME_STORAGE_KEY = 'floeterm_theme_name';
 const HISTORY_STATS_POLL_MS = 2000;
+
+type FloetermPerfHarness = {
+  sendInput(data: string): void;
+  clear(): void;
+  serialize(): string;
+  getTerminalInfo(): ReturnType<TerminalManagerActions['getTerminalInfo']>;
+  getSnapshot(): TerminalInstanceSnapshot;
+  getFabricDiagnostics(): TerminalFabricDiagnostics;
+  forceResize(): void;
+  getGeometryDiagnostics(): { generation: number; cols: number; rows: number };
+  getStreamDiagnostics(): {
+    dataEvents: number;
+    firstSequence: number;
+    lastSequence: number;
+    sequenceGaps: number;
+    totalBytes: number;
+    hash: number;
+    tail: string;
+  };
+  resetStreamDiagnostics(): void;
+};
+
+type FloetermMirrorViewHarness = FloetermPerfHarness & {
+  label: string;
+  forceResize(): void;
+  getStreamDiagnostics(): {
+    dataEvents: number;
+    firstSequence: number;
+    lastSequence: number;
+    totalBytes: number;
+    hash: number;
+  };
+  getRenderDiagnostics(): { count: number; lastRenderAtMs: number };
+  resetRenderDiagnostics(): void;
+  resetStreamDiagnostics(): void;
+  reconnect(): void;
+};
+
+type FloetermMirrorHarness = {
+  getViews(): FloetermMirrorViewHarness[];
+  getRuntimeState(): { connectedCount: number; errorCount: number };
+};
+
+type FloetermPerfWindow = Window & {
+  __floetermPerfHarness?: FloetermPerfHarness;
+  __floetermMirrorHarness?: FloetermMirrorHarness;
+};
 
 const noopActions: TerminalManagerActions = {
   write: () => {},
@@ -205,11 +252,11 @@ const SchedulerStatsPanel = () => {
       </div>
       <div class="metric metricStrong">
         <span class="metricLabel">renderer</span>
-        <span class="metricValue">{fabric().backend === 'beamterm_webgl2' ? 'Beamterm' : 'Canvas'}</span>
+        <span class="metricValue">Beamterm</span>
       </div>
       <div class="metric">
         <span class="metricLabel">path</span>
-        <span class="metricValue">{fabric().renderPath === 'main_thread_webgl2' ? 'WebGL2' : 'fallback'}</span>
+        <span class="metricValue">WebGL2</span>
       </div>
       <div class="metric">
         <span class="metricLabel">active</span>
@@ -252,9 +299,22 @@ const SingleTerminalPane = (props: {
   themeName: TerminalThemeName;
   isBusy: boolean;
   error: string;
+  canRestart: boolean;
   onRestart: () => void;
   onThemeChange: (theme: TerminalThemeName) => void;
 }) => {
+  const initialStreamDiagnostics = () => ({
+    dataEvents: 0,
+    firstSequence: 0,
+    lastSequence: 0,
+    sequenceGaps: 0,
+    totalBytes: 0,
+    hash: 2166136261,
+    tail: '',
+  });
+  let streamDiagnostics = initialStreamDiagnostics();
+  let streamDecoder = new TextDecoder();
+  let geometryDiagnostics = { generation: 0, cols: 0, rows: 0 };
   const isMobile = createMediaQuery('(max-width: 640px), (pointer: coarse)');
   const fontSize = createMemo(() => (isMobile() ? 14 : 12));
   const terminal = createSolidTerminal(() => ({
@@ -265,14 +325,80 @@ const SingleTerminalPane = (props: {
     themeName: props.themeName,
     transport: props.transport,
     eventSource: props.eventSource,
+    onRender: () => undefined,
     config: {
       rendererType: 'webgl',
+      responsive: {
+        fitOnFocus: true,
+        emitResizeOnFocus: true,
+        notifyResizeOnlyWhenFocused: false,
+        reportHostDimensionsWithFixedGrid: true,
+      },
     },
   }));
 
   const [historyBytes, setHistoryBytes] = createSignal<number | null>(null);
   let mounted = true;
   let clearStatsRefreshTimer: number | null = null;
+  const perfWindow = window as FloetermPerfWindow;
+  const perfParams = new URLSearchParams(window.location.search);
+  const perfHarness: FloetermPerfHarness | null = (
+    perfParams.get('perf') === '1' || perfParams.get('perf_probe') === '1'
+  )
+    ? {
+      sendInput: data => terminal.actions().sendInput(data),
+      clear: () => terminal.actions().clear(),
+      serialize: () => terminal.actions().serialize(),
+      getTerminalInfo: () => terminal.actions().getTerminalInfo(),
+      getSnapshot: () => terminal.snapshot(),
+      getFabricDiagnostics: () => getTerminalFabricDiagnostics(),
+      forceResize: () => terminal.actions().forceResize(),
+      getGeometryDiagnostics: () => ({ ...geometryDiagnostics }),
+      getStreamDiagnostics: () => ({ ...streamDiagnostics }),
+      resetStreamDiagnostics: () => {
+        streamDiagnostics = initialStreamDiagnostics();
+        streamDecoder = new TextDecoder();
+      },
+    }
+    : null;
+  if (perfHarness) perfWindow.__floetermPerfHarness = perfHarness;
+  onCleanup(() => {
+    if (perfHarness && perfWindow.__floetermPerfHarness === perfHarness) {
+      delete perfWindow.__floetermPerfHarness;
+    }
+  });
+
+  onMount(() => {
+    const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
+      if (event.type !== 'data') return;
+      const sequence = Number(event.sequence ?? 0);
+      streamDiagnostics.dataEvents += 1;
+      streamDiagnostics.totalBytes += event.data.byteLength;
+      if (streamDiagnostics.firstSequence === 0) {
+        streamDiagnostics.firstSequence = sequence;
+      } else if (sequence !== streamDiagnostics.lastSequence + 1) {
+        streamDiagnostics.sequenceGaps += 1;
+      }
+      streamDiagnostics.lastSequence = sequence;
+      streamDiagnostics.tail = (
+        streamDiagnostics.tail + streamDecoder.decode(event.data, { stream: true })
+      ).slice(-4096);
+      for (const byte of event.data) {
+        streamDiagnostics.hash = Math.imul(streamDiagnostics.hash ^ byte, 16777619) >>> 0;
+      }
+    });
+    const unsubscribeGeometry = props.eventSource.onTerminalGeometry?.(props.sessionId, event => {
+      geometryDiagnostics = {
+        generation: event.generation,
+        cols: event.cols,
+        rows: event.rows,
+      };
+    });
+    onCleanup(() => {
+      unsubscribeData();
+      unsubscribeGeometry?.();
+    });
+  });
 
   const refreshHistoryBytes = async () => {
     try {
@@ -373,6 +499,10 @@ const SingleTerminalPane = (props: {
     }
     return parts.join(' :: ');
   });
+  const rendererError = createMemo(() => {
+    const snapshot = terminal.snapshot();
+    return snapshot.state.hasError ? snapshot.state.error?.message ?? 'Beamterm WebGL2 renderer failed' : '';
+  });
 
   return (
     <>
@@ -383,7 +513,11 @@ const SingleTerminalPane = (props: {
         </div>
         <div class="toolbarActions">
           <ThemeSelector themeName={props.themeName} onThemeChange={props.onThemeChange} disabled={props.isBusy} />
-          <button onClick={props.onRestart} disabled={props.isBusy}>restart</button>
+          <button
+            onClick={props.onRestart}
+            disabled={props.isBusy || !props.canRestart}
+            title={props.canRestart ? 'Restart terminal session' : 'This shared session is managed externally'}
+          >restart</button>
           <button onClick={clearTerminal} disabled={props.isBusy}>clear</button>
         </div>
       </div>
@@ -391,7 +525,285 @@ const SingleTerminalPane = (props: {
         <div class="error">{props.error}</div>
       </Show>
       <div class="terminalContainer">
-        <div class="terminalPane" ref={terminal.mount} />
+        <div class="terminalPane">
+          <div class="terminalSurface" ref={terminal.mount} />
+          <Show when={rendererError()}>
+            {message => (
+              <div class="terminalRendererError" role="alert">
+                <strong>Beamterm WebGL2 unavailable</strong>
+                <span>{message()}</span>
+                <button onClick={() => void terminal.actions().reinitialize?.()}>Retry renderer</button>
+              </div>
+            )}
+          </Show>
+        </div>
+      </div>
+    </>
+  );
+};
+
+type MirrorTerminalRuntime = ReturnType<typeof createTerminalRuntime>;
+
+const MirrorTerminalConnection = (props: {
+  sessionId: string;
+  label: string;
+  runtime: MirrorTerminalRuntime;
+  themeName: TerminalThemeName;
+  onRuntimeState: (label: string, connected: boolean, error: string) => void;
+  onReconnect: () => void;
+  onHarnessChange: (label: string, harness: FloetermMirrorViewHarness | null) => void;
+}) => {
+  const initialStreamDiagnostics = () => ({
+    dataEvents: 0,
+    firstSequence: 0,
+    lastSequence: 0,
+    sequenceGaps: 0,
+    totalBytes: 0,
+    hash: 2166136261,
+    tail: '',
+  });
+  let streamDiagnostics = initialStreamDiagnostics();
+  let streamDecoder = new TextDecoder();
+  let geometryDiagnostics = { generation: 0, cols: 0, rows: 0 };
+  let renderDiagnostics = { count: 0, lastRenderAtMs: 0 };
+  const terminal = createSolidTerminal(() => ({
+    sessionId: props.sessionId,
+    isActive: true,
+    autoFocus: false,
+    fontSize: 11,
+    themeName: props.themeName,
+    transport: props.runtime.transport,
+    eventSource: props.runtime.eventSource,
+    onRender: () => {
+      renderDiagnostics.count += 1;
+      renderDiagnostics.lastRenderAtMs = performance.now();
+    },
+    config: {
+      rendererType: 'webgl',
+      responsive: {
+        fitOnFocus: true,
+        emitResizeOnFocus: true,
+        notifyResizeOnlyWhenFocused: false,
+        reportHostDimensionsWithFixedGrid: true,
+      },
+    },
+  }));
+
+  const status = createMemo(() => {
+    const snapshot = terminal.snapshot();
+    return snapshot.state.hasError
+      ? snapshot.state.error?.message ?? 'renderer error'
+      : snapshot.connection.error?.message || snapshot.loadingMessage || (snapshot.connection.isConnected ? 'live' : snapshot.connection.state);
+  });
+  const rendererError = createMemo(() => {
+    const snapshot = terminal.snapshot();
+    return snapshot.state.hasError ? snapshot.state.error?.message ?? 'Beamterm WebGL2 renderer failed' : '';
+  });
+
+  createEffect(() => {
+    const snapshot = terminal.snapshot();
+    props.onRuntimeState(props.label, snapshot.connection.isConnected, status());
+  });
+
+  const harness: FloetermMirrorViewHarness = {
+    label: props.label,
+    sendInput: data => terminal.actions().sendInput(data),
+    clear: () => terminal.actions().clear(),
+    serialize: () => terminal.actions().serialize(),
+    getTerminalInfo: () => terminal.actions().getTerminalInfo(),
+    getSnapshot: () => terminal.snapshot(),
+    getFabricDiagnostics: () => getTerminalFabricDiagnostics(),
+    forceResize: () => terminal.actions().forceResize(),
+    getGeometryDiagnostics: () => ({ ...geometryDiagnostics }),
+    getRenderDiagnostics: () => ({ ...renderDiagnostics }),
+    resetRenderDiagnostics: () => { renderDiagnostics = { count: 0, lastRenderAtMs: 0 }; },
+    getStreamDiagnostics: () => ({ ...streamDiagnostics }),
+    resetStreamDiagnostics: () => {
+      streamDiagnostics = initialStreamDiagnostics();
+      streamDecoder = new TextDecoder();
+    },
+    reconnect: props.onReconnect,
+  };
+
+  onMount(() => {
+    props.onHarnessChange(props.label, harness);
+    const unsubscribe = props.runtime.eventSource.onTerminalData(props.sessionId, event => {
+      if (event.type !== 'data') return;
+      const sequence = Number(event.sequence ?? 0);
+      streamDiagnostics.dataEvents += 1;
+      streamDiagnostics.totalBytes += event.data.byteLength;
+      if (streamDiagnostics.firstSequence === 0) {
+        streamDiagnostics.firstSequence = sequence;
+      } else if (sequence !== streamDiagnostics.lastSequence + 1) {
+        streamDiagnostics.sequenceGaps += 1;
+      }
+      streamDiagnostics.lastSequence = sequence;
+      streamDiagnostics.tail = (
+        streamDiagnostics.tail + streamDecoder.decode(event.data, { stream: true })
+      ).slice(-4096);
+      for (const byte of event.data) {
+        streamDiagnostics.hash = Math.imul(streamDiagnostics.hash ^ byte, 16777619) >>> 0;
+      }
+    });
+    const unsubscribeGeometry = props.runtime.eventSource.onTerminalGeometry?.(props.sessionId, event => {
+      geometryDiagnostics = {
+        generation: event.generation,
+        cols: event.cols,
+        rows: event.rows,
+      };
+    });
+    onCleanup(() => {
+      unsubscribe();
+      unsubscribeGeometry?.();
+    });
+  });
+  onCleanup(() => props.onHarnessChange(props.label, null));
+
+  onMount(() => {
+    const scheduleResize = () => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => terminal.actions().forceResize());
+      });
+    };
+    scheduleResize();
+    const settleTimer = window.setTimeout(scheduleResize, 180);
+    window.addEventListener('resize', scheduleResize);
+    onCleanup(() => {
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('resize', scheduleResize);
+    });
+  });
+
+  return (
+    <section class="mirrorTerminalView" data-mirror-view={props.label}>
+      <div class="tileHeader">
+        <span class="tileName">{props.label}</span>
+        <div class="mirrorViewActions">
+          <span class="tileState">{status()}</span>
+          <button onClick={props.onReconnect}>reconnect</button>
+        </div>
+      </div>
+      <div class="mirrorTerminalSurface">
+        <div class="terminalSurface" ref={terminal.mount} />
+        <Show when={rendererError()}>
+          <div class="terminalRendererError terminalRendererErrorCompact" role="alert">
+            <strong>WebGL2 error</strong>
+            <button onClick={() => void terminal.actions().reinitialize?.()}>Retry</button>
+          </div>
+        </Show>
+      </div>
+    </section>
+  );
+};
+
+const MirrorTerminalView = (props: {
+  sessionId: string;
+  label: string;
+  runtime: MirrorTerminalRuntime;
+  themeName: TerminalThemeName;
+  onRuntimeState: (label: string, connected: boolean, error: string) => void;
+  onHarnessChange: (label: string, harness: FloetermMirrorViewHarness | null) => void;
+}) => {
+  const [generation, setGeneration] = createSignal(1);
+  return (
+    <For each={[generation()]}>
+      {() => (
+        <MirrorTerminalConnection
+          sessionId={props.sessionId}
+          label={props.label}
+          runtime={props.runtime}
+          themeName={props.themeName}
+          onRuntimeState={props.onRuntimeState}
+          onReconnect={() => setGeneration(value => value + 1)}
+          onHarnessChange={props.onHarnessChange}
+        />
+      )}
+    </For>
+  );
+};
+
+const MirrorTerminalDemo = (props: {
+  sessionId: string;
+  runtimes: readonly MirrorTerminalRuntime[];
+  themeName: TerminalThemeName;
+  isBusy: boolean;
+  error: string;
+  canRestart: boolean;
+  onRestart: () => void;
+  onThemeChange: (theme: TerminalThemeName) => void;
+}) => {
+  const [runtimeState, setRuntimeState] = createSignal<Record<string, { connected: boolean; error: string }>>({});
+  const connectedCount = createMemo(() => Object.values(runtimeState()).filter(state => state.connected).length);
+  const errorCount = createMemo(() => Object.values(runtimeState()).filter(state => state.error && !state.connected).length);
+  const updateRuntimeState = (label: string, connected: boolean, error: string) => {
+    setRuntimeState(previous => ({ ...previous, [label]: { connected, error } }));
+  };
+  const harnessViews = new Map<string, FloetermMirrorViewHarness>();
+  const updateHarness = (label: string, harness: FloetermMirrorViewHarness | null) => {
+    if (harness) {
+      harnessViews.set(label, harness);
+      return;
+    }
+    harnessViews.delete(label);
+  };
+  const perfWindow = window as FloetermPerfWindow;
+  const perfEnabled = new URLSearchParams(window.location.search).get('perf_probe') === '1';
+  const mirrorHarness: FloetermMirrorHarness | null = perfEnabled
+    ? {
+      getViews: () => Array.from(harnessViews.values()).sort((left, right) => left.label.localeCompare(right.label)),
+      getRuntimeState: () => ({ connectedCount: connectedCount(), errorCount: errorCount() }),
+    }
+    : null;
+  if (mirrorHarness) perfWindow.__floetermMirrorHarness = mirrorHarness;
+  onCleanup(() => {
+    if (mirrorHarness && perfWindow.__floetermMirrorHarness === mirrorHarness) {
+      delete perfWindow.__floetermMirrorHarness;
+    }
+  });
+
+  return (
+    <>
+      <div
+        hidden
+        data-testid="mirror-runtime-state"
+        data-session-id={props.sessionId}
+        data-view-count={props.runtimes.length}
+        data-connected-count={connectedCount()}
+        data-error-count={errorCount()}
+      />
+      <div class="toolbar">
+        <div class="toolbarPrimary">
+          <span class="appTitle">floeterm mirror</span>
+          <span class="status">
+            {props.runtimes.length} views :: 1 session :: connected {connectedCount()}/{props.runtimes.length}
+            {errorCount() > 0 ? ` :: errors ${errorCount()}` : ''}
+          </span>
+        </div>
+        <div class="toolbarActions">
+          <ThemeSelector themeName={props.themeName} onThemeChange={props.onThemeChange} disabled={props.isBusy} />
+          <button
+            onClick={props.onRestart}
+            disabled={props.isBusy || !props.canRestart}
+            title={props.canRestart ? 'Restart terminal session' : 'This shared session is managed externally'}
+          >restart session</button>
+        </div>
+      </div>
+      <Show when={props.error}>
+        <div class="error">{props.error}</div>
+      </Show>
+      <div class="mirrorTerminalContainer">
+        <For each={props.runtimes}>
+          {(runtime, index) => (
+            <MirrorTerminalView
+              sessionId={props.sessionId}
+              label={`view ${index() + 1}`}
+              runtime={runtime}
+              themeName={props.themeName}
+              onRuntimeState={updateRuntimeState}
+              onHarnessChange={updateHarness}
+            />
+          )}
+        </For>
       </div>
     </>
   );
@@ -435,6 +847,10 @@ const GridTerminalTile = (props: {
     return snapshot.state.hasError
       ? 'error'
       : snapshot.connection.error?.message || snapshot.loadingMessage || (snapshot.connection.isConnected ? 'live' : snapshot.connection.state);
+  });
+  const rendererError = createMemo(() => {
+    const snapshot = terminal.snapshot();
+    return snapshot.state.hasError ? snapshot.state.error?.message ?? 'Beamterm WebGL2 renderer failed' : '';
   });
 
   createEffect(() => {
@@ -484,7 +900,15 @@ const GridTerminalTile = (props: {
         <span class="tileName">{props.session.name}</span>
         <span class="tileState">{tileStatus()}</span>
       </div>
-      <div class="tileTerminal" ref={terminal.mount} />
+      <div class="tileTerminal">
+        <div class="terminalSurface" ref={terminal.mount} />
+        <Show when={rendererError()}>
+          <div class="terminalRendererError terminalRendererErrorCompact" role="alert">
+            <strong>WebGL2 error</strong>
+            <button onClick={() => void terminal.actions().reinitialize?.()}>Retry</button>
+          </div>
+        </Show>
+      </div>
     </section>
   );
 };
@@ -591,14 +1015,20 @@ const GridTerminalDemo = (props: {
 export const App = () => {
   const demo = createFloetermDemoRuntime();
   const [themeName, setThemeName] = createThemeName();
+  const mirrorRuntimes = [1, 2].map(index => createTerminalRuntime(`${demo.connId}-mirror-${index}`));
+  onCleanup(() => {
+    for (const runtime of mirrorRuntimes) runtime.transport.dispose();
+  });
 
   return (
     <div class="app">
       <div
         hidden
         data-testid="demo-runtime-state"
+        data-connection-id={demo.connId}
         data-mode={demo.mode()}
         data-single-session-id={demo.singleSessionId()}
+        data-single-session-external={demo.singleSessionExternallyManaged() ? 'true' : 'false'}
         data-single-busy={demo.singleBusy() ? 'true' : 'false'}
         data-single-error={demo.singleError()}
         data-grid-busy={demo.gridBusy() ? 'true' : 'false'}
@@ -613,13 +1043,13 @@ export const App = () => {
         </div>
         <div class="modeSwitch" aria-label="demo mode">
           <button class={demo.mode() === 'single' ? 'isActive' : ''} onClick={() => demo.switchMode('single')}>single</button>
+          <button class={demo.mode() === 'mirror' ? 'isActive' : ''} onClick={() => demo.switchMode('mirror')}>mirror</button>
           <button class={demo.mode() === 'grid' ? 'isActive' : ''} onClick={() => demo.switchMode('grid')}>grid</button>
         </div>
       </div>
       <main class="main">
-        <Show
-          when={demo.mode() === 'grid'}
-          fallback={(
+        <Show when={demo.mode() === 'grid'} fallback={(
+          <Show when={demo.mode() === 'mirror'} fallback={(
             <Show
               when={demo.singleSessionId()}
               fallback={(
@@ -649,12 +1079,29 @@ export const App = () => {
                   themeName={themeName()}
                   isBusy={demo.singleBusy()}
                   error={demo.singleError()}
+                  canRestart={demo.canRestartSingleSession()}
                   onRestart={() => void demo.restartSingleSession()}
                   onThemeChange={setThemeName}
                 />
               )}
             </Show>
-          )}
+          )}>
+            <Show when={demo.singleSessionId()}>
+              {id => (
+                <MirrorTerminalDemo
+                  sessionId={id()}
+                  runtimes={mirrorRuntimes}
+                  themeName={themeName()}
+                  isBusy={demo.singleBusy()}
+                  error={demo.singleError()}
+                  canRestart={demo.canRestartSingleSession()}
+                  onRestart={() => void demo.restartSingleSession()}
+                  onThemeChange={setThemeName}
+                />
+              )}
+            </Show>
+          </Show>
+        )}
         >
           <GridTerminalDemo
             transport={demo.transport}

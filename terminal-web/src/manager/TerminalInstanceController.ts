@@ -13,6 +13,7 @@ import {
   type TerminalConnectionState,
   type TerminalCoreConstructor,
   type TerminalCoreLike,
+  type TerminalAtomicTransport,
   type TerminalDataChunk,
   type TerminalDataEvent,
   type TerminalError,
@@ -22,6 +23,8 @@ import {
   type TerminalInstanceOptions,
   type TerminalInstanceScheduler,
   type TerminalInstanceSnapshot,
+  type TerminalHistoryPage,
+  type TerminalGeometryEvent,
   type TerminalLoadingState,
   type TerminalManagerActions,
   type TerminalManagerAppearance,
@@ -38,8 +41,14 @@ enum ConnectionState {
   ABORTED = 'aborted'
 }
 
-const MAX_WRITE_BATCH_CHUNKS = 64;
-const MAX_WRITE_BATCH_BYTES = 256 * 1024;
+const MAX_WRITE_BATCH_CHUNKS = 2048;
+const MAX_WRITE_BATCH_BYTES = 512 * 1024;
+const MAX_IMMEDIATE_LIVE_BATCH_BYTES = 256;
+
+const isAtomicTransport = (transport: TerminalInstanceOptions['transport']): transport is TerminalAtomicTransport => (
+  typeof (transport as Partial<TerminalAtomicTransport>).attachWithHistoryBoundary === 'function'
+  && typeof (transport as Partial<TerminalAtomicTransport>).historyPage === 'function'
+);
 
 const createDefaultScheduler = (): TerminalInstanceScheduler => ({
   requestFrame: callback => {
@@ -69,6 +78,9 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   private terminalCore: TerminalCoreLike | null = null;
   private isInitializing = false;
   private terminalDataUnsubscribe: (() => void) | null = null;
+  private terminalGeometryUnsubscribe: (() => void) | null = null;
+  private lastGeometryGeneration = 0;
+  private pendingGeometryEvents: TerminalGeometryEvent[] = [];
   private sequenceBuffer = new SequenceBuffer();
   private replayCompleteReceived = false;
   private isReplayActive = false;
@@ -79,6 +91,8 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   private connectionState: ConnectionState = ConnectionState.IDLE;
   private connectionError: TerminalError | null = null;
   private retryCount = 0;
+  private connectGeneration = 0;
+  private resizeGeneration = 0;
   private retryTimeout: ReturnType<typeof setTimeout> | null = null;
   private initializationAbortController: AbortController | null = null;
   private queueRetryTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -94,6 +108,9 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   private isProcessing = false;
   private queueGeneration = 0;
   private flushRaf: number | null = null;
+  private flushMicrotaskScheduled = false;
+  private flushMicrotaskGeneration = 0;
+  private immediateFlushEligible = false;
   private disposed = false;
 
   readonly actions: TerminalManagerActions = {
@@ -148,6 +165,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.logger = options.logger ?? createConsoleLogger();
     this.scheduler = options.scheduler ?? createDefaultScheduler();
     this.subscribeToTerminalData();
+    this.subscribeToTerminalGeometry();
   }
 
   get connection(): TerminalConnectionController {
@@ -174,6 +192,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       return;
     }
     this.disposed = true;
+    this.connectGeneration += 1;
     this.initializationAbortController?.abort();
     this.initializationAbortController = null;
     this.clearRetryTimeout();
@@ -181,6 +200,8 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.cancelDataQueueFlush();
     this.terminalDataUnsubscribe?.();
     this.terminalDataUnsubscribe = null;
+    this.terminalGeometryUnsubscribe?.();
+    this.terminalGeometryUnsubscribe = null;
     this.cleanupTerminal();
     this.updateState({ state: TerminalState.DISPOSED });
     this.listeners.clear();
@@ -197,6 +218,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     const previousFontSize = this.options.fontSize;
     const previousFontFamily = this.options.config?.fontFamily;
     const previousPresentationScale = this.options.presentationScale;
+    const previousSharedGeometry = Boolean(this.options.config?.responsive?.reportHostDimensionsWithFixedGrid);
 
     this.options = {
       ...this.options,
@@ -207,10 +229,19 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     if (options.sessionId !== undefined && options.sessionId !== previousSessionId) {
       this.resetSessionState();
       this.subscribeToTerminalData();
+      this.subscribeToTerminalGeometry();
       if (this.terminalCore) {
         void this.reinitialize();
       }
       return;
+    }
+
+    const nextSharedGeometry = Boolean(this.options.config?.responsive?.reportHostDimensionsWithFixedGrid);
+    if (previousSharedGeometry !== nextSharedGeometry) {
+      this.lastGeometryGeneration = 0;
+      this.pendingGeometryEvents = [];
+      if (!nextSharedGeometry) this.terminalCore?.setFixedDimensions(null);
+      this.subscribeToTerminalGeometry();
     }
 
     if (options.isActive !== undefined && options.isActive !== previousIsActive) {
@@ -301,6 +332,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       connect: () => void this.connectToSession(),
       disconnect: () => {
         this.clearRetryTimeout();
+        this.connectGeneration += 1;
         this.setConnectionState(ConnectionState.ABORTED);
       },
       retry: () => {
@@ -316,10 +348,14 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
 
   private resetSessionState(): void {
     this.queueGeneration += 1;
+    this.connectGeneration += 1;
     this.sequenceBuffer.reset(1);
     this.replayCompleteReceived = false;
     this.isReplayActive = false;
     this.lastAppliedSequence = 0;
+    this.lastGeometryGeneration = 0;
+    this.pendingGeometryEvents = [];
+    this.terminalCore?.setFixedDimensions(null);
     this.dataQueue = [];
     this.isProcessing = false;
     this.cancelDataQueueFlush();
@@ -335,6 +371,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   };
 
   private handleResize = async (size: { cols: number; rows: number }): Promise<void> => {
+    const resizeGeneration = this.resizeGeneration;
     this.dimensions = size;
     this.updateState({ dimensions: size });
     this.options.onResize?.(size.cols, size.rows);
@@ -343,10 +380,16 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     if (!sessionId) {
       return;
     }
+    if (isAtomicTransport(this.options.transport) && this.connectionState !== ConnectionState.CONNECTED) {
+      return;
+    }
 
     try {
       await this.options.transport.resize(sessionId, size.cols, size.rows);
     } catch (error) {
+      if (this.disposed || resizeGeneration !== this.resizeGeneration) {
+        return;
+      }
       this.logger.warn('[TerminalInstanceController] Resize request failed', { error });
     }
   };
@@ -364,6 +407,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
 
     this.options.transport.sendInput(sessionId, data).catch(error => {
       this.logger.warn('[TerminalInstanceController] sendInput failed', { error });
+      this.handleError(error instanceof Error ? error : new Error(String(error)));
     });
   }
 
@@ -379,6 +423,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   }
 
   private cleanupTerminal(): void {
+    this.resizeGeneration += 1;
     this.initializationAbortController?.abort();
     this.initializationAbortController = null;
     this.isInitializing = false;
@@ -402,11 +447,13 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.scheduleFocus();
   }
 
-  private scheduleDataQueueFlush(): void {
+  private scheduleDataQueueFlush(allowImmediate = false): void {
     if (this.flushRaf !== null) {
+      this.immediateFlushEligible = false;
       return;
     }
 
+    this.immediateFlushEligible = allowImmediate;
     const generation = this.queueGeneration;
     this.flushRaf = this.scheduler.requestFrame(() => {
       this.flushRaf = null;
@@ -415,9 +462,36 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       }
       void this.processDataQueue();
     });
+
+    if (!allowImmediate || this.isReplayActive || this.flushMicrotaskScheduled) {
+      return;
+    }
+    this.flushMicrotaskScheduled = true;
+    const microtaskGeneration = ++this.flushMicrotaskGeneration;
+    queueMicrotask(() => {
+      if (microtaskGeneration !== this.flushMicrotaskGeneration) {
+        return;
+      }
+      this.flushMicrotaskScheduled = false;
+      if (this.disposed || this.queueGeneration !== generation || this.isReplayActive || this.isProcessing) {
+        return;
+      }
+      if (
+        !this.immediateFlushEligible
+        || this.dataQueue.length !== 1
+        || this.dataQueue[0]!.data.byteLength > MAX_IMMEDIATE_LIVE_BATCH_BYTES
+      ) {
+        return;
+      }
+      this.cancelDataQueueFlush();
+      void this.processDataQueue();
+    });
   }
 
   private cancelDataQueueFlush(): void {
+    this.immediateFlushEligible = false;
+    this.flushMicrotaskScheduled = false;
+    this.flushMicrotaskGeneration += 1;
     if (this.flushRaf === null) {
       return;
     }
@@ -427,9 +501,12 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
 
   private async processDataQueue(): Promise<void> {
     const generation = this.queueGeneration;
-    if (this.isProcessing || !this.terminalCore || this.dataQueue.length === 0) {
+    if (this.isProcessing || !this.terminalCore) {
       return;
     }
+
+    this.applyPendingGeometryEvents();
+    if (this.dataQueue.length === 0) return;
 
     const terminalState = this.terminalCore.getState();
     if (terminalState !== TerminalState.READY && terminalState !== TerminalState.CONNECTED) {
@@ -449,8 +526,16 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     try {
       let batchLength = 0;
       let batchBytes = 0;
+      const geometryBoundary = this.pendingGeometryEvents[0]?.outputSequenceBoundary;
       for (const chunk of this.dataQueue) {
         if (batchLength >= MAX_WRITE_BATCH_CHUNKS) {
+          break;
+        }
+        if (
+          geometryBoundary !== undefined
+          && chunk.sequence > 0
+          && chunk.sequence > geometryBoundary
+        ) {
           break;
         }
         if (batchLength > 0 && batchBytes + chunk.data.byteLength > MAX_WRITE_BATCH_BYTES) {
@@ -460,12 +545,15 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
         batchBytes += chunk.data.byteLength;
       }
 
-      const batch = this.dataQueue.splice(0, Math.max(1, batchLength));
+      if (batchLength === 0) {
+        return;
+      }
+      const batch = this.dataQueue.splice(0, batchLength);
       if (this.queueGeneration !== generation) {
         return;
       }
       const payload = batch.length === 1 ? batch[0]!.data : concatChunks(batch.map(chunk => chunk.data));
-      this.terminalCore.write(payload);
+      this.terminalCore.writeFrame(payload);
       for (const chunk of batch) {
         if (this.queueGeneration !== generation) {
           return;
@@ -474,6 +562,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
           this.lastAppliedSequence = chunk.sequence;
         }
       }
+      this.applyPendingGeometryEvents();
     } finally {
       this.isProcessing = false;
       if (this.dataQueue.length > 0) {
@@ -484,7 +573,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     }
   }
 
-  private addChunkToQueue(chunk: TerminalDataChunk): void {
+  private addChunkToQueue(chunk: TerminalDataChunk, allowImmediate = false): void {
     if (chunk.sequence > 0 && chunk.sequence <= this.lastAppliedSequence) {
       return;
     }
@@ -494,9 +583,10 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       return;
     }
 
+    const queueWasEmpty = this.dataQueue.length === 0;
     this.dataQueue.push(...ready);
     if (!this.isProcessing) {
-      this.scheduleDataQueueFlush();
+      this.scheduleDataQueueFlush(queueWasEmpty && ready.length === 1 && allowImmediate);
     }
   }
 
@@ -565,7 +655,8 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
           onData: data => this.handleUserInput(data),
           onResize: size => void this.handleResize(size),
           onStateChange: this.handleStateChange,
-          onError: this.handleError
+          onError: this.handleError,
+          onRender: durationMs => this.options.onRender?.(durationMs),
         },
         this.logger ?? noopLogger
       );
@@ -585,7 +676,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       }
 
       const sessionId = this.options.sessionId;
-      if (sessionId) {
+      if (sessionId && !isAtomicTransport(this.options.transport)) {
         const dimensions = terminalCore.getDimensions();
         await this.options.transport.resize(sessionId, dimensions.cols, dimensions.rows);
       }
@@ -625,10 +716,18 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.setConnectionState(ConnectionState.CONNECTING);
     this.setConnectionError(null);
     this.setLoading('attaching', 'Attaching to session...');
+    const connectGeneration = ++this.connectGeneration;
 
     try {
       const dims = this.terminalCore?.getDimensions() ?? this.dimensions;
-      await this.options.transport.attach(sessionId, dims.cols, dims.rows);
+      if (isAtomicTransport(this.options.transport)) {
+        const attached = await this.options.transport.attachWithHistoryBoundary(sessionId, dims.cols, dims.rows);
+        if (connectGeneration !== this.connectGeneration || this.disposed) return;
+        await this.recoverAtomicHistory(sessionId, attached);
+      } else {
+        await this.options.transport.attach(sessionId, dims.cols, dims.rows);
+      }
+      if (connectGeneration !== this.connectGeneration || this.disposed) return;
       this.setConnectionState(ConnectionState.CONNECTED);
       this.retryCount = 0;
       this.emit();
@@ -638,12 +737,111 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
         this.setLoading('processing_history', 'Restoring terminal...');
       }
     } catch (error) {
+      if (connectGeneration !== this.connectGeneration || this.disposed) return;
       const terminalError = createTerminalError('transport', error);
       this.setConnectionState(ConnectionState.FAILED);
       this.setConnectionError(terminalError);
       this.setLoading('ready', '');
       this.scheduleConnectionRetry();
     }
+  }
+
+  private async recoverAtomicHistory(
+    sessionId: string,
+    attachment: { historyBoundarySequence: number; historyGeneration: number; historyStartSequence: number },
+  ): Promise<void> {
+    const boundary = attachment.historyBoundarySequence;
+    const historyGeneration = attachment.historyGeneration;
+    const historyStartSequence = attachment.historyStartSequence;
+    if (!Number.isSafeInteger(boundary) || boundary < 0) {
+      throw new Error('terminal live history boundary is invalid');
+    }
+    if (!Number.isSafeInteger(historyGeneration) || historyGeneration < 1) {
+      throw new Error('terminal live history generation is invalid');
+    }
+    if (
+      !Number.isSafeInteger(historyStartSequence)
+      || historyStartSequence < 1
+      || historyStartSequence > boundary + 1
+    ) {
+      throw new Error('terminal live history start sequence is invalid');
+    }
+    if (!isAtomicTransport(this.options.transport)) {
+      throw new Error('terminal atomic history page transport is required');
+    }
+
+    this.lastAppliedSequence = Math.max(this.lastAppliedSequence, historyStartSequence - 1);
+    this.applyPendingGeometryEvents();
+    let queuedHistoryOutput = false;
+    let startSequence = Math.max(this.lastAppliedSequence + 1, historyStartSequence);
+    while (startSequence <= boundary) {
+      const page: TerminalHistoryPage = await this.options.transport.historyPage(
+        sessionId,
+        startSequence,
+        boundary,
+        historyGeneration,
+      );
+      if (page.historyGeneration !== historyGeneration || page.historyReset) {
+        throw new Error('terminal history generation changed during atomic replay');
+      }
+      if (page.snapshotEndSequence !== boundary) {
+        throw new Error('terminal history snapshot boundary does not match live attachment');
+      }
+      if (page.historyTruncated) {
+        throw new Error('terminal history was truncated before the acknowledged live boundary');
+      }
+      if (
+        !Number.isSafeInteger(page.coveredThroughSequence)
+        || page.coveredThroughSequence < startSequence - 1
+        || page.coveredThroughSequence > boundary
+      ) {
+        throw new Error('terminal history page coverage is invalid');
+      }
+
+      let expectedSequence = startSequence;
+      for (const chunk of page.chunks) {
+        if (!Number.isSafeInteger(chunk.sequence) || chunk.sequence !== expectedSequence) {
+          throw new Error(`missing terminal output sequence ${expectedSequence} before replay boundary ${boundary}`);
+        }
+        if (chunk.sequence > page.coveredThroughSequence) {
+          throw new Error('terminal history chunk exceeded its page coverage');
+        }
+        this.addChunkToQueue(chunk);
+        queuedHistoryOutput = true;
+        expectedSequence += 1;
+      }
+      const explicitlyCleared = page.chunks.length === 0 && page.totalBytes === 0;
+      if (page.coveredThroughSequence >= expectedSequence && !explicitlyCleared) {
+        throw new Error(`missing terminal output sequence ${expectedSequence} before replay boundary ${boundary}`);
+      }
+
+      if (!page.hasMore) {
+        if (page.coveredThroughSequence !== boundary) {
+          throw new Error('terminal history did not cover the acknowledged live boundary');
+        }
+        startSequence = boundary + 1;
+        break;
+      }
+      if (
+        !Number.isSafeInteger(page.nextStartSequence)
+        || page.nextStartSequence !== page.coveredThroughSequence + 1
+      ) {
+        throw new Error('terminal history page cursor is invalid');
+      }
+      startSequence = page.nextStartSequence;
+    }
+
+    const ready = this.sequenceBuffer.coverThrough(boundary);
+    if (ready.length > 0) {
+      this.dataQueue.push(...ready);
+      this.scheduleDataQueueFlush();
+    }
+    if (!queuedHistoryOutput) {
+      this.lastAppliedSequence = Math.max(this.lastAppliedSequence, boundary);
+      this.applyPendingGeometryEvents();
+    }
+    this.replayCompleteReceived = true;
+    this.finishReplayIfIdle();
   }
 
   private scheduleConnectionRetry(): void {
@@ -693,45 +891,97 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
 
     const lastSeq = this.terminalCore ? this.lastAppliedSequence : 0;
     const unsubscribe = this.options.eventSource.onTerminalData(sessionId, (payload: TerminalDataEvent) => {
-      if (payload.type === 'error') {
-        const message = payload.error || 'Terminal stream failed';
-        const terminalError = createTerminalError('connection', new Error(message));
+      try {
+        if (payload.type === 'error') {
+          throw new Error(payload.error || 'Terminal stream failed');
+        }
+
+        if (payload.type === 'replay-complete') {
+          const boundary = payload.sequence ?? this.lastAppliedSequence;
+          this.sequenceBuffer.assertCoveredThrough(boundary);
+          this.replayCompleteReceived = true;
+          const ready = this.sequenceBuffer.flushPending();
+          if (ready.length > 0) {
+            this.dataQueue.push(...ready);
+            this.scheduleDataQueueFlush();
+          }
+          this.finishReplayIfIdle();
+          return;
+        }
+
+        const chunk: TerminalDataChunk = {
+          data: payload.data,
+          sequence: payload.sequence ?? 0,
+          timestampMs: payload.timestampMs ?? Date.now()
+        };
+        this.addChunkToQueue(chunk, payload.liveBatchSize === 1);
+      } catch (value) {
+        const error = value instanceof Error ? value : new Error(String(value));
+        const terminalError = createTerminalError('connection', error);
         this.setConnectionState(ConnectionState.FAILED);
         this.setConnectionError(terminalError);
         this.setLoading('ready', '');
-        this.updateState({ error: new Error(message), state: TerminalState.ERROR });
-        this.options.onError?.(new Error(message));
-        return;
+        this.updateState({ error, state: TerminalState.ERROR });
+        this.options.onError?.(error);
+        this.scheduleConnectionRetry();
       }
-
-      if (payload.type === 'replay-complete') {
-        this.replayCompleteReceived = true;
-        const ready = this.sequenceBuffer.flushPending();
-        if (ready.length > 0) {
-          this.dataQueue.push(...ready);
-          this.scheduleDataQueueFlush();
-        } else if (
-          typeof payload.sequence === 'number'
-          && payload.sequence > this.lastAppliedSequence
-          && this.dataQueue.length === 0
-          && !this.isProcessing
-        ) {
-          this.lastAppliedSequence = payload.sequence;
-          this.sequenceBuffer.reset(payload.sequence + 1);
-        }
-        this.finishReplayIfIdle();
-        return;
-      }
-
-      const chunk: TerminalDataChunk = {
-        data: payload.data,
-        sequence: payload.sequence ?? 0,
-        timestampMs: payload.timestampMs ?? Date.now()
-      };
-      this.addChunkToQueue(chunk);
     }, { lastSeq });
 
     this.terminalDataUnsubscribe = unsubscribe;
+  }
+
+  private subscribeToTerminalGeometry(): void {
+    this.terminalGeometryUnsubscribe?.();
+    this.terminalGeometryUnsubscribe = null;
+    if (!this.options.config?.responsive?.reportHostDimensionsWithFixedGrid) {
+      return;
+    }
+    const sessionId = this.options.sessionId;
+    const subscribe = this.options.eventSource.onTerminalGeometry;
+    if (!sessionId || !subscribe) {
+      return;
+    }
+    this.terminalGeometryUnsubscribe = subscribe(sessionId, (event: TerminalGeometryEvent) => {
+      if (!Number.isSafeInteger(event.generation) || event.generation <= 0 ||
+        !Number.isSafeInteger(event.outputSequenceBoundary) || event.outputSequenceBoundary < 0 ||
+        !Number.isSafeInteger(event.cols) || event.cols <= 0 ||
+        !Number.isSafeInteger(event.rows) || event.rows <= 0) {
+        this.handleError(new Error('terminal live geometry is invalid'));
+        return;
+      }
+      if (event.generation <= this.lastGeometryGeneration) {
+        return;
+      }
+      const duplicate = this.pendingGeometryEvents.find(pending => pending.generation === event.generation);
+      if (duplicate) {
+        if (
+          duplicate.outputSequenceBoundary !== event.outputSequenceBoundary
+          || duplicate.cols !== event.cols
+          || duplicate.rows !== event.rows
+        ) {
+          this.handleError(new Error('terminal live geometry generation is inconsistent'));
+        }
+        return;
+      }
+      this.pendingGeometryEvents.push(event);
+      this.pendingGeometryEvents.sort((left, right) => left.generation - right.generation);
+      this.applyPendingGeometryEvents();
+    });
+  }
+
+  private applyPendingGeometryEvents(): void {
+    if (!this.terminalCore) return;
+    while (this.pendingGeometryEvents.length > 0) {
+      const event = this.pendingGeometryEvents[0]!;
+      if (event.generation <= this.lastGeometryGeneration) {
+        this.pendingGeometryEvents.shift();
+        continue;
+      }
+      if (event.outputSequenceBoundary > this.lastAppliedSequence) return;
+      this.pendingGeometryEvents.shift();
+      this.lastGeometryGeneration = event.generation;
+      this.terminalCore.setFixedDimensions({ cols: event.cols, rows: event.rows });
+    }
   }
 
   private async reinitialize(): Promise<void> {
@@ -742,6 +992,8 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.replayCompleteReceived = false;
     this.isReplayActive = true;
     this.lastAppliedSequence = 0;
+    this.lastGeometryGeneration = 0;
+    this.pendingGeometryEvents = [];
     this.dataQueue = [];
     this.isProcessing = false;
     this.cancelDataQueueFlush();
@@ -749,6 +1001,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.setLoading('processing_history', 'Restoring terminal...');
     this.cleanupTerminal();
     this.subscribeToTerminalData();
+    this.subscribeToTerminalGeometry();
     await this.initializeTerminal();
   }
 }

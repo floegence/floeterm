@@ -94,8 +94,8 @@ export interface TerminalOutputPipelineHandle {
 }
 
 const DEFAULT_POLICY: TerminalOutputPipelinePolicy = {
-  maxLiveBatchChunks: 64,
-  maxLiveBatchBytes: 256 * 1024,
+  maxLiveBatchChunks: 256,
+  maxLiveBatchBytes: 64 * 1024,
   maxInactiveChunks: 256,
   maxInactiveBytes: 512 * 1024,
 };

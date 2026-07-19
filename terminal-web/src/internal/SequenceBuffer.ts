@@ -2,168 +2,103 @@ import type { TerminalDataChunk } from '../types.js';
 
 interface SequenceBufferConfig {
   maxPendingChunks: number;
-  maxSequenceGap: number;
-  cleanupIntervalMs: number;
-  forceCleanupThreshold: number;
-  maxStallMs: number;
+  maxPendingBytes: number;
 }
 
 const defaultConfig: SequenceBufferConfig = {
-  maxPendingChunks: 40,
-  maxSequenceGap: 32,
-  cleanupIntervalMs: 5000,
-  forceCleanupThreshold: 60,
-  // If we keep seeing chunks ahead of the expected sequence for too long, assume a missing
-  // chunk was dropped (e.g. transient websocket loss) and advance to keep the UI responsive.
-  maxStallMs: 500
+  maxPendingChunks: 4096,
+  maxPendingBytes: 8 * 1024 * 1024,
 };
 
-// SequenceBuffer reorders chunks based on sequence numbers while limiting memory growth.
+const normalizePositiveInteger = (value: number | undefined, fallback: number): number => (
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback
+);
+
+// Reliable transports may reorder delivery across the history/live handoff, but
+// they must never infer or skip a missing sequence. Recovery owns gap resolution.
 export class SequenceBuffer {
   private expectedSequence = 1;
-  private pending = new Map<number, TerminalDataChunk>();
-  private pendingInsertedAt = new Map<number, number>();
-  private lastCleanupMs = Date.now();
-  private config: SequenceBufferConfig;
+  private readonly pending = new Map<number, TerminalDataChunk>();
+  private pendingBytes = 0;
+  private readonly config: SequenceBufferConfig;
 
   constructor(config: Partial<SequenceBufferConfig> = {}) {
-    this.config = { ...defaultConfig, ...config };
+    this.config = {
+      maxPendingChunks: normalizePositiveInteger(config.maxPendingChunks, defaultConfig.maxPendingChunks),
+      maxPendingBytes: normalizePositiveInteger(config.maxPendingBytes, defaultConfig.maxPendingBytes),
+    };
   }
 
   reset(startSequence: number): void {
-    this.expectedSequence = Math.max(1, startSequence);
+    this.expectedSequence = Number.isSafeInteger(startSequence) && startSequence > 0
+      ? startSequence
+      : 1;
     this.pending.clear();
-    this.pendingInsertedAt.clear();
-    this.lastCleanupMs = Date.now();
+    this.pendingBytes = 0;
   }
 
   flushPending(): TerminalDataChunk[] {
-    if (this.pending.size === 0) {
-      return [];
-    }
-
-    const ready: TerminalDataChunk[] = [];
-    const sequences = Array.from(this.pending.keys()).sort((a, b) => a - b);
-    for (const sequence of sequences) {
-      const chunk = this.pending.get(sequence);
-      this.pending.delete(sequence);
-      this.pendingInsertedAt.delete(sequence);
-      if (!chunk || sequence < this.expectedSequence) {
-        continue;
-      }
-
-      ready.push(chunk);
-      this.expectedSequence = sequence + 1;
-    }
-
-    return ready;
-  }
-
-  push(chunk: TerminalDataChunk, now = Date.now()): TerminalDataChunk[] {
-    const sequence = chunk.sequence;
-    const ready: TerminalDataChunk[] = [];
-
-    if (!Number.isInteger(sequence) || sequence < 1) {
-      ready.push(chunk);
-      return ready;
-    }
-
-    this.cleanupIfNeeded(now);
-    ready.push(...this.flushIfStalled(now));
-
-    if (sequence === this.expectedSequence) {
-      ready.push(chunk);
-      this.expectedSequence += 1;
-
-      while (this.pending.has(this.expectedSequence)) {
-        const next = this.pending.get(this.expectedSequence);
-        if (next) {
-          ready.push(next);
-        }
-        this.pending.delete(this.expectedSequence);
-        this.pendingInsertedAt.delete(this.expectedSequence);
-        this.expectedSequence += 1;
-      }
-
-      return ready;
-    }
-
-    const withinGap = sequence > this.expectedSequence && sequence <= this.expectedSequence + this.config.maxSequenceGap;
-    if (withinGap && this.pending.size < this.config.maxPendingChunks) {
-      this.pending.set(sequence, chunk);
-      if (!this.pendingInsertedAt.has(sequence)) {
-        this.pendingInsertedAt.set(sequence, now);
-      }
-      return ready;
-    }
-
-    if (sequence > this.expectedSequence) {
-      this.expectedSequence = sequence + 1;
-      this.pending.clear();
-      this.pendingInsertedAt.clear();
-    }
-
-    ready.push(chunk);
-    return ready;
-  }
-
-  private flushIfStalled(now: number): TerminalDataChunk[] {
-    if (this.pending.size === 0) {
-      return [];
-    }
-
-    let minPendingSeq = Number.POSITIVE_INFINITY;
-    let minPendingInsertedAt = Number.POSITIVE_INFINITY;
-    for (const seq of this.pending.keys()) {
-      if (seq < minPendingSeq) {
-        minPendingSeq = seq;
-        minPendingInsertedAt = this.pendingInsertedAt.get(seq) ?? now;
-      }
-    }
-
-    if (!Number.isFinite(minPendingSeq) || minPendingSeq <= this.expectedSequence) {
-      return [];
-    }
-
-    const ageMs = now - minPendingInsertedAt;
-    if (ageMs < this.config.maxStallMs) {
-      return [];
-    }
-
-    this.expectedSequence = minPendingSeq;
     const ready: TerminalDataChunk[] = [];
     while (this.pending.has(this.expectedSequence)) {
-      const next = this.pending.get(this.expectedSequence);
-      if (next) {
-        ready.push(next);
-      }
+      const chunk = this.pending.get(this.expectedSequence)!;
       this.pending.delete(this.expectedSequence);
-      this.pendingInsertedAt.delete(this.expectedSequence);
+      this.pendingBytes -= chunk.data.byteLength;
+      ready.push(chunk);
       this.expectedSequence += 1;
     }
     return ready;
   }
 
-  private cleanupIfNeeded(now: number): void {
-    if (this.pending.size >= this.config.forceCleanupThreshold) {
-      this.pending.clear();
-      this.pendingInsertedAt.clear();
-      this.lastCleanupMs = now;
-      return;
+  push(chunk: TerminalDataChunk, _now = Date.now()): TerminalDataChunk[] {
+    const sequence = chunk.sequence;
+    if (!Number.isSafeInteger(sequence) || sequence < 1) {
+      return [chunk];
+    }
+    if (sequence < this.expectedSequence || this.pending.has(sequence)) {
+      return [];
+    }
+    if (sequence === this.expectedSequence) {
+      this.expectedSequence += 1;
+      return [chunk, ...this.flushPending()];
     }
 
-    if (now-this.lastCleanupMs < this.config.cleanupIntervalMs) {
-      return;
+    if (
+      this.pending.size + 1 > this.config.maxPendingChunks
+      || this.pendingBytes + chunk.data.byteLength > this.config.maxPendingBytes
+    ) {
+      throw new Error('terminal output reorder queue limit exceeded');
+    }
+    this.pending.set(sequence, chunk);
+    this.pendingBytes += chunk.data.byteLength;
+    return [];
+  }
+
+  assertCoveredThrough(sequence: number): void {
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new Error('terminal output replay boundary is invalid');
+    }
+    if (this.expectedSequence <= sequence) {
+      throw new Error(`missing terminal output sequence ${this.expectedSequence} before replay boundary ${sequence}`);
+    }
+  }
+
+  coverThrough(sequence: number): TerminalDataChunk[] {
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new Error('terminal output replay coverage is invalid');
+    }
+    if (sequence < this.expectedSequence - 1) {
+      return [];
     }
 
-    const cutoff = this.expectedSequence + this.config.maxSequenceGap;
-    for (const seq of this.pending.keys()) {
-      if (seq < this.expectedSequence || seq > cutoff) {
-        this.pending.delete(seq);
-        this.pendingInsertedAt.delete(seq);
-      }
-    }
-
-    this.lastCleanupMs = now;
+    const covered = [...this.pending.entries()]
+      .filter(([pendingSequence]) => pendingSequence <= sequence)
+      .sort(([left], [right]) => left - right)
+      .map(([pendingSequence, chunk]) => {
+        this.pending.delete(pendingSequence);
+        this.pendingBytes -= chunk.data.byteLength;
+        return chunk;
+      });
+    this.expectedSequence = sequence + 1;
+    return [...covered, ...this.flushPending()];
   }
 }

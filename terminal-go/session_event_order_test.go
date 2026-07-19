@@ -16,7 +16,7 @@ type eventOrderHandler struct {
 	events  chan string
 }
 
-func (h *eventOrderHandler) OnTerminalData(string, []byte, int64, bool, string) {}
+func (h *eventOrderHandler) OnTerminalData(string, TerminalOutputEvent) {}
 func (h *eventOrderHandler) OnTerminalNameChanged(string, string, string, string) {
 }
 

@@ -1,7 +1,7 @@
 import type { Logger } from '../types.js';
 
-export type TerminalFabricBackend = 'beamterm_webgl2' | 'main_thread_canvas_live';
-export type TerminalFabricRenderPath = 'main_thread_webgl2' | 'canvas_live_fallback';
+export type TerminalFabricBackend = 'beamterm_webgl2';
+export type TerminalFabricRenderPath = 'main_thread_webgl2';
 
 export type TerminalFabricVisibility = 'visible' | 'occluded' | 'offscreen';
 
@@ -27,6 +27,46 @@ export type TerminalFabricCell = {
   fg: TerminalFabricColor;
   bg: TerminalFabricColor;
   attrs: TerminalFabricCellAttrs;
+};
+
+export type TerminalFabricSourceCell = {
+  codepoint?: number;
+  fg_r?: number;
+  fg_g?: number;
+  fg_b?: number;
+  bg_r?: number;
+  bg_g?: number;
+  bg_b?: number;
+  flags?: number;
+  width?: number;
+  grapheme_len?: number;
+  hyperlink_id?: number;
+};
+
+export type TerminalFabricSourceRenderer = {
+  currentBuffer?: {
+    getGraphemeString?: (row: number, col: number) => string;
+  } | null;
+};
+
+export type TerminalFabricRowRenderHints = {
+  selection?: {
+    startCol: number;
+    startRow: number;
+    endCol: number;
+    endRow: number;
+    foreground: TerminalFabricColor;
+    background: TerminalFabricColor;
+  } | null;
+  hover?: {
+    hyperlinkId?: number;
+    range?: {
+      startX: number;
+      startY: number;
+      endX: number;
+      endY: number;
+    } | null;
+  } | null;
 };
 
 export type TerminalFabricCursor = {
@@ -108,6 +148,7 @@ export type TerminalFabricRendererTarget = {
   getGhosttyCanvas: () => HTMLCanvasElement | null;
   focusInputSurface: () => void;
   forwardWheel: (event: WheelEvent) => void;
+  onRendererError: (error: Error) => void;
 };
 
 export type TerminalFabricRenderer = {
@@ -120,7 +161,13 @@ export type TerminalFabricRenderer = {
     rows: number;
     theme: TerminalFabricTheme;
   }): void;
-  writeRow(row: number, cells: TerminalFabricCell[], cols: number): void;
+  writeRow(
+    sourceRenderer: TerminalFabricSourceRenderer,
+    row: number,
+    cells: readonly TerminalFabricSourceCell[],
+    cols: number,
+    hints?: TerminalFabricRowRenderHints,
+  ): void;
   finishFrame(cursor: TerminalFabricCursor | null): TerminalFabricFrameRenderResult;
   resize(width: number, height: number): void;
   getGeometry(): TerminalFabricGeometry | null;

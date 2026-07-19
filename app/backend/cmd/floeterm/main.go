@@ -18,9 +18,11 @@ func main() {
 	var addr string
 	var staticDir string
 	var logLevel string
+	var performanceDiagnostics bool
 	flag.StringVar(&addr, "addr", ":8080", "HTTP listen address")
 	flag.StringVar(&staticDir, "static", "", "path to app/web dist directory")
 	flag.StringVar(&logLevel, "log-level", "info", "log level: debug|info|warn|error")
+	flag.BoolVar(&performanceDiagnostics, "performance-diagnostics", false, "enable loopback performance diagnostics endpoint")
 	flag.Parse()
 
 	if staticDir == "" {
@@ -45,7 +47,8 @@ func main() {
 	logger := terminal.NewStdLogger(level)
 
 	srv := server.New(server.Config{
-		StaticDir: staticDir,
+		StaticDir:                    staticDir,
+		EnablePerformanceDiagnostics: performanceDiagnostics,
 		ManagerConfig: terminal.ManagerConfig{
 			Logger: logger,
 			// Keep UI responsiveness high.

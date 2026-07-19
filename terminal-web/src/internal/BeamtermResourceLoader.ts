@@ -1,10 +1,10 @@
-export type BeamtermModule = typeof import('@beamterm/renderer');
+export type BeamtermModule = typeof import('@floegence/beamterm-renderer');
 
 let beamtermModulePromise: Promise<BeamtermModule> | null = null;
 
 export const loadBeamtermModule = async (): Promise<BeamtermModule> => {
   if (!beamtermModulePromise) {
-    beamtermModulePromise = import('@beamterm/renderer').then(async module => {
+    beamtermModulePromise = import('@floegence/beamterm-renderer').then(async module => {
       await module.main();
       return module;
     }).catch((error: unknown) => {

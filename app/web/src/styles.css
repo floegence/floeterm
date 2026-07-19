@@ -344,6 +344,66 @@ body {
   background: var(--surface-0);
 }
 
+.mirrorTerminalContainer {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
+  background: var(--surface-0);
+}
+
+.mirrorTerminalView {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+}
+
+.mirrorTerminalView:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
+.mirrorTerminalSurface {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface-0);
+  cursor: text;
+}
+
+.mirrorViewActions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.mirrorViewActions button {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.mirrorViewActions button:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
 .terminalPane {
   height: 100%;
   width: 100%;
@@ -365,12 +425,72 @@ body {
   box-shadow: inset 0 0 32px rgba(71, 215, 172, 0.018);
 }
 
+.terminalSurface {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .terminalPane canvas,
 .tileTerminal canvas {
   display: block;
   max-height: 100%;
   max-width: 100%;
   image-rendering: auto;
+}
+
+.terminalRendererError {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  color: var(--text-primary);
+  background: var(--surface-1);
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+.terminalRendererError strong {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.terminalRendererError span {
+  max-width: 560px;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.terminalRendererError button {
+  min-height: 30px;
+  padding: 0 var(--space-md);
+  border: 1px solid var(--line-strong);
+  color: var(--text-primary);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.terminalRendererErrorCompact {
+  gap: 6px;
+  padding: 8px;
+}
+
+.terminalRendererErrorCompact strong {
+  font-size: 10px;
+}
+
+.terminalRendererErrorCompact button {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 10px;
 }
 
 .fabricShell {
@@ -601,6 +721,11 @@ body {
     grid-auto-rows: minmax(160px, 1fr);
     grid-template-rows: none;
   }
+
+  .mirrorTerminalContainer {
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 640px) {
@@ -637,6 +762,7 @@ body {
   }
 
   .terminalContainer,
+  .mirrorTerminalContainer,
   .fabricShell {
     padding: var(--space-sm);
     padding-bottom: calc(var(--space-sm) + env(safe-area-inset-bottom));

@@ -1,18 +1,15 @@
 package server
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/coder/websocket"
 	terminal "github.com/floegence/floeterm/terminal-go"
+	"github.com/floegence/floeterm/terminal-go/livev1"
 )
 
 type Config struct {
@@ -22,20 +19,19 @@ type Config struct {
 
 	// ManagerConfig is forwarded to terminal-go.
 	ManagerConfig terminal.ManagerConfig
+
+	// EnablePerformanceDiagnostics exposes process-local metrics for controlled test runs.
+	EnablePerformanceDiagnostics bool
 }
 
 // Server is a runnable HTTP/WebSocket server that bridges terminal-go sessions to terminal-web clients.
 type Server struct {
 	manager *terminal.Manager
 
-	staticDir string
-	logger    terminal.Logger
-
-	wsMu        sync.RWMutex
-	wsBySession map[string]map[*wsClient]struct{}
-	wsConnRefs  map[string]map[string]int
-
-	inputLimiter *byteRateLimiter
+	staticDir              string
+	logger                 terminal.Logger
+	live                   *livev1.Service
+	performanceDiagnostics bool
 }
 
 func New(cfg Config) *Server {
@@ -44,17 +40,14 @@ func New(cfg Config) *Server {
 		logger = terminal.NopLogger{}
 	}
 
+	manager := terminal.NewManager(cfg.ManagerConfig)
 	s := &Server{
-		manager:     terminal.NewManager(cfg.ManagerConfig),
-		staticDir:   cfg.StaticDir,
-		logger:      logger,
-		wsBySession: make(map[string]map[*wsClient]struct{}),
-		wsConnRefs:  make(map[string]map[string]int),
-		// Input limiting is a safety rail for the reference server; it helps avoid accidental
-		// resource exhaustion from oversized pastes or tight input loops.
-		inputLimiter: newByteRateLimiter(64*1024 /* bytes/s */, 128*1024 /* burst bytes */),
+		manager:                manager,
+		staticDir:              cfg.StaticDir,
+		logger:                 logger,
+		live:                   livev1.NewService(livev1.NewManagerBackend(manager, livev1.ManagerBackendOptions{})),
+		performanceDiagnostics: cfg.EnablePerformanceDiagnostics,
 	}
-	s.manager.SetEventHandler(s)
 	return s
 }
 
@@ -63,6 +56,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionByID)
 	mux.HandleFunc("/ws", s.handleWS)
+	if s.performanceDiagnostics {
+		mux.HandleFunc("/api/performance/runtime", s.handlePerformanceRuntime)
+		mux.HandleFunc("/api/performance/goroutines", s.handlePerformanceGoroutines)
+	}
 
 	if strings.TrimSpace(s.staticDir) != "" {
 		mux.Handle("/", spaFileServer(s.staticDir))
@@ -73,77 +70,6 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) Close() {
 	s.manager.Cleanup()
-
-	s.wsMu.Lock()
-	clients := s.wsBySession
-	s.wsBySession = make(map[string]map[*wsClient]struct{})
-	s.wsConnRefs = make(map[string]map[string]int)
-	s.wsMu.Unlock()
-
-	for _, set := range clients {
-		for client := range set {
-			_ = client.conn.Close(websocket.StatusNormalClosure, "server shutting down")
-		}
-	}
-}
-
-// --- terminal.TerminalEventHandler implementation ---
-
-func (s *Server) OnTerminalData(sessionID string, data []byte, sequenceNumber int64, isEcho bool, originalSource string) {
-	payload, err := json.Marshal(wsEvent{
-		Type:           "data",
-		SessionID:      sessionID,
-		DataBase64:     base64.StdEncoding.EncodeToString(data),
-		Sequence:       sequenceNumber,
-		TimestampMs:    time.Now().UnixMilli(),
-		EchoOfInput:    isEcho,
-		OriginalSource: originalSource,
-	})
-	if err != nil {
-		return
-	}
-	s.broadcast(sessionID, payload)
-}
-
-func (s *Server) OnTerminalNameChanged(sessionID string, _ string, newName string, workingDir string) {
-	payload, err := json.Marshal(wsEvent{
-		Type:        "name",
-		SessionID:   sessionID,
-		NewName:     newName,
-		WorkingDir:  workingDir,
-		TimestampMs: time.Now().UnixMilli(),
-	})
-	if err != nil {
-		return
-	}
-	s.broadcast(sessionID, payload)
-}
-
-func (s *Server) OnTerminalSessionCreated(*terminal.Session) {}
-
-func (s *Server) OnTerminalSessionClosed(sessionID string) {
-	// Drop all websocket clients for this session so the web UI doesn't keep reconnecting.
-	s.wsMu.Lock()
-	clients := s.wsBySession[sessionID]
-	delete(s.wsBySession, sessionID)
-	s.wsMu.Unlock()
-
-	for client := range clients {
-		_ = client.conn.Close(websocket.StatusNormalClosure, "session closed")
-	}
-}
-
-func (s *Server) OnTerminalError(sessionID string, err error) {
-	payload, marshalErr := json.Marshal(wsEvent{
-		Type:        "error",
-		SessionID:   sessionID,
-		Error:       err.Error(),
-		TimestampMs: time.Now().UnixMilli(),
-	})
-	if marshalErr != nil {
-		return
-	}
-	s.broadcast(sessionID, payload)
 }
 
 // --- API helpers ---

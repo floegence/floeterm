@@ -33,6 +33,12 @@ jobs:
           cache-dependency-path: |
             terminal-web/package-lock.json
             app/web/package-lock.json
+            e2e/package-lock.json
+
+      - name: Install pinned renderer build tool
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.13.1
 
       - name: Install terminal browser test runtime
         working-directory: terminal-web

@@ -768,6 +768,30 @@ describe('PagedTerminalOutputCoordinator', () => {
     coordinator.dispose();
   });
 
+  it('coalesces already-arrived live output in one microtask without waiting for an animation frame', async () => {
+    const writes: string[] = [];
+    const frames: FrameRequestCallback[] = [];
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: vi.fn(),
+      write: data => writes.push(decoder.decode(data)),
+      scheduler: {
+        requestFrame: callback => {
+          frames.push(callback);
+          return frames.length;
+        },
+        cancelFrame: vi.fn(),
+      },
+    });
+
+    const attachGeneration = coordinator.beginAttach(0);
+    await coordinator.completeAttach(attachGeneration, 0);
+    coordinator.pushLive(chunk(1, 'one'));
+    coordinator.pushLive(chunk(2, 'two'));
+    await vi.waitFor(() => expect(writes).toEqual(['onetwo']));
+    expect(frames).toEqual([]);
+    coordinator.dispose();
+  });
+
   it('catches up a gap after an explicit zero attach boundary', async () => {
     const writes: string[] = [];
     const fetchPage = vi.fn().mockResolvedValue(page({

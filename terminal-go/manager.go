@@ -69,20 +69,21 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	defer close(createdDone)
 
 	session := &Session{
-		ID:                sessionID,
-		Name:              name,
-		WorkingDir:        workingDir,
-		CreatedAt:         time.Now(),
-		LastActive:        time.Now(),
-		isActive:          false,
-		connections:       make(map[string]*ConnectionInfo),
-		ctx:               ctx,
-		cancel:            cancel,
-		ringBuffer:        NewTerminalRingBufferWithLimits(sessionCfg.historyBufferSize, sessionCfg.historyBufferMaxChunks, sessionCfg.historyBufferMaxBytes),
-		historyGeneration: 1,
-		currentWorkingDir: workingDir,
-		inputWindow:       sessionCfg.inputWindow,
-		eventHandler:      initialHandler,
+		ID:                   sessionID,
+		Name:                 name,
+		WorkingDir:           workingDir,
+		CreatedAt:            time.Now(),
+		LastActive:           time.Now(),
+		isActive:             false,
+		connections:          make(map[string]*ConnectionInfo),
+		liveAttachments:      make(map[string]liveAttachment),
+		ctx:                  ctx,
+		cancel:               cancel,
+		ringBuffer:           NewTerminalRingBufferWithLimits(sessionCfg.historyBufferSize, sessionCfg.historyBufferMaxChunks, sessionCfg.historyBufferMaxBytes),
+		historyGeneration:    1,
+		historyStartSequence: 1,
+		currentWorkingDir:    workingDir,
+		eventHandler:         initialHandler,
 		onExit: func(sessionID string) {
 			<-createdDone
 			m.deleteSessionIfExists(sessionID)
@@ -133,7 +134,15 @@ func (m *Manager) GetDiagnostics() ManagerDiagnostics {
 		session.mu.RLock()
 		ringBuffer := session.ringBuffer
 		sessionID := session.ID
+		isActive := session.isActive
+		connectionCount := len(session.connections)
+		liveAttachmentCount := len(session.liveAttachments)
 		session.mu.RUnlock()
+		if isActive {
+			diagnostics.ActiveSessionCount++
+		}
+		diagnostics.ConnectionCount += connectionCount
+		diagnostics.LiveAttachmentCount += liveAttachmentCount
 		if ringBuffer == nil {
 			continue
 		}

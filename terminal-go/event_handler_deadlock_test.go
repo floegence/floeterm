@@ -12,7 +12,7 @@ type managerReentrantHandler struct {
 	created chan struct{}
 }
 
-func (h *managerReentrantHandler) OnTerminalData(string, []byte, int64, bool, string) {}
+func (h *managerReentrantHandler) OnTerminalData(string, TerminalOutputEvent) {}
 func (h *managerReentrantHandler) OnTerminalNameChanged(string, string, string, string) {
 }
 func (h *managerReentrantHandler) OnTerminalSessionCreated(*Session) {
@@ -77,7 +77,7 @@ type dataReentrantHandler struct {
 	err   error
 }
 
-func (h *dataReentrantHandler) OnTerminalData(string, []byte, int64, bool, string) {
+func (h *dataReentrantHandler) OnTerminalData(string, TerminalOutputEvent) {
 	h.once.Do(func() {
 		// This would deadlock if broadcastData invoked handlers while holding s.mu.
 		h.errMu.Lock()
@@ -147,7 +147,7 @@ type deletingDataHandler struct {
 	duration chan time.Duration
 }
 
-func (h *deletingDataHandler) OnTerminalData(sessionID string, _ []byte, _ int64, _ bool, _ string) {
+func (h *deletingDataHandler) OnTerminalData(sessionID string, _ TerminalOutputEvent) {
 	h.once.Do(func() {
 		<-h.reaped
 		started := time.Now()

@@ -214,4 +214,33 @@ describe('TerminalCore transformed-host input integration', () => {
     expect(renderHost.scrollLeft).toBe(0);
     expect(renderHost.scrollTop).toBe(0);
   });
+
+  it('emits a 1 MiB native paste exactly once and preserves bracketed-paste semantics', async () => {
+    const container = document.createElement('div');
+    container.style.width = '824px';
+    container.style.height = '667px';
+    document.body.appendChild(container);
+    const onData = vi.fn();
+    core = new TerminalCore(container, { rendererType: 'canvas' }, { onData });
+    await core.initialize();
+    await writeTerminal(core, '\x1b[?2004h');
+    core.focus();
+    await settleFrames();
+
+    const textarea = document.querySelector('textarea[aria-label="Terminal input"]');
+    expect(textarea).toBeInstanceOf(HTMLTextAreaElement);
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    const payload = 'A中文😀'.repeat(Math.ceil((1024 * 1024) / 'A中文😀'.length)).slice(0, 1024 * 1024);
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', {
+      value: { getData: (type: string) => type === 'text/plain' ? payload : '' },
+    });
+
+    textarea.dispatchEvent(paste);
+    textarea.dispatchEvent(createInputEvent('insertFromPaste', payload));
+
+    expect(paste.defaultPrevented).toBe(true);
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenCalledWith(`\x1b[200~${payload}\x1b[201~`);
+  });
 });

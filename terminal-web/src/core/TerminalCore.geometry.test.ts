@@ -57,6 +57,10 @@ vi.mock('ghostty-web', () => {
       this.resizeHandler?.({ cols, rows });
     }
 
+    resize(cols: number, rows: number) {
+      this.__applyFit(cols, rows);
+    }
+
     write(_data: string | Uint8Array, cb?: () => void) {
       cb?.();
     }
@@ -185,6 +189,44 @@ describe('TerminalCore geometry stability', () => {
     await vi.runAllTimersAsync();
 
     expect(core.getDimensions()).toEqual({ cols: 98, rows: 25 });
+
+    core.dispose();
+  });
+
+  it('keeps the shared terminal grid fixed while reporting independent host dimensions', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const reported: Array<{ cols: number; rows: number }> = [];
+
+    const core = new TerminalCore(container, {
+      fixedDimensions: { cols: 80, rows: 24 },
+      fit: { scrollbarReservePx: 0 },
+      responsive: { reportHostDimensionsWithFixedGrid: true },
+    }, {
+      onResize: dimensions => reported.push(dimensions),
+    });
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    await vi.runAllTimersAsync();
+
+    expect(core.getDimensions()).toEqual({ cols: 80, rows: 24 });
+    expect(reported[reported.length - 1]).toEqual({ cols: 100, rows: 25 });
+
+    Object.defineProperty(container, 'clientWidth', { value: 640, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 320, configurable: true });
+    core.forceResize();
+    await vi.runAllTimersAsync();
+    expect(core.getDimensions()).toEqual({ cols: 80, rows: 24 });
+    expect(reported[reported.length - 1]).toEqual({ cols: 80, rows: 20 });
+
+    core.setFixedDimensions({ cols: 70, rows: 18 });
+    await vi.runAllTimersAsync();
+    expect(core.getDimensions()).toEqual({ cols: 70, rows: 18 });
+    expect(reported[reported.length - 1]).toEqual({ cols: 80, rows: 20 });
 
     core.dispose();
   });

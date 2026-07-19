@@ -175,7 +175,7 @@ const DEFAULT_POLICY: PagedTerminalOutputPolicy = {
   maxRetainedLiveChunks: 2048,
   maxRetainedLiveBytes: 8 * 1024 * 1024,
   retryDelaysMs: [250, 1000, 4000],
-  maxWriteBatchBytes: 256 * 1024,
+  maxWriteBatchBytes: 512 * 1024,
 };
 
 const DEFAULT_PREPARED_HISTORY_MAX_BYTES = 32 * 1024 * 1024;
@@ -596,6 +596,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       this.emitState();
       this.setState('live');
       this.drainRetainedLive();
+      await this.writeChain;
       return;
     }
     await this.runRecovery();
@@ -1023,6 +1024,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       this.setState('live');
       this.recoveryRunning = false;
       this.drainRetainedLive();
+      await this.writeChain;
     } catch (error) {
       if (!this.isRecoveryCurrent(generation, recoverySerial, controller)) return;
       this.lastError = error;
@@ -1253,8 +1255,6 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     if (this.liveWriteScheduled) return;
     this.liveWriteScheduled = true;
     this.writeChain = this.writeChain.then(async () => {
-      if (!this.isCurrent(generation)) return;
-      await Promise.resolve();
       if (!this.isCurrent(generation)) return;
       const pending = this.pendingLiveWrites.splice(0);
       this.liveWriteScheduled = false;

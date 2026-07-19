@@ -57,7 +57,7 @@ type blockingNaturalExitDataHandler struct {
 	once    sync.Once
 }
 
-func (h *blockingNaturalExitDataHandler) OnTerminalData(string, []byte, int64, bool, string) {
+func (h *blockingNaturalExitDataHandler) OnTerminalData(string, TerminalOutputEvent) {
 	h.once.Do(func() {
 		<-h.reaped
 		close(h.entered)

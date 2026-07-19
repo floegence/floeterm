@@ -5,7 +5,7 @@ SHELL := /bin/bash
 GO_MODULES := terminal-go app/backend
 
 .PHONY: check
-check: go-test-race go-vuln web-check
+check: go-test-race go-vuln renderer-check web-check e2e-check
 
 .PHONY: go-test-race
 go-test-race:
@@ -24,7 +24,7 @@ go-vuln:
 	done
 
 .PHONY: terminal-web-prepare
-terminal-web-prepare:
+terminal-web-prepare: renderer-check
 	@set -euo pipefail; \
 	echo "==> terminal-web npm ci"; \
 	(cd terminal-web && npm ci); \
@@ -33,7 +33,13 @@ terminal-web-prepare:
 	echo "==> terminal-web lint/test/browser/build/package artifact"; \
 	(cd terminal-web && npm run lint && npm test && npm run test:browser && npm run build && npm run check:package-artifact); \
 	echo "==> terminal-web npm audit"; \
-	(cd terminal-web && npm audit --audit-level=low)
+	(cd terminal-web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low)
+
+.PHONY: renderer-check
+renderer-check:
+	@set -euo pipefail; \
+	echo "==> beamterm-renderer source/build/package checks"; \
+	(cd beamterm-renderer && npm run check)
 
 .PHONY: app-web-prepare
 app-web-prepare: terminal-web-prepare
@@ -43,10 +49,24 @@ app-web-prepare: terminal-web-prepare
 	echo "==> app/web lint/build/test"; \
 	(cd app/web && npm run lint && npm run build && npm test); \
 	echo "==> app/web npm audit"; \
-	(cd app/web && npm audit --audit-level=low)
+	(cd app/web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low)
 
 .PHONY: web-check
 web-check: app-web-prepare
+
+.PHONY: e2e-check
+e2e-check: app-web-prepare
+	@set -euo pipefail; \
+	echo "==> e2e npm ci"; \
+	(cd e2e && npm ci); \
+	echo "==> e2e unit and browser tests"; \
+	if [[ -n "$${CI:-}" ]]; then \
+		(cd e2e && xvfb-run -a npm test); \
+	else \
+		(cd e2e && npm test); \
+	fi; \
+	echo "==> e2e npm audit"; \
+	(cd e2e && npm audit --registry=https://registry.npmjs.org/ --audit-level=low)
 
 .PHONY: app-web-build
 app-web-build:
@@ -59,7 +79,7 @@ app-web-build:
 .PHONY: run
 run: app-web-prepare
 	@set -euo pipefail; \
-	(cd app/backend && go run ./cmd/floeterm -addr 0.0.0.0:8280 -static ../web/dist -log-level debug)
+	(cd app/backend && go run ./cmd/floeterm -addr 0.0.0.0:8280 -static ../web/dist -log-level debug -performance-diagnostics)
 
 .PHONY: dev
 dev:

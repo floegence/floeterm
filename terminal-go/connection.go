@@ -88,6 +88,49 @@ func (s *Session) UpdateConnectionSize(connectionID string, cols, rows int) {
 	}
 }
 
+// ApplyConnectionSize records one view's dimensions and returns only after the
+// shared PTY reflects the minimum rows and columns required by all live views.
+func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (TerminalGeometry, error) {
+	if connectionID == "" {
+		return TerminalGeometry{}, fmt.Errorf("connection ID is required")
+	}
+	if err := validateTerminalSize(cols, rows); err != nil {
+		return TerminalGeometry{}, err
+	}
+
+	s.mu.Lock()
+	conn, exists := s.connections[connectionID]
+	if !exists {
+		s.mu.Unlock()
+		return TerminalGeometry{}, fmt.Errorf("terminal connection %q is not attached", connectionID)
+	}
+	previousCols, previousRows := conn.Cols, conn.Rows
+	previousGeneration := s.geometryGeneration
+	conn.Cols = cols
+	conn.Rows = rows
+	if !s.isActive {
+		geometry := s.effectiveGeometryLocked()
+		s.mu.Unlock()
+		return geometry, nil
+	}
+	if err := s.reconcilePTYSizeLocked("connection-applied"); err != nil {
+		conn.Cols = previousCols
+		conn.Rows = previousRows
+		s.mu.Unlock()
+		return TerminalGeometry{}, err
+	}
+	geometry := s.effectiveGeometryLocked()
+	var subscribers []LiveSubscriber
+	if geometry.Generation != previousGeneration {
+		subscribers = s.liveSubscribersLocked()
+	}
+	s.mu.Unlock()
+	if len(subscribers) > 0 {
+		s.broadcastGeometry(geometry, subscribers)
+	}
+	return geometry, nil
+}
+
 func (s *Session) hasConnections() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -125,6 +168,26 @@ func (s *Session) getMinimumTerminalSize() (int, int) {
 		return 80, 24
 	}
 	return cols, rows
+}
+
+func (s *Session) effectiveGeometryLocked() TerminalGeometry {
+	cols, rows := s.lastAppliedCols, s.lastAppliedRows
+	if cols <= 0 || rows <= 0 {
+		if minimumCols, minimumRows, ok := s.getMinimumTerminalSizeLocked(); ok {
+			cols, rows = minimumCols, minimumRows
+		} else {
+			cols, rows = 80, 24
+		}
+	}
+	if s.geometryGeneration == 0 {
+		s.geometryGeneration = 1
+	}
+	return TerminalGeometry{
+		Generation:             s.geometryGeneration,
+		OutputSequenceBoundary: s.committedSequence,
+		Cols:                   cols,
+		Rows:                   rows,
+	}
 }
 
 func (s *Session) reconcilePTYSizeLocked(reason string) error {
@@ -172,11 +235,22 @@ func (s *Session) runPTYSizeReconciler() {
 
 		s.mu.Lock()
 		stillCurrent := s.isActive && s.PTY == ptyFile
+		var geometry TerminalGeometry
+		var subscribers []LiveSubscriber
 		if err == nil && stillCurrent {
 			s.lastAppliedCols = cols
 			s.lastAppliedRows = rows
+			s.geometryGeneration++
+			if s.geometryGeneration == 0 {
+				s.geometryGeneration = 1
+			}
+			geometry = s.effectiveGeometryLocked()
+			subscribers = s.liveSubscribersLocked()
 		}
 		s.mu.Unlock()
+		if len(subscribers) > 0 {
+			s.broadcastGeometry(geometry, subscribers)
+		}
 
 		if err != nil && stillCurrent {
 			s.config.logger.Warn("Failed to reconcile PTY size", "sessionID", s.ID, "reason", reason, "error", err)
@@ -198,6 +272,9 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string) error {
 		return err
 	}
 	if s.lastAppliedCols == cols && s.lastAppliedRows == rows {
+		if s.geometryGeneration == 0 {
+			s.geometryGeneration = 1
+		}
 		s.config.logger.Debug("PTY resize skipped", "sessionID", s.ID, "cols", cols, "rows", rows, "reason", reason)
 		return nil
 	}
@@ -211,6 +288,10 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string) error {
 	}
 	s.lastAppliedCols = cols
 	s.lastAppliedRows = rows
+	s.geometryGeneration++
+	if s.geometryGeneration == 0 {
+		s.geometryGeneration = 1
+	}
 	s.config.logger.Debug("PTY resized", "sessionID", s.ID, "cols", cols, "rows", rows, "reason", reason)
 	return nil
 }

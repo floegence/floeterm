@@ -168,3 +168,152 @@ func TestConnectionResizeRetriesAfterFailure(t *testing.T) {
 		t.Fatalf("unexpected retry result: attempts=%d size=%dx%d", attempts, session.lastAppliedCols, session.lastAppliedRows)
 	}
 }
+
+func TestConnectionResizeUsesTheMinimumDimensionsAcrossDistinctViews(t *testing.T) {
+	var calls []*pty.Winsize
+	var callsMu sync.Mutex
+	session := &Session{
+		ID:       "resize-distinct-views",
+		PTY:      &os.File{},
+		isActive: true,
+		connections: map[string]*ConnectionInfo{
+			"wide-short":  {ConnID: "wide-short", Cols: 140, Rows: 24},
+			"narrow-tall": {ConnID: "narrow-tall", Cols: 80, Rows: 48},
+		},
+		lastAppliedCols: 120,
+		lastAppliedRows: 40,
+		setPTYSize: func(_ *os.File, size *pty.Winsize) error {
+			callsMu.Lock()
+			defer callsMu.Unlock()
+			copySize := *size
+			calls = append(calls, &copySize)
+			return nil
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	geometry, err := session.ApplyConnectionSize("wide-short", 160, 30)
+	if err != nil {
+		t.Fatalf("apply wide view size: %v", err)
+	}
+	if geometry.Cols != 80 || geometry.Rows != 30 {
+		t.Fatalf("effective geometry = %+v, want 80x30", geometry)
+	}
+	callsMu.Lock()
+	if len(calls) != 1 || calls[0].Cols != 80 || calls[0].Rows != 30 {
+		callsMu.Unlock()
+		t.Fatalf("shared PTY did not use independent minimum dimensions: %+v", calls)
+	}
+	callsMu.Unlock()
+
+	geometry, err = session.ApplyConnectionSize("narrow-tall", 100, 50)
+	if err != nil {
+		t.Fatalf("apply narrow view size: %v", err)
+	}
+	if geometry.Cols != 100 || geometry.Rows != 30 {
+		t.Fatalf("effective geometry = %+v, want 100x30", geometry)
+	}
+	callsMu.Lock()
+	if len(calls) != 2 || calls[1].Cols != 100 || calls[1].Rows != 30 {
+		callsMu.Unlock()
+		t.Fatalf("shared PTY did not advance to the new minimum dimensions: %+v", calls)
+	}
+	callsMu.Unlock()
+
+	session.RemoveConnection("wide-short")
+	waitForResizeCalls(t, &callsMu, &calls, 3)
+	waitForResizeIdle(t, session)
+	callsMu.Lock()
+	defer callsMu.Unlock()
+	if calls[2].Cols != 100 || calls[2].Rows != 50 {
+		t.Fatalf("remaining view size was not restored after detach: %+v", calls)
+	}
+}
+
+func TestApplyConnectionSizeReturnsOnlyAfterThePTYResizeCompletes(t *testing.T) {
+	resizeStarted := make(chan struct{})
+	allowResize := make(chan struct{})
+	returned := make(chan struct {
+		geometry TerminalGeometry
+		err      error
+	}, 1)
+	session := &Session{
+		ID:              "resize-ack",
+		PTY:             &os.File{},
+		isActive:        true,
+		connections:     map[string]*ConnectionInfo{"page-a": {ConnID: "page-a", Cols: 80, Rows: 24}},
+		lastAppliedCols: 80,
+		lastAppliedRows: 24,
+		setPTYSize: func(_ *os.File, _ *pty.Winsize) error {
+			close(resizeStarted)
+			<-allowResize
+			return nil
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	go func() {
+		geometry, err := session.ApplyConnectionSize("page-a", 120, 40)
+		returned <- struct {
+			geometry TerminalGeometry
+			err      error
+		}{geometry: geometry, err: err}
+	}()
+	select {
+	case <-resizeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("PTY resize did not start")
+	}
+	select {
+	case result := <-returned:
+		t.Fatalf("resize returned before the PTY resize completed: %+v", result)
+	default:
+	}
+	close(allowResize)
+	select {
+	case result := <-returned:
+		if result.err != nil {
+			t.Fatalf("resize returned an error: %v", result.err)
+		}
+		if result.geometry.Cols != 120 || result.geometry.Rows != 40 {
+			t.Fatalf("resize returned geometry %+v", result.geometry)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resize did not return after the PTY resize completed")
+	}
+}
+
+func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testing.T) {
+	session := &Session{
+		ID:       "geometry-generation",
+		PTY:      &os.File{},
+		isActive: true,
+		connections: map[string]*ConnectionInfo{
+			"wide":   {ConnID: "wide", Cols: 120, Rows: 30},
+			"narrow": {ConnID: "narrow", Cols: 80, Rows: 50},
+		},
+		lastAppliedCols:    80,
+		lastAppliedRows:    30,
+		geometryGeneration: 7,
+		setPTYSize: func(_ *os.File, _ *pty.Winsize) error {
+			return nil
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	geometry, err := session.ApplyConnectionSize("wide", 140, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Generation != 8 || geometry.Cols != 80 || geometry.Rows != 40 {
+		t.Fatalf("changed geometry = %+v", geometry)
+	}
+
+	geometry, err = session.ApplyConnectionSize("wide", 160, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Generation != 8 || geometry.Cols != 80 || geometry.Rows != 40 {
+		t.Fatalf("unchanged geometry advanced generation: %+v", geometry)
+	}
+}

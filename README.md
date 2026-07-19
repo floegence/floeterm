@@ -44,7 +44,7 @@
 `floeterm` is built for teams that want terminal workflows inside their own product, not inside someone else's UI shell.
 
 - `Product-first`: ship your own terminal experience while floeterm handles PTY lifecycle, history replay, resize coordination, and browser-facing terminal plumbing.
-- `Composable`: use [`terminal-go`](./terminal-go) as the backend engine, [`terminal-web`](./terminal-web) as the headless browser layer, or start from the end-to-end reference app in [`app/`](./app).
+- `Composable`: use [`terminal-go`](./terminal-go) as the backend engine, [`terminal-web`](./terminal-web) as the headless browser layer, or start from the end-to-end reference app in [`app/`](./app). FloeTerm also owns the versioned [`beamterm-renderer`](./beamterm-renderer) WebGL2 distribution used by the web package.
 - `User-ready`: mobile-friendly input bridging, IME support, reconnect-friendly history replay, configurable clipboard behavior, and first-class shell bell/title plus link-provider extension points are already in the stack.
 - `Operationally sane`: one `make check` path matches CI for Go race tests, `govulncheck`, web lint/test/build, and `npm audit`.
 
@@ -73,6 +73,7 @@ Typical use cases:
 | --- | --- | --- |
 | [`terminal-go`](./terminal-go) | Go backends that need PTY sessions | Session lifecycle, history buffering/filtering, explicit workdir signal parsing, resize coordination, and event callbacks |
 | [`terminal-web`](./terminal-web) | Web clients that want terminal plumbing without UI lock-in | `TerminalCore`, `createTerminalInstance`, `TerminalSessionsCoordinator`, config helpers, and a headless `ghostty-web` wrapper |
+| [`beamterm-renderer`](./beamterm-renderer) | FloeTerm's WebGL2 rendering release | A versioned, reproducible Beamterm fork with upstream provenance and browser warning/performance gates |
 | [`app/`](./app) | Teams that want a working reference before integrating | HTTP APIs, WebSocket streaming, and a Solid.js demo UI that wires the stack together |
 
 Install the building blocks you need:
@@ -156,6 +157,7 @@ await controller.mount(container);
 | --- | --- |
 | Platform | `terminal-go` relies on a POSIX PTY and is tested on macOS/Linux. |
 | Lifecycle | `CreateSession` creates a dormant logical session. The first attach or an explicit activation should provide the real terminal viewport size. `ActivateSessionContext` lets a request stop waiting without cancelling another caller's shared activation; delete and cleanup cancel the session-owned activation. |
+| Multi-view sizing | Every live connection reports its own viewport `cols/rows`. Because one PTY has one real window size, the shared PTY uses the minimum live column count and minimum live row count. `terminal/live_v1` publishes that effective geometry to every renderer, so differently sized pages keep one terminal grid and identical screen state; detaching the limiting view expands the PTY and all remaining renderers together. |
 | Working directory tracking | `terminal-go` follows explicit cwd OSC markers (`633;P;Cwd`, `1337;CurrentDir`, `OSC 7`) and buffers incomplete frames across PTY reads instead of guessing from generic terminal title changes. |
 | UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
 | Input model | `TerminalCore` handles one-time `ghostty-web` initialization internally and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
@@ -166,10 +168,16 @@ await controller.mount(container);
 
 | Command | What it does |
 | --- | --- |
-| `make check` | Runs the same hard gates as CI: Go race tests, `govulncheck`, web lint/test/build, and `npm audit` |
+| `make check` | Runs the same hard gates as CI: Go race tests, `govulncheck`, renderer Rust/WASM/package checks, web lint/test/build, real-process E2E, and `npm audit` |
 | `make run` | Builds and serves the reference app from the Go backend |
 | `make dev` | Runs backend + Vite dev server separately for local iteration |
 | `make app-web-build` | Builds the reference web app only |
+| `cd e2e && npm run perf:standalone -- --url=http://127.0.0.1:8280` | Runs the headed hardware WebGL2 performance gate, including two differently-sized views on one session |
+
+Renderer and web releases are coupled: `terminal-web` pins one exact
+`@floegence/beamterm-renderer` version. The release workflow validates that pin, builds
+the Rust/WASM package with the repository's fixed toolchain, publishes the renderer
+first, and only then validates and publishes `terminal-web`.
 
 ## 🗂 Repository Layout
 
@@ -177,8 +185,10 @@ await controller.mount(container);
 | --- | --- |
 | [`terminal-go/`](./terminal-go) | Go PTY session manager |
 | [`terminal-web/`](./terminal-web) | Framework-neutral web terminal package |
+| [`beamterm-renderer/`](./beamterm-renderer) | FloeTerm-maintained Beamterm WebGL2 renderer fork and npm package |
 | [`app/backend/`](./app/backend) | HTTP + WebSocket backend reference implementation |
 | [`app/web/`](./app/web) | Solid.js reference UI |
+| [`e2e/`](./e2e) | Real-process unit, Playwright functional, and hardware performance gates |
 
 ## 📄 Notices
 

@@ -1,0 +1,44 @@
+{
+  "name": "@floegence/beamterm-renderer",
+  "version": "1.0.1-rc.6",
+  "description": "FloeTerm-maintained WebGL2 terminal renderer fork",
+  "type": "module",
+  "main": "./dist/beamterm_renderer.js",
+  "types": "./dist/beamterm_renderer.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/beamterm_renderer.d.ts",
+      "import": "./dist/beamterm_renderer.js",
+      "default": "./dist/beamterm_renderer.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "LICENSE",
+    "README.md",
+    "UPSTREAM.md"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "cargo:check": "cargo check --locked --target wasm32-unknown-unknown --features js-api",
+    "cargo:test": "cargo test --locked --features js-api --lib",
+    "check:package-artifact": "npm pack --dry-run --ignore-scripts",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm test && npm run cargo:test && npm run cargo:check && npm run build && npm run check:package-artifact",
+    "prepack": "npm test && npm run cargo:check && npm run build"
+  },
+  "keywords": [
+    "terminal",
+    "webgl2",
+    "wasm",
+    "renderer"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
