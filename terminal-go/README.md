@@ -94,6 +94,20 @@ args := terminal.DefaultShellArgsProvider{
 
 Lifecycle mode works even when no PATH prepend is required. Bash, Zsh, and Fish receive native hooks; POSIX fallback shells retain their original profile behavior without unsafe command-hook emulation.
 
+Enabled shells also report a bounded foreground-command snapshot through
+`TerminalSessionInfo.ForegroundCommand`. The phase is `unknown`, `idle`, or
+`running`; a running snapshot may include a sanitized executable basename such
+as `top`. It never contains arguments, environment values, a PID, or the raw
+command line. The monotonic command revision lets hosts reject stale metadata
+notifications while keeping name and working-directory updates independent.
+
+Implement `TerminalSessionMetadataEventHandler` in addition to
+`TerminalEventHandler` to receive command boundary changes without polling.
+The state is owned by the session and remains available from `ListSessions`
+even when no renderer is attached or the originating OSC marker has fallen out
+of retained history. This is interactive-shell lifecycle state, not an
+operating-system foreground-process probe.
+
 Custom `ShellInitWriter` implementations that also need to run without a PATH prepend can implement `ShellInitRequirement`. Existing writers keep the previous PATH-triggered behavior.
 
 ## Notes
@@ -103,4 +117,5 @@ Custom `ShellInitWriter` implementations that also need to run without a PATH pr
 - PTYs start at the effective attached viewport, preserve their last size after the final detach, and skip redundant same-size resizes.
 - Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and `OSC 7 file://...`) and ignores generic title-only OSC updates.
 - Cwd parsing is stream-safe across PTY read chunks, so fragmented fullscreen/TUI control sequences do not trigger false working-directory parse failures.
+- Shell metadata parsing is bounded to 4 KiB of pending data. Program labels use a strict 64-byte ASCII allowlist, and ordinary PTY output does not publish metadata updates.
 - `NewStdLogger` colorizes output by level when writing to a TTY (disable via `NO_COLOR=1` or `FLOETERM_LOG_COLOR=0`).

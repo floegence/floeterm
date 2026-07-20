@@ -278,6 +278,10 @@ func (s *Session) applyWorkingDirectoryChange(currentDir string) {
 
 	// Protect currentWorkingDir/Name reads and updates.
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
 	oldDir := s.currentWorkingDir
 	shouldRename := newName != s.Name
 	if currentDir == oldDir {

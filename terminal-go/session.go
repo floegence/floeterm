@@ -383,6 +383,7 @@ func (s *Session) waitProcessExit(cmd *exec.Cmd, ptyFile *os.File, readerDone ch
 		s.Cmd = nil
 		s.procWaitErr = err
 		s.isActive = false
+		s.clearForegroundCommandLocked()
 	}
 	if ptyFile != nil {
 		_ = ptyFile.Close()
@@ -427,6 +428,7 @@ func (s *Session) cleanup() {
 	s.PTY = nil
 	s.Cmd = nil
 	s.isActive = false
+	s.clearForegroundCommandLocked()
 
 	for connID := range s.connections {
 		delete(s.connections, connID)
@@ -811,7 +813,7 @@ func (s *Session) processRawPTYData(data []byte) {
 		Geometry:    geometry,
 	}, subscribers)
 
-	s.checkWorkingDirectoryChange(data)
+	s.checkShellIntegrationChange(data)
 }
 
 // WriteDataWithSource writes each accepted input exactly once to the PTY.

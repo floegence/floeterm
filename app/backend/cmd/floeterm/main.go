@@ -45,12 +45,17 @@ func main() {
 	}
 
 	logger := terminal.NewStdLogger(level)
-
 	srv := server.New(server.Config{
 		StaticDir:                    staticDir,
 		EnablePerformanceDiagnostics: performanceDiagnostics,
 		ManagerConfig: terminal.ManagerConfig{
 			Logger: logger,
+			ShellArgsProvider: terminal.DefaultShellArgsProvider{
+				EnableCommandLifecycle: true,
+			},
+			ShellInitWriter: terminal.DefaultShellInitWriter{
+				EnableCommandLifecycle: true,
+			},
 			// Keep UI responsiveness high.
 			InitialResizeSuppressDuration: 200 * time.Millisecond,
 			ResizeSuppressDuration:        150 * time.Millisecond,

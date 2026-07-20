@@ -12,6 +12,10 @@ import {
 } from './codec.js';
 import type { TerminalByteStream } from './client.js';
 import { createTerminalLiveTransport } from './transport.js';
+import type {
+  TerminalEventSource,
+  TerminalForegroundCommandUpdateEvent,
+} from '../types.js';
 
 class FakeStream implements TerminalByteStream {
   readonly writes: Uint8Array[] = [];
@@ -61,7 +65,7 @@ const decodeSingleWrite = (data: Uint8Array) => {
   return frames[0]!;
 };
 
-const createHarness = () => {
+const createHarness = (controlEvents?: TerminalEventSource) => {
   const streams: FakeStream[] = [];
   const control = {
     history: vi.fn(async () => []),
@@ -98,6 +102,7 @@ const createHarness = () => {
       return stream;
     },
     control,
+    controlEvents,
   });
   return { ...bundle, control, streams };
 };
@@ -115,6 +120,34 @@ const acknowledgeAttach = async (stream: FakeStream, boundary = 4n, generation =
 };
 
 describe('terminal live transport', () => {
+  it('forwards foreground command control events and their unsubscribe handle', () => {
+    let commandHandler: ((event: TerminalForegroundCommandUpdateEvent) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const controlEvents: TerminalEventSource = {
+      onTerminalData: () => () => undefined,
+      onTerminalForegroundCommandUpdate: (sessionId, handler) => {
+        expect(sessionId).toBe('session');
+        commandHandler = handler;
+        return unsubscribe;
+      },
+    };
+    const { eventSource } = createHarness(controlEvents);
+    const observer = vi.fn();
+
+    const stop = eventSource.onTerminalForegroundCommandUpdate?.('session', observer);
+    const event: TerminalForegroundCommandUpdateEvent = {
+      sessionId: 'session',
+      foregroundCommand: {
+        phase: 'running', displayName: 'top', revision: 2, updatedAtMs: 20,
+      },
+    };
+    commandHandler?.(event);
+
+    expect(observer).toHaveBeenCalledWith(event);
+    stop?.();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
   it('opens one live_v1 stream and forwards input and acknowledged resize', async () => {
     const { transport, streams } = createHarness();
     const attaching = transport.attachWithHistoryBoundary('session', 80, 24);

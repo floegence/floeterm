@@ -87,6 +87,28 @@ import { preparePagedTerminalHistory } from '@floegence/floeterm-terminal-web/hi
 
 `TerminalSessionsCoordinator` treats `pollMs: 0` as a real periodic-poll disable. Subscribing still performs one best-effort initial reconcile, and explicit `refresh()` calls remain available to a host-owned lifecycle coordinator.
 
+Session snapshots may include `foregroundCommand`. The coordinator normalizes
+missing metadata to `unknown`, compares command-only updates, and applies a
+command patch only when its command revision is newer. Working-directory and
+name patches keep their independent ordering.
+
+Hosts that own output projection can reuse the bounded shell parser instead of
+maintaining a product-specific OSC implementation:
+
+```ts
+import { TerminalShellIntegrationParser } from '@floegence/floeterm-terminal-web';
+
+const parser = new TerminalShellIntegrationParser();
+const { displayData, events } = parser.parse(chunk);
+core.write(displayData);
+```
+
+The parser recognizes OSC 633 prompt/command/cwd markers and Floeterm's safe
+program label. Recognized metadata is removed from display output, unknown OSC
+sequences are preserved, fragmented input is bounded, and program labels are
+limited to a 64-byte ASCII allowlist. The label never contains command
+arguments or environment values.
+
 ## Notes
 
 - You must provide a `TerminalTransport` and `TerminalEventSource` for the managed controller.

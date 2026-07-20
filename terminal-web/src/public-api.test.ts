@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   TerminalCore,
   TerminalSessionsCoordinator,
+  TerminalShellIntegrationParser,
   TerminalState,
   createTerminalInstance,
   createTerminalOutputPipeline,
@@ -37,6 +38,7 @@ describe('public framework-neutral API', () => {
   it('keeps low-level and managed terminal routes exported together', () => {
     expect(TerminalCore).toBeTypeOf('function');
     expect(TerminalSessionsCoordinator).toBeTypeOf('function');
+    expect(TerminalShellIntegrationParser).toBeTypeOf('function');
     expect(createTerminalInstance).toBeTypeOf('function');
     expect(createTerminalOutputPipeline).toBeTypeOf('function');
     expect(createPagedTerminalOutputCoordinator).toBeTypeOf('function');

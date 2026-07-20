@@ -83,7 +83,10 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		historyGeneration:    1,
 		historyStartSequence: 1,
 		currentWorkingDir:    workingDir,
-		eventHandler:         initialHandler,
+		foregroundCommand: TerminalForegroundCommandInfo{
+			Phase: ForegroundCommandUnknown,
+		},
+		eventHandler: initialHandler,
 		onExit: func(sessionID string) {
 			<-createdDone
 			m.deleteSessionIfExists(sessionID)
@@ -334,11 +337,12 @@ func (s *Session) ToSessionInfo() TerminalSessionInfo {
 	defer s.mu.RUnlock()
 
 	return TerminalSessionInfo{
-		ID:         s.ID,
-		Name:       s.Name,
-		WorkingDir: s.WorkingDir,
-		CreatedAt:  s.CreatedAt.UnixMilli(),
-		LastActive: s.LastActive.UnixMilli(),
-		IsActive:   s.isActive,
+		ID:                s.ID,
+		Name:              s.Name,
+		WorkingDir:        s.WorkingDir,
+		CreatedAt:         s.CreatedAt.UnixMilli(),
+		LastActive:        s.LastActive.UnixMilli(),
+		IsActive:          s.isActive,
+		ForegroundCommand: normalizeForegroundCommandInfo(s.foregroundCommand),
 	}
 }

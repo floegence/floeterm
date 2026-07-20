@@ -256,22 +256,70 @@ __floeterm_terminal_emit_cwd() {
     fi
 }
 
+__floeterm_terminal_extract_program() {
+    local command_text="$1"
+    local word=""
+    __floeterm_terminal_program=""
+    while :; do
+        command_text="${command_text#"${command_text%%[![:space:]]*}"}"
+        [ -n "$command_text" ] || return 1
+        word="${command_text%%[[:space:]]*}"
+        command_text="${command_text#"$word"}"
+        case "$word" in
+            env)
+                while :; do
+                    command_text="${command_text#"${command_text%%[![:space:]]*}"}"
+                    word="${command_text%%[[:space:]]*}"
+                    case "$word" in
+                        -*|*=*) command_text="${command_text#"$word"}" ;;
+                        *) break ;;
+                    esac
+                done
+                ;;
+            command|builtin|exec|nohup)
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    word="${word##*/}"
+    case "$word" in
+        ''|*[!A-Za-z0-9._+@-]*) return 1 ;;
+    esac
+    [ "${#word}" -le 64 ] || return 1
+    __floeterm_terminal_program="$word"
+}
+
 __floeterm_terminal_command_start() {
+    local command_text="$1"
     if [ "${__floeterm_terminal_at_prompt:-0}" = "1" ]; then
         __floeterm_terminal_at_prompt=0
+        __floeterm_terminal_command_running=1
         __floeterm_terminal_osc "B"
+        if __floeterm_terminal_extract_program "$command_text"; then
+            __floeterm_terminal_osc "P;FloetermProgram=$__floeterm_terminal_program"
+        fi
+        __floeterm_terminal_osc "C"
     fi
 }
 
+__floeterm_terminal_prompt_begin() {
+    return "${__floeterm_terminal_last_status:-0}"
+}
+
 __floeterm_terminal_precmd() {
-    local exit_code=$?
-    if [ "${__floeterm_terminal_prompt_seen:-0}" = "1" ] && [ "${__floeterm_terminal_at_prompt:-0}" = "0" ]; then
+    local exit_code="${__floeterm_terminal_last_status:-0}"
+    if [ "${__floeterm_terminal_prompt_seen:-0}" = "1" ] && [ "${__floeterm_terminal_command_running:-0}" = "1" ]; then
         __floeterm_terminal_osc "D;$exit_code"
     fi
     __floeterm_terminal_prompt_seen=1
+    __floeterm_terminal_command_running=0
     __floeterm_terminal_at_prompt=1
     __floeterm_terminal_emit_cwd
     __floeterm_terminal_osc "A"
+    __floeterm_terminal_in_prompt_command=0
+    return "$exit_code"
 }
 
 if [ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]; then
@@ -280,18 +328,57 @@ if [ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]; then
     if __floeterm_terminal_trap_output=$(trap -p DEBUG 2>/dev/null); then
         __floeterm_terminal_existing_debug_trap=$(printf '%s\n' "$__floeterm_terminal_trap_output" | sed -E "s/^trap -- '(.*)' DEBUG$/\1/")
     fi
-    __floeterm_terminal_debug_trap() {
-        __floeterm_terminal_command_start
-        if [ -n "${__floeterm_terminal_existing_debug_trap:-}" ]; then
-            eval "$__floeterm_terminal_existing_debug_trap"
-        fi
+    __floeterm_terminal_restore_status() {
+        return "$1"
     }
-    trap '__floeterm_terminal_debug_trap' DEBUG
-    if [ -n "${PROMPT_COMMAND:-}" ]; then
-        PROMPT_COMMAND="__floeterm_terminal_precmd;${PROMPT_COMMAND}"
-    else
-        PROMPT_COMMAND="__floeterm_terminal_precmd"
+    __floeterm_terminal_debug_trap() {
+        local debug_status="$1"
+        local debug_command="$2"
+        local debug_function=""
+        __floeterm_terminal_debug_status="$debug_status"
+        __floeterm_terminal_forward_existing_debug=1
+        case "$debug_command" in
+            __floeterm_terminal_prompt_begin|__floeterm_terminal_precmd)
+                __floeterm_terminal_forward_existing_debug=0
+                ;;
+        esac
+        for debug_function in "${FUNCNAME[@]:1}"; do
+            case "$debug_function" in
+                __floeterm_terminal_prompt_begin|__floeterm_terminal_precmd|__floeterm_terminal_emit_cwd)
+                    __floeterm_terminal_forward_existing_debug=0
+                    break
+                    ;;
+            esac
+        done
+        if [ "$debug_command" = "__floeterm_terminal_prompt_begin" ]; then
+            __floeterm_terminal_last_status="$debug_status"
+            __floeterm_terminal_in_prompt_command=1
+        elif [ "${__floeterm_terminal_in_prompt_command:-0}" != "1" ]; then
+            __floeterm_terminal_command_start "$debug_command"
+        fi
+        return "$debug_status"
+    }
+    __floeterm_terminal_debug_trap_body='__floeterm_terminal_debug_trap "$?" "$BASH_COMMAND"'
+    if [ -n "${__floeterm_terminal_existing_debug_trap:-}" ]; then
+        __floeterm_terminal_debug_trap_body="${__floeterm_terminal_debug_trap_body}; if [ \"\$__floeterm_terminal_forward_existing_debug\" = \"1\" ]; then __floeterm_terminal_restore_status \"\$__floeterm_terminal_debug_status\"; ${__floeterm_terminal_existing_debug_trap}; fi"
     fi
+    __floeterm_terminal_debug_trap_body="${__floeterm_terminal_debug_trap_body}; __floeterm_terminal_restore_status \"\$__floeterm_terminal_debug_status\""
+    trap "$__floeterm_terminal_debug_trap_body" DEBUG
+    unset __floeterm_terminal_debug_trap_body
+    __floeterm_terminal_prompt_command_declaration="$(declare -p PROMPT_COMMAND 2>/dev/null || true)"
+    case "$__floeterm_terminal_prompt_command_declaration" in
+        "declare -a "*)
+            PROMPT_COMMAND=(__floeterm_terminal_prompt_begin "${PROMPT_COMMAND[@]}" __floeterm_terminal_precmd)
+            ;;
+        *)
+            if [ -n "${PROMPT_COMMAND:-}" ]; then
+                PROMPT_COMMAND="__floeterm_terminal_prompt_begin;${PROMPT_COMMAND};__floeterm_terminal_precmd"
+            else
+                PROMPT_COMMAND="__floeterm_terminal_prompt_begin;__floeterm_terminal_precmd"
+            fi
+            ;;
+    esac
+    unset __floeterm_terminal_prompt_command_declaration
 fi
 `
 }
@@ -309,9 +396,38 @@ __floeterm_terminal_emit_cwd() {
     fi
 }
 
+__floeterm_terminal_extract_program() {
+    local -a words
+    local word
+    words=(${(z)1})
+    while (( ${#words[@]} > 0 )); do
+        word="$words[1]"
+        words=("${words[@]:1}")
+        case "$word" in
+            env)
+                while (( ${#words[@]} > 0 )) && [[ "$words[1]" == -* || "$words[1]" == *=* ]]; do
+                    words=("${words[@]:1}")
+                done
+                ;;
+            command|builtin|exec|nohup)
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    word="${word:t}"
+    [[ -n "$word" && ${#word} -le 64 && "$word" != *[^A-Za-z0-9._+@-]* ]] || return 1
+    __floeterm_terminal_program="$word"
+}
+
 __floeterm_terminal_preexec() {
     __floeterm_terminal_command_running=1
     __floeterm_terminal_osc "B"
+    if __floeterm_terminal_extract_program "$1"; then
+        __floeterm_terminal_osc "P;FloetermProgram=$__floeterm_terminal_program"
+    fi
+    __floeterm_terminal_osc "C"
 }
 
 __floeterm_terminal_precmd() {
@@ -353,12 +469,44 @@ function __floeterm_terminal_emit_cwd
     end
 end
 
+function __floeterm_terminal_extract_program --argument command_text
+    set -g __floeterm_terminal_program ""
+    set -l words (string split -n ' ' -- $command_text)
+    while test (count $words) -gt 0
+        set -l word $words[1]
+        set -e words[1]
+        switch $word
+            case env
+                while test (count $words) -gt 0
+                    if string match -qr '^(-|[^=]+=)' -- $words[1]
+                        set -e words[1]
+                    else
+                        break
+                    end
+                end
+            case command builtin exec nohup
+            case '*'
+                set word (string split -r -m 1 '/' -- $word)[-1]
+                if string match -rq '^[A-Za-z0-9._+@-]{1,64}$' -- $word
+                    set -g __floeterm_terminal_program $word
+                    return 0
+                end
+                return 1
+        end
+    end
+    return 1
+end
+
 set -g __floeterm_terminal_prompt_seen 0
 set -g __floeterm_terminal_command_running 0
 
 function __floeterm_terminal_fish_preexec --on-event fish_preexec
     set -g __floeterm_terminal_command_running 1
     __floeterm_terminal_osc B
+    if __floeterm_terminal_extract_program "$argv"
+        __floeterm_terminal_osc "P;FloetermProgram=$__floeterm_terminal_program"
+    end
+    __floeterm_terminal_osc C
 end
 
 function __floeterm_terminal_fish_postexec --on-event fish_postexec

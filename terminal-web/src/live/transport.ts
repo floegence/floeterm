@@ -5,6 +5,7 @@ import type {
   TerminalDataEvent,
   TerminalEventSource,
   TerminalID,
+  TerminalForegroundCommandUpdateEvent,
   TerminalNameUpdateEvent,
   TerminalSessionInfo,
   TerminalHistoryPage,
@@ -230,6 +231,11 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
     onTerminalNameUpdate: options.controlEvents?.onTerminalNameUpdate
       ? (sessionId: TerminalID, handler: (event: TerminalNameUpdateEvent) => void) => (
         options.controlEvents!.onTerminalNameUpdate!(sessionId, handler)
+      )
+      : undefined,
+    onTerminalForegroundCommandUpdate: options.controlEvents?.onTerminalForegroundCommandUpdate
+      ? (sessionId: TerminalID, handler: (event: TerminalForegroundCommandUpdateEvent) => void) => (
+        options.controlEvents!.onTerminalForegroundCommandUpdate!(sessionId, handler)
       )
       : undefined,
     onTerminalGeometry: (sessionId, handler) => {

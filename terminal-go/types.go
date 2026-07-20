@@ -47,12 +47,31 @@ type HistoryPage struct {
 
 // TerminalSessionInfo summarizes a terminal session for listing APIs.
 type TerminalSessionInfo struct {
-	ID         string
-	Name       string
-	WorkingDir string
-	CreatedAt  int64
-	LastActive int64
-	IsActive   bool
+	ID                string
+	Name              string
+	WorkingDir        string
+	CreatedAt         int64
+	LastActive        int64
+	IsActive          bool
+	ForegroundCommand TerminalForegroundCommandInfo
+}
+
+// ForegroundCommandPhase describes the interactive shell's command lifecycle.
+// It is shell-reported state, not an operating-system process observation.
+type ForegroundCommandPhase string
+
+const (
+	ForegroundCommandUnknown ForegroundCommandPhase = "unknown"
+	ForegroundCommandIdle    ForegroundCommandPhase = "idle"
+	ForegroundCommandRunning ForegroundCommandPhase = "running"
+)
+
+// TerminalForegroundCommandInfo is the latest shell-reported foreground command state.
+type TerminalForegroundCommandInfo struct {
+	Phase       ForegroundCommandPhase
+	DisplayName string
+	Revision    uint64
+	UpdatedAt   int64
 }
 
 // ManagerDiagnostics reports terminal history memory without imposing a
@@ -81,6 +100,12 @@ type TerminalEventHandler interface {
 	OnTerminalSessionCreated(session *Session)
 	OnTerminalSessionClosed(sessionID string)
 	OnTerminalError(sessionID string, err error)
+}
+
+// TerminalSessionMetadataEventHandler optionally receives command metadata
+// transitions without widening the required TerminalEventHandler contract.
+type TerminalSessionMetadataEventHandler interface {
+	OnTerminalSessionMetadataChanged(sessionID string, info TerminalSessionInfo)
 }
 
 // TerminalGeometry identifies one applied PTY grid size.
@@ -186,8 +211,11 @@ type Session struct {
 	historyGeneration    int64
 	historyStartSequence int64
 
-	currentWorkingDir string
-	workdirPending    []byte
+	currentWorkingDir        string
+	workdirPending           []byte
+	shellIntegrationPending  []byte
+	pendingForegroundProgram string
+	foregroundCommand        TerminalForegroundCommandInfo
 
 	lastAppliedCols    int
 	lastAppliedRows    int

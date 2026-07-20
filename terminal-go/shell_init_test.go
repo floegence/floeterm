@@ -1,10 +1,18 @@
 package terminal
 
 import (
+	"bytes"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 type emptyArgsProvider struct{}
@@ -161,6 +169,259 @@ func TestDefaultShellIntegrationCanEnableCommandLifecycleWithoutPathPrepend(t *t
 	}
 	if len(env) != 0 {
 		t.Fatalf("unexpected env without PATH prepend: %#v", env)
+	}
+}
+
+func TestBashCommandLifecyclePublishesExecutedProgramAndFinalPromptState(t *testing.T) {
+	script := bashCommandLifecycleScript()
+
+	for _, required := range []string{
+		"P;FloetermProgram=",
+		`__floeterm_terminal_osc "C"`,
+		"__floeterm_terminal_prompt_begin",
+		"__floeterm_terminal_precmd",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("bash lifecycle script missing %q", required)
+		}
+	}
+	if strings.Contains(script, `PROMPT_COMMAND="__floeterm_terminal_precmd;${PROMPT_COMMAND}"`) {
+		t.Fatal("floeterm precmd must not run before the existing PROMPT_COMMAND")
+	}
+}
+
+func TestRealBashCommandLifecyclePreservesPromptCommandAndReportsSilentCommand(t *testing.T) {
+	bashPath := "/bin/bash"
+	if _, err := os.Stat(bashPath); err != nil {
+		t.Skipf("bash unavailable: %v", err)
+	}
+
+	t.Run("string PROMPT_COMMAND", func(t *testing.T) {
+		output := runBashLifecycleProbe(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='printf "__USER_PROMPT__\n"'
+`)
+		assertContainsInOrder(t, output, []string{
+			"\x1b]633;B\a",
+			"\x1b]633;P;FloetermProgram=sleep\a",
+			"\x1b]633;C\a",
+			"__USER_PROMPT__",
+			"\x1b]633;D;0\a",
+			"\x1b]633;A\a",
+		})
+
+		t.Run("failure status and existing DEBUG trap", func(t *testing.T) {
+			output := runBashLifecycleCommand(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='printf "__USER_PROMPT__\n"'
+trap 'printf "__USER_DEBUG__:%s:%s\n" "$?" "$BASH_COMMAND"' DEBUG
+`, "false\n", "\x1b]633;D;1\a")
+			assertContainsInOrder(t, output, []string{
+				"\x1b]633;P;FloetermProgram=false\a",
+				"\x1b]633;C\a",
+				"__USER_DEBUG__:0:false",
+				"__USER_PROMPT__",
+				"\x1b]633;D;1\a",
+				"\x1b]633;A\a",
+			})
+			if !strings.Contains(output, "__USER_DEBUG__:1:printf") {
+				t.Fatalf("existing DEBUG trap did not observe the failed status before PROMPT_COMMAND: %q", output)
+			}
+			if got := strings.Count(output, "__USER_DEBUG__:"); got != 2 {
+				t.Fatalf("existing DEBUG trap count = %d, want 2 in %q", got, output)
+			}
+		})
+	})
+
+	majorOutput, err := exec.Command(bashPath, "-c", `printf '%s' "${BASH_VERSINFO[0]}"`).Output()
+	if err != nil {
+		t.Fatalf("read bash version: %v", err)
+	}
+	major, _ := strconv.Atoi(string(majorOutput))
+	if major >= 5 {
+		t.Run("array PROMPT_COMMAND", func(t *testing.T) {
+			output := runBashLifecycleProbe(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND=('printf "__USER_PROMPT_ONE__\n"' 'printf "__USER_PROMPT_TWO__\n"')
+`)
+			assertContainsInOrder(t, output, []string{
+				"\x1b]633;P;FloetermProgram=sleep\a",
+				"\x1b]633;C\a",
+				"__USER_PROMPT_ONE__",
+				"__USER_PROMPT_TWO__",
+				"\x1b]633;D;0\a",
+				"\x1b]633;A\a",
+			})
+		})
+	}
+}
+
+func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
+	zshPath := "/bin/zsh"
+	if _, err := os.Stat(zshPath); err != nil {
+		t.Skipf("zsh unavailable: %v", err)
+	}
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	if err := os.WriteFile(filepath.Join(homeDir, ".zshrc"), []byte("PROMPT='__FLOETERM_ZSH_PROMPT__ '\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseDir := filepath.Join(t.TempDir(), "shell-init")
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	if err := writer.EnsureShellInitFiles(""); err != nil {
+		t.Fatal(err)
+	}
+	paths := newShellInitPaths(baseDir)
+
+	cmd := exec.Command(zshPath)
+	cmd.Env = replaceEnvironmentValues(os.Environ(), map[string]string{
+		"HOME":    homeDir,
+		"TERM":    "xterm-256color",
+		"ZDOTDIR": paths.ZshDir(),
+	})
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = ptmx.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	})
+
+	capture := &synchronizedBuffer{}
+	go func() { _, _ = io.Copy(capture, ptmx) }()
+	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;A\a", "__FLOETERM_ZSH_PROMPT__")
+	before := len(capture.String())
+	if _, err := ptmx.Write([]byte("sleep 0.2\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;P;FloetermProgram=sleep\a", "\x1b]633;C\a", "\x1b]633;D;0\a")
+	output := capture.String()
+	assertContainsInOrder(t, output[before:], []string{
+		"\x1b]633;B\a",
+		"\x1b]633;P;FloetermProgram=sleep\a",
+		"\x1b]633;C\a",
+		"\x1b]633;D;0\a",
+		"\x1b]633;A\a",
+	})
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+func runBashLifecycleProbe(t *testing.T, bashPath string, userRC string) string {
+	return runBashLifecycleCommand(t, bashPath, userRC, "sleep 0.2\n", "\x1b]633;D;0\a")
+}
+
+func runBashLifecycleCommand(t *testing.T, bashPath string, userRC string, command string, completionMarker string) string {
+	t.Helper()
+	homeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(homeDir, ".bashrc"), []byte(userRC), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseDir := filepath.Join(t.TempDir(), "shell-init")
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	if err := writer.EnsureShellInitFiles(""); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := newShellInitPaths(baseDir)
+	cmd := exec.Command(bashPath, "--noprofile", "--rcfile", paths.BashRC(), "-i")
+	cmd.Env = replaceEnvironmentValues(os.Environ(), map[string]string{
+		"HOME": homeDir,
+		"TERM": "xterm-256color",
+	})
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = ptmx.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	})
+
+	capture := &synchronizedBuffer{}
+	go func() { _, _ = io.Copy(capture, ptmx) }()
+	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;A\a", "__FLOETERM_PROMPT__")
+	before := len(capture.String())
+	if _, err := ptmx.Write([]byte(command)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;C\a", completionMarker)
+	output := capture.String()
+	if before > len(output) {
+		before = 0
+	}
+	return output[before:]
+}
+
+func replaceEnvironmentValues(env []string, replacements map[string]string) []string {
+	result := make([]string, 0, len(env)+len(replacements))
+	for _, value := range env {
+		key, _, ok := strings.Cut(value, "=")
+		if ok {
+			if _, replaced := replacements[key]; replaced {
+				continue
+			}
+		}
+		result = append(result, value)
+	}
+	for key, value := range replacements {
+		result = append(result, key+"="+value)
+	}
+	return result
+}
+
+func waitForCapturedOutput(t *testing.T, capture *synchronizedBuffer, timeout time.Duration, needles ...string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		output := capture.String()
+		matched := true
+		for _, needle := range needles {
+			if !strings.Contains(output, needle) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %q in %q", needles, capture.String())
+}
+
+func assertContainsInOrder(t *testing.T, output string, values []string) {
+	t.Helper()
+	offset := 0
+	for _, value := range values {
+		index := strings.Index(output[offset:], value)
+		if index < 0 {
+			t.Fatalf("missing %q after offset %d in %q", value, offset, output)
+		}
+		offset += index + len(value)
 	}
 }
 

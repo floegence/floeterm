@@ -99,7 +99,10 @@ describe('TerminalSessionsCoordinator', () => {
     const coordinator = new TerminalSessionsCoordinator({ transport, pollMs: 0 });
 
     const refresh = coordinator.refresh();
-    await expect(coordinator.createSession('Created', '/workspace')).resolves.toEqual(created);
+    await expect(coordinator.createSession('Created', '/workspace')).resolves.toMatchObject({
+      ...created,
+      foregroundCommand: { phase: 'unknown', displayName: '', revision: 0, updatedAtMs: 0 },
+    });
     staleRefresh.resolve([]);
     await refresh;
 
@@ -185,6 +188,135 @@ describe('TerminalSessionsCoordinator', () => {
     coordinator.updateSessionMeta('s1', { name: 'New Name', workingDir: '/new' });
     expect(coordinator.getSnapshot().find((s) => s.id === 's1')?.name).toBe('New Name');
     expect(coordinator.getSnapshot().find((s) => s.id === 's1')?.workingDir).toBe('/new');
+  });
+
+  it('publishes command-only metadata updates and rejects stale command revisions', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('s1', {
+      foregroundCommand: { phase: 'idle', displayName: '', revision: 1, updatedAtMs: 10 },
+    }));
+    const snapshots: TerminalSessionInfo[][] = [];
+    const unsubscribe = coordinator.subscribe((sessions) => snapshots.push(sessions));
+
+    coordinator.updateSessionMeta('s1', {
+      foregroundCommand: { phase: 'running', displayName: 'top', revision: 2, updatedAtMs: 20 },
+    });
+    coordinator.updateSessionMeta('s1', {
+      foregroundCommand: { phase: 'idle', displayName: '', revision: 1, updatedAtMs: 30 },
+    });
+
+    expect(coordinator.getSnapshot()[0]?.foregroundCommand).toEqual({
+      phase: 'running', displayName: 'top', revision: 2, updatedAtMs: 20,
+    });
+    expect(snapshots.some(snapshot => snapshot[0]?.foregroundCommand?.displayName === 'top')).toBe(true);
+    unsubscribe();
+  });
+
+  it('preserves newer command metadata when a stale session upsert arrives', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('s1', {
+      name: 'Original',
+      foregroundCommand: { phase: 'idle', displayName: '', revision: 1, updatedAtMs: 10 },
+    }));
+    coordinator.updateSessionMeta('s1', {
+      foregroundCommand: { phase: 'running', displayName: 'top', revision: 3, updatedAtMs: 30 },
+    });
+
+    coordinator.upsertSession(makeSession('s1', {
+      name: 'Refreshed',
+      foregroundCommand: { phase: 'idle', displayName: '', revision: 2, updatedAtMs: 20 },
+    }));
+
+    expect(coordinator.getSnapshot()[0]).toMatchObject({
+      name: 'Refreshed',
+      foregroundCommand: {
+        phase: 'running', displayName: 'top', revision: 3, updatedAtMs: 30,
+      },
+    });
+  });
+
+  it('does not let a malformed snapshot revision block a later valid command update', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('s1', {
+      foregroundCommand: {
+        phase: 'garbage',
+        displayName: 'unsafe token',
+        revision: 999,
+        updatedAtMs: 50,
+      } as any,
+    }));
+
+    coordinator.updateSessionMeta('s1', {
+      foregroundCommand: { phase: 'running', displayName: 'top', revision: 1, updatedAtMs: 60 },
+    });
+
+    expect(coordinator.getSnapshot()[0]?.foregroundCommand).toEqual({
+      phase: 'running', displayName: 'top', revision: 1, updatedAtMs: 60,
+    });
+  });
+
+  it('preserves newer command metadata when a stale refresh arrives', async () => {
+    const listSessions = vi.fn().mockResolvedValue([
+      makeSession('s1', {
+        name: 'Refreshed',
+        foregroundCommand: { phase: 'idle', displayName: '', revision: 2, updatedAtMs: 20 },
+      }),
+    ]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }),
+      pollMs: 0,
+    });
+    coordinator.upsertSession(makeSession('s1', {
+      name: 'Original',
+      foregroundCommand: { phase: 'running', displayName: 'top', revision: 3, updatedAtMs: 30 },
+    }));
+
+    await coordinator.refresh();
+
+    expect(coordinator.getSnapshot()[0]).toMatchObject({
+      name: 'Refreshed',
+      foregroundCommand: {
+        phase: 'running', displayName: 'top', revision: 3, updatedAtMs: 30,
+      },
+    });
+  });
+
+  it('applies cwd changes independently from command revision', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('s1', {
+      workingDir: '/old',
+      foregroundCommand: { phase: 'running', displayName: 'top', revision: 4, updatedAtMs: 20 },
+    }));
+
+    coordinator.updateSessionMeta('s1', { workingDir: '/new' });
+
+    expect(coordinator.getSnapshot()[0]?.workingDir).toBe('/new');
+    expect(coordinator.getSnapshot()[0]?.foregroundCommand).toMatchObject({
+      phase: 'running', displayName: 'top', revision: 4,
+    });
+  });
+
+  it('rejects malformed higher-revision command patches without clearing valid state', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('s1', {
+      foregroundCommand: { phase: 'running', displayName: 'top', revision: 4, updatedAtMs: 20 },
+    }));
+
+    coordinator.updateSessionMeta('s1', {
+      foregroundCommand: {
+        phase: 'garbage',
+        displayName: 'oops',
+        revision: 5,
+        updatedAtMs: 30,
+      } as any,
+    });
+    coordinator.updateSessionMeta('s1', {
+      foregroundCommand: { phase: 'idle', revision: 6 } as any,
+    });
+
+    expect(coordinator.getSnapshot()[0]?.foregroundCommand).toEqual({
+      phase: 'running', displayName: 'top', revision: 4, updatedAtMs: 20,
+    });
   });
 
   it('filters pending deletions during refresh to avoid session reappearing', async () => {

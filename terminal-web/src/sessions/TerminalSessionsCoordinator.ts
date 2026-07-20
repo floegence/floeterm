@@ -1,5 +1,6 @@
-import type { Logger, TerminalSessionInfo, TerminalTransport } from '../types.js';
+import type { Logger, TerminalForegroundCommandInfo, TerminalSessionInfo, TerminalTransport } from '../types.js';
 import { noopLogger } from '../utils/logger.js';
+import { normalizeTerminalForegroundCommandDisplayName } from '../shell/TerminalShellIntegrationParser.js';
 
 export type TerminalSessionsCoordinatorOptions = {
   transport: TerminalTransport;
@@ -17,12 +18,51 @@ type refresh_in_flight = {
   promise: Promise<void>;
 };
 
+const normalizeForegroundCommand = (
+  value: TerminalSessionInfo['foregroundCommand'],
+): TerminalForegroundCommandInfo => {
+  return validateForegroundCommandUpdate(value) ?? {
+    phase: 'unknown',
+    displayName: '',
+    revision: 0,
+    updatedAtMs: 0,
+  };
+};
+
+const validateForegroundCommandUpdate = (value: unknown): TerminalForegroundCommandInfo | null => {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  const phase = candidate.phase;
+  const displayName = candidate.displayName;
+  const revision = candidate.revision;
+  const updatedAtMs = candidate.updatedAtMs;
+  if (phase !== 'unknown' && phase !== 'idle' && phase !== 'running') return null;
+  if (typeof displayName !== 'string') return null;
+  if (!Number.isSafeInteger(revision) || Number(revision) < 0) return null;
+  if (!Number.isSafeInteger(updatedAtMs) || Number(updatedAtMs) < 0) return null;
+  const normalizedDisplayName = normalizeTerminalForegroundCommandDisplayName(displayName);
+  if (displayName && normalizedDisplayName !== displayName) return null;
+  if (phase !== 'running' && displayName !== '') return null;
+  return {
+    phase,
+    displayName: phase === 'running' ? normalizedDisplayName : '',
+    revision: Number(revision),
+    updatedAtMs: Number(updatedAtMs),
+  };
+};
+
+const normalizeSession = (raw: TerminalSessionInfo): TerminalSessionInfo => ({
+  ...raw,
+  id: String(raw?.id ?? '').trim(),
+  foregroundCommand: normalizeForegroundCommand(raw?.foregroundCommand),
+});
+
 const normalizeSessions = (list: TerminalSessionInfo[]): TerminalSessionInfo[] => {
   const byId = new Map<string, TerminalSessionInfo>();
   for (const raw of list) {
     const id = String(raw?.id ?? '').trim();
     if (!id) continue;
-    byId.set(id, { ...raw, id });
+    byId.set(id, normalizeSession({ ...raw, id }));
   }
 
   return [...byId.values()].sort((a, b) => {
@@ -30,6 +70,26 @@ const normalizeSessions = (list: TerminalSessionInfo[]): TerminalSessionInfo[] =
     if (t !== 0) return t;
     return a.id.localeCompare(b.id);
   });
+};
+
+const preferCurrentForegroundCommand = (
+  current: TerminalSessionInfo | undefined,
+  incoming: TerminalSessionInfo,
+): TerminalSessionInfo => {
+  if (!current) return incoming;
+  const currentCommand = normalizeForegroundCommand(current.foregroundCommand);
+  const incomingCommand = normalizeForegroundCommand(incoming.foregroundCommand);
+  return incomingCommand.revision <= currentCommand.revision
+    ? { ...incoming, foregroundCommand: currentCommand }
+    : incoming;
+};
+
+const mergeCurrentForegroundCommands = (
+  current: TerminalSessionInfo[],
+  incoming: TerminalSessionInfo[],
+): TerminalSessionInfo[] => {
+  const currentById = new Map(current.map(session => [session.id, session]));
+  return incoming.map(session => preferCurrentForegroundCommand(currentById.get(session.id), session));
 };
 
 const sessionsEqual = (a: TerminalSessionInfo[], b: TerminalSessionInfo[]): boolean => {
@@ -45,6 +105,12 @@ const sessionsEqual = (a: TerminalSessionInfo[], b: TerminalSessionInfo[]): bool
     if ((sa.createdAtMs ?? 0) !== (sb.createdAtMs ?? 0)) return false;
     if ((sa.lastActiveAtMs ?? 0) !== (sb.lastActiveAtMs ?? 0)) return false;
     if (Boolean(sa.isActive) !== Boolean(sb.isActive)) return false;
+    const ca = normalizeForegroundCommand(sa.foregroundCommand);
+    const cb = normalizeForegroundCommand(sb.foregroundCommand);
+    if (ca.phase !== cb.phase) return false;
+    if (ca.displayName !== cb.displayName) return false;
+    if (ca.revision !== cb.revision) return false;
+    if (ca.updatedAtMs !== cb.updatedAtMs) return false;
   }
   return true;
 };
@@ -199,7 +265,7 @@ export class TerminalSessionsCoordinator {
         ? normalized.filter((s) => !this.pendingDeletions.has(s.id))
         : normalized;
 
-      this.setSessions(filtered);
+      this.setSessions(mergeCurrentForegroundCommands(this.sessions, filtered));
       this.lastAppliedRefreshSeq = seq;
       this.lastAppliedMutationRevision = mutationRevision;
     })();
@@ -222,15 +288,18 @@ export class TerminalSessionsCoordinator {
       throw new Error('Invalid terminal session: missing id');
     }
 
-    const normalized = { ...session, id };
+    const normalized = normalizeSession({ ...session, id });
     if (this.disposed) return normalized;
 
-    const merged = normalizeSessions([...this.sessions, normalized]);
+    const existing = this.sessions.find((item) => item.id === id);
+    const accepted = preferCurrentForegroundCommand(existing, normalized);
+
+    const merged = normalizeSessions([...this.sessions, accepted]);
     const filtered = this.pendingDeletions.size > 0
       ? merged.filter((item) => !this.pendingDeletions.has(item.id))
       : merged;
     this.applyLocalSessions(filtered);
-    return normalized;
+    return accepted;
   }
 
   removeSession(sessionId: string): boolean {
@@ -268,6 +337,7 @@ export class TerminalSessionsCoordinator {
       workingDir?: string;
       lastActiveAtMs?: number;
       isActive?: boolean;
+      foregroundCommand?: TerminalForegroundCommandInfo;
     }
   ): void {
     const id = String(sessionId ?? '').trim();
@@ -284,6 +354,13 @@ export class TerminalSessionsCoordinator {
         ? patch.lastActiveAtMs
         : s.lastActiveAtMs;
       const isActive = typeof patch?.isActive === 'boolean' ? patch.isActive : s.isActive;
+      const currentCommand = normalizeForegroundCommand(s.foregroundCommand);
+      const incomingCommand = patch?.foregroundCommand
+        ? validateForegroundCommandUpdate(patch.foregroundCommand)
+        : null;
+      const foregroundCommand = incomingCommand && incomingCommand.revision > currentCommand.revision
+        ? incomingCommand
+        : currentCommand;
 
       return {
         ...s,
@@ -291,6 +368,7 @@ export class TerminalSessionsCoordinator {
         workingDir,
         lastActiveAtMs,
         isActive,
+        foregroundCommand,
       };
     });
 

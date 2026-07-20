@@ -24,12 +24,20 @@ type performanceRuntimeResponse struct {
 }
 
 type apiSessionInfo struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	WorkingDir     string `json:"workingDir"`
-	CreatedAtMs    int64  `json:"createdAtMs"`
-	LastActiveAtMs int64  `json:"lastActiveAtMs"`
-	IsActive       bool   `json:"isActive"`
+	ID                string                   `json:"id"`
+	Name              string                   `json:"name"`
+	WorkingDir        string                   `json:"workingDir"`
+	CreatedAtMs       int64                    `json:"createdAtMs"`
+	LastActiveAtMs    int64                    `json:"lastActiveAtMs"`
+	IsActive          bool                     `json:"isActive"`
+	ForegroundCommand apiForegroundCommandInfo `json:"foregroundCommand"`
+}
+
+type apiForegroundCommandInfo struct {
+	Phase       string `json:"phase"`
+	DisplayName string `json:"displayName"`
+	Revision    uint64 `json:"revision"`
+	UpdatedAtMs int64  `json:"updatedAtMs"`
 }
 
 type createSessionRequest struct {
@@ -76,6 +84,12 @@ func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
 		CreatedAtMs:    info.CreatedAt,
 		LastActiveAtMs: info.LastActive,
 		IsActive:       info.IsActive,
+		ForegroundCommand: apiForegroundCommandInfo{
+			Phase:       string(info.ForegroundCommand.Phase),
+			DisplayName: info.ForegroundCommand.DisplayName,
+			Revision:    info.ForegroundCommand.Revision,
+			UpdatedAtMs: info.ForegroundCommand.UpdatedAt,
+		},
 	}
 }
 

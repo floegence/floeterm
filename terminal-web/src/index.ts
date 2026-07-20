@@ -20,6 +20,14 @@ export {
   resetTerminalFabricDiagnostics,
 } from './fabric/TerminalFabricCoordinator.js';
 export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator.js';
+export {
+  TerminalShellIntegrationParser,
+  normalizeTerminalForegroundCommandDisplayName,
+} from './shell/TerminalShellIntegrationParser.js';
+export type {
+  TerminalShellIntegrationEvent,
+  TerminalShellIntegrationParseResult,
+} from './shell/TerminalShellIntegrationParser.js';
 export type { TerminalSessionsCoordinatorOptions } from './sessions/TerminalSessionsCoordinator.js';
 export type { TerminalRenderSchedulerStats } from './core/TerminalRenderScheduler.js';
 export type { TerminalInitializationSchedulerSnapshot } from './internal/TerminalInitializationScheduler.js';
@@ -89,6 +97,9 @@ export type {
   TerminalLoadingState,
   TerminalID,
   TerminalSessionInfo,
+  TerminalForegroundCommandInfo,
+  TerminalForegroundCommandPhase,
+  TerminalForegroundCommandUpdateEvent,
   TerminalDataChunk,
   TerminalDataEvent,
   TerminalHistoryPage,
