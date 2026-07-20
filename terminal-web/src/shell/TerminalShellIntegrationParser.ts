@@ -1,4 +1,4 @@
-import { normalizeTerminalForegroundCommandDisplayName } from './TerminalForegroundCommand.js';
+import { normalizeTerminalForegroundCommandDisplayName } from '../sessions/TerminalForegroundCommandMetadata.js';
 
 export type TerminalShellIntegrationEvent =
   | { kind: 'prompt-ready' }

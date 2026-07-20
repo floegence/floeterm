@@ -52,28 +52,63 @@ function staticModuleSpecifiers(sourcePath, sourceText) {
   return specifiers;
 }
 
-async function collectRelativeStaticModuleClosure(entryPath) {
+async function collectStaticModuleClosure(entryPath) {
   const visited = new Set();
+  const externalSpecifiers = new Set();
   const visit = async (sourcePath) => {
     const normalizedPath = path.resolve(sourcePath);
     if (visited.has(normalizedPath)) return;
     visited.add(normalizedPath);
     const sourceText = await readFile(normalizedPath, 'utf8');
     for (const specifier of staticModuleSpecifiers(normalizedPath, sourceText)) {
-      if (!specifier.startsWith('.')) continue;
+      if (!specifier.startsWith('.')) {
+        externalSpecifiers.add(specifier);
+        continue;
+      }
       await visit(path.resolve(path.dirname(normalizedPath), specifier));
     }
   };
   await visit(entryPath);
-  return visited;
+  return { modules: visited, externalSpecifiers };
 }
 
 async function assertLightweightForegroundCommandArtifact(installedPackageRoot) {
   const sessionsEntry = path.join(installedPackageRoot, 'dist/entries/sessions.js');
+  const metadataModule = path.join(
+    installedPackageRoot,
+    'dist/sessions/TerminalForegroundCommandMetadata.js',
+  );
   const parserModule = path.join(installedPackageRoot, 'dist/shell/TerminalShellIntegrationParser.js');
-  const sessionsClosure = await collectRelativeStaticModuleClosure(sessionsEntry);
+  const loggerModule = path.join(installedPackageRoot, 'dist/utils/logger.js');
+  const coordinatorModule = path.join(
+    installedPackageRoot,
+    'dist/sessions/TerminalSessionsCoordinator.js',
+  );
+  const { modules: sessionsClosure, externalSpecifiers } = await collectStaticModuleClosure(sessionsEntry);
+  if (!sessionsClosure.has(metadataModule)) {
+    throw new Error('sessions artifact does not include the lightweight foreground command metadata module');
+  }
+  const metadataSource = await readFile(metadataModule, 'utf8');
+  if (staticModuleSpecifiers(metadataModule, metadataSource).length > 0) {
+    throw new Error('foreground command metadata artifact must not have static dependencies');
+  }
   if (sessionsClosure.has(parserModule)) {
     throw new Error('sessions artifact unexpectedly depends on the shell integration parser');
+  }
+  const allowedSessionsModules = new Set([
+    sessionsEntry,
+    coordinatorModule,
+    metadataModule,
+    loggerModule,
+  ]);
+  const unexpectedSessionsModules = [...sessionsClosure].filter(modulePath => (
+    !allowedSessionsModules.has(modulePath)
+  ));
+  if (unexpectedSessionsModules.length > 0) {
+    throw new Error(`sessions artifact has unexpected static modules: ${unexpectedSessionsModules.join(', ')}`);
+  }
+  if (externalSpecifiers.size > 0) {
+    throw new Error(`sessions artifact has external static dependencies: ${[...externalSpecifiers].join(', ')}`);
   }
 
   const indexPath = path.join(installedPackageRoot, 'dist/index.js');
@@ -89,7 +124,7 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
     ts.isExportDeclaration(statement)
     && statement.moduleSpecifier
     && ts.isStringLiteral(statement.moduleSpecifier)
-    && statement.moduleSpecifier.text === './shell/TerminalForegroundCommand.js'
+    && statement.moduleSpecifier.text === './sessions/TerminalForegroundCommandMetadata.js'
     && statement.exportClause
     && ts.isNamedExports(statement.exportClause)
     && statement.exportClause.elements.some((element) => (
@@ -141,6 +176,7 @@ try {
       "if (typeof api.TerminalCore !== 'function') throw new Error('TerminalCore export is unavailable')",
       "if (api.normalizeTerminalForegroundCommandDisplayName('top') !== 'top') throw new Error('foreground command sanitizer export is unavailable')",
       "if (typeof sessions.TerminalSessionsCoordinator !== 'function') throw new Error('sessions export is unavailable')",
+      "if (sessions.normalizeTerminalForegroundCommandDisplayName('top') !== 'top') throw new Error('sessions foreground command sanitizer export is unavailable')",
       "if (typeof history.preparePagedTerminalHistory !== 'function') throw new Error('history export is unavailable')",
       "if (typeof preload.preloadTerminalResources !== 'function') throw new Error('preload export is unavailable')",
     ].join('; '),
@@ -165,6 +201,7 @@ import {
 } from '@floegence/floeterm-terminal-web';
 import {
   TerminalSessionsCoordinator,
+  normalizeTerminalForegroundCommandDisplayName as normalizeSessionForegroundCommandDisplayName,
   type TerminalSessionInfo,
   type TerminalTransport,
 } from '@floegence/floeterm-terminal-web/sessions';
@@ -181,7 +218,7 @@ const outcome: PagedTerminalPreparedHistoryOutcome | undefined = undefined;
 const transport = undefined as unknown as TerminalTransport;
 const session = undefined as unknown as TerminalSessionInfo;
 const coordinator = new TerminalSessionsCoordinator({ transport, pollMs: 0 });
-void [TerminalCore, normalizeTerminalForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, prepared, outcome, session, coordinator];
+void [TerminalCore, normalizeTerminalForegroundCommandDisplayName, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, prepared, outcome, session, coordinator];
 `);
 
   await run(process.execPath, [
