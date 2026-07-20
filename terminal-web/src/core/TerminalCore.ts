@@ -9,7 +9,7 @@ import {
   type TerminalLiveFabricViewHandle,
 } from '../fabric/TerminalLiveFabric.js';
 import { terminalFabricCoordinator } from '../fabric/TerminalFabricCoordinator.js';
-import type { TerminalFabricFrame } from '../fabric/types.js';
+import type { TerminalFabricFrame, TerminalFabricFrameRenderResult } from '../fabric/types.js';
 import {
   TerminalState,
   type Logger,
@@ -75,6 +75,13 @@ type terminal_selection_manager = {
   requestRender?: () => void;
   hasSelection?: () => boolean;
   getSelectionCoords?: () => unknown;
+};
+
+type terminal_presentation_request = {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  frameHandle: number | null;
 };
 
 type floeterm_perf_probe = {
@@ -618,7 +625,18 @@ export class TerminalCore {
   private fabricView: TerminalLiveFabricViewHandle | null = null;
   private readonly fabricViewId: string;
   private fabricAttachSeq = 0;
+  private fabricAttachPromise: Promise<void> | null = null;
+  private fabricAttachWaiters: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
   private committedFabricFrameGeneration = 0;
+  private lastCommittedFabricFrame: {
+    generation: number;
+    result: TerminalFabricFrameRenderResult;
+  } | null = null;
+  private pendingPresentationRequest: terminal_presentation_request | null = null;
+  private readonly presentationRequests = new Set<terminal_presentation_request>();
   private cancelFabricAttachSchedule: ScheduledTurnCancel | null = null;
   private cancelInputRefocusSchedule: ScheduledTurnCancel | null = null;
   private inputElement: HTMLTextAreaElement | null = null;
@@ -1563,6 +1581,10 @@ export class TerminalCore {
     if (result.rendered) {
       terminalFabricCoordinator.completeFrame(frame, result.renderedRows, result.dirtyCells);
       this.committedFabricFrameGeneration += 1;
+      this.lastCommittedFabricFrame = {
+        generation: this.committedFabricFrameGeneration,
+        result,
+      };
     }
   }
 
@@ -1696,7 +1718,7 @@ export class TerminalCore {
     };
   }
 
-  private async attachFabricRenderer(): Promise<void> {
+  private async attachFabricRenderer(seq: number): Promise<void> {
     if (this.fabricView || this.config.rendererType !== 'webgl' || !this.terminal) {
       return;
     }
@@ -1721,7 +1743,7 @@ export class TerminalCore {
       typeof this.config.sessionId === 'string' ? this.config.sessionId : this.fabricViewId,
     );
 
-    this.fabricView = await terminalLiveFabric.attachView({
+    const fabricView = await terminalLiveFabric.attachView({
       sessionId,
       viewId: this.fabricViewId,
       container: this.renderHost ?? this.container,
@@ -1736,14 +1758,69 @@ export class TerminalCore {
       },
       onRendererError: error => this.handleRendererFailure(error),
     });
+    if (this.isDisposed || seq !== this.fabricAttachSeq || this.fabricView) {
+      fabricView.dispose();
+      if (this.isDisposed) {
+        throw new Error('TerminalCore was disposed before the Beamterm renderer attached');
+      }
+      return;
+    }
+    this.fabricView = fabricView;
     this.fabricView.renderer.setAppearance({ theme, fontFamily, fontSize });
     this.performResize('force');
     this.syncGhosttyInputGeometryToFabric();
     this.forceFullRender();
+    this.resolveFabricAttachWaiters();
+  }
+
+  private waitForFabricRendererAttach(): Promise<void> {
+    if (this.isFabricRendererActive()) return Promise.resolve();
+    if (this.isDisposed) return Promise.reject(new Error('Cannot attach a disposed TerminalCore'));
+    const waiter = new Promise<void>((resolve, reject) => {
+      this.fabricAttachWaiters.push({ resolve, reject });
+    });
+    if (!this.fabricAttachPromise) {
+      this.cancelFabricAttachSchedule?.();
+      this.cancelFabricAttachSchedule = null;
+      const seq = ++this.fabricAttachSeq;
+      void this.startFabricRendererAttach(seq).catch(() => undefined);
+    }
+    return waiter;
+  }
+
+  private resolveFabricAttachWaiters(): void {
+    const waiters = this.fabricAttachWaiters;
+    this.fabricAttachWaiters = [];
+    for (const waiter of waiters) waiter.resolve();
+  }
+
+  private rejectFabricAttachWaiters(error: Error): void {
+    const waiters = this.fabricAttachWaiters;
+    this.fabricAttachWaiters = [];
+    for (const waiter of waiters) waiter.reject(error);
+  }
+
+  private startFabricRendererAttach(seq: number): Promise<void> {
+    if (this.fabricView) return Promise.resolve();
+    if (this.fabricAttachPromise) return this.fabricAttachPromise;
+    const operation = this.attachFabricRenderer(seq)
+      .catch(error => {
+        if (!this.isDisposed && seq === this.fabricAttachSeq) {
+          this.handleRendererFailure(error);
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (this.fabricAttachPromise === operation) {
+          this.fabricAttachPromise = null;
+        }
+      });
+    this.fabricAttachPromise = operation;
+    return operation;
   }
 
   private scheduleFabricRendererAttach(): void {
-    if (this.config.rendererType !== 'webgl' || this.fabricView || !this.terminal) {
+    if (this.config.rendererType !== 'webgl' || this.fabricView || this.fabricAttachPromise || !this.terminal) {
       return;
     }
 
@@ -1757,12 +1834,7 @@ export class TerminalCore {
       if (this.isDisposed || seq !== this.fabricAttachSeq || this.fabricView) {
         return;
       }
-      this.attachFabricRenderer().catch(error => {
-        if (this.isDisposed || seq !== this.fabricAttachSeq) {
-          return;
-        }
-        this.handleRendererFailure(error);
-      });
+      void this.startFabricRendererAttach(seq).catch(() => undefined);
     };
 
     this.cancelFabricAttachSchedule = scheduleUiTurn(() => {
@@ -1778,6 +1850,8 @@ export class TerminalCore {
     if (this.isDisposed) return;
     const error = value instanceof Error ? value : new Error(String(value));
     this.cancelDemandRender();
+    this.rejectFabricAttachWaiters(error);
+    this.rejectAllPresentationRequests(error);
     this.logger.error('[TerminalCore] Beamterm WebGL2 renderer failed', { error });
     this.setState(TerminalState.ERROR);
     this.eventHandlers.onError?.(error);
@@ -3269,6 +3343,34 @@ export class TerminalCore {
     this.requestDemandRender(true);
   }
 
+  async forceResizeAndWaitForPresentation(): Promise<void> {
+    if (this.isDisposed) {
+      throw new Error('Cannot present a disposed TerminalCore');
+    }
+    if (!this.terminal || !this.isReady()) {
+      throw new Error('Cannot present a TerminalCore before initialization completes');
+    }
+    if (this.config.rendererType === 'webgl' && !this.isFabricRendererActive()) {
+      await this.waitForFabricRendererAttach();
+      if (this.isDisposed) throw new Error('TerminalCore was disposed before presentation started');
+    }
+    if (this.pendingPresentationRequest) {
+      this.forceResize();
+      return this.pendingPresentationRequest.promise;
+    }
+
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    this.pendingPresentationRequest = { promise, resolve, reject, frameHandle: null };
+    this.presentationRequests.add(this.pendingPresentationRequest);
+    this.forceResize();
+    return promise;
+  }
+
   setFixedDimensions(dimensions: TerminalDimensions | null): void {
     const next = normalizeTerminalDimensions(dimensions);
     if (sameTerminalDimensions(this.fixedDimensions, next) || (!this.fixedDimensions && !next)) {
@@ -3429,6 +3531,9 @@ export class TerminalCore {
 
   dispose(): void {
     this.isDisposed = true;
+    const disposalError = new Error('TerminalCore was disposed before presentation completed');
+    this.rejectFabricAttachWaiters(disposalError);
+    this.rejectAllPresentationRequests(disposalError);
     this.initializationOperation?.lifecycleAbortController.abort();
     this.initializationOperation?.request.cancel();
     if (this.focusResizeRaf !== null) {
@@ -3771,6 +3876,7 @@ export class TerminalCore {
       renderer?: ghostty_renderer_with_row_cache;
       wasmTerm?: {
         getCursor?: () => { y?: number };
+        getDimensions?: () => { rows?: number };
       };
       viewportY?: number;
       scrollbarOpacity?: number;
@@ -3782,9 +3888,11 @@ export class TerminalCore {
       return;
     }
 
+    const presentationRequest = forceAll ? this.pendingPresentationRequest : null;
+    const expectedRows = Math.max(0, Math.floor(Number(terminalAny.wasmTerm.getDimensions?.().rows ?? 0)));
+    const fabricFrameGeneration = this.committedFabricFrameGeneration;
     try {
       const startedAt = performance.now();
-      const fabricFrameGeneration = this.committedFabricFrameGeneration;
       this.keepDemandCursorVisible(terminalAny.renderer);
       terminalAny.renderer.render(
         terminalAny.wasmTerm,
@@ -3805,10 +3913,69 @@ export class TerminalCore {
         this.config.rendererType !== 'webgl'
         || this.committedFabricFrameGeneration > fabricFrameGeneration
       ) {
-        this.eventHandlers.onRender?.(durationMs);
+        try {
+          this.eventHandlers.onRender?.(durationMs);
+        } catch (error) {
+          this.logger.debug('[TerminalCore] onRender observer failed', { error });
+        }
+      }
+      if (presentationRequest && this.pendingPresentationRequest === presentationRequest) {
+        if (this.config.rendererType === 'webgl') {
+          const committed = this.lastCommittedFabricFrame;
+          if (
+            !committed
+            || committed.generation <= fabricFrameGeneration
+            || expectedRows <= 0
+            || committed.result.renderedRows !== expectedRows
+          ) {
+            this.rejectPresentationRequest(presentationRequest, new Error(
+              'The forced Beamterm frame was incomplete '
+                + `(expected_rows=${expectedRows} rendered_rows=${committed?.result.renderedRows ?? 0})`,
+            ));
+            return;
+          }
+          const fabricRenderer = this.fabricView?.renderer;
+          if (!fabricRenderer) {
+            throw new Error('The Beamterm renderer detached before its frame completed');
+          }
+          fabricRenderer.finishSubmittedFrame();
+        }
+        this.pendingPresentationRequest = null;
+        presentationRequest.frameHandle = requestAnimationFrame(() => {
+          if (!this.presentationRequests.has(presentationRequest)) return;
+          presentationRequest.frameHandle = requestAnimationFrame(() => {
+            if (!this.presentationRequests.delete(presentationRequest)) return;
+            presentationRequest.frameHandle = null;
+            presentationRequest.resolve();
+          });
+        });
       }
     } catch (error) {
+      if (presentationRequest && this.presentationRequests.has(presentationRequest)) {
+        this.rejectPresentationRequest(
+          presentationRequest,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
       this.logger.debug('[TerminalCore] Force render failed', { error });
+    }
+  }
+
+  private rejectPresentationRequest(request: terminal_presentation_request, error: Error): void {
+    if (!this.presentationRequests.delete(request)) return;
+    if (this.pendingPresentationRequest === request) {
+      this.pendingPresentationRequest = null;
+    }
+    if (request.frameHandle !== null) {
+      cancelAnimationFrame(request.frameHandle);
+      request.frameHandle = null;
+    }
+    request.reject(error);
+  }
+
+  private rejectAllPresentationRequests(error: Error): void {
+    for (const request of [...this.presentationRequests]) {
+      this.rejectPresentationRequest(request, error);
     }
   }
 }

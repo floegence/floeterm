@@ -23,6 +23,7 @@ const createRenderer = (overrides: Partial<TerminalFabricRenderer> = {}): Termin
   startFrame: vi.fn(),
   writeRow: vi.fn(),
   finishFrame: vi.fn(() => ({ rendered: true, renderedRows: 1, dirtyCells: 1 })),
+  finishSubmittedFrame: vi.fn(),
   resize: vi.fn(),
   getGeometry: vi.fn(() => null),
   setAppearance: vi.fn(),

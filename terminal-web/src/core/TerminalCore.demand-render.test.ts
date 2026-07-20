@@ -37,6 +37,7 @@ const mockFabric = vi.hoisted(() => ({
     renderedRows: 0,
     dirtyCells: 0,
   })),
+  finishSubmittedFrame: vi.fn(),
   setAppearance: vi.fn(),
   setVisible: vi.fn(),
   dispose: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('../fabric/TerminalLiveFabric', async importOriginal => {
     startFrame: mockFabric.startFrame,
     writeRow: mockFabric.writeRow,
     finishFrame: mockFabric.finishFrame,
+    finishSubmittedFrame: mockFabric.finishSubmittedFrame,
     resize: vi.fn(),
     getGeometry: vi.fn(() => null),
     setAppearance: mockFabric.setAppearance,
@@ -455,6 +457,240 @@ describe('TerminalCore demand rendering', () => {
     expect(onRender).toHaveBeenCalledTimes(1);
     expect(onRender).toHaveBeenCalledWith(expect.any(Number));
 
+    core.dispose();
+  });
+
+  it('resolves a requested presentation only after its forced full Beamterm frame', async () => {
+    const core = await createWebGLCore();
+    mockFabric.startFrame.mockClear();
+    mockFabric.writeRow.mockClear();
+    mockFabric.finishFrame.mockClear();
+    let presented = false;
+
+    const presentation = core.forceResizeAndWaitForPresentation().then(() => {
+      presented = true;
+    });
+
+    expect(presented).toBe(false);
+    await vi.runOnlyPendingTimersAsync();
+    expect(mockFabric.startFrame).toHaveBeenCalledWith(
+      expect.objectContaining({ forceAll: true }),
+      expect.objectContaining({ rows: 2 }),
+    );
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(2);
+    expect(mockFabric.finishFrame).toHaveBeenCalledTimes(1);
+    expect(presented).toBe(false);
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
+    expect(presented).toBe(false);
+
+    await vi.runOnlyPendingTimersAsync();
+    await presentation;
+    expect(presented).toBe(true);
+
+    core.dispose();
+  });
+
+  it('reuses an attachment that is already in flight for requested presentation', async () => {
+    let resolveAttach!: (handle: any) => void;
+    mockFabric.attachView.mockReturnValueOnce(new Promise(resolve => {
+      resolveAttach = resolve;
+    }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const core = new TerminalCore(container, { rendererType: 'webgl', sessionId: 'session-a' });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    core.setConnected(true);
+    await vi.runAllTimersAsync();
+    expect(mockFabric.attachView).toHaveBeenCalledTimes(1);
+
+    const presentation = core.forceResizeAndWaitForPresentation();
+    await vi.runAllTimersAsync();
+    expect(mockFabric.attachView).toHaveBeenCalledTimes(1);
+
+    resolveAttach({
+      viewId: 'mock-view',
+      sessionId: 'mock-session',
+      renderer: mockFabric.renderer,
+      dispose: mockFabric.dispose,
+    });
+    await Promise.resolve();
+    await vi.runAllTimersAsync();
+    await presentation;
+    core.dispose();
+  });
+
+  it('starts a new forced frame for a request made after the prior frame commits', async () => {
+    const core = await createWebGLCore();
+    mockFabric.finishFrame.mockClear();
+    mockFabric.finishSubmittedFrame.mockClear();
+
+    const first = core.forceResizeAndWaitForPresentation();
+    await vi.runOnlyPendingTimersAsync();
+    expect(mockFabric.finishFrame).toHaveBeenCalledTimes(1);
+
+    const second = core.forceResizeAndWaitForPresentation();
+    expect(second).not.toBe(first);
+    await vi.runOnlyPendingTimersAsync();
+    expect(mockFabric.finishFrame).toHaveBeenCalledTimes(2);
+
+    await vi.runAllTimersAsync();
+    await Promise.all([first, second]);
+    core.dispose();
+  });
+
+  it('coalesces callers that arrive before their forced frame is submitted', async () => {
+    const core = await createWebGLCore();
+    mockFabric.finishFrame.mockClear();
+    mockFabric.finishSubmittedFrame.mockClear();
+
+    const first = core.forceResizeAndWaitForPresentation();
+    const second = core.forceResizeAndWaitForPresentation();
+    await vi.runAllTimersAsync();
+    await Promise.all([first, second]);
+
+    expect(mockFabric.finishFrame).toHaveBeenCalledTimes(1);
+    expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
+    core.dispose();
+  });
+
+  it('rejects a presentation disposed after GPU completion but before browser paint', async () => {
+    const core = await createWebGLCore();
+    const presentation = core.forceResizeAndWaitForPresentation();
+    const rejection = expect(presentation).rejects.toThrow(/disposed before presentation completed/);
+    await vi.runOnlyPendingTimersAsync();
+    expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
+
+    core.dispose();
+    await rejection;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('waits for a delayed Beamterm attachment before requesting presentation', async () => {
+    let resolveAttach!: (handle: any) => void;
+    mockFabric.attachView.mockReturnValueOnce(new Promise(resolve => {
+      resolveAttach = resolve;
+    }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const core = new TerminalCore(container, { rendererType: 'webgl', sessionId: 'session-a' });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    core.setConnected(true);
+
+    let presented = false;
+    const presentation = core.forceResizeAndWaitForPresentation().then(() => {
+      presented = true;
+    });
+    await Promise.resolve();
+    expect(presented).toBe(false);
+
+    resolveAttach({
+      viewId: 'mock-view',
+      sessionId: 'mock-session',
+      renderer: mockFabric.renderer,
+      dispose: mockFabric.dispose,
+    });
+    await Promise.resolve();
+    await vi.runAllTimersAsync();
+    await presentation;
+    expect(presented).toBe(true);
+
+    core.dispose();
+  });
+
+  it('rejects a pending presentation and disposes a late Beamterm attachment', async () => {
+    let resolveAttach!: (handle: any) => void;
+    mockFabric.attachView.mockReturnValueOnce(new Promise(resolve => {
+      resolveAttach = resolve;
+    }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const core = new TerminalCore(container, { rendererType: 'webgl', sessionId: 'session-a' });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    core.setConnected(true);
+
+    const presentation = core.forceResizeAndWaitForPresentation();
+    const rejection = expect(presentation).rejects.toThrow(/disposed before presentation completed/);
+    await vi.runOnlyPendingTimersAsync();
+    expect(mockFabric.attachView).toHaveBeenCalledTimes(1);
+    core.dispose();
+    await rejection;
+
+    resolveAttach({
+      viewId: 'mock-view',
+      sessionId: 'mock-session',
+      renderer: mockFabric.renderer,
+      dispose: mockFabric.dispose,
+    });
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+    expect(mockFabric.dispose).toHaveBeenCalled();
+  });
+
+  it('rejects a requested presentation when its forced Beamterm frame is incomplete', async () => {
+    const core = await createWebGLCore();
+    mockFabric.finishFrame.mockReturnValue({
+      rendered: true,
+      renderedRows: 1,
+      dirtyCells: 2,
+    });
+
+    const presentation = core.forceResizeAndWaitForPresentation();
+    const rejection = expect(presentation).rejects.toThrow(/forced Beamterm frame was incomplete/);
+    await vi.runOnlyPendingTimersAsync();
+
+    await rejection;
+    core.dispose();
+  });
+
+  it('rejects a requested presentation when Beamterm reports surplus rows', async () => {
+    const core = await createWebGLCore();
+    mockFabric.finishFrame.mockReturnValue({
+      rendered: true,
+      renderedRows: 3,
+      dirtyCells: 6,
+    });
+
+    const presentation = core.forceResizeAndWaitForPresentation();
+    const rejection = expect(presentation).rejects.toThrow(/forced Beamterm frame was incomplete/);
+    await vi.runOnlyPendingTimersAsync();
+
+    await rejection;
+    core.dispose();
+  });
+
+  it('does not let an onRender observer failure reject a committed presentation', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const core = new TerminalCore(
+      container,
+      { rendererType: 'webgl', sessionId: 'session-a' },
+      { onRender: () => { throw new Error('observer failed'); } },
+    );
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    core.setConnected(true);
+    await vi.runAllTimersAsync();
+
+    const presentation = core.forceResizeAndWaitForPresentation();
+    await vi.runAllTimersAsync();
+    await expect(presentation).resolves.toBeUndefined();
     core.dispose();
   });
 
@@ -971,6 +1207,7 @@ describe('TerminalCore demand rendering', () => {
         startFrame: mockFabric.startFrame,
         writeRow: mockFabric.writeRow,
         finishFrame: mockFabric.finishFrame,
+        finishSubmittedFrame: mockFabric.finishSubmittedFrame,
         resize: vi.fn(),
         getGeometry: vi.fn(() => null),
         setAppearance: mockFabric.setAppearance,

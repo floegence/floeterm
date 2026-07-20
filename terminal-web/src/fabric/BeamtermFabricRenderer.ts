@@ -384,6 +384,14 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     }
   }
 
+  finishSubmittedFrame(): void {
+    const gl = this.canvas?.getContext('webgl2');
+    if (!this.renderer || !this.visible || !gl) {
+      throw new Error('Cannot finish a Beamterm frame without an active WebGL2 renderer');
+    }
+    gl.finish();
+  }
+
   resize(width: number, height: number): void {
     if (!this.renderer || !this.canvas) {
       return;

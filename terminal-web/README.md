@@ -53,6 +53,20 @@ const core = new TerminalCore(
 await core.initialize();
 ```
 
+After a host-owned layout transition or history recovery, request an explicit
+presentation fence before declaring the terminal surface ready:
+
+```ts
+await core.forceResizeAndWaitForPresentation();
+```
+
+The fence performs a fresh resize, requires a complete Beamterm frame, finishes
+the submitted WebGL work, and resolves after that frame has crossed a browser
+paint opportunity. Concurrent callers before the frame is submitted share the
+same work; a caller arriving after submission requests a newer frame. This is an
+explicit recovery/lifecycle operation, not a replacement for ordinary demand
+rendering.
+
 Hosts can preload the dynamic Ghostty module, WASM, and renderer resources before a terminal surface is visible without creating a `TerminalCore`:
 
 ```ts

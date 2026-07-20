@@ -33,6 +33,28 @@ describe('TerminalCore transformed-host input integration', () => {
     document.body.replaceChildren();
   });
 
+  it('completes an explicit presentation fence with the real Beamterm WebGL renderer', async () => {
+    const container = document.createElement('div');
+    container.style.width = '800px';
+    container.style.height = '400px';
+    document.body.appendChild(container);
+    core = new TerminalCore(container, {
+      rendererType: 'webgl',
+      sessionId: 'browser-presentation-fence',
+      fixedDimensions: { cols: 80, rows: 20 },
+    });
+
+    await core.initialize();
+    core.setConnected(true);
+    await writeTerminal(core, '\x1b[2J\x1b[Hpresentation fence');
+    await core.forceResizeAndWaitForPresentation();
+
+    const canvas = container.querySelector('.floeterm-beamterm-canvas');
+    expect(canvas).toBeInstanceOf(HTMLCanvasElement);
+    expect((canvas as HTMLCanvasElement).getContext('webgl2')).not.toBeNull();
+    expect(core.getDimensions()).toEqual({ cols: 80, rows: 20 });
+  });
+
   it('keeps canvas focus from scrolling a transformed terminal host', async () => {
     const frame = document.createElement('div');
     frame.style.position = 'fixed';

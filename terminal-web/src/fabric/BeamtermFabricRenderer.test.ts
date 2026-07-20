@@ -114,6 +114,8 @@ const logger: Logger = {
   error: vi.fn(),
 };
 
+const finishSubmittedGpuWork = vi.fn();
+
 describe('BeamtermFabricRenderer', () => {
   beforeEach(() => {
     rendererState.main.mockResolvedValue(undefined);
@@ -133,7 +135,10 @@ describe('BeamtermFabricRenderer', () => {
     rendererState.setCanvasPaddingColor.mockClear();
     rendererState.terminalCols = 80;
     rendererState.terminalRows = 20;
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as RenderingContext);
+    finishSubmittedGpuWork.mockClear();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      finish: finishSubmittedGpuWork,
+    } as unknown as RenderingContext);
   });
 
   afterEach(() => {
@@ -145,6 +150,30 @@ describe('BeamtermFabricRenderer', () => {
     expect(formatHexColor(0x1a2b3c)).toBe('#1a2b3c');
     expect(formatHexColor(-1)).toBe('#000000');
     expect(formatHexColor(0xffffff + 1)).toBe('#ffffff');
+  });
+
+  it('finishes submitted WebGL work only when explicitly requested', async () => {
+    const host = document.createElement('div');
+    Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(host, 'clientHeight', { value: 400, configurable: true });
+    document.body.appendChild(host);
+    const renderer = new BeamtermFabricRenderer();
+    await renderer.initialize({
+      container: host,
+      logger,
+      fontFamily: 'monospace',
+      fontSize: 12,
+      theme: { background: '#0b0f14', foreground: '#c9d1d9' },
+      getGhosttyCanvas: () => null,
+      focusInputSurface: vi.fn(),
+      forwardWheel: vi.fn(),
+      onRendererError: vi.fn(),
+    });
+
+    expect(finishSubmittedGpuWork).not.toHaveBeenCalled();
+    renderer.finishSubmittedFrame();
+    expect(finishSubmittedGpuWork).toHaveBeenCalledTimes(1);
+    renderer.dispose();
   });
 
   it('keeps the full WebGL surface on the terminal theme background', async () => {

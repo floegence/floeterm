@@ -169,6 +169,7 @@ export type TerminalFabricRenderer = {
     hints?: TerminalFabricRowRenderHints,
   ): void;
   finishFrame(cursor: TerminalFabricCursor | null): TerminalFabricFrameRenderResult;
+  finishSubmittedFrame(): void;
   resize(width: number, height: number): void;
   getGeometry(): TerminalFabricGeometry | null;
   setAppearance(appearance: {
