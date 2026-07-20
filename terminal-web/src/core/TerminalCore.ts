@@ -674,6 +674,7 @@ export class TerminalCore {
   private terminalThemeSource: Record<string, string> = {};
   private themeColorTranslator: terminal_theme_color_translator | null = null;
   private fontMetricSeq = 0;
+  private fontMetricRefreshPromise: Promise<void> | null = null;
   private pendingPresentationScale: number | null = null;
   private suppressResizeNotifications = false;
   private clearResizeSuppressionRaf: number | null = null;
@@ -1931,9 +1932,9 @@ export class TerminalCore {
     }
   }
 
-  private async refreshFontMetricsAfterLoad(reason: string): Promise<void> {
+  private refreshFontMetricsAfterLoad(reason: string): Promise<void> {
     if (!this.terminal) {
-      return;
+      return Promise.resolve();
     }
 
     const terminalAny = this.terminal as unknown as {
@@ -1943,15 +1944,34 @@ export class TerminalCore {
     const fontFamily = terminalAny.options?.fontFamily ?? this.config.fontFamily;
     const fontSize = Number(terminalAny.options?.fontSize ?? this.resolveEffectiveFontSize());
     const seq = ++this.fontMetricSeq;
+    const refresh = this.applyFontMetricsAfterLoad(
+      terminalAny,
+      typeof fontFamily === 'string' ? fontFamily : undefined,
+      fontSize,
+      reason,
+      seq,
+    );
+    this.fontMetricRefreshPromise = refresh;
+    return refresh;
+  }
 
-    await this.waitForTerminalFontReady(typeof fontFamily === 'string' ? fontFamily : undefined, fontSize, reason);
+  private async applyFontMetricsAfterLoad(
+    terminal: {
+      renderer?: ghostty_renderer_with_row_cache;
+    },
+    fontFamily: string | undefined,
+    fontSize: number,
+    reason: string,
+    seq: number,
+  ): Promise<void> {
+    await this.waitForTerminalFontReady(fontFamily, fontSize, reason);
 
     if (this.isDisposed || seq !== this.fontMetricSeq || !this.terminal) {
       return;
     }
 
     try {
-      terminalAny.renderer?.remeasureFont?.();
+      terminal.renderer?.remeasureFont?.();
     } catch (error) {
       this.logger.debug('[TerminalCore] Terminal font remeasure failed', { error, reason });
     }
@@ -1959,6 +1979,22 @@ export class TerminalCore {
     this.performResize('font');
     this.forceFullRender();
     this.scheduleRenderSearchOverlay();
+  }
+
+  private async waitForStableFontMetrics(): Promise<number> {
+    while (true) {
+      if (this.isDisposed) {
+        throw new Error('TerminalCore was disposed before font metrics stabilized');
+      }
+      const seq = this.fontMetricSeq;
+      const refresh = this.fontMetricRefreshPromise;
+      if (refresh) {
+        await refresh;
+      }
+      if (seq === this.fontMetricSeq && refresh === this.fontMetricRefreshPromise) {
+        return seq;
+      }
+    }
   }
 
   private async ensureContainerReady(): Promise<void> {
@@ -3344,6 +3380,17 @@ export class TerminalCore {
   }
 
   async forceResizeAndWaitForPresentation(): Promise<void> {
+    while (true) {
+      const fontMetricSeq = await this.waitForStableFontMetrics();
+      await this.forceResizeAndWaitForCommittedFrame();
+      await this.waitForStableFontMetrics();
+      if (fontMetricSeq === this.fontMetricSeq) {
+        return;
+      }
+    }
+  }
+
+  private async forceResizeAndWaitForCommittedFrame(): Promise<void> {
     if (this.isDisposed) {
       throw new Error('Cannot present a disposed TerminalCore');
     }

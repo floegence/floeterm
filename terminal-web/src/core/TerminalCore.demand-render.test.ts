@@ -350,6 +350,7 @@ describe('TerminalCore demand rendering', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     document.body.replaceChildren();
+    delete (document as unknown as { fonts?: unknown }).fonts;
   });
 
   it('does not keep ghostty-web rendering while the terminal is idle', async () => {
@@ -487,6 +488,96 @@ describe('TerminalCore demand rendering', () => {
 
     await vi.runOnlyPendingTimersAsync();
     await presentation;
+    expect(presented).toBe(true);
+
+    core.dispose();
+  });
+
+  it('waits for the latest terminal font metrics before starting presentation', async () => {
+    let resolveInitialFont!: () => void;
+    let resolveLatestFont!: () => void;
+    const fontLoads: Array<Promise<unknown[]>> = [
+      Promise.resolve([]),
+      new Promise(resolve => { resolveInitialFont = () => resolve([]); }),
+      new Promise(resolve => { resolveLatestFont = () => resolve([]); }),
+    ];
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve(),
+        load: vi.fn(() => fontLoads.shift() ?? Promise.resolve([])),
+      },
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const core = new TerminalCore(container, {
+      rendererType: 'webgl',
+      sessionId: 'font-stable-presentation',
+      fontFamily: 'Initial Font, monospace',
+    });
+    const initialization = core.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+    await initialization;
+    core.setConnected(true);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    let presented = false;
+    const presentation = core.forceResizeAndWaitForPresentation().then(() => {
+      presented = true;
+    });
+    core.setFontFamily('Latest Font, monospace');
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+    expect(presented).toBe(false);
+
+    resolveInitialFont();
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+    expect(presented).toBe(false);
+
+    resolveLatestFont();
+    await Promise.resolve();
+    await vi.runAllTimersAsync();
+    await presentation;
+    expect(presented).toBe(true);
+
+    core.dispose();
+  });
+
+  it('repeats the presentation fence when font metrics change during frame submission', async () => {
+    const core = await createWebGLCore();
+    mockFabric.finishFrame.mockClear();
+    let resolveFont!: () => void;
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve(),
+        load: vi.fn(() => new Promise<unknown[]>(resolve => {
+          resolveFont = () => resolve([]);
+        })),
+      },
+    });
+
+    let presented = false;
+    const presentation = core.forceResizeAndWaitForPresentation().then(() => {
+      presented = true;
+    });
+    await vi.runOnlyPendingTimersAsync();
+    expect(mockFabric.finishFrame).toHaveBeenCalledTimes(1);
+    expect(presented).toBe(false);
+
+    core.setFontFamily('Late Font, monospace');
+    await vi.runAllTimersAsync();
+    expect(presented).toBe(false);
+
+    resolveFont();
+    await Promise.resolve();
+    await vi.runAllTimersAsync();
+    await presentation;
+    expect(mockFabric.finishFrame.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(presented).toBe(true);
 
     core.dispose();
