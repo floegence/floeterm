@@ -34,7 +34,7 @@ test('reports silent and fullscreen foreground commands without idle false posit
     const command = (await activeSession(page))?.foregroundCommand;
     return `${command?.phase ?? ''}:${command?.displayName ?? ''}`;
   }).toBe('running:top');
-  await page.evaluate(() => window.__floetermPerfHarness.sendInput('q'));
+  await page.evaluate(() => window.__floetermPerfHarness.sendInput('\x03'));
   await expect.poll(async () => (await activeSession(page))?.foregroundCommand?.phase).toBe('idle');
 
   expect(failures).toEqual([]);
