@@ -618,6 +618,7 @@ export class TerminalCore {
   private fabricView: TerminalLiveFabricViewHandle | null = null;
   private readonly fabricViewId: string;
   private fabricAttachSeq = 0;
+  private committedFabricFrameGeneration = 0;
   private cancelFabricAttachSchedule: ScheduledTurnCancel | null = null;
   private cancelInputRefocusSchedule: ScheduledTurnCancel | null = null;
   private inputElement: HTMLTextAreaElement | null = null;
@@ -1561,6 +1562,7 @@ export class TerminalCore {
     const result = fabricRenderer.finishFrame(cursorToFabricCursor(terminalAny?.wasmTerm?.getCursor?.()));
     if (result.rendered) {
       terminalFabricCoordinator.completeFrame(frame, result.renderedRows, result.dirtyCells);
+      this.committedFabricFrameGeneration += 1;
     }
   }
 
@@ -3782,6 +3784,7 @@ export class TerminalCore {
 
     try {
       const startedAt = performance.now();
+      const fabricFrameGeneration = this.committedFabricFrameGeneration;
       this.keepDemandCursorVisible(terminalAny.renderer);
       terminalAny.renderer.render(
         terminalAny.wasmTerm,
@@ -3798,7 +3801,12 @@ export class TerminalCore {
       this.syncImeInputAnchor();
       const durationMs = performance.now() - startedAt;
       getPerfProbe()?.onTerminalRender?.(durationMs);
-      this.eventHandlers.onRender?.(durationMs);
+      if (
+        this.config.rendererType !== 'webgl'
+        || this.committedFabricFrameGeneration > fabricFrameGeneration
+      ) {
+        this.eventHandlers.onRender?.(durationMs);
+      }
     } catch (error) {
       this.logger.debug('[TerminalCore] Force render failed', { error });
     }

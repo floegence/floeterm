@@ -404,6 +404,88 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('reports WebGL renders only after the active Beamterm frame commits', async () => {
+    let resolveAttach!: (handle: any) => void;
+    mockFabric.attachView.mockReturnValueOnce(new Promise(resolve => {
+      resolveAttach = resolve;
+    }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const onRender = vi.fn();
+    const core = new TerminalCore(
+      container,
+      { rendererType: 'webgl', sessionId: 'session-a' },
+      { onRender },
+    );
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    onRender.mockClear();
+
+    core.setConnected(true);
+    await vi.runAllTimersAsync();
+    expect(mockFabric.attachView).toHaveBeenCalledTimes(1);
+
+    core.forceResize();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(mockState.lastTerminal.renderSpy).toHaveBeenCalled();
+    expect(onRender).not.toHaveBeenCalled();
+
+    mockFabric.startFrame.mockClear();
+    mockFabric.writeRow.mockClear();
+    mockFabric.finishFrame.mockClear();
+    resolveAttach({
+      viewId: 'mock-view',
+      sessionId: 'mock-session',
+      renderer: mockFabric.renderer,
+      dispose: mockFabric.dispose,
+    });
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(mockFabric.startFrame).toHaveBeenCalledWith(
+      expect.objectContaining({ forceAll: true }),
+      expect.objectContaining({ rows: 2 }),
+    );
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(2);
+    expect(mockFabric.finishFrame).toHaveBeenCalledTimes(1);
+    expect(onRender).toHaveBeenCalledTimes(1);
+    expect(onRender).toHaveBeenCalledWith(expect.any(Number));
+
+    core.dispose();
+  });
+
+  it('does not report a WebGL render when Beamterm declines the frame', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const onRender = vi.fn();
+    const core = new TerminalCore(
+      container,
+      { rendererType: 'webgl', sessionId: 'session-a' },
+      { onRender },
+    );
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    core.setConnected(true);
+    await vi.runAllTimersAsync();
+    onRender.mockClear();
+    mockFabric.finishFrame.mockReturnValue({ rendered: false, renderedRows: 0, dirtyCells: 0 });
+
+    core.forceResize();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(mockFabric.finishFrame).toHaveBeenCalled();
+    expect(onRender).not.toHaveBeenCalled();
+
+    core.dispose();
+  });
+
   it('parses and renders frame-owned output without scheduling another RAF', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
