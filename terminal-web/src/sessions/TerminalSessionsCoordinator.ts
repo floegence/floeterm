@@ -1,6 +1,6 @@
 import type { Logger, TerminalForegroundCommandInfo, TerminalSessionInfo, TerminalTransport } from '../types.js';
 import { noopLogger } from '../utils/logger.js';
-import { normalizeTerminalForegroundCommandDisplayName } from '../shell/TerminalShellIntegrationParser.js';
+import { normalizeTerminalForegroundCommandDisplayName } from '../shell/TerminalForegroundCommand.js';
 
 export type TerminalSessionsCoordinatorOptions = {
   transport: TerminalTransport;

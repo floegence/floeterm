@@ -1,3 +1,5 @@
+import { normalizeTerminalForegroundCommandDisplayName } from './TerminalForegroundCommand.js';
+
 export type TerminalShellIntegrationEvent =
   | { kind: 'prompt-ready' }
   | { kind: 'command-start' }
@@ -17,7 +19,6 @@ const BEL = 0x07;
 const ST = 0x5c;
 const MAX_PENDING_BYTES = 4096;
 const MAX_METADATA_PAYLOAD_BYTES = 4092;
-const MAX_PROGRAM_BYTES = 64;
 const textDecoder = new TextDecoder();
 
 type OscTerminator = { payloadEnd: number; nextIndex: number };
@@ -82,12 +83,6 @@ export class TerminalShellIntegrationParser {
   reset(): void {
     this.pending = new Uint8Array(0);
   }
-}
-
-export function normalizeTerminalForegroundCommandDisplayName(value: unknown): string {
-  const text = typeof value === 'string' ? value : '';
-  if (!text || encodedByteLength(text) > MAX_PROGRAM_BYTES) return '';
-  return /^[A-Za-z0-9._+@-]+$/.test(text) ? text : '';
 }
 
 function parseShellIntegrationPayload(payload: Uint8Array): ParsedPayload {
@@ -172,10 +167,6 @@ function concatSegments(segments: Uint8Array[]): Uint8Array {
     offset += segment.byteLength;
   }
   return result;
-}
-
-function encodedByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
 }
 
 function decodePayloadPrefix(payload: Uint8Array): string {

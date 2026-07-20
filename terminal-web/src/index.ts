@@ -20,10 +20,8 @@ export {
   resetTerminalFabricDiagnostics,
 } from './fabric/TerminalFabricCoordinator.js';
 export { TerminalSessionsCoordinator } from './sessions/TerminalSessionsCoordinator.js';
-export {
-  TerminalShellIntegrationParser,
-  normalizeTerminalForegroundCommandDisplayName,
-} from './shell/TerminalShellIntegrationParser.js';
+export { normalizeTerminalForegroundCommandDisplayName } from './shell/TerminalForegroundCommand.js';
+export { TerminalShellIntegrationParser } from './shell/TerminalShellIntegrationParser.js';
 export type {
   TerminalShellIntegrationEvent,
   TerminalShellIntegrationParseResult,
