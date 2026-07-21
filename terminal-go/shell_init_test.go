@@ -300,7 +300,7 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 	if _, err := ptmx.Write([]byte("sleep 0.2\n")); err != nil {
 		t.Fatal(err)
 	}
-	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;P;FloetermProgram=sleep\a", "\x1b]633;C\a", "\x1b]633;D;0\a")
+	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;P;FloetermProgram=sleep\a", "\x1b]633;C\a", "\x1b]633;D;0\a", "\x1b]633;A\a")
 	output := capture.String()
 	assertContainsInOrder(t, output[before:], []string{
 		"\x1b]633;B\a",
