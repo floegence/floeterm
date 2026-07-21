@@ -98,8 +98,10 @@ is `streaming` while a running command is producing visible display payload and
 becomes `settled` after the configured quiet interval. `settled` does not mean
 that the command, Agent turn, or task completed successfully.
 
-`classifyTerminalAgentCli` maps an already-sanitized foreground basename to the
-strict identities `codex`, `claude`, `opencode`, or `kimi`. Matching is
+`classifyTerminalAgentCli` maps an already-sanitized foreground basename to an
+audited strict identity for Codex, Claude Code, OpenCode, Kimi Code, Gemini CLI,
+Qwen Code, GitHub Copilot CLI, Cline, Roo Code, Mistral Vibe, Cursor
+Agent, Junie CLI, Kiro CLI, OpenHands, TRAE Agent, or Kilo Code. Matching is
 case-insensitive and accepts one Windows executable suffix (`.exe`, `.cmd`, or
 `.bat`), but deliberately rejects paths, arguments, wrappers, partial matches,
 Unicode guesses, and overlong values. The root package exports the same helper.
