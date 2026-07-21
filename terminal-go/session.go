@@ -330,6 +330,7 @@ func (s *Session) closeActivationAdmission() {
 	}
 	s.mu.Lock()
 	s.closed = true
+	_, _ = s.resetOutputActivityLocked(time.Now())
 	if s.cancel != nil {
 		s.cancel()
 	}

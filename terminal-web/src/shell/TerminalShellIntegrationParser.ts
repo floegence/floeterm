@@ -11,7 +11,17 @@ export type TerminalShellIntegrationEvent =
 export type TerminalShellIntegrationParseResult = {
   displayData: Uint8Array;
   events: TerminalShellIntegrationEvent[];
+  tokens?: TerminalShellIntegrationToken[];
 };
+
+export type TerminalShellIntegrationToken =
+  | { kind: 'display'; data: Uint8Array }
+  | { kind: 'event'; event: TerminalShellIntegrationEvent };
+
+export type TerminalShellIntegrationOrderedParseResult =
+  Omit<TerminalShellIntegrationParseResult, 'tokens'> & {
+    tokens: TerminalShellIntegrationToken[];
+  };
 
 const ESC = 0x1b;
 const OSC = 0x5d;
@@ -27,17 +37,19 @@ type ParsedPayload = { recognized: boolean; event: TerminalShellIntegrationEvent
 export class TerminalShellIntegrationParser {
   private pending = new Uint8Array(0);
 
-  parse(chunk: Uint8Array): TerminalShellIntegrationParseResult {
+  parse(chunk: Uint8Array): TerminalShellIntegrationOrderedParseResult {
     if (this.pending.byteLength === 0 && !containsOscStart(chunk)) {
       if (chunk.byteLength > 0 && chunk[chunk.byteLength - 1] === ESC) {
         this.pending = chunk.subarray(chunk.byteLength - 1).slice();
-        return { displayData: chunk.subarray(0, chunk.byteLength - 1), events: [] };
+        const displayData = chunk.subarray(0, chunk.byteLength - 1);
+        return { displayData, events: [], tokens: displayData.byteLength > 0 ? [{ kind: 'display', data: displayData }] : [] };
       }
-      return { displayData: chunk, events: [] };
+      return { displayData: chunk, events: [], tokens: chunk.byteLength > 0 ? [{ kind: 'display', data: chunk }] : [] };
     }
     const data = concatUint8Arrays(this.pending, chunk);
     const displaySegments: Uint8Array[] = [];
     const events: TerminalShellIntegrationEvent[] = [];
+    const tokens: TerminalShellIntegrationToken[] = [];
     this.pending = new Uint8Array(0);
 
     let index = 0;
@@ -45,20 +57,20 @@ export class TerminalShellIntegrationParser {
       const start = findOscStart(data, index);
       if (start < 0) {
         if (data.byteLength > index && data[data.byteLength - 1] === ESC) {
-          appendSegment(displaySegments, data.subarray(index, data.byteLength - 1));
+          appendDisplaySegment(displaySegments, tokens, data.subarray(index, data.byteLength - 1));
           this.pending = data.subarray(data.byteLength - 1).slice();
         } else {
-          appendSegment(displaySegments, data.subarray(index));
+          appendDisplaySegment(displaySegments, tokens, data.subarray(index));
         }
         break;
       }
-      appendSegment(displaySegments, data.subarray(index, start));
+      appendDisplaySegment(displaySegments, tokens, data.subarray(index, start));
       if (data[start] === ESC && start + 1 < data.length && data[start + 1] === OSC) {
         const terminator = findOscTerminator(data, start + 2);
         if (!terminator) {
           const fragment = data.subarray(start);
           if (fragment.byteLength > MAX_PENDING_BYTES) {
-            appendSegment(displaySegments, fragment);
+            appendDisplaySegment(displaySegments, tokens, fragment);
           } else {
             this.pending = fragment.slice();
           }
@@ -68,16 +80,19 @@ export class TerminalShellIntegrationParser {
         const payload = data.subarray(start + 2, terminator.payloadEnd);
         const parsed = parseShellIntegrationPayload(payload);
         if (parsed.recognized) {
-          if (parsed.event) events.push(parsed.event);
+          if (parsed.event) {
+            events.push(parsed.event);
+            tokens.push({ kind: 'event', event: parsed.event });
+          }
         } else {
-          appendSegment(displaySegments, data.subarray(start, terminator.nextIndex));
+          appendDisplaySegment(displaySegments, tokens, data.subarray(start, terminator.nextIndex));
         }
         index = terminator.nextIndex;
         continue;
       }
     }
 
-    return { displayData: concatSegments(displaySegments), events };
+    return { displayData: concatSegments(displaySegments), events, tokens };
   }
 
   reset(): void {
@@ -152,8 +167,14 @@ function concatUint8Arrays(left: Uint8Array, right: Uint8Array): Uint8Array {
   return result;
 }
 
-function appendSegment(target: Uint8Array[], source: Uint8Array): void {
-  if (source.byteLength > 0) target.push(source);
+function appendDisplaySegment(
+  displaySegments: Uint8Array[],
+  tokens: TerminalShellIntegrationToken[],
+  source: Uint8Array,
+): void {
+  if (source.byteLength === 0) return;
+  displaySegments.push(source);
+  tokens.push({ kind: 'display', data: source });
 }
 
 function concatSegments(segments: Uint8Array[]): Uint8Array {

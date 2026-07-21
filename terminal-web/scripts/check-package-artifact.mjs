@@ -78,6 +78,10 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
     installedPackageRoot,
     'dist/sessions/TerminalForegroundCommandMetadata.js',
   );
+  const agentCliMetadataModule = path.join(
+    installedPackageRoot,
+    'dist/sessions/TerminalAgentCliMetadata.js',
+  );
   const parserModule = path.join(installedPackageRoot, 'dist/shell/TerminalShellIntegrationParser.js');
   const loggerModule = path.join(installedPackageRoot, 'dist/utils/logger.js');
   const coordinatorModule = path.join(
@@ -88,9 +92,20 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
   if (!sessionsClosure.has(metadataModule)) {
     throw new Error('sessions artifact does not include the lightweight foreground command metadata module');
   }
+  if (!sessionsClosure.has(agentCliMetadataModule)) {
+    throw new Error('sessions artifact does not include the lightweight agent CLI metadata module');
+  }
   const metadataSource = await readFile(metadataModule, 'utf8');
   if (staticModuleSpecifiers(metadataModule, metadataSource).length > 0) {
     throw new Error('foreground command metadata artifact must not have static dependencies');
+  }
+  const agentCliMetadataSource = await readFile(agentCliMetadataModule, 'utf8');
+  const agentCliSpecifiers = staticModuleSpecifiers(agentCliMetadataModule, agentCliMetadataSource);
+  if (
+    agentCliSpecifiers.length !== 1
+    || agentCliSpecifiers[0] !== './TerminalForegroundCommandMetadata.js'
+  ) {
+    throw new Error('agent CLI metadata artifact must only depend on foreground command metadata');
   }
   if (sessionsClosure.has(parserModule)) {
     throw new Error('sessions artifact unexpectedly depends on the shell integration parser');
@@ -99,6 +114,7 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
     sessionsEntry,
     coordinatorModule,
     metadataModule,
+    agentCliMetadataModule,
     loggerModule,
   ]);
   const unexpectedSessionsModules = [...sessionsClosure].filter(modulePath => (
@@ -133,6 +149,20 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
   ));
   if (!sanitizerExport) {
     throw new Error('root sanitizer export is not sourced from the lightweight metadata module');
+  }
+  const classifierExport = indexFile.statements.find((statement) => (
+    ts.isExportDeclaration(statement)
+    && statement.moduleSpecifier
+    && ts.isStringLiteral(statement.moduleSpecifier)
+    && statement.moduleSpecifier.text === './sessions/TerminalAgentCliMetadata.js'
+    && statement.exportClause
+    && ts.isNamedExports(statement.exportClause)
+    && statement.exportClause.elements.some((element) => (
+      element.name.text === 'classifyTerminalAgentCli'
+    ))
+  ));
+  if (!classifierExport) {
+    throw new Error('root agent CLI classifier export is not sourced from the lightweight metadata module');
   }
 }
 
@@ -175,8 +205,10 @@ try {
       "const preload = await import('@floegence/floeterm-terminal-web/preload')",
       "if (typeof api.TerminalCore !== 'function') throw new Error('TerminalCore export is unavailable')",
       "if (api.normalizeTerminalForegroundCommandDisplayName('top') !== 'top') throw new Error('foreground command sanitizer export is unavailable')",
+      "if (api.classifyTerminalAgentCli('CODEX.exe') !== 'codex') throw new Error('agent CLI classifier export is unavailable')",
       "if (typeof sessions.TerminalSessionsCoordinator !== 'function') throw new Error('sessions export is unavailable')",
       "if (sessions.normalizeTerminalForegroundCommandDisplayName('top') !== 'top') throw new Error('sessions foreground command sanitizer export is unavailable')",
+      "if (sessions.classifyTerminalAgentCli('claude') !== 'claude') throw new Error('sessions agent CLI classifier export is unavailable')",
       "if (typeof history.preparePagedTerminalHistory !== 'function') throw new Error('history export is unavailable')",
       "if (typeof preload.preloadTerminalResources !== 'function') throw new Error('preload export is unavailable')",
     ].join('; '),
@@ -196,12 +228,15 @@ try {
   await writeFile(path.join(consumerRoot, 'index.mts'), `
 import {
   TerminalCore,
+  classifyTerminalAgentCli,
   normalizeTerminalForegroundCommandDisplayName,
   type TerminalInitializationPriority,
 } from '@floegence/floeterm-terminal-web';
 import {
   TerminalSessionsCoordinator,
+  classifyTerminalAgentCli as classifySessionAgentCli,
   normalizeTerminalForegroundCommandDisplayName as normalizeSessionForegroundCommandDisplayName,
+  type TerminalAgentCliIdentity,
   type TerminalSessionInfo,
   type TerminalTransport,
 } from '@floegence/floeterm-terminal-web/sessions';
@@ -213,12 +248,14 @@ import {
 import { preloadTerminalResources } from '@floegence/floeterm-terminal-web/preload';
 
 const priority: TerminalInitializationPriority = 'interactive';
+const agentCli: TerminalAgentCliIdentity | null = classifyTerminalAgentCli('opencode');
+const sessionAgentCli: TerminalAgentCliIdentity | null = classifySessionAgentCli('kimi');
 const prepared: PreparedPagedTerminalHistory | undefined = undefined;
 const outcome: PagedTerminalPreparedHistoryOutcome | undefined = undefined;
 const transport = undefined as unknown as TerminalTransport;
 const session = undefined as unknown as TerminalSessionInfo;
 const coordinator = new TerminalSessionsCoordinator({ transport, pollMs: 0 });
-void [TerminalCore, normalizeTerminalForegroundCommandDisplayName, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, prepared, outcome, session, coordinator];
+void [TerminalCore, classifyTerminalAgentCli, normalizeTerminalForegroundCommandDisplayName, classifySessionAgentCli, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, agentCli, sessionAgentCli, prepared, outcome, session, coordinator];
 `);
 
   await run(process.execPath, [

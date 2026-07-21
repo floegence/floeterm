@@ -86,6 +86,9 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		foregroundCommand: TerminalForegroundCommandInfo{
 			Phase: ForegroundCommandUnknown,
 		},
+		outputActivity: TerminalOutputActivityInfo{
+			Phase: OutputActivityUnknown,
+		},
 		eventHandler: initialHandler,
 		onExit: func(sessionID string) {
 			<-createdDone
@@ -344,5 +347,6 @@ func (s *Session) ToSessionInfo() TerminalSessionInfo {
 		LastActive:        s.LastActive.UnixMilli(),
 		IsActive:          s.isActive,
 		ForegroundCommand: normalizeForegroundCommandInfo(s.foregroundCommand),
+		OutputActivity:    normalizeOutputActivityInfo(s.outputActivity),
 	}
 }

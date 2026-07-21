@@ -36,6 +36,107 @@ const deferred = <T = void>() => {
 };
 
 describe('TerminalSessionsCoordinator', () => {
+  it('preserves newer output activity metadata when a stale session snapshot arrives', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession({
+      id: 'session-output',
+      name: 'repo',
+      workingDir: '/workspace/repo',
+      createdAtMs: 1,
+      lastActiveAtMs: 1,
+      isActive: true,
+      outputActivity: { phase: 'streaming', revision: 4, updatedAtMs: 40 },
+    });
+
+    coordinator.upsertSession({
+      id: 'session-output',
+      name: 'repo',
+      workingDir: '/workspace/repo',
+      createdAtMs: 1,
+      lastActiveAtMs: 2,
+      isActive: true,
+      outputActivity: { phase: 'settled', revision: 3, updatedAtMs: 30 },
+    });
+
+    expect(coordinator.getSnapshot()[0]?.outputActivity).toEqual({
+      phase: 'streaming', revision: 4, updatedAtMs: 40,
+    });
+  });
+
+  it('applies output activity patches only when their own revision is newer and valid', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('session-output', {
+      foregroundCommand: { phase: 'running', displayName: 'codex', revision: 5, updatedAtMs: 50 },
+      outputActivity: { phase: 'streaming', revision: 2, updatedAtMs: 20 },
+    }));
+
+    coordinator.updateSessionMeta('session-output', {
+      outputActivity: { phase: 'settled', revision: 3, updatedAtMs: 30 },
+    });
+    coordinator.updateSessionMeta('session-output', {
+      outputActivity: { phase: 'unknown', revision: 2, updatedAtMs: 40 },
+    });
+    coordinator.updateSessionMeta('session-output', {
+      outputActivity: { phase: 'invalid', revision: 999, updatedAtMs: 999 } as any,
+    });
+
+    expect(coordinator.getSnapshot()[0]).toMatchObject({
+      foregroundCommand: { phase: 'running', displayName: 'codex', revision: 5, updatedAtMs: 50 },
+      outputActivity: { phase: 'settled', revision: 3, updatedAtMs: 30 },
+    });
+  });
+
+  it('merges command and output revisions independently across stale refreshes', async () => {
+    const listSessions = vi.fn()
+      .mockResolvedValueOnce([makeSession('session-output', {
+        name: 'First refresh',
+        foregroundCommand: { phase: 'idle', displayName: '', revision: 5, updatedAtMs: 50 },
+        outputActivity: { phase: 'settled', revision: 5, updatedAtMs: 50 },
+      })])
+      .mockResolvedValueOnce([makeSession('session-output', {
+        name: 'Second refresh',
+        foregroundCommand: { phase: 'running', displayName: 'stale', revision: 4, updatedAtMs: 40 },
+        outputActivity: { phase: 'settled', revision: 7, updatedAtMs: 70 },
+      })]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }),
+      pollMs: 0,
+    });
+    coordinator.upsertSession(makeSession('session-output', {
+      foregroundCommand: { phase: 'running', displayName: 'codex', revision: 4, updatedAtMs: 40 },
+      outputActivity: { phase: 'streaming', revision: 6, updatedAtMs: 60 },
+    }));
+
+    await coordinator.refresh();
+    expect(coordinator.getSnapshot()[0]).toMatchObject({
+      name: 'First refresh',
+      foregroundCommand: { phase: 'idle', displayName: '', revision: 5, updatedAtMs: 50 },
+      outputActivity: { phase: 'streaming', revision: 6, updatedAtMs: 60 },
+    });
+
+    await coordinator.refresh();
+    expect(coordinator.getSnapshot()[0]).toMatchObject({
+      name: 'Second refresh',
+      foregroundCommand: { phase: 'idle', displayName: '', revision: 5, updatedAtMs: 50 },
+      outputActivity: { phase: 'settled', revision: 7, updatedAtMs: 70 },
+    });
+  });
+
+  it('does not let malformed high-revision output metadata block a later valid update', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('session-output', {
+      outputActivity: { phase: 'invalid', revision: 999, updatedAtMs: 999 } as any,
+    }));
+
+    coordinator.updateSessionMeta('session-output', {
+      outputActivity: { phase: 'streaming', revision: 1, updatedAtMs: 10 },
+    });
+
+    expect(coordinator.getSnapshot()[0]?.outputActivity).toEqual({
+      phase: 'streaming', revision: 1, updatedAtMs: 10,
+    });
+  });
+
   it('upserts and removes normalized sessions synchronously', () => {
     const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
     const snapshots: string[][] = [];

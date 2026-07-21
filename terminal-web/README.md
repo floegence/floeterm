@@ -81,16 +81,29 @@ Resource loading is single-flight and retryable after a real import or WASM init
 Use the lightweight subpath exports when the host needs session metadata or renderer-neutral history before loading the full terminal feature:
 
 ```ts
-import { TerminalSessionsCoordinator } from '@floegence/floeterm-terminal-web/sessions';
+import {
+  TerminalSessionsCoordinator,
+  classifyTerminalAgentCli,
+} from '@floegence/floeterm-terminal-web/sessions';
 import { preparePagedTerminalHistory } from '@floegence/floeterm-terminal-web/history';
 ```
 
 `TerminalSessionsCoordinator` treats `pollMs: 0` as a real periodic-poll disable. Subscribing still performs one best-effort initial reconcile, and explicit `refresh()` calls remain available to a host-owned lifecycle coordinator.
 
-Session snapshots may include `foregroundCommand`. The coordinator normalizes
-missing metadata to `unknown`, compares command-only updates, and applies a
-command patch only when its command revision is newer. Working-directory and
-name patches keep their independent ordering.
+Session snapshots may include independent `foregroundCommand` and
+`outputActivity` metadata. The coordinator normalizes missing metadata to
+`unknown` and merges each field only when its own revision is newer, so a stale
+list response cannot overwrite a newer output boundary. `outputActivity.phase`
+is `streaming` while a running command is producing visible display payload and
+becomes `settled` after the configured quiet interval. `settled` does not mean
+that the command, Agent turn, or task completed successfully.
+
+`classifyTerminalAgentCli` maps an already-sanitized foreground basename to the
+strict identities `codex`, `claude`, `opencode`, or `kimi`. Matching is
+case-insensitive and accepts one Windows executable suffix (`.exe`, `.cmd`, or
+`.bat`), but deliberately rejects paths, arguments, wrappers, partial matches,
+Unicode guesses, and overlong values. The root package exports the same helper.
+The lightweight sessions entry does not load TerminalCore or renderer code.
 
 Hosts that own output projection can reuse the bounded shell parser instead of
 maintaining a product-specific OSC implementation:
@@ -99,7 +112,7 @@ maintaining a product-specific OSC implementation:
 import { TerminalShellIntegrationParser } from '@floegence/floeterm-terminal-web';
 
 const parser = new TerminalShellIntegrationParser();
-const { displayData, events } = parser.parse(chunk);
+const { displayData, events, tokens } = parser.parse(chunk);
 core.write(displayData);
 ```
 
@@ -107,7 +120,9 @@ The parser recognizes OSC 633 prompt/command/cwd markers and Floeterm's safe
 program label. Recognized metadata is removed from display output, unknown OSC
 sequences are preserved, fragmented input is bounded, and program labels are
 limited to a 64-byte ASCII allowlist. The label never contains command
-arguments or environment values.
+arguments or environment values. `tokens` preserves the original order of
+display segments and recognized events, allowing hosts to attribute output to
+the foreground revision that was active at that exact byte boundary.
 
 ## Notes
 

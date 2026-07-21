@@ -293,6 +293,7 @@ export interface TerminalSessionInfo {
   lastActiveAtMs: number;
   isActive: boolean;
   foregroundCommand?: TerminalForegroundCommandInfo;
+  outputActivity?: TerminalOutputActivityInfo;
 }
 
 export type TerminalForegroundCommandPhase = 'unknown' | 'idle' | 'running';
@@ -300,6 +301,14 @@ export type TerminalForegroundCommandPhase = 'unknown' | 'idle' | 'running';
 export interface TerminalForegroundCommandInfo {
   phase: TerminalForegroundCommandPhase;
   displayName: string;
+  revision: number;
+  updatedAtMs: number;
+}
+
+export type TerminalOutputActivityPhase = 'unknown' | 'streaming' | 'settled';
+
+export interface TerminalOutputActivityInfo {
+  phase: TerminalOutputActivityPhase;
   revision: number;
   updatedAtMs: number;
 }
@@ -333,6 +342,11 @@ export interface TerminalNameUpdateEvent {
 export interface TerminalForegroundCommandUpdateEvent {
   sessionId: TerminalID;
   foregroundCommand: TerminalForegroundCommandInfo;
+}
+
+export interface TerminalOutputActivityUpdateEvent {
+  sessionId: TerminalID;
+  outputActivity: TerminalOutputActivityInfo;
 }
 
 // TerminalTransport is a neutral interface that defines request-style APIs.
@@ -403,6 +417,10 @@ export interface TerminalEventSource {
   onTerminalForegroundCommandUpdate?(
     sessionId: TerminalID,
     handler: (event: TerminalForegroundCommandUpdateEvent) => void,
+  ): () => void;
+  onTerminalOutputActivityUpdate?(
+    sessionId: TerminalID,
+    handler: (event: TerminalOutputActivityUpdateEvent) => void,
   ): () => void;
   onTerminalGeometry?(sessionId: TerminalID, handler: (event: TerminalGeometryEvent) => void): () => void;
   onSessionDeleted?(sessionId: TerminalID, handler: () => void): () => void;

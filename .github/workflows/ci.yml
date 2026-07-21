@@ -40,6 +40,9 @@ jobs:
         with:
           tool: wasm-pack@0.13.1
 
+      - name: Install real-shell matrix
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+
       - name: Install terminal browser test runtime
         working-directory: terminal-web
         run: |
@@ -47,4 +50,6 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Run Checks
+        env:
+          FLOETERM_REQUIRE_REAL_SHELL_MATRIX: "1"
         run: make check

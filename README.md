@@ -71,8 +71,8 @@ Typical use cases:
 
 | Package | Best for | What you get |
 | --- | --- | --- |
-| [`terminal-go`](./terminal-go) | Go backends that need PTY sessions | Session lifecycle, history buffering/filtering, explicit workdir signal parsing, resize coordination, and event callbacks |
-| [`terminal-web`](./terminal-web) | Web clients that want terminal plumbing without UI lock-in | `TerminalCore`, `createTerminalInstance`, `TerminalSessionsCoordinator`, config helpers, and a headless `ghostty-web` wrapper |
+| [`terminal-go`](./terminal-go) | Go backends that need PTY sessions | Session lifecycle, history buffering/filtering, explicit workdir and foreground-command signals, low-frequency output activity metadata, resize coordination, and event callbacks |
+| [`terminal-web`](./terminal-web) | Web clients that want terminal plumbing without UI lock-in | `TerminalCore`, `createTerminalInstance`, `TerminalSessionsCoordinator`, strict Agent CLI classification, config helpers, and a headless `ghostty-web` wrapper |
 | [`beamterm-renderer`](./beamterm-renderer) | FloeTerm's WebGL2 rendering release | A versioned, reproducible Beamterm fork with upstream provenance and browser warning/performance gates |
 | [`app/`](./app) | Teams that want a working reference before integrating | HTTP APIs, WebSocket streaming, and a Solid.js demo UI that wires the stack together |
 
@@ -91,6 +91,7 @@ npm i @floegence/floeterm-terminal-web
 | Restore terminal output after reconnect or remount | History chunks, replay windows, and filtering that removes problematic terminal auto-responses |
 | Support touch devices and IME input | A browser input bridge that keeps composition and soft keyboard flows working with `ghostty-web` |
 | Reuse one session across multiple surfaces | Per-connection sizing on the backend plus focus-aware responsive resize options in the web layer |
+| Distinguish a running command from active terminal output | Independent foreground-command and `unknown` / `streaming` / `settled` output metadata, without subscribing every session to its PTY byte stream |
 | Turn terminal output into product interactions | Custom link providers, bell events, and title updates surfaced through `TerminalCore` |
 | Evaluate quickly before integrating | A reference app you can run locally in minutes |
 
@@ -159,6 +160,7 @@ await controller.mount(container);
 | Lifecycle | `CreateSession` creates a dormant logical session. The first attach or an explicit activation should provide the real terminal viewport size. `ActivateSessionContext` lets a request stop waiting without cancelling another caller's shared activation; delete and cleanup cancel the session-owned activation. |
 | Multi-view sizing | Every live connection reports its own viewport `cols/rows`. Because one PTY has one real window size, the shared PTY uses the minimum live column count and minimum live row count. `terminal/live_v1` publishes that effective geometry to every renderer, so differently sized pages keep one terminal grid and identical screen state; detaching the limiting view expands the PTY and all remaining renderers together. |
 | Working directory tracking | `terminal-go` follows explicit cwd OSC markers (`633;P;Cwd`, `1337;CurrentDir`, `OSC 7`) and buffers incomplete frames across PTY reads instead of guessing from generic terminal title changes. |
+| Command and output awareness | Shell integration exposes a bounded foreground executable basename and independent output activity revisions. `settled` means the same command is still running but visible output has been quiet for the configured interval; it never means the command, Agent turn, or task succeeded. |
 | UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
 | Input model | `TerminalCore` handles one-time `ghostty-web` initialization internally and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
 | Extension points | `TerminalCore` exposes link providers, shell bell/title callbacks, buffer line reads, touch-scroll helpers, and explicit runtime font updates so downstream apps do not need `any`-based terminal mutations. |

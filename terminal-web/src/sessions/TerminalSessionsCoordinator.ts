@@ -1,4 +1,4 @@
-import type { Logger, TerminalForegroundCommandInfo, TerminalSessionInfo, TerminalTransport } from '../types.js';
+import type { Logger, TerminalForegroundCommandInfo, TerminalOutputActivityInfo, TerminalSessionInfo, TerminalTransport } from '../types.js';
 import { noopLogger } from '../utils/logger.js';
 import { normalizeTerminalForegroundCommandDisplayName } from './TerminalForegroundCommandMetadata.js';
 
@@ -51,10 +51,31 @@ const validateForegroundCommandUpdate = (value: unknown): TerminalForegroundComm
   };
 };
 
+const normalizeOutputActivity = (
+  value: TerminalSessionInfo['outputActivity'],
+): TerminalOutputActivityInfo => validateOutputActivityUpdate(value) ?? {
+  phase: 'unknown',
+  revision: 0,
+  updatedAtMs: 0,
+};
+
+const validateOutputActivityUpdate = (value: unknown): TerminalOutputActivityInfo | null => {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  const phase = candidate.phase;
+  const revision = candidate.revision;
+  const updatedAtMs = candidate.updatedAtMs;
+  if (phase !== 'unknown' && phase !== 'streaming' && phase !== 'settled') return null;
+  if (!Number.isSafeInteger(revision) || Number(revision) < 0) return null;
+  if (!Number.isSafeInteger(updatedAtMs) || Number(updatedAtMs) < 0) return null;
+  return { phase, revision: Number(revision), updatedAtMs: Number(updatedAtMs) };
+};
+
 const normalizeSession = (raw: TerminalSessionInfo): TerminalSessionInfo => ({
   ...raw,
   id: String(raw?.id ?? '').trim(),
   foregroundCommand: normalizeForegroundCommand(raw?.foregroundCommand),
+  outputActivity: normalizeOutputActivity(raw?.outputActivity),
 });
 
 const normalizeSessions = (list: TerminalSessionInfo[]): TerminalSessionInfo[] => {
@@ -72,24 +93,32 @@ const normalizeSessions = (list: TerminalSessionInfo[]): TerminalSessionInfo[] =
   });
 };
 
-const preferCurrentForegroundCommand = (
+const preferCurrentSessionMetadata = (
   current: TerminalSessionInfo | undefined,
   incoming: TerminalSessionInfo,
 ): TerminalSessionInfo => {
   if (!current) return incoming;
   const currentCommand = normalizeForegroundCommand(current.foregroundCommand);
   const incomingCommand = normalizeForegroundCommand(incoming.foregroundCommand);
-  return incomingCommand.revision <= currentCommand.revision
-    ? { ...incoming, foregroundCommand: currentCommand }
-    : incoming;
+  const currentOutput = normalizeOutputActivity(current.outputActivity);
+  const incomingOutput = normalizeOutputActivity(incoming.outputActivity);
+  return {
+    ...incoming,
+    foregroundCommand: incomingCommand.revision <= currentCommand.revision
+      ? currentCommand
+      : incomingCommand,
+    outputActivity: incomingOutput.revision <= currentOutput.revision
+      ? currentOutput
+      : incomingOutput,
+  };
 };
 
-const mergeCurrentForegroundCommands = (
+const mergeCurrentSessionMetadata = (
   current: TerminalSessionInfo[],
   incoming: TerminalSessionInfo[],
 ): TerminalSessionInfo[] => {
   const currentById = new Map(current.map(session => [session.id, session]));
-  return incoming.map(session => preferCurrentForegroundCommand(currentById.get(session.id), session));
+  return incoming.map(session => preferCurrentSessionMetadata(currentById.get(session.id), session));
 };
 
 const sessionsEqual = (a: TerminalSessionInfo[], b: TerminalSessionInfo[]): boolean => {
@@ -111,6 +140,11 @@ const sessionsEqual = (a: TerminalSessionInfo[], b: TerminalSessionInfo[]): bool
     if (ca.displayName !== cb.displayName) return false;
     if (ca.revision !== cb.revision) return false;
     if (ca.updatedAtMs !== cb.updatedAtMs) return false;
+    const oa = normalizeOutputActivity(sa.outputActivity);
+    const ob = normalizeOutputActivity(sb.outputActivity);
+    if (oa.phase !== ob.phase) return false;
+    if (oa.revision !== ob.revision) return false;
+    if (oa.updatedAtMs !== ob.updatedAtMs) return false;
   }
   return true;
 };
@@ -265,7 +299,7 @@ export class TerminalSessionsCoordinator {
         ? normalized.filter((s) => !this.pendingDeletions.has(s.id))
         : normalized;
 
-      this.setSessions(mergeCurrentForegroundCommands(this.sessions, filtered));
+      this.setSessions(mergeCurrentSessionMetadata(this.sessions, filtered));
       this.lastAppliedRefreshSeq = seq;
       this.lastAppliedMutationRevision = mutationRevision;
     })();
@@ -292,7 +326,7 @@ export class TerminalSessionsCoordinator {
     if (this.disposed) return normalized;
 
     const existing = this.sessions.find((item) => item.id === id);
-    const accepted = preferCurrentForegroundCommand(existing, normalized);
+    const accepted = preferCurrentSessionMetadata(existing, normalized);
 
     const merged = normalizeSessions([...this.sessions, accepted]);
     const filtered = this.pendingDeletions.size > 0
@@ -338,6 +372,7 @@ export class TerminalSessionsCoordinator {
       lastActiveAtMs?: number;
       isActive?: boolean;
       foregroundCommand?: TerminalForegroundCommandInfo;
+      outputActivity?: TerminalOutputActivityInfo;
     }
   ): void {
     const id = String(sessionId ?? '').trim();
@@ -361,6 +396,13 @@ export class TerminalSessionsCoordinator {
       const foregroundCommand = incomingCommand && incomingCommand.revision > currentCommand.revision
         ? incomingCommand
         : currentCommand;
+      const currentOutput = normalizeOutputActivity(s.outputActivity);
+      const incomingOutput = patch?.outputActivity
+        ? validateOutputActivityUpdate(patch.outputActivity)
+        : null;
+      const outputActivity = incomingOutput && incomingOutput.revision > currentOutput.revision
+        ? incomingOutput
+        : currentOutput;
 
       return {
         ...s,
@@ -369,6 +411,7 @@ export class TerminalSessionsCoordinator {
         lastActiveAtMs,
         isActive,
         foregroundCommand,
+        outputActivity,
       };
     });
 

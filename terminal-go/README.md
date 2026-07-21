@@ -101,8 +101,18 @@ as `top`. It never contains arguments, environment values, a PID, or the raw
 command line. The monotonic command revision lets hosts reject stale metadata
 notifications while keeping name and working-directory updates independent.
 
+The same session snapshot includes independent `OutputActivity` metadata with
+`unknown`, `streaming`, and `settled` phases. `settled` means the same foreground
+command is still running but visible PTY output has been quiet for the configured
+interval; it does not mean that the command, Agent turn, or task completed. Set
+`ManagerConfig.OutputActivityQuietDuration` to tune the interval; the default is
+3.5 seconds.
+
 Implement `TerminalSessionMetadataEventHandler` in addition to
 `TerminalEventHandler` to receive command boundary changes without polling.
+Implement the optional `TerminalOutputActivityEventHandler` to receive only
+low-frequency output phase boundaries; steady streaming output resets one
+session timer without publishing one metadata event per PTY chunk.
 The state is owned by the session and remains available from `ListSessions`
 even when no renderer is attached or the originating OSC marker has fallen out
 of retained history. This is interactive-shell lifecycle state, not an
@@ -117,5 +127,5 @@ Custom `ShellInitWriter` implementations that also need to run without a PATH pr
 - PTYs start at the effective attached viewport, preserve their last size after the final detach, and skip redundant same-size resizes.
 - Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and `OSC 7 file://...`) and ignores generic title-only OSC updates.
 - Cwd parsing is stream-safe across PTY read chunks, so fragmented fullscreen/TUI control sequences do not trigger false working-directory parse failures.
-- Shell metadata parsing is bounded to 4 KiB of pending data. Program labels use a strict 64-byte ASCII allowlist, and ordinary PTY output does not publish metadata updates.
+- Shell metadata parsing is bounded to 4 KiB of pending data. Program labels use a strict 64-byte ASCII allowlist, and ordinary PTY output publishes only output phase boundaries rather than one metadata update per chunk.
 - `NewStdLogger` colorizes output by level when writing to a TTY (disable via `NO_COLOR=1` or `FLOETERM_LOG_COLOR=0`).

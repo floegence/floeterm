@@ -31,11 +31,18 @@ type apiSessionInfo struct {
 	LastActiveAtMs    int64                    `json:"lastActiveAtMs"`
 	IsActive          bool                     `json:"isActive"`
 	ForegroundCommand apiForegroundCommandInfo `json:"foregroundCommand"`
+	OutputActivity    apiOutputActivityInfo    `json:"outputActivity"`
 }
 
 type apiForegroundCommandInfo struct {
 	Phase       string `json:"phase"`
 	DisplayName string `json:"displayName"`
+	Revision    uint64 `json:"revision"`
+	UpdatedAtMs int64  `json:"updatedAtMs"`
+}
+
+type apiOutputActivityInfo struct {
+	Phase       string `json:"phase"`
 	Revision    uint64 `json:"revision"`
 	UpdatedAtMs int64  `json:"updatedAtMs"`
 }
@@ -89,6 +96,11 @@ func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
 			DisplayName: info.ForegroundCommand.DisplayName,
 			Revision:    info.ForegroundCommand.Revision,
 			UpdatedAtMs: info.ForegroundCommand.UpdatedAt,
+		},
+		OutputActivity: apiOutputActivityInfo{
+			Phase:       string(info.OutputActivity.Phase),
+			Revision:    info.OutputActivity.Revision,
+			UpdatedAtMs: info.OutputActivity.UpdatedAt,
 		},
 	}
 }

@@ -1,11 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
+import vectors from '../../../protocol/shell_integration_activity_vectors.json';
 import { TerminalShellIntegrationParser } from './TerminalShellIntegrationParser';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 describe('TerminalShellIntegrationParser', () => {
+  it('matches the shared ordered activity vectors', () => {
+    for (const vector of vectors.cases) {
+      const parser = new TerminalShellIntegrationParser();
+      const tokens: string[] = [];
+      for (const chunk of vector.chunks) {
+        const result = parser.parse(encoder.encode(chunk));
+        for (const token of result.tokens) {
+          if (token.kind === 'display') {
+            tokens.push(`display:${decoder.decode(token.data)}`);
+            continue;
+          }
+          const event = token.event;
+          tokens.push(`signal:${event.kind}${event.kind === 'program' ? `:${event.displayName}` : ''}`);
+        }
+      }
+      expect(tokens, vector.name).toEqual(vector.tokens);
+    }
+  });
+
   it('strips lifecycle, cwd, and safe program markers while preserving ordered events', () => {
     const parser = new TerminalShellIntegrationParser();
     const result = parser.parse(encoder.encode(

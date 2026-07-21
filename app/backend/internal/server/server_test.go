@@ -62,6 +62,20 @@ func createTestSession(t *testing.T, baseURL string) apiSessionInfo {
 	return created
 }
 
+func TestAPISessionInfoIncludesOutputActivity(t *testing.T) {
+	got := toAPISessionInfo(terminal.TerminalSessionInfo{
+		ID: "session-output",
+		OutputActivity: terminal.TerminalOutputActivityInfo{
+			Phase:     terminal.OutputActivitySettled,
+			Revision:  7,
+			UpdatedAt: 99,
+		},
+	})
+	if got.OutputActivity.Phase != "settled" || got.OutputActivity.Revision != 7 || got.OutputActivity.UpdatedAtMs != 99 {
+		t.Fatalf("output activity = %#v", got.OutputActivity)
+	}
+}
+
 func readLiveFrame(t *testing.T, ctx context.Context, conn *websocket.Conn) livev1.Frame {
 	t.Helper()
 	messageType, data, err := conn.Read(ctx)

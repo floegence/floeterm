@@ -15,6 +15,7 @@ import { createTerminalLiveTransport } from './transport.js';
 import type {
   TerminalEventSource,
   TerminalForegroundCommandUpdateEvent,
+  TerminalOutputActivityUpdateEvent,
 } from '../types.js';
 
 class FakeStream implements TerminalByteStream {
@@ -142,6 +143,32 @@ describe('terminal live transport', () => {
       },
     };
     commandHandler?.(event);
+
+    expect(observer).toHaveBeenCalledWith(event);
+    stop?.();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('forwards output activity control events and their unsubscribe handle', () => {
+    let activityHandler: ((event: TerminalOutputActivityUpdateEvent) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const controlEvents: TerminalEventSource = {
+      onTerminalData: () => () => undefined,
+      onTerminalOutputActivityUpdate: (sessionId, handler) => {
+        expect(sessionId).toBe('session');
+        activityHandler = handler;
+        return unsubscribe;
+      },
+    };
+    const { eventSource } = createHarness(controlEvents);
+    const observer = vi.fn();
+
+    const stop = eventSource.onTerminalOutputActivityUpdate?.('session', observer);
+    const event: TerminalOutputActivityUpdateEvent = {
+      sessionId: 'session',
+      outputActivity: { phase: 'settled', revision: 3, updatedAtMs: 30 },
+    };
+    activityHandler?.(event);
 
     expect(observer).toHaveBeenCalledWith(event);
     stop?.();

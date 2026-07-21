@@ -54,6 +54,7 @@ type TerminalSessionInfo struct {
 	LastActive        int64
 	IsActive          bool
 	ForegroundCommand TerminalForegroundCommandInfo
+	OutputActivity    TerminalOutputActivityInfo
 }
 
 // ForegroundCommandPhase describes the interactive shell's command lifecycle.
@@ -72,6 +73,24 @@ type TerminalForegroundCommandInfo struct {
 	DisplayName string
 	Revision    uint64
 	UpdatedAt   int64
+}
+
+// TerminalOutputActivityPhase describes whether a running foreground command
+// is currently producing display payload or has gone quiet.
+type TerminalOutputActivityPhase string
+
+const (
+	OutputActivityUnknown   TerminalOutputActivityPhase = "unknown"
+	OutputActivityStreaming TerminalOutputActivityPhase = "streaming"
+	OutputActivitySettled   TerminalOutputActivityPhase = "settled"
+)
+
+// TerminalOutputActivityInfo is a low-frequency output-boundary snapshot.
+// Settled means output is quiet; it does not mean the command completed.
+type TerminalOutputActivityInfo struct {
+	Phase     TerminalOutputActivityPhase
+	Revision  uint64
+	UpdatedAt int64
 }
 
 // ManagerDiagnostics reports terminal history memory without imposing a
@@ -106,6 +125,11 @@ type TerminalEventHandler interface {
 // transitions without widening the required TerminalEventHandler contract.
 type TerminalSessionMetadataEventHandler interface {
 	OnTerminalSessionMetadataChanged(sessionID string, info TerminalSessionInfo)
+}
+
+// TerminalOutputActivityEventHandler optionally receives output phase changes.
+type TerminalOutputActivityEventHandler interface {
+	OnTerminalOutputActivityChanged(sessionID string, info TerminalOutputActivityInfo)
 }
 
 // TerminalGeometry identifies one applied PTY grid size.
@@ -211,11 +235,16 @@ type Session struct {
 	historyGeneration    int64
 	historyStartSequence int64
 
-	currentWorkingDir        string
-	workdirPending           []byte
-	shellIntegrationPending  []byte
-	pendingForegroundProgram string
-	foregroundCommand        TerminalForegroundCommandInfo
+	currentWorkingDir             string
+	workdirPending                []byte
+	shellIntegrationPending       []byte
+	pendingForegroundProgram      string
+	foregroundCommand             TerminalForegroundCommandInfo
+	outputActivity                TerminalOutputActivityInfo
+	outputActivityTimer           *time.Timer
+	outputActivityDeadline        time.Time
+	outputActivityGeneration      uint64
+	outputActivityCommandRevision uint64
 
 	lastAppliedCols    int
 	lastAppliedRows    int

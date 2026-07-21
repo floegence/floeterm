@@ -7,6 +7,7 @@ import {
   createTerminalInstance,
   createTerminalOutputPipeline,
   createPagedTerminalOutputCoordinator,
+  classifyTerminalAgentCli,
   getTerminalInitializationSchedulerStats,
   getTerminalRenderSchedulerStats,
   preloadTerminalResources,
@@ -44,6 +45,7 @@ describe('public framework-neutral API', () => {
     expect(createPagedTerminalOutputCoordinator).toBeTypeOf('function');
     expect(preloadTerminalResources).toBeTypeOf('function');
     expect(preparePagedTerminalHistory).toBeTypeOf('function');
+    expect(classifyTerminalAgentCli('codex')).toBe('codex');
     expect(TerminalState.IDLE).toBe('idle');
     expect(getTerminalInitializationSchedulerStats()).toMatchObject({
       active: expect.any(Number),

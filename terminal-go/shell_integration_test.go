@@ -2,11 +2,84 @@ package terminal
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+type shellIntegrationActivityVectorFile struct {
+	Cases []struct {
+		Name   string   `json:"name"`
+		Chunks []string `json:"chunks"`
+		Tokens []string `json:"tokens"`
+	} `json:"cases"`
+}
+
+func TestShellIntegrationActivityVectorsPreserveTokenOrder(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "protocol", "shell_integration_activity_vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors shellIntegrationActivityVectorFile
+	if err := json.Unmarshal(content, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	for _, vector := range vectors.Cases {
+		t.Run(vector.Name, func(t *testing.T) {
+			var pending []byte
+			var got []string
+			for _, chunk := range vector.Chunks {
+				buffer := append(append([]byte(nil), pending...), []byte(chunk)...)
+				tokens, malformed, nextPending := parseShellIntegrationTokens(buffer)
+				if len(malformed) != 0 {
+					t.Fatalf("malformed = %v", malformed)
+				}
+				pending = nextPending
+				for _, token := range tokens {
+					switch token.kind {
+					case shellIntegrationDisplay:
+						got = append(got, "display:"+string(token.data))
+					case shellIntegrationMetadata:
+						label := "signal:" + shellIntegrationSignalLabel(token.signal.kind)
+						if token.signal.program != "" {
+							label += ":" + token.signal.program
+						}
+						got = append(got, label)
+					}
+				}
+			}
+			if len(pending) != 0 {
+				t.Fatalf("pending = %q", pending)
+			}
+			if strings.Join(got, "\n") != strings.Join(vector.Tokens, "\n") {
+				t.Fatalf("tokens = %#v, want %#v", got, vector.Tokens)
+			}
+		})
+	}
+}
+
+func shellIntegrationSignalLabel(kind shellIntegrationSignalKind) string {
+	switch kind {
+	case shellIntegrationCwd:
+		return "cwd-update"
+	case shellIntegrationPromptReady:
+		return "prompt-ready"
+	case shellIntegrationCommandStart:
+		return "command-start"
+	case shellIntegrationCommandExecuted:
+		return "command-executed"
+	case shellIntegrationCommandFinished:
+		return "command-finished"
+	case shellIntegrationProgram:
+		return "program"
+	default:
+		return "unknown"
+	}
+}
 
 type metadataCaptureHandler struct {
 	mu      sync.Mutex
@@ -98,6 +171,8 @@ func TestSessionTracksForegroundCommandMetadataFromShellIntegration(t *testing.T
 	}
 	if updates := handler.snapshot(); len(updates) != 2 {
 		t.Fatalf("metadata updates = %d, want 2", len(updates))
+	} else if updates[1].OutputActivity != info.OutputActivity {
+		t.Fatalf("metadata output activity = %+v, want snapshot %+v", updates[1].OutputActivity, info.OutputActivity)
 	}
 }
 
@@ -257,6 +332,46 @@ func BenchmarkSessionCheckShellIntegrationNoMetadata64KiB(b *testing.B) {
 	session := &Session{}
 	b.SetBytes(int64(len(payload)))
 	b.ReportAllocs()
+	for index := 0; index < b.N; index++ {
+		session.checkShellIntegrationChange(payload)
+	}
+}
+
+func BenchmarkSessionCheckShellIntegrationSteadyStreaming64KiB(b *testing.B) {
+	payload := bytes.Repeat([]byte("terminal output without control metadata\n"), 2048)
+	session := &Session{
+		foregroundCommand: TerminalForegroundCommandInfo{
+			Phase:       ForegroundCommandRunning,
+			DisplayName: "codex",
+			Revision:    1,
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.checkShellIntegrationChange(payload)
+	b.Cleanup(func() { _ = session.Close() })
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		session.checkShellIntegrationChange(payload)
+	}
+}
+
+func BenchmarkSessionCheckShellIntegrationSteadyStreamingANSI64KiB(b *testing.B) {
+	payload := bytes.Repeat([]byte("\x1b[38;5;81magent output\x1b[0m\r"), 2800)
+	session := &Session{
+		foregroundCommand: TerminalForegroundCommandInfo{
+			Phase:       ForegroundCommandRunning,
+			DisplayName: "claude",
+			Revision:    1,
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.checkShellIntegrationChange(payload)
+	b.Cleanup(func() { _ = session.Close() })
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
 		session.checkShellIntegrationChange(payload)
 	}
