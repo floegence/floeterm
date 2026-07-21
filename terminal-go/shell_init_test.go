@@ -233,6 +233,133 @@ trap 'printf "__USER_DEBUG__:%s:%s\n" "$?" "$BASH_COMMAND"' DEBUG
 		})
 	})
 
+	t.Run("string PROMPT_COMMAND with trailing separator", func(t *testing.T) {
+		output := runBashLifecycleProbe(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='printf "__USER_TRAILING_PROMPT__\n"; '
+`)
+		if strings.Contains(output, "syntax error") {
+			t.Fatalf("trailing PROMPT_COMMAND separator caused a syntax error: %q", output)
+		}
+		if got := strings.Count(output, "__USER_TRAILING_PROMPT__"); got != 1 {
+			t.Fatalf("user PROMPT_COMMAND count = %d, want 1 in %q", got, output)
+		}
+		assertContainsInOrder(t, output, []string{
+			"\x1b]633;B\a",
+			"\x1b]633;P;FloetermProgram=sleep\a",
+			"\x1b]633;C\a",
+			"__USER_TRAILING_PROMPT__",
+			"\x1b]633;D;0\a",
+			"\x1b]633;A\a",
+		})
+	})
+
+	t.Run("history PROMPT_COMMAND with trailing separator", func(t *testing.T) {
+		output := runBashLifecycleProbe(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='history -a; '
+`)
+		if strings.Contains(output, "syntax error") {
+			t.Fatalf("history PROMPT_COMMAND caused a syntax error: %q", output)
+		}
+		assertContainsInOrder(t, output, []string{
+			"\x1b]633;B\a",
+			"\x1b]633;P;FloetermProgram=sleep\a",
+			"\x1b]633;C\a",
+			"\x1b]633;D;0\a",
+			"\x1b]633;A\a",
+		})
+	})
+
+	t.Run("string PROMPT_COMMAND with trailing comment", func(t *testing.T) {
+		output := runBashLifecycleProbe(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='printf "__USER_COMMENT_PROMPT__\n"; # preserve this comment'
+`)
+		if got := strings.Count(output, "__USER_COMMENT_PROMPT__"); got != 1 {
+			t.Fatalf("commented user PROMPT_COMMAND count = %d, want 1 in %q", got, output)
+		}
+		assertContainsInOrder(t, output, []string{
+			"\x1b]633;C\a",
+			"__USER_COMMENT_PROMPT__",
+			"\x1b]633;D;0\a",
+			"\x1b]633;A\a",
+		})
+	})
+
+	t.Run("multiline string PROMPT_COMMAND with trailing newline", func(t *testing.T) {
+		output := runBashLifecycleProbe(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='printf "__USER_MULTI_ONE__\n"
+printf "__USER_MULTI_TWO__\n"
+'
+`)
+		for _, marker := range []string{"__USER_MULTI_ONE__", "__USER_MULTI_TWO__"} {
+			if got := strings.Count(output, marker); got != 1 {
+				t.Fatalf("multiline user PROMPT_COMMAND marker %q count = %d, want 1 in %q", marker, got, output)
+			}
+		}
+		assertContainsInOrder(t, output, []string{
+			"\x1b]633;C\a",
+			"__USER_MULTI_ONE__",
+			"__USER_MULTI_TWO__",
+			"\x1b]633;D;0\a",
+			"\x1b]633;A\a",
+		})
+	})
+
+	t.Run("string PROMPT_COMMAND with internal separator", func(t *testing.T) {
+		output := runBashLifecycleProbe(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='printf "__USER_INTERNAL_ONE__\n"; printf "__USER_INTERNAL_TWO__\n"'
+`)
+		for _, marker := range []string{"__USER_INTERNAL_ONE__", "__USER_INTERNAL_TWO__"} {
+			if got := strings.Count(output, marker); got != 1 {
+				t.Fatalf("compound user PROMPT_COMMAND marker %q count = %d, want 1 in %q", marker, got, output)
+			}
+		}
+	})
+
+	t.Run("foreground status reaches user hook lifecycle and prompt", func(t *testing.T) {
+		output := runBashLifecycleCommand(t, bashPath, `
+PS1='__FLOETERM_PROMPT__:$? '
+PROMPT_COMMAND='printf "__USER_STATUS__:%s\n" "$?"; '
+`, "false\n", "\x1b]633;D;1\a")
+		assertContainsInOrder(t, output, []string{
+			"\x1b]633;P;FloetermProgram=false\a",
+			"\x1b]633;C\a",
+			"__USER_STATUS__:1",
+			"\x1b]633;D;1\a",
+			"\x1b]633;A\a",
+			"__FLOETERM_PROMPT__:1",
+		})
+	})
+
+	t.Run("repeated lifecycle load installs one hook", func(t *testing.T) {
+		output := runBashLifecycleProbe(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='printf "__USER_RELOAD_PROMPT__\n"; '
+source "$HOME/floeterm-lifecycle.sh"
+source "$HOME/floeterm-lifecycle.sh"
+`)
+		if got := strings.Count(output, "__USER_RELOAD_PROMPT__"); got != 1 {
+			t.Fatalf("reloaded user PROMPT_COMMAND count = %d, want 1 in %q", got, output)
+		}
+		if got := strings.Count(output, "\x1b]633;A\a"); got != 1 {
+			t.Fatalf("reloaded lifecycle ready marker count = %d, want 1 in %q", got, output)
+		}
+	})
+
+	t.Run("invalid string PROMPT_COMMAND remains invalid", func(t *testing.T) {
+		output := runBashLifecycleStartup(t, bashPath, `
+PS1='__FLOETERM_PROMPT__ '
+PROMPT_COMMAND='history -a;;'
+`)
+		if !strings.Contains(output, "syntax error") || !strings.Contains(output, "history -a;;") {
+			t.Fatalf("invalid user PROMPT_COMMAND was unexpectedly hidden or rewritten: %q", output)
+		}
+	})
+
 	majorOutput, err := exec.Command(bashPath, "-c", `printf '%s' "${BASH_VERSINFO[0]}"`).Output()
 	if err != nil {
 		t.Fatalf("read bash version: %v", err)
@@ -252,6 +379,11 @@ PROMPT_COMMAND=('printf "__USER_PROMPT_ONE__\n"' 'printf "__USER_PROMPT_TWO__\n"
 				"\x1b]633;D;0\a",
 				"\x1b]633;A\a",
 			})
+			for _, marker := range []string{"__USER_PROMPT_ONE__", "__USER_PROMPT_TWO__"} {
+				if got := strings.Count(output, marker); got != 1 {
+					t.Fatalf("array user PROMPT_COMMAND marker %q count = %d, want 1 in %q", marker, got, output)
+				}
+			}
 		})
 	}
 }
@@ -338,6 +470,9 @@ func runBashLifecycleCommand(t *testing.T, bashPath string, userRC string, comma
 	if err := os.WriteFile(filepath.Join(homeDir, ".bashrc"), []byte(userRC), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(homeDir, "floeterm-lifecycle.sh"), []byte(bashCommandLifecycleScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	baseDir := filepath.Join(t.TempDir(), "shell-init")
 	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
 	if err := writer.EnsureShellInitFiles(""); err != nil {
@@ -375,6 +510,28 @@ func runBashLifecycleCommand(t *testing.T, bashPath string, userRC string, comma
 		before = 0
 	}
 	return output[before:]
+}
+
+func runBashLifecycleStartup(t *testing.T, bashPath string, userRC string) string {
+	t.Helper()
+	homeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(homeDir, ".bashrc"), []byte(userRC), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseDir := filepath.Join(t.TempDir(), "shell-init")
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	if err := writer.EnsureShellInitFiles(""); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := newShellInitPaths(baseDir)
+	cmd := exec.Command(bashPath, "--noprofile", "--rcfile", paths.BashRC(), "-i")
+	cmd.Env = replaceEnvironmentValues(os.Environ(), map[string]string{
+		"HOME": homeDir,
+		"TERM": "xterm-256color",
+	})
+	output, _ := cmd.CombinedOutput()
+	return string(output)
 }
 
 func replaceEnvironmentValues(env []string, replacements map[string]string) []string {

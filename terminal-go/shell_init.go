@@ -372,9 +372,12 @@ if [ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]; then
             ;;
         *)
             if [ -n "${PROMPT_COMMAND:-}" ]; then
-                PROMPT_COMMAND="__floeterm_terminal_prompt_begin;${PROMPT_COMMAND};__floeterm_terminal_precmd"
+                PROMPT_COMMAND="__floeterm_terminal_prompt_begin
+${PROMPT_COMMAND}
+__floeterm_terminal_precmd"
             else
-                PROMPT_COMMAND="__floeterm_terminal_prompt_begin;__floeterm_terminal_precmd"
+                PROMPT_COMMAND="__floeterm_terminal_prompt_begin
+__floeterm_terminal_precmd"
             fi
             ;;
     esac

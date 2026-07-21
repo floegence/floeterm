@@ -9,6 +9,45 @@ on:
       - "v*.*.*"
 
 jobs:
+  bash-shell-integration:
+    name: Bash shell integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: terminal-go/go.mod
+          cache-dependency-path: terminal-go/go.sum
+
+      - name: Verify Bash compatibility version
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash --version | head -n 1
+          if [[ "$RUNNER_OS" == "macOS" && "${BASH_VERSINFO[0]}" -ne 3 ]]; then
+            echo "Expected the macOS system Bash 3.x compatibility runtime" >&2
+            exit 1
+          fi
+          if [[ "$RUNNER_OS" == "Linux" && "${BASH_VERSINFO[0]}" -lt 5 ]]; then
+            echo "Expected the Ubuntu Bash 5.x compatibility runtime" >&2
+            exit 1
+          fi
+
+      - name: Test Bash prompt command compatibility
+        working-directory: terminal-go
+        run: go test ./... -run '^TestRealBashCommandLifecyclePreservesPromptCommandAndReportsSilentCommand$' -count=1
+
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 45
