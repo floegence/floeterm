@@ -276,9 +276,10 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 
 	cmd := exec.Command(zshPath)
 	cmd.Env = replaceEnvironmentValues(os.Environ(), map[string]string{
-		"HOME":    homeDir,
-		"TERM":    "xterm-256color",
-		"ZDOTDIR": paths.ZshDir(),
+		"HOME":                 homeDir,
+		"TERM":                 "xterm-256color",
+		"ZDOTDIR":              paths.ZshDir(),
+		"skip_global_compinit": "1",
 	})
 	ptmx, err := pty.Start(cmd)
 	if err != nil {

@@ -392,8 +392,11 @@ func TestRealShellOutputActivityMatrix(t *testing.T) {
 			}
 			initDir := t.TempDir()
 			manager := NewManager(ManagerConfig{
-				Logger:        NopLogger{},
-				EnvProvider:   StaticEnvProvider{Env: os.Environ(), PathPrepend: binDir},
+				Logger: NopLogger{},
+				EnvProvider: StaticEnvProvider{
+					Env:         append(os.Environ(), "skip_global_compinit=1"),
+					PathPrepend: binDir,
+				},
 				ShellResolver: testShellResolver{shell: shellPath},
 				ShellArgsProvider: DefaultShellArgsProvider{
 					ShellInitBaseDir:       initDir,
