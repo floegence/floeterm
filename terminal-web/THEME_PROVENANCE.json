@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "generatedFor": "Floeterm terminal-web 0.8.0 design review",
+  "packageArtifactOwner": "@floegence/floeterm-terminal-web npm tarball",
+  "floetermLegacySourceCommit": "ee13df3",
+  "originalThemeNameDecision": {
+    "reference": "https://github.com/mbadolato/iTerm2-Color-Schemes/tree/97e244cf98a0eb2ce4339d2069ec1bba6c81f141/ghostty",
+    "referenceCommit": "97e244cf98a0eb2ce4339d2069ec1bba6c81f141",
+    "referenceThemeCount": 592,
+    "exactNameConflicts": [],
+    "decision": "No exact collision across 592 iTerm2-Color-Schemes Ghostty names; original compound labels approved."
+  },
+  "themes": [
+    { "id": "dark", "classification": "legacy_existing", "source": "floeterm", "sourceCommit": "ee13df3", "spdx": "MIT", "copyright": "Floeterm contributors", "decision": "retain existing fields and values" },
+    { "id": "light", "classification": "legacy_existing", "source": "floeterm", "sourceCommit": "ee13df3", "spdx": "MIT", "copyright": "Floeterm contributors", "decision": "retain existing fields and values; add cursorAccent equal to background" },
+    { "id": "solarizedDark", "classification": "legacy_external", "source": "https://github.com/altercation/solarized/blob/62f656a02f93c5190a8753159e34b385588d5ff3/iterm2-colors-solarized/Solarized%20Dark.itermcolors", "sourceCommit": "62f656a02f93c5190a8753159e34b385588d5ff3", "floetermSourceCommit": "ee13df3", "spdx": "MIT", "copyright": "Copyright (c) 2011 Ethan Schoonover", "modification": "existing Floeterm ANSI mapping retained; cursorAccent added equal to background", "packageLicenseArtifact": "third_party_licenses/solarized-MIT.txt" },
+    { "id": "monokai", "classification": "legacy_unresolved", "source": "floeterm", "sourceCommit": "ee13df3", "spdx": "NOASSERTION", "floetermSourceLicense": "MIT", "copyright": "Floeterm contributors", "risk": "The exact pre-existing palette source and upstream naming authorization could not be reconstructed reliably.", "productDecision": "Retain legacy ID, display label, and colors for backward compatibility without claiming official Monokai status or adding new third-party material; future legal review may change the display label while preserving the persisted ID.", "modification": "cursorAccent added equal to background" },
+    { "id": "tokyoNight", "classification": "legacy_external", "source": "https://github.com/folke/tokyonight.nvim/blob/cdc07ac78467a233fd62c493de29a17e0cf2b2b6/lua/tokyonight/colors/night.lua", "terminalMapping": "https://github.com/folke/tokyonight.nvim/blob/cdc07ac78467a233fd62c493de29a17e0cf2b2b6/lua/tokyonight/extra/ghostty.lua", "sourceCommit": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6", "floetermSourceCommit": "ee13df3", "spdx": "Apache-2.0", "copyright": "Folke Lemaitre and Tokyo Night contributors", "noticeFileAtSource": "none found in fixed source tree", "modification": "existing Floeterm palette retained", "packageLicenseArtifact": "third_party_licenses/tokyonight-Apache-2.0.txt" },
+    { "id": "polarVeil", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "copperCircuit", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "violetDusk", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "cedarGrove", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "midnightInk", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "velvetOrchid", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "blueQuarry", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "studioPaper", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "softLinen", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "mintGlass", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "roseDawn", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "openSky", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "highContrastDark", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "highContrastLight", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false },
+    { "id": "signalSafeDark", "classification": "floeterm_original", "source": "Floeterm 0.8.0 theme design", "spdx": "MIT", "copyright": "Floeterm contributors", "externalColorTableCopied": false, "certification": { "model": "Machado, Oliveira and Fernandes 2009 full dichromacy matrices", "doi": "10.1109/TVCG.2009.113", "pipeline": "linear sRGB to D65 CIELAB and CIEDE2000", "testEvidenceArtifact": "THEME_QUALITY_EVIDENCE.json", "repositoryTestEvidence": "terminal-web/src/utils/themeQuality.test.ts" } }
+  ]
+}

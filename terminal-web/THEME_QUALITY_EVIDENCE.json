@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "0.8.0",
+  "catalogSha256": "84fb9d7f9015a0f872ec3cda405ae6c641d562ee9f91fbc99fa9e4613987bc70",
+  "methodology": {
+    "contrast": "WCAG relative luminance after sRGB decoding",
+    "distinctness": "weighted CIEDE2000 across background, foreground, selection background, and ANSI 0-15",
+    "colorVisionSimulation": {
+      "model": "Machado, Oliveira and Fernandes 2009 full dichromacy matrices",
+      "doi": "10.1109/TVCG.2009.113",
+      "pipeline": "sRGB decode to linear RGB -> severity 1.0 matrix -> D65 CIELAB -> CIEDE2000"
+    }
+  },
+  "thresholds": {
+    "foregroundContrast": 4.5,
+    "highContrastForeground": 7,
+    "selectionContrast": 4.5,
+    "cursorContrast": 3,
+    "cursorAccentContrast": 4.5,
+    "originalChromaticAnsiContrast": 4.5,
+    "originalBrightBlackContrast": 3,
+    "catalogNearestNeighborDeltaE00": 5,
+    "signalSafeSemanticPairDeltaE00": 10,
+    "signalSafeNormalBrightDeltaE00": 5
+  },
+  "results": {
+    "themeCount": 20,
+    "allThemesPassed": true,
+    "minimumCatalogNearestNeighborDeltaE00": 5.38,
+    "signalSafeDark": {
+      "foregroundContrast": 16.34,
+      "selectionContrast": 8.09,
+      "cursorContrast": 16.34,
+      "cursorAccentContrast": 16.34,
+      "simulations": {
+        "protanopia": {
+          "redGreenDeltaE00": 26.82,
+          "blueMagentaDeltaE00": 13.08,
+          "normalBrightDeltaE00": [13.84, 8.63, 11.16, 8.22, 7.62, 10.12, 10.49, 7.52]
+        },
+        "deuteranopia": {
+          "redGreenDeltaE00": 36.42,
+          "blueMagentaDeltaE00": 24.15,
+          "normalBrightDeltaE00": [13.75, 6.91, 12.67, 7.59, 8.78, 6.97, 13.24, 8.1]
+        },
+        "tritanopia": {
+          "redGreenDeltaE00": 58.4,
+          "blueMagentaDeltaE00": 69.53,
+          "normalBrightDeltaE00": [13.82, 8.48, 11.4, 7.17, 5.99, 11.34, 13.3, 8.87]
+        }
+      }
+    }
+  },
+  "repositoryTestEvidence": "terminal-web/src/utils/themeQuality.test.ts"
+}

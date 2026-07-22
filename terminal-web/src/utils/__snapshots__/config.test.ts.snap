@@ -1,0 +1,133 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`config helpers > preserves every legacy color field and adds only the missing cursor accent > dark legacy palette 1`] = `
+{
+  "background": "#0b0f14",
+  "black": "#0b0f14",
+  "blue": "#57c7ff",
+  "brightBlack": "#545d68",
+  "brightBlue": "#57c7ff",
+  "brightCyan": "#9aedfe",
+  "brightGreen": "#5af78e",
+  "brightMagenta": "#ff6ac1",
+  "brightRed": "#ff5c57",
+  "brightWhite": "#ffffff",
+  "brightYellow": "#f3f99d",
+  "cursor": "#c9d1d9",
+  "cursorAccent": "#0b0f14",
+  "cyan": "#9aedfe",
+  "foreground": "#c9d1d9",
+  "green": "#5af78e",
+  "magenta": "#ff6ac1",
+  "red": "#ff5c57",
+  "selectionBackground": "#f5e6b3",
+  "selectionForeground": "#1f2328",
+  "white": "#c9d1d9",
+  "yellow": "#f3f99d",
+}
+`;
+
+exports[`config helpers > preserves every legacy color field and adds only the missing cursor accent > light legacy palette 1`] = `
+{
+  "background": "#ffffff",
+  "black": "#000000",
+  "blue": "#0451a5",
+  "brightBlack": "#666666",
+  "brightBlue": "#0451a5",
+  "brightCyan": "#0598bc",
+  "brightGreen": "#14ce14",
+  "brightMagenta": "#bc05bc",
+  "brightRed": "#cd3131",
+  "brightWhite": "#a5a5a5",
+  "brightYellow": "#b5ba00",
+  "cursor": "#333333",
+  "cyan": "#0598bc",
+  "foreground": "#333333",
+  "green": "#00bc00",
+  "magenta": "#bc05bc",
+  "red": "#cd3131",
+  "selectionBackground": "#f5e6b3",
+  "selectionForeground": "#1f2328",
+  "white": "#555555",
+  "yellow": "#949800",
+}
+`;
+
+exports[`config helpers > preserves every legacy color field and adds only the missing cursor accent > monokai legacy palette 1`] = `
+{
+  "background": "#272822",
+  "black": "#272822",
+  "blue": "#66d9ef",
+  "brightBlack": "#75715e",
+  "brightBlue": "#66d9ef",
+  "brightCyan": "#a1efe4",
+  "brightGreen": "#a6e22e",
+  "brightMagenta": "#ae81ff",
+  "brightRed": "#f92672",
+  "brightWhite": "#f9f8f5",
+  "brightYellow": "#f4bf75",
+  "cursor": "#f8f8f2",
+  "cyan": "#a1efe4",
+  "foreground": "#f8f8f2",
+  "green": "#a6e22e",
+  "magenta": "#ae81ff",
+  "red": "#f92672",
+  "selectionBackground": "#f5e6b3",
+  "selectionForeground": "#1f2328",
+  "white": "#f8f8f2",
+  "yellow": "#f4bf75",
+}
+`;
+
+exports[`config helpers > preserves every legacy color field and adds only the missing cursor accent > solarizedDark legacy palette 1`] = `
+{
+  "background": "#002b36",
+  "black": "#073642",
+  "blue": "#268bd2",
+  "brightBlack": "#002b36",
+  "brightBlue": "#839496",
+  "brightCyan": "#93a1a1",
+  "brightGreen": "#586e75",
+  "brightMagenta": "#6c71c4",
+  "brightRed": "#cb4b16",
+  "brightWhite": "#fdf6e3",
+  "brightYellow": "#657b83",
+  "cursor": "#93a1a1",
+  "cyan": "#2aa198",
+  "foreground": "#93a1a1",
+  "green": "#859900",
+  "magenta": "#d33682",
+  "red": "#dc322f",
+  "selectionBackground": "#f5e6b3",
+  "selectionForeground": "#1f2328",
+  "white": "#eee8d5",
+  "yellow": "#b58900",
+}
+`;
+
+exports[`config helpers > preserves every legacy color field and adds only the missing cursor accent > tokyo night legacy palette 1`] = `
+{
+  "background": "#1a1b26",
+  "black": "#15161e",
+  "blue": "#7aa2f7",
+  "brightBlack": "#414868",
+  "brightBlue": "#7aa2f7",
+  "brightCyan": "#7dcfff",
+  "brightGreen": "#9ece6a",
+  "brightMagenta": "#bb9af7",
+  "brightRed": "#f7768e",
+  "brightWhite": "#c0caf5",
+  "brightYellow": "#e0af68",
+  "cursor": "#c0caf5",
+  "cursorAccent": "#1a1b26",
+  "cyan": "#7dcfff",
+  "foreground": "#c0caf5",
+  "green": "#9ece6a",
+  "magenta": "#bb9af7",
+  "red": "#f7768e",
+  "selectionBackground": "#f5e6b3",
+  "selectionForeground": "#1f2328",
+  "white": "#a9b1d6",
+  "yellow": "#e0af68",
+}
+`;

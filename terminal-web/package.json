@@ -1,6 +1,6 @@
 {
   "name": "@floegence/floeterm-terminal-web",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Framework-neutral ghostty-web (xterm.js API-compatible) integration with terminal core, session, and data flow utilities.",
   "license": "MIT",
   "publishConfig": {
@@ -43,7 +43,11 @@
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "THEME_PROVENANCE.json",
+    "THEME_QUALITY_EVIDENCE.json",
+    "THIRD_PARTY_THEME_NOTICES.md",
+    "third_party_licenses"
   ],
   "sideEffects": [
     "dist/styles/*.css"
@@ -72,13 +76,13 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@vitest/browser": "4.1.8",
-    "@vitest/browser-playwright": "4.1.8",
+    "@vitest/browser": "4.1.10",
+    "@vitest/browser-playwright": "4.1.10",
     "jsdom": "^24.1.3",
     "playwright": "^1.57.0",
     "typescript": "^5.4.0",
     "vite": "^8.0.16",
     "vite-plugin-wasm": "^3.6.0",
-    "vitest": "^4.1.8"
+    "vitest": "4.1.10"
   }
 }

@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import {
   createTerminalInstance,
+  isTerminalThemeName,
   getTerminalFabricDiagnostics,
   getTerminalRenderSchedulerStats,
   type TerminalFabricDiagnostics,
@@ -11,6 +12,7 @@ import {
   TerminalState,
   type TerminalThemeName,
 } from '@floegence/floeterm-terminal-web';
+import { applyTerminalThemeShell, ThemeSelector } from './themeCatalog';
 import { createTerminalRuntime, type AppTerminalTransport } from './terminalApi';
 import {
   buildLiveGridCommand,
@@ -126,10 +128,6 @@ const initialTerminalSnapshot: TerminalInstanceSnapshot = {
   loadingMessage: '',
 };
 
-const isThemeName = (value: string): value is TerminalThemeName => {
-  return value === 'tokyoNight' || value === 'dark' || value === 'monokai' || value === 'solarizedDark' || value === 'light';
-};
-
 const createMediaQuery = (query: string) => {
   const [matches, setMatches] = createSignal(typeof window !== 'undefined' ? window.matchMedia(query).matches : false);
 
@@ -146,11 +144,12 @@ const createMediaQuery = (query: string) => {
 
 const createThemeName = () => {
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY) ?? '';
-  const [themeName, setThemeName] = createSignal<TerminalThemeName>(isThemeName(stored) ? stored : 'tokyoNight');
+  const [themeName, setThemeName] = createSignal<TerminalThemeName>(isTerminalThemeName(stored) ? stored : 'tokyoNight');
 
   createEffect(() => {
-    document.documentElement.dataset.theme = themeName();
-    window.localStorage.setItem(THEME_STORAGE_KEY, themeName());
+    const nextTheme = themeName();
+    applyTerminalThemeShell(document.documentElement, nextTheme);
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
   });
 
   return [themeName, setThemeName] as const;
@@ -278,20 +277,6 @@ const SchedulerStatsPanel = () => {
     </div>
   );
 };
-
-const ThemeSelector = (props: {
-  themeName: TerminalThemeName;
-  disabled?: boolean;
-  onThemeChange: (theme: TerminalThemeName) => void;
-}) => (
-  <select value={props.themeName} onChange={e => props.onThemeChange(e.currentTarget.value as TerminalThemeName)} disabled={props.disabled}>
-    <option value="tokyoNight">tokyo night</option>
-    <option value="dark">dark</option>
-    <option value="monokai">monokai</option>
-    <option value="solarizedDark">solarized dark</option>
-    <option value="light">light</option>
-  </select>
-);
 
 const SingleTerminalPane = (props: {
   sessionId: string;

@@ -378,3 +378,38 @@ core.setAppearance({
 
 core.setFontFamily('"Iosevka Term", monospace');
 ```
+
+## Built-in Theme Catalog
+
+Floeterm 0.8.0 publishes 20 immutable built-in theme definitions. Hosts can use
+the same stable catalog for validation, previews, and terminal rendering:
+
+```ts
+import {
+  TERMINAL_THEME_DEFINITIONS,
+  getThemeColors,
+  normalizeTerminalThemeName,
+} from '@floegence/floeterm-terminal-web';
+
+const selected = normalizeTerminalThemeName(persistedValue, 'dark');
+const colors = getThemeColors(selected);
+const lightThemes = TERMINAL_THEME_DEFINITIONS.filter(
+  (theme) => theme.appearance === 'light',
+);
+```
+
+The exported arrays, definitions, and nested color objects are frozen at
+runtime. `getThemeColors()` returns a defensive copy. Theme provenance and
+third-party license details ship in `THEME_PROVENANCE.json` and
+`THIRD_PARTY_THEME_NOTICES.md`. The package also includes
+`THEME_QUALITY_EVIDENCE.json` with the catalog thresholds, measured results,
+and Signal Safe color-vision simulation evidence.
+
+### 0.8.0 migration
+
+- `TerminalThemeName` now includes the full catalog; exhaustive switches must
+  handle the new IDs.
+- `getThemeColors()` keeps its function name but returns the exact readonly
+  `TerminalThemeColors` type instead of a mutable `Record<string, string>`.
+- `light`, `solarizedDark`, and `monokai` add `cursorAccent` equal to their
+  existing background. All other legacy fields and values are unchanged.

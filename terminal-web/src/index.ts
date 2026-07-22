@@ -126,8 +126,19 @@ export type {
   TerminalVisualSuspendHandle,
   TerminalVisualSuspendOptions,
   TerminalVisualSuspendReason,
-  TerminalThemeName
+  TerminalThemeName,
+  TerminalThemeAppearance,
+  TerminalThemeDefinition,
+  TerminalThemeColors
 } from './types.js';
 
-export { getThemeColors, getDefaultTerminalConfig } from './utils/config.js';
+export {
+  getThemeColors,
+  getDefaultTerminalConfig,
+  getTerminalThemeDefinition,
+  isTerminalThemeName,
+  normalizeTerminalThemeName,
+  TERMINAL_THEME_DEFINITIONS,
+  TERMINAL_THEME_NAMES,
+} from './utils/config.js';
 export { filterXtermAutoResponses } from './utils/xtermAutoResponseFilter.js';
