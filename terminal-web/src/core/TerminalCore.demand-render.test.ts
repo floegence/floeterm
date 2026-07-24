@@ -467,7 +467,7 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
-  it('resolves a requested presentation only after its forced full Beamterm frame', async () => {
+  it('resolves a requested presentation on the browser frame after its forced full Beamterm frame', async () => {
     const core = await createWebGLCore();
     mockFabric.startFrame.mockClear();
     mockFabric.writeRow.mockClear();
@@ -490,9 +490,6 @@ describe('TerminalCore demand rendering', () => {
 
     await vi.runOnlyPendingTimersAsync();
     expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
-    expect(presented).toBe(false);
-
-    await vi.runOnlyPendingTimersAsync();
     await presentation;
     expect(presented).toBe(true);
 

@@ -4048,11 +4048,9 @@ export class TerminalCore {
         this.pendingPresentationRequest = null;
         presentationRequest.frameHandle = requestAnimationFrame(() => {
           if (!this.presentationRequests.has(presentationRequest)) return;
-          presentationRequest.frameHandle = requestAnimationFrame(() => {
-            if (!this.presentationRequests.delete(presentationRequest)) return;
-            presentationRequest.frameHandle = null;
-            presentationRequest.resolve();
-          });
+          if (!this.presentationRequests.delete(presentationRequest)) return;
+          presentationRequest.frameHandle = null;
+          presentationRequest.resolve();
         });
       }
     } catch (error) {

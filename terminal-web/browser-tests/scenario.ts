@@ -46,7 +46,6 @@ const nextFrame = (): Promise<void> => new Promise(resolve => requestAnimationFr
 
 const settleCommittedFrame = async (core: TerminalCore): Promise<void> => {
   await core.forceResizeAndWaitForPresentation();
-  await nextFrame();
 };
 
 const createContainer = (): HTMLElement => {
