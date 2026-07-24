@@ -1,18 +1,24 @@
 import type { Logger, TerminalResourcePreloadOptions } from '../types.js';
 import { noopLogger } from '../utils/logger.js';
 import { loadBeamtermModule } from './BeamtermResourceLoader.js';
+import { EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION } from './GhosttyScrollbackCompat.js';
+import {
+  terminalInitializationScheduler,
+  type TerminalInitializationScheduler,
+} from './TerminalInitializationScheduler.js';
 
-let TerminalCtor: typeof import('ghostty-web').Terminal | null = null;
-let FitAddonCtor: typeof import('ghostty-web').FitAddon | null = null;
-let LinkDetectorCtor: typeof import('ghostty-web').LinkDetector | null = null;
-let OSC8LinkProviderCtor: typeof import('ghostty-web').OSC8LinkProvider | null = null;
-let UrlRegexProviderCtor: typeof import('ghostty-web').UrlRegexProvider | null = null;
-let ghosttyResourcesPromise: Promise<void> | null = null;
+export type GhosttyRuntimeInstance = InstanceType<typeof import('ghostty-web').Ghostty>;
 
-type GhosttyRuntime = Pick<
+type GhosttyResourceModule = Pick<
   typeof import('ghostty-web'),
-  'Terminal' | 'FitAddon' | 'LinkDetector' | 'OSC8LinkProvider' | 'UrlRegexProvider' | 'init'
+  'Terminal' | 'FitAddon' | 'LinkDetector' | 'OSC8LinkProvider' | 'UrlRegexProvider' | 'Ghostty'
 >;
+
+type GhosttyModuleImporter = () => Promise<typeof import('ghostty-web')>;
+type GhosttyRuntimeScheduler = Pick<TerminalInitializationScheduler, 'request'>;
+type GhosttyRuntimeReservation = {
+  promise: Promise<GhosttyRuntimeInstance>;
+};
 
 const REQUIRED_GHOSTTY_EXPORTS = [
   'Terminal',
@@ -20,10 +26,10 @@ const REQUIRED_GHOSTTY_EXPORTS = [
   'LinkDetector',
   'OSC8LinkProvider',
   'UrlRegexProvider',
-  'init',
+  'Ghostty',
 ] as const;
 
-export const resolveGhosttyRuntime = (module: typeof import('ghostty-web')): GhosttyRuntime => {
+export const resolveGhosttyRuntime = (module: typeof import('ghostty-web')): GhosttyResourceModule => {
   for (const exportName of REQUIRED_GHOSTTY_EXPORTS) {
     if (typeof module[exportName] !== 'function') {
       throw new Error(`ghostty-web is missing the required ${exportName} export`);
@@ -58,64 +64,152 @@ export const waitWithAbort = <T>(promise: Promise<T>, signal?: AbortSignal): Pro
   });
 };
 
-export const loadGhosttyModules = async (logger: Logger, signal?: AbortSignal): Promise<void> => {
-  if (typeof window === 'undefined') {
-    throw new Error('ghostty-web can only be loaded in a browser environment');
+const runtimeMemoryCompatibilityError = (): Error => new Error(
+  `ghostty-web@${EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION} compatibility check failed: `
+  + 'the owned Ghostty runtime does not expose a WebAssembly.Memory at "memory"; '
+  + 'review or remove the version-bound scrollback adapter before changing ghostty-web',
+);
+
+export const inspectGhosttyRuntimeMemory = (runtime: GhosttyRuntimeInstance): WebAssembly.Memory => {
+  let memory: unknown;
+  try {
+    memory = Reflect.get(runtime, 'memory');
+  } catch {
+    throw runtimeMemoryCompatibilityError();
+  }
+  if (typeof WebAssembly === 'undefined' || !(memory instanceof WebAssembly.Memory)) {
+    throw runtimeMemoryCompatibilityError();
+  }
+  return memory;
+};
+
+export class GhosttyResourceLoader {
+  private module: GhosttyResourceModule | null = null;
+  private modulePromise: Promise<GhosttyResourceModule> | null = null;
+  private reservation: GhosttyRuntimeReservation | null = null;
+
+  constructor(
+    private readonly importModule: GhosttyModuleImporter = () => import('ghostty-web'),
+    private readonly scheduler: GhosttyRuntimeScheduler = terminalInitializationScheduler,
+  ) {}
+
+  async loadModules(logger: Logger, signal?: AbortSignal): Promise<void> {
+    await waitWithAbort(this.loadModule(logger), signal);
   }
 
-  if (
-    TerminalCtor
-    && FitAddonCtor
-    && LinkDetectorCtor
-    && OSC8LinkProviderCtor
-    && UrlRegexProviderCtor
-  ) return;
+  async acquireRuntime(logger: Logger): Promise<GhosttyRuntimeInstance> {
+    const reservation = this.reservation;
+    if (reservation) {
+      this.reservation = null;
+      logger.debug('[TerminalCore] Consuming preloaded ghostty-web WASM runtime');
+      return reservation.promise;
+    }
 
-  if (!ghosttyResourcesPromise) {
-    logger.debug('[TerminalCore] Initializing ghostty-web WASM');
-    ghosttyResourcesPromise = (async () => {
-      const runtime = resolveGhosttyRuntime(await import('ghostty-web'));
-      await runtime.init();
-      TerminalCtor = runtime.Terminal;
-      FitAddonCtor = runtime.FitAddon;
-      LinkDetectorCtor = runtime.LinkDetector;
-      OSC8LinkProviderCtor = runtime.OSC8LinkProvider;
-      UrlRegexProviderCtor = runtime.UrlRegexProvider;
-    })().catch((error: unknown) => {
-      TerminalCtor = null;
-      FitAddonCtor = null;
-      LinkDetectorCtor = null;
-      OSC8LinkProviderCtor = null;
-      UrlRegexProviderCtor = null;
-      ghosttyResourcesPromise = null;
+    const module = await this.loadModule(logger);
+    logger.debug('[TerminalCore] Creating isolated ghostty-web WASM runtime');
+    return module.Ghostty.load();
+  }
+
+  preloadRuntime(logger: Logger): Promise<GhosttyRuntimeInstance> {
+    if (this.reservation) return this.reservation.promise;
+
+    const request = this.scheduler.request('background');
+    const loadPromise = (async () => {
+      const permit = await request.permit;
+      if (!permit) {
+        throw new Error('ghostty-web runtime preload was cancelled before it started');
+      }
+
+      try {
+        const module = await this.loadModule(logger);
+        logger.debug('[TerminalCore] Preloading one isolated ghostty-web WASM runtime');
+        return await module.Ghostty.load();
+      } finally {
+        permit.release();
+      }
+    })();
+    const promise = loadPromise.catch((error: unknown) => {
+      if (this.reservation?.promise === promise) {
+        this.reservation = null;
+      }
       throw error;
     });
+    const reservation: GhosttyRuntimeReservation = { promise };
+    this.reservation = reservation;
+    return reservation.promise;
   }
 
-  await waitWithAbort(ghosttyResourcesPromise, signal);
-};
-
-export const getGhosttyTerminalConstructor = (): typeof import('ghostty-web').Terminal | null => TerminalCtor;
-
-export const getGhosttyFitAddonConstructor = (): typeof import('ghostty-web').FitAddon | null => FitAddonCtor;
-
-export const getGhosttyLinkConstructors = () => {
-  if (!LinkDetectorCtor || !OSC8LinkProviderCtor || !UrlRegexProviderCtor) {
-    throw new Error('Required ghostty-web link providers not loaded');
+  getTerminalConstructor(): typeof import('ghostty-web').Terminal | null {
+    return this.module?.Terminal ?? null;
   }
 
-  return {
-    LinkDetector: LinkDetectorCtor,
-    OSC8LinkProvider: OSC8LinkProviderCtor,
-    UrlRegexProvider: UrlRegexProviderCtor,
-  };
-};
+  getFitAddonConstructor(): typeof import('ghostty-web').FitAddon | null {
+    return this.module?.FitAddon ?? null;
+  }
+
+  getLinkConstructors() {
+    if (!this.module) {
+      throw new Error('Required ghostty-web link providers not loaded');
+    }
+
+    return {
+      LinkDetector: this.module.LinkDetector,
+      OSC8LinkProvider: this.module.OSC8LinkProvider,
+      UrlRegexProvider: this.module.UrlRegexProvider,
+    };
+  }
+
+  private loadModule(logger: Logger): Promise<GhosttyResourceModule> {
+    if (typeof window === 'undefined') {
+      return Promise.reject(new Error('ghostty-web can only be loaded in a browser environment'));
+    }
+    if (this.module) return Promise.resolve(this.module);
+
+    if (!this.modulePromise) {
+      logger.debug('[TerminalCore] Loading ghostty-web module');
+      const modulePromise = this.importModule()
+        .then(resolveGhosttyRuntime)
+        .then(module => {
+          this.module = module;
+          return module;
+        })
+        .catch((error: unknown) => {
+          this.module = null;
+          if (this.modulePromise === modulePromise) this.modulePromise = null;
+          throw error;
+        });
+      this.modulePromise = modulePromise;
+    }
+
+    return this.modulePromise;
+  }
+}
+
+const ghosttyResourceLoader = new GhosttyResourceLoader();
+
+export const loadGhosttyModules = (logger: Logger, signal?: AbortSignal): Promise<void> => (
+  ghosttyResourceLoader.loadModules(logger, signal)
+);
+
+export const acquireGhosttyRuntime = (logger: Logger): Promise<GhosttyRuntimeInstance> => (
+  ghosttyResourceLoader.acquireRuntime(logger)
+);
+
+export const getGhosttyTerminalConstructor = (): typeof import('ghostty-web').Terminal | null => (
+  ghosttyResourceLoader.getTerminalConstructor()
+);
+
+export const getGhosttyFitAddonConstructor = (): typeof import('ghostty-web').FitAddon | null => (
+  ghosttyResourceLoader.getFitAddonConstructor()
+);
+
+export const getGhosttyLinkConstructors = () => ghosttyResourceLoader.getLinkConstructors();
 
 export const preloadTerminalResources = async (
   options: TerminalResourcePreloadOptions = {},
 ): Promise<void> => {
   const resources = Promise.all([
-    loadGhosttyModules(options.logger ?? noopLogger),
+    ghosttyResourceLoader.preloadRuntime(options.logger ?? noopLogger),
     loadBeamtermModule(),
   ]).then(() => undefined);
   await waitWithAbort(resources, options.signal);

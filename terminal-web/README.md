@@ -129,7 +129,10 @@ the foreground revision that was active at that exact byte boundary.
 ## Notes
 
 - You must provide a `TerminalTransport` and `TerminalEventSource` for the managed controller.
-- `ghostty-web` needs a one-time `init()`; `TerminalCore` handles that internally.
+- Each `TerminalCore` owns an isolated `ghostty-web` WASM runtime; consumers must not provide or share a Ghostty runtime.
+- `scrollback` is measured in terminal buffer rows, including separately wrapped rows, and accepts integers from 1 through 10,000. Within the supported geometry, Floeterm preserves at least the requested number of buffer rows; it does not trim to an exact physical row count. Floeterm maps that contract to a bounded byte budget for the exact pinned `ghostty-web@0.4.0-next.14.g6a1a50d` release, which currently interprets the value as bytes. The 81,920,000-byte cap limits Ghostty's scrollback arena, not the total memory of a WASM runtime. The mapping is temporary and must be reviewed and removed or updated with any Ghostty upgrade.
+- Supported terminal geometry is limited to 500 columns. Explicit dimensions above that limit fail, while automatic fitting reports at most 500 columns.
+- Consumer dependency overrides for `ghostty-web` are unsupported. Floeterm's compatibility guard requires the exact package pin so an upstream behavior change cannot silently apply the row-to-byte mapping twice.
 - `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and composition input continue to work on touch devices.
 - The hidden terminal input is mounted in the document viewport plane and anchored from rendered cursor geometry, so native IME candidate windows stay aligned without expanding transformed terminal hosts.
 - Programmatic terminal focus uses no-scroll focus by default, keeping embedded terminals stable inside scaled, projected, or otherwise transformed host surfaces.

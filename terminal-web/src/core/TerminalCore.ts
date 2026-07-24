@@ -40,12 +40,21 @@ import {
   type TerminalInitializationRequest,
 } from '../internal/TerminalInitializationScheduler.js';
 import {
+  acquireGhosttyRuntime,
   getGhosttyFitAddonConstructor,
   getGhosttyLinkConstructors,
   getGhosttyTerminalConstructor,
+  inspectGhosttyRuntimeMemory,
   loadGhosttyModules,
+  type GhosttyRuntimeInstance,
   waitWithAbort,
 } from '../internal/TerminalResourceLoader.js';
+import {
+  capAutoFitTerminalColumns,
+  mapGhosttyScrollbackRowsForPinnedVersion,
+  validateTerminalColumns,
+  validateTerminalScrollbackRows,
+} from '../internal/GhosttyScrollbackCompat.js';
 import {
   createUnicodeSafeUrlProviderTerminal,
   type UrlProviderTerminal,
@@ -151,7 +160,6 @@ type rgb_color = {
 const TERMINAL_SNAPSHOT_VERSION = 1 as const;
 const DEFAULT_TERMINAL_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024;
 const ESTIMATED_RENDERER_BYTES = 4 * 1024 * 1024;
-const ESTIMATED_CELL_BYTES = 16;
 const SNAPSHOT_RESET_PREFIX = '\x1bc\x1b[2J\x1b[H';
 
 const encodedByteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
@@ -515,15 +523,18 @@ function samePresentationScale(left: number, right: number): boolean {
   return Math.abs(left - right) <= PRESENTATION_SCALE_EPSILON;
 }
 
-function normalizeTerminalDimensions(value: unknown): TerminalDimensions | null {
+function normalizeTerminalDimensions(
+  value: unknown,
+  columnsLabel = 'fixedDimensions.cols',
+): TerminalDimensions | null {
   const raw = (typeof value === 'object' && value) ? value as Partial<TerminalDimensions> : null;
   if (!raw) {
     return null;
   }
 
-  const cols = Math.floor(Number(raw.cols));
+  const cols = validateTerminalColumns(raw.cols, columnsLabel);
   const rows = Math.floor(Number(raw.rows));
-  if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) {
+  if (!Number.isFinite(rows) || rows <= 0) {
     return null;
   }
 
@@ -618,6 +629,8 @@ function normalizeFabricIdentifier(value: string): string {
 // TerminalCore provides a focused wrapper around ghostty-web (xterm.js API-compatible) and its fit addon.
 export class TerminalCore {
   private terminal: ghostty_runtime_terminal | null = null;
+  private ownedRuntime: GhosttyRuntimeInstance | null = null;
+  private ownedRuntimeMemory: WebAssembly.Memory | null = null;
   private fitAddon: import('ghostty-web').FitAddon | null = null;
   private needsFullRenderOnNextWrite = false;
   private demandRenderForceAll = false;
@@ -678,6 +691,7 @@ export class TerminalCore {
   private pendingPresentationScale: number | null = null;
   private suppressResizeNotifications = false;
   private clearResizeSuppressionRaf: number | null = null;
+  private readonly scrollbackRows: number;
 
   private hasFocus = false;
   private resizeNotifySeq = 0;
@@ -721,6 +735,13 @@ export class TerminalCore {
     eventHandlers: TerminalEventHandlers = {},
     logger: Logger = createConsoleLogger()
   ) {
+    const explicitCols = config?.cols;
+    if (explicitCols !== undefined) {
+      validateTerminalColumns(explicitCols);
+    }
+    this.scrollbackRows = validateTerminalScrollbackRows(
+      config?.scrollback === undefined ? 1_000 : config.scrollback,
+    );
     this.eventHandlers = eventHandlers;
     this.clipboard = TerminalCore.normalizeClipboardConfig(config?.clipboard);
     this.fit = TerminalCore.normalizeFitConfig(config?.fit);
@@ -729,6 +750,12 @@ export class TerminalCore {
     this.logicalFontSize = TerminalCore.normalizeFontSize(config?.fontSize);
     this.presentationScale = TerminalCore.normalizePresentationScale(config?.presentationScale);
     this.fixedDimensions = normalizeTerminalDimensions(config?.fixedDimensions);
+    this.config = {
+      ...config,
+      ...(explicitCols === undefined ? {} : { cols: explicitCols }),
+      fixedDimensions: this.fixedDimensions,
+      scrollback: this.scrollbackRows,
+    };
     this.renderTask = {
       id: TerminalCore.nextRenderTaskId,
       run: forceAll => {
@@ -774,6 +801,10 @@ export class TerminalCore {
       promise: Promise.resolve(),
     };
     operation.promise = (async () => {
+      const assertInitializationActive = () => {
+        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        lifecycleAbortController.signal.throwIfAborted();
+      };
       const permit = await request.permit;
       if (!permit) {
         if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
@@ -782,15 +813,21 @@ export class TerminalCore {
       }
       operation!.started = true;
       try {
-        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        assertInitializationActive();
         await loadGhosttyModules(this.logger, lifecycleAbortController.signal);
-        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        assertInitializationActive();
+        const ownedRuntime = await acquireGhosttyRuntime(this.logger);
+        assertInitializationActive();
+        const ownedRuntimeMemory = inspectGhosttyRuntimeMemory(ownedRuntime);
+        assertInitializationActive();
+        this.ownedRuntime = ownedRuntime;
+        this.ownedRuntimeMemory = ownedRuntimeMemory;
         await this.createTerminalInstance(lifecycleAbortController.signal);
-        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        assertInitializationActive();
         await this.loadAddons();
-        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        assertInitializationActive();
         await this.openTerminal(lifecycleAbortController.signal);
-        if (this.isDisposed) throw new Error('Cannot initialize a disposed TerminalCore');
+        assertInitializationActive();
         this.setupEventListeners();
         this.setupResponsiveListeners();
         this.startSizeWatching();
@@ -850,6 +887,8 @@ export class TerminalCore {
     this.fabricView = null;
     this.terminal?.dispose();
     this.terminal = null;
+    this.ownedRuntimeMemory = null;
+    this.ownedRuntime = null;
     this.inputElement?.remove();
     this.inputElement = null;
     this.fitAddon = null;
@@ -862,6 +901,9 @@ export class TerminalCore {
     const TerminalCtor = getGhosttyTerminalConstructor();
     if (!TerminalCtor) {
       throw new Error('ghostty-web module not loaded');
+    }
+    if (!this.ownedRuntime) {
+      throw new Error('ghostty-web runtime not acquired');
     }
 
     const defaultConfig: TerminalConfig = {
@@ -906,13 +948,14 @@ export class TerminalCore {
       cursorBlink: typeof finalConfig.cursorBlink === 'boolean' ? finalConfig.cursorBlink : undefined,
       cursorStyle: typeof (finalConfig as any).cursorStyle === 'string' ? ((finalConfig as any).cursorStyle as any) : undefined,
       theme: initialTheme,
-      scrollback: typeof finalConfig.scrollback === 'number' ? finalConfig.scrollback : undefined,
+      scrollback: mapGhosttyScrollbackRowsForPinnedVersion(this.scrollbackRows),
       fontSize: this.resolveEffectiveFontSize(),
       fontFamily: typeof finalConfig.fontFamily === 'string' ? finalConfig.fontFamily : undefined,
       allowTransparency: typeof finalConfig.allowTransparency === 'boolean' ? finalConfig.allowTransparency : undefined,
       convertEol: typeof finalConfig.convertEol === 'boolean' ? finalConfig.convertEol : undefined,
       disableStdin: typeof (finalConfig as any).disableStdin === 'boolean' ? ((finalConfig as any).disableStdin as boolean) : undefined,
-      smoothScrollDuration: typeof (finalConfig as any).smoothScrollDuration === 'number' ? ((finalConfig as any).smoothScrollDuration as number) : undefined
+      smoothScrollDuration: typeof (finalConfig as any).smoothScrollDuration === 'number' ? ((finalConfig as any).smoothScrollDuration as number) : undefined,
+      ghostty: this.ownedRuntime,
     }) as ghostty_runtime_terminal;
   }
 
@@ -1041,7 +1084,7 @@ export class TerminalCore {
     const availableWidth = Math.max(0, width - paddingLeft - paddingRight - this.fit.scrollbarReservePx);
     const availableHeight = Math.max(0, height - paddingTop - paddingBottom);
     return {
-      cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availableWidth / cellWidth)),
+      cols: capAutoFitTerminalColumns(Math.max(MIN_TERMINAL_COLS, Math.floor(availableWidth / cellWidth))),
       rows: Math.max(MIN_TERMINAL_ROWS, Math.floor(availableHeight / cellHeight)),
     };
   }
@@ -1063,7 +1106,7 @@ export class TerminalCore {
     }
 
     return {
-      cols: Math.max(MIN_TERMINAL_COLS, cols),
+      cols: capAutoFitTerminalColumns(Math.max(MIN_TERMINAL_COLS, cols)),
       rows: Math.max(MIN_TERMINAL_ROWS, rows),
     };
   }
@@ -2517,6 +2560,16 @@ export class TerminalCore {
   }
 
   getResourceEstimate(): TerminalResourceEstimate {
+    const wasmMemoryBytes = this.ownedRuntimeMemory?.buffer.byteLength ?? 0;
+    if (wasmMemoryBytes <= 0) {
+      return {
+        bufferBytes: 0,
+        cellCount: 0,
+        wasmMemoryBytes: 0,
+        estimatedBytes: 0,
+        rendererType: this.config.rendererType ?? 'canvas',
+      };
+    }
     const info = this.getTerminalInfo();
     const cellCount = info ? Math.max(0, info.cols * info.bufferLength) : 0;
     let bufferBytes = 0;
@@ -2528,7 +2581,8 @@ export class TerminalCore {
     return {
       bufferBytes,
       cellCount,
-      estimatedBytes: ESTIMATED_RENDERER_BYTES + bufferBytes + cellCount * ESTIMATED_CELL_BYTES,
+      wasmMemoryBytes,
+      estimatedBytes: ESTIMATED_RENDERER_BYTES + wasmMemoryBytes,
       rendererType: this.config.rendererType ?? 'canvas',
     };
   }
@@ -3630,10 +3684,14 @@ export class TerminalCore {
     this.fabricView = null;
     this.terminal?.dispose();
     this.terminal = null;
+    this.ownedRuntimeMemory = null;
+    this.ownedRuntime = null;
     this.inputElement?.remove();
     this.inputElement = null;
+    this.viewportHost?.remove();
     this.viewportHost = null;
     this.renderHost = null;
+    this.fitAddon = null;
     this.registeredLinkProviders.clear();
     this.appliedLinkProviders.clear();
     this.setState(TerminalState.DISPOSED);

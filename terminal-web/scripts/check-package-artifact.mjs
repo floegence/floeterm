@@ -10,6 +10,8 @@ import ts from 'typescript';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
+const EXPECTED_PACKAGE_VERSION = '0.9.0';
+const EXPECTED_GHOSTTY_WEB_VERSION = '0.4.0-next.14.g6a1a50d';
 const EXPECTED_TERMINAL_THEME_IDS = [
   'dark', 'light', 'solarizedDark', 'monokai', 'tokyoNight',
   'polarVeil', 'copperCircuit', 'violetDusk', 'cedarGrove', 'midnightInk',
@@ -420,6 +422,69 @@ async function assertThemeProvenanceArtifact(installedPackageRoot) {
   }
 }
 
+async function assertGhosttyScrollbackCompatibilityArtifact(installedPackageRoot, installRoot) {
+  const installedManifest = JSON.parse(await readFile(
+    path.join(installedPackageRoot, 'package.json'),
+    'utf8',
+  ));
+  if (installedManifest.version !== EXPECTED_PACKAGE_VERSION) {
+    throw new Error(`installed terminal-web package version must be ${EXPECTED_PACKAGE_VERSION}`);
+  }
+  if (installedManifest.dependencies?.['ghostty-web'] !== EXPECTED_GHOSTTY_WEB_VERSION) {
+    throw new Error(
+      `installed terminal-web package must pin ghostty-web exactly to ${EXPECTED_GHOSTTY_WEB_VERSION}`,
+    );
+  }
+
+  const installedGhosttyManifest = JSON.parse(await readFile(
+    path.join(installRoot, 'node_modules', 'ghostty-web', 'package.json'),
+    'utf8',
+  ));
+  if (installedGhosttyManifest.version !== EXPECTED_GHOSTTY_WEB_VERSION) {
+    throw new Error(
+      `installed ghostty-web version must be exactly ${EXPECTED_GHOSTTY_WEB_VERSION}; `
+      + 'consumer overrides are unsupported while the version-bound scrollback adapter is active',
+    );
+  }
+
+  const compatibilityModule = await import(pathToFileURL(path.join(
+    installedPackageRoot,
+    'dist/internal/GhosttyScrollbackCompat.js',
+  )).href);
+  if (
+    compatibilityModule.EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION
+      !== EXPECTED_GHOSTTY_WEB_VERSION
+    || compatibilityModule.GHOSTTY_SCROLLBACK_BYTES_PER_ROW !== 8_192
+    || compatibilityModule.MAX_GHOSTTY_SCROLLBACK_BYTES !== 81_920_000
+    || compatibilityModule.MAX_SUPPORTED_TERMINAL_COLUMNS !== 500
+  ) {
+    throw new Error('installed Ghostty scrollback compatibility constants are invalid');
+  }
+  if (
+    compatibilityModule.mapGhosttyScrollbackRowsForPinnedVersion(1) !== 8_192
+    || compatibilityModule.mapGhosttyScrollbackRowsForPinnedVersion(10_000) !== 81_920_000
+  ) {
+    throw new Error('installed Ghostty scrollback compatibility mapping is invalid');
+  }
+  for (const invalid of [0, -1, 1.5, 10_001, Number.NaN, Number.POSITIVE_INFINITY, '1000']) {
+    let rejected = false;
+    try {
+      compatibilityModule.validateTerminalScrollbackRows(invalid);
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) {
+      throw new Error(`installed scrollback validator accepted invalid value: ${String(invalid)}`);
+    }
+  }
+  if (
+    compatibilityModule.validateTerminalColumns(500) !== 500
+    || compatibilityModule.capAutoFitTerminalColumns(501) !== 500
+  ) {
+    throw new Error('installed terminal column compatibility boundary is invalid');
+  }
+}
+
 try {
   const { stdout } = await execFileAsync(process.execPath, [npmCliPath,
     'pack',
@@ -446,6 +511,10 @@ try {
   );
   await assertThemeProvenanceArtifact(
     path.join(temporaryRoot, 'node_modules', '@floegence', 'floeterm-terminal-web'),
+  );
+  await assertGhosttyScrollbackCompatibilityArtifact(
+    path.join(temporaryRoot, 'node_modules', '@floegence', 'floeterm-terminal-web'),
+    temporaryRoot,
   );
 
   await writeFile(path.join(temporaryRoot, 'package.json'), `${JSON.stringify({

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Floeterm terminal browser gate</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #111;
+      }
+
+      #fixtures {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 8px;
+      }
+
+      .terminal-fixture {
+        width: 1200px;
+        height: 720px;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="fixtures"></main>
+    <script type="module" src="./scenario.ts"></script>
+  </body>
+</html>

@@ -6,9 +6,10 @@ import { TerminalState } from '../types';
 import { getTerminalInitializationSchedulerStats } from '../internal/TerminalInitializationScheduler';
 
 const moduleState = vi.hoisted(() => ({
-  init: vi.fn<() => Promise<void>>(),
+  runtimeLoad: vi.fn<() => Promise<{ memory: WebAssembly.Memory }>>(),
   rendererMain: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   constructorFailures: 0,
+  terminalOptions: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock('@floegence/beamterm-renderer', () => ({
@@ -22,11 +23,13 @@ vi.mock('ghostty-web', () => {
     options: Record<string, unknown> = {};
     buffer = { active: { length: 0 } };
 
-    constructor() {
+    constructor(options: Record<string, unknown> = {}) {
       if (moduleState.constructorFailures > 0) {
         moduleState.constructorFailures -= 1;
         throw new Error('terminal construction failed');
       }
+      this.options = options;
+      moduleState.terminalOptions.push(options);
     }
 
     loadAddon(addon: { __terminal?: MockTerminal }) { addon.__terminal = this; }
@@ -48,13 +51,19 @@ vi.mock('ghostty-web', () => {
     fit() {}
   }
 
+  class MockGhostty {
+    readonly memory = new WebAssembly.Memory({ initial: 1 });
+    static load = () => moduleState.runtimeLoad();
+  }
+
   return {
     Terminal: MockTerminal,
     FitAddon: MockFitAddon,
     LinkDetector: class { registerProvider() {} },
     OSC8LinkProvider: class {},
     UrlRegexProvider: class {},
-    init: moduleState.init,
+    Ghostty: MockGhostty,
+    init: vi.fn(),
   };
 });
 
@@ -75,6 +84,13 @@ const createContainer = (): HTMLDivElement => {
 describe('TerminalCore initialization', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    moduleState.runtimeLoad.mockReset();
+    moduleState.runtimeLoad.mockImplementation(async () => ({
+      memory: new WebAssembly.Memory({ initial: 1 }),
+    }));
+    moduleState.rendererMain.mockReset();
+    moduleState.rendererMain.mockResolvedValue(undefined);
+    moduleState.terminalOptions.length = 0;
     globalThis.requestAnimationFrame = callback => (
       setTimeout(() => callback(Date.now()), 0) as unknown as number
     );
@@ -92,50 +108,39 @@ describe('TerminalCore initialization', () => {
     document.body.replaceChildren();
   });
 
-  it('shares resource preload work and retries after the real initialization fails', async () => {
-    let rejectInitialization: ((error: Error) => void) | undefined;
-    let rejectRendererInitialization: ((error: Error) => void) | undefined;
-    moduleState.init.mockReset();
-    moduleState.rendererMain.mockReset();
-    moduleState.init.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
-      rejectInitialization = reject;
-    }));
-    moduleState.rendererMain.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
-      rejectRendererInitialization = reject;
+  it('keeps a claimed preload load scheduled until it settles after abort and dispose', async () => {
+    let resolveRuntime: ((runtime: { memory: WebAssembly.Memory }) => void) | undefined;
+    moduleState.runtimeLoad.mockImplementationOnce(() => new Promise(resolve => {
+      resolveRuntime = resolve;
     }));
 
     const callerAbort = new AbortController();
     const first = preloadTerminalResources({ signal: callerAbort.signal });
     const second = preloadTerminalResources();
-    await vi.waitFor(() => expect(moduleState.init).toHaveBeenCalledTimes(1));
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(moduleState.runtimeLoad).toHaveBeenCalledTimes(1));
     expect(moduleState.rendererMain).toHaveBeenCalledTimes(1);
     callerAbort.abort();
     await expect(first).rejects.toMatchObject({ name: 'AbortError' });
 
     const core = new TerminalCore(createContainer());
-    const coreInitialization = core.initialize({ priority: 'background' });
+    const coreInitialization = core.initialize({ priority: 'interactive' });
     await vi.runOnlyPendingTimersAsync();
     expect(getTerminalInitializationSchedulerStats()).toMatchObject({
-      active: 1,
+      active: 2,
       activeBackground: 1,
     });
     core.dispose();
-    await expect(coreInitialization).rejects.toMatchObject({ name: 'AbortError' });
+    expect(getTerminalInitializationSchedulerStats()).toMatchObject({ active: 2 });
+
+    resolveRuntime?.({ memory: new WebAssembly.Memory({ initial: 1 }) });
+    await expect(second).resolves.toBeUndefined();
+    await expect(coreInitialization).rejects.toThrow('disposed TerminalCore');
     expect(getTerminalInitializationSchedulerStats()).toMatchObject({
       active: 0,
       activeBackground: 0,
     });
-
-    rejectInitialization?.(new Error('wasm failed'));
-    rejectRendererInitialization?.(new Error('renderer wasm failed'));
-
-    await expect(second).rejects.toThrow('wasm failed');
-
-    moduleState.init.mockResolvedValueOnce(undefined);
-    moduleState.rendererMain.mockResolvedValueOnce(undefined);
-    await expect(preloadTerminalResources()).resolves.toBeUndefined();
-    expect(moduleState.init).toHaveBeenCalledTimes(2);
-    expect(moduleState.rendererMain).toHaveBeenCalledTimes(2);
+    expect(moduleState.terminalOptions).toHaveLength(0);
   });
 
   it('keeps duplicate initialize callers pending until the core is ready', async () => {
@@ -222,5 +227,100 @@ describe('TerminalCore initialization', () => {
     await expect(retry).resolves.toBeUndefined();
     expect(states[states.length - 1]).toBe(TerminalState.READY);
     core.dispose();
+  });
+
+  it('rejects invalid scrollback and unsupported explicit columns before loading a runtime', () => {
+    const invalidScrollback = [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 10_001, '1000'];
+    for (const value of invalidScrollback) {
+      expect(() => new TerminalCore(createContainer(), { scrollback: value as number }))
+        .toThrow(/scrollback.*integer.*1.*10000/i);
+    }
+    expect(() => new TerminalCore(createContainer(), { cols: 501 })).toThrow(/cols.*1.*500/i);
+    expect(() => new TerminalCore(createContainer(), {
+      fixedDimensions: { cols: 501, rows: 24 },
+    })).toThrow(/fixedDimensions\.cols.*1.*500/i);
+    expect(moduleState.runtimeLoad).not.toHaveBeenCalled();
+    expect(document.querySelector('textarea')).toBeNull();
+  });
+
+  it('maps buffer rows for the pinned Ghostty version and prevents runtime overrides', async () => {
+    const unsupportedOverride = { memory: new WebAssembly.Memory({ initial: 1 }) };
+    const core = new TerminalCore(createContainer(), {
+      scrollback: 10_000,
+      ghostty: unsupportedOverride,
+    });
+
+    const initialization = core.initialize();
+    await vi.runAllTimersAsync();
+    await initialization;
+
+    expect(moduleState.terminalOptions).toHaveLength(1);
+    expect(moduleState.terminalOptions[0]?.scrollback).toBe(81_920_000);
+    expect(moduleState.terminalOptions[0]?.ghostty).not.toBe(unsupportedOverride);
+    core.dispose();
+  });
+
+  it('owns distinct WASM memories and reports only live runtime memory', async () => {
+    const first = new TerminalCore(createContainer());
+    const second = new TerminalCore(createContainer());
+    const firstInitialization = first.initialize();
+    const secondInitialization = second.initialize();
+    await vi.runAllTimersAsync();
+    await Promise.all([firstInitialization, secondInitialization]);
+
+    const firstRuntime = moduleState.terminalOptions[0]?.ghostty as { memory: WebAssembly.Memory };
+    const secondRuntime = moduleState.terminalOptions[1]?.ghostty as { memory: WebAssembly.Memory };
+    expect(firstRuntime).not.toBe(secondRuntime);
+    expect(firstRuntime.memory).not.toBe(secondRuntime.memory);
+    expect(first.getResourceEstimate()).toMatchObject({
+      wasmMemoryBytes: 65_536,
+      estimatedBytes: 4 * 1024 * 1024 + 65_536,
+    });
+
+    first.dispose();
+    expect(first.getResourceEstimate()).toMatchObject({
+      bufferBytes: 0,
+      cellCount: 0,
+      wasmMemoryBytes: 0,
+      estimatedBytes: 0,
+    });
+    second.dispose();
+  });
+
+  it('never exceeds the initialization scheduler limit during an abort storm', async () => {
+    const pendingLoads: Array<(runtime: { memory: WebAssembly.Memory }) => void> = [];
+    let activeLoads = 0;
+    let peakLoads = 0;
+    moduleState.runtimeLoad.mockImplementation(() => new Promise(resolve => {
+      activeLoads += 1;
+      peakLoads = Math.max(peakLoads, activeLoads);
+      pendingLoads.push(runtime => {
+        activeLoads -= 1;
+        resolve(runtime);
+      });
+    }));
+
+    const fixtures = Array.from({ length: 8 }, () => {
+      const container = createContainer();
+      return { container, core: new TerminalCore(container) };
+    });
+    const cores = fixtures.map(({ core }) => core);
+    const controllers = cores.map(() => new AbortController());
+    const waits = cores.map((core, index) => core.initialize({ signal: controllers[index]?.signal }));
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(moduleState.runtimeLoad).toHaveBeenCalledTimes(3));
+    controllers.forEach(controller => controller.abort());
+    await Promise.all(waits.map(wait => expect(wait).rejects.toMatchObject({ name: 'AbortError' })));
+
+    pendingLoads.forEach(resolve => resolve({ memory: new WebAssembly.Memory({ initial: 1 }) }));
+    await vi.runAllTimersAsync();
+    await vi.waitFor(() => expect(getTerminalInitializationSchedulerStats()).toMatchObject({
+      active: 0,
+      queued: 0,
+    }));
+    expect(peakLoads).toBe(3);
+
+    cores.forEach(core => core.dispose());
+    expect(document.querySelector('textarea')).toBeNull();
   });
 });

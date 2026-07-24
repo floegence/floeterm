@@ -80,6 +80,11 @@ vi.mock('ghostty-web', () => {
     }
   }
 
+  class MockGhostty {
+    readonly memory = new WebAssembly.Memory({ initial: 1 });
+    static load = vi.fn(async () => new MockGhostty());
+  }
+
   const init = vi.fn().mockResolvedValue(undefined);
 
   return {
@@ -88,6 +93,7 @@ vi.mock('ghostty-web', () => {
     LinkDetector: class { registerProvider() {} },
     OSC8LinkProvider: class {},
     UrlRegexProvider: class {},
+    Ghostty: MockGhostty,
     init,
   };
 });

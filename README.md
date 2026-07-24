@@ -162,7 +162,7 @@ await controller.mount(container);
 | Working directory tracking | `terminal-go` follows explicit cwd OSC markers (`633;P;Cwd`, `1337;CurrentDir`, `OSC 7`) and buffers incomplete frames across PTY reads instead of guessing from generic terminal title changes. |
 | Command and output awareness | Shell integration exposes a bounded foreground executable basename and independent output activity revisions. `settled` means the same command is still running but visible output has been quiet for the configured interval; it never means the command, Agent turn, or task succeeded. |
 | UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
-| Input model | `TerminalCore` handles one-time `ghostty-web` initialization internally and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
+| Input model | Every `TerminalCore` owns an isolated `ghostty-web` WASM runtime and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
 | Extension points | `TerminalCore` exposes link providers, shell bell/title callbacks, buffer line reads, touch-scroll helpers, and explicit runtime font updates so downstream apps do not need `any`-based terminal mutations. |
 | Reference transport | The sample app uses HTTP APIs for control operations and one bidirectional binary WebSocket for live terminal input, resize, and output. |
 

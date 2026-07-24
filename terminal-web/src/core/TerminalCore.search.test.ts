@@ -87,6 +87,7 @@ describe('TerminalCore search scanning', () => {
   it('captures bounded in-memory snapshots with sequence coverage and resource estimates', () => {
     const core = new TerminalCore(document.createElement('div'));
     (core as any).terminal = makeFakeTerminal(['alpha', 'beta', 'gamma']);
+    (core as any).ownedRuntimeMemory = new WebAssembly.Memory({ initial: 2 });
     (core as any).state = TerminalState.READY;
 
     const snapshot = core.captureRestorableSnapshot({
@@ -105,7 +106,8 @@ describe('TerminalCore search scanning', () => {
     expect(snapshot?.byteLength).toBeLessThanOrEqual(16);
     expect(estimate.bufferBytes).toBeGreaterThan(0);
     expect(estimate.cellCount).toBe(240);
-    expect(estimate.estimatedBytes).toBeGreaterThan(estimate.bufferBytes);
+    expect(estimate.wasmMemoryBytes).toBe(131_072);
+    expect(estimate.estimatedBytes).toBe(4 * 1024 * 1024 + 131_072);
   });
 
   it('restores compatible snapshots with an explicit full repaint and rejects incompatible versions', async () => {

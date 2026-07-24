@@ -43,14 +43,21 @@ class MockTerminal {
   dispose() {}
 }
 
-vi.mock('ghostty-web', () => ({
-  Terminal: MockTerminal,
-  FitAddon: class { fit() {} },
-  LinkDetector: class { registerProvider() {} },
-  OSC8LinkProvider: class {},
-  UrlRegexProvider: class {},
-  init: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock('ghostty-web', () => {
+  class MockGhostty {
+    readonly memory = new WebAssembly.Memory({ initial: 1 });
+    static load = vi.fn(async () => new MockGhostty());
+  }
+  return {
+    Terminal: MockTerminal,
+    FitAddon: class { fit() {} },
+    LinkDetector: class { registerProvider() {} },
+    OSC8LinkProvider: class {},
+    UrlRegexProvider: class {},
+    Ghostty: MockGhostty,
+    init: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 class MockResizeObserver {
   constructor(_callback: ResizeObserverCallback) {}

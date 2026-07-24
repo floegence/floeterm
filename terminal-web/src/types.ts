@@ -128,6 +128,10 @@ export interface TerminalConfig {
   fit?: TerminalFitConfig;
   presentationScale?: number;
   cursorBlink?: boolean;
+  /**
+   * Maximum terminal buffer rows retained as scrollback. Wrapped rows count
+   * separately. Values must be finite integers from 1 through 10,000.
+   */
   scrollback?: number;
   rendererType?: 'canvas' | 'webgl' | 'dom';
   sessionId?: string;
@@ -191,6 +195,7 @@ export interface TerminalRestorableSnapshot {
 export interface TerminalResourceEstimate {
   readonly bufferBytes: number;
   readonly cellCount: number;
+  readonly wasmMemoryBytes: number;
   readonly estimatedBytes: number;
   readonly rendererType: 'canvas' | 'webgl' | 'dom';
 }

@@ -9,5 +9,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src", "vitest.config.ts", "vitest.browser.config.ts"]
+  "include": ["src", "browser-tests", "vitest.config.ts", "vitest.browser.config.ts"]
 }

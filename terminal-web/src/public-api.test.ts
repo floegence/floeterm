@@ -125,6 +125,7 @@ describe('public framework-neutral API', () => {
     const resourceEstimate: TerminalResourceEstimate = {
       bufferBytes: 0,
       cellCount: 0,
+      wasmMemoryBytes: 0,
       estimatedBytes: 0,
       rendererType: 'canvas',
     };

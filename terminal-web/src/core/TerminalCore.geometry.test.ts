@@ -88,6 +88,11 @@ vi.mock('ghostty-web', () => {
     }
   }
 
+  class MockGhostty {
+    readonly memory = new WebAssembly.Memory({ initial: 1 });
+    static load = vi.fn(async () => new MockGhostty());
+  }
+
   const init = vi.fn().mockResolvedValue(undefined);
 
   return {
@@ -96,6 +101,7 @@ vi.mock('ghostty-web', () => {
     LinkDetector: class { registerProvider() {} },
     OSC8LinkProvider: class {},
     UrlRegexProvider: class {},
+    Ghostty: MockGhostty,
     init,
   };
 });
@@ -180,6 +186,33 @@ describe('TerminalCore geometry stability', () => {
     expect(core.getDimensions()).toEqual({ cols: 100, rows: 25 });
 
     core.dispose();
+  });
+
+  it('caps automatic fitting at the supported 500-column boundary', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 10_000, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const core = new TerminalCore(container, { fit: { scrollbarReservePx: 0 } });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    await vi.runAllTimersAsync();
+
+    expect(core.getDimensions().cols).toBe(500);
+    core.dispose();
+  });
+
+  it('rejects unsupported fixed dimensions before initialization', () => {
+    expect(() => new TerminalCore(document.createElement('div'), {
+      fixedDimensions: { cols: 501, rows: 24 },
+    })).toThrow(/fixedDimensions\.cols.*1.*500/i);
+
+    const core = new TerminalCore(document.createElement('div'), {
+      fixedDimensions: { cols: 80, rows: 24 },
+    });
+    expect(() => core.setFixedDimensions({ cols: 501, rows: 24 })).toThrow(/fixedDimensions\.cols.*1.*500/i);
   });
 
   it('preserves ghostty-web scrollbar reserve by default', async () => {
