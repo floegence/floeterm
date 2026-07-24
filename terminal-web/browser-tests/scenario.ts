@@ -438,7 +438,7 @@ const runPerformance = async (metric: Extract<ScenarioRequest, { kind: 'performa
       const resolve = resolveCommittedRender;
       if (!resolve) return;
       resolveCommittedRender = null;
-      requestAnimationFrame(() => resolve());
+      window.setTimeout(resolve, 0);
     });
     try {
       await initializeCore(core);
