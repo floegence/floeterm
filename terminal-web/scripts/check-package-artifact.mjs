@@ -580,6 +580,7 @@ import {
   type TerminalThemeDefinition,
   type TerminalThemeName,
   type TerminalInitializationPriority,
+  type TerminalResourceEstimate,
 } from '@floegence/floeterm-terminal-web';
 import {
   TerminalSessionsCoordinator,
@@ -608,7 +609,21 @@ const themeName: TerminalThemeName = 'studioPaper';
 const appearance: TerminalThemeAppearance = 'light';
 const colors: TerminalThemeColors = getThemeColors(themeName);
 const definition: TerminalThemeDefinition = getTerminalThemeDefinition(themeName);
-void [TerminalCore, classifyTerminalAgentCli, normalizeTerminalForegroundCommandDisplayName, classifySessionAgentCli, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, agentCli, sessionAgentCli, prepared, outcome, session, coordinator, themeName, appearance, colors, definition];
+const resourceEstimate: TerminalResourceEstimate = {
+  bufferBytes: 0,
+  cellCount: 0,
+  wasmMemoryBytes: 65_536,
+  estimatedBytes: 65_536,
+  rendererType: 'canvas',
+};
+// @ts-expect-error wasmMemoryBytes is required in the published contract
+const incompleteResourceEstimate: TerminalResourceEstimate = {
+  bufferBytes: 0,
+  cellCount: 0,
+  estimatedBytes: 0,
+  rendererType: 'canvas',
+};
+void [TerminalCore, classifyTerminalAgentCli, normalizeTerminalForegroundCommandDisplayName, classifySessionAgentCli, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, agentCli, sessionAgentCli, prepared, outcome, session, coordinator, themeName, appearance, colors, definition, resourceEstimate, incompleteResourceEstimate];
 if (TERMINAL_THEME_NAMES.length !== 20) throw new Error('terminal theme type export is unavailable');
 if (TERMINAL_THEME_DEFINITIONS.length !== 20) throw new Error('terminal theme definitions type export is unavailable');
 if (!isTerminalThemeName('polarVeil')) throw new Error('terminal theme type validator is unavailable');

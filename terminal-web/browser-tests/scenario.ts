@@ -117,7 +117,11 @@ const inspectHistory = (
   };
 };
 
-const makeCore = (cols: number, scrollback = SCROLLBACK_ROWS): { container: HTMLElement; core: TerminalCore } => {
+const makeCore = (
+  cols: number,
+  scrollback = SCROLLBACK_ROWS,
+  onRender?: (durationMs: number) => void,
+): { container: HTMLElement; core: TerminalCore } => {
   const container = createContainer();
   const core = new TerminalCore(container, {
     cols,
@@ -127,7 +131,7 @@ const makeCore = (cols: number, scrollback = SCROLLBACK_ROWS): { container: HTML
     cursorBlink: false,
     rendererType: 'canvas',
     scrollback,
-  });
+  }, { onRender });
   return { container, core };
 };
 
@@ -279,8 +283,12 @@ const runSamePagePressure = async (): Promise<ScenarioResult> => {
 
   const hibernating = makeCore(166);
   let snapshot: TerminalRestorableSnapshot;
+  let hibernatedMemory: WebAssembly.Memory;
   try {
     await initializeCore(hibernating.core);
+    const memory = findOwnedMemory(hibernating.core);
+    if (!memory) throw new Error('Hibernating Core does not expose its owned WebAssembly.Memory');
+    hibernatedMemory = memory;
     await writeCore(hibernating.core, 'HIBERNATE-BEFORE\r\n');
     const captured = hibernating.core.captureRestorableSnapshot({ maxBytes: 512 * 1024 });
     if (!captured) throw new Error('Unable to capture hibernate snapshot');
@@ -293,6 +301,9 @@ const runSamePagePressure = async (): Promise<ScenarioResult> => {
   const resumed = makeCore(166);
   try {
     await resumed.core.initialize();
+    const resumedMemory = findOwnedMemory(resumed.core);
+    if (!resumedMemory) throw new Error('Resumed Core does not expose its owned WebAssembly.Memory');
+    if (resumedMemory === hibernatedMemory) throw new Error('Resumed Core reused the hibernated WebAssembly.Memory');
     if (!await resumed.core.restoreSnapshot(snapshot)) throw new Error('Unable to restore hibernate snapshot');
     await writeCore(resumed.core, 'HIBERNATE-AFTER\r\n');
     await settleCommittedFrame(resumed.core);
@@ -312,6 +323,7 @@ const runSamePagePressure = async (): Promise<ScenarioResult> => {
     kind: 'same-page-pressure',
     durationMs: performance.now() - startedAt,
     distinctConcurrentMemories: memories.length,
+    hibernateMemoryReplaced: true,
     scheduler,
   };
 };
@@ -344,6 +356,8 @@ const runCancellationStorm = async (): Promise<ScenarioResult> => {
 
   const fixtures = Array.from({ length: 12 }, () => makeCore(166, 1_000));
   const controllers = fixtures.map(() => new AbortController());
+  let leakedEstimates = 0;
+  let leakedContainers = 0;
   try {
     const waits = fixtures.map(({ core }, index) => core.initialize({
       signal: controllers[index]?.signal,
@@ -362,22 +376,21 @@ const runCancellationStorm = async (): Promise<ScenarioResult> => {
     }, 10_000);
 
     if (maxActiveLoads > 3) throw new Error(`Cancellation storm started ${maxActiveLoads} concurrent Ghostty loads`);
+    leakedEstimates = fixtures.filter(({ core }) => {
+      const estimate = core.getResourceEstimate();
+      return estimate.bufferBytes !== 0
+        || estimate.cellCount !== 0
+        || estimate.wasmMemoryBytes !== 0
+        || estimate.estimatedBytes !== 0;
+    }).length;
+    leakedContainers = fixtures.filter(({ container }) => container.childElementCount > 0).length;
+    if (leakedEstimates > 0) throw new Error(`${leakedEstimates} cancelled Cores retained live resource estimates`);
+    if (leakedContainers > 0) throw new Error(`${leakedContainers} cancelled Cores retained terminal DOM`);
   } finally {
     Reflect.set(Ghostty, 'load', originalLoad);
     fixtures.forEach(({ core }) => core.dispose());
+    fixtures.forEach(({ container }) => removeContainer(container));
   }
-
-  const leakedEstimates = fixtures.filter(({ core }) => {
-    const estimate = core.getResourceEstimate();
-    return estimate.bufferBytes !== 0
-      || estimate.cellCount !== 0
-      || estimate.wasmMemoryBytes !== 0
-      || estimate.estimatedBytes !== 0;
-  }).length;
-  const leakedContainers = fixtures.filter(({ container }) => container.childElementCount > 0).length;
-  fixtures.forEach(({ container }) => removeContainer(container));
-  if (leakedEstimates > 0) throw new Error(`${leakedEstimates} disposed Cores retained live resource estimates`);
-  if (leakedContainers > 0) throw new Error(`${leakedContainers} disposed Cores retained terminal DOM`);
 
   return {
     kind: 'cancellation-storm',
@@ -420,13 +433,26 @@ const runPerformance = async (metric: Extract<ScenarioRequest, { kind: 'performa
   }
 
   if (metric === 'write') {
-    const { core, container } = makeCore(166, 1_000);
+    let resolveCommittedRender: (() => void) | null = null;
+    const { core, container } = makeCore(166, 1_000, () => {
+      const resolve = resolveCommittedRender;
+      if (!resolve) return;
+      resolveCommittedRender = null;
+      requestAnimationFrame(() => resolve());
+    });
     try {
       await initializeCore(core);
       const sampleWrite = async (index: number): Promise<number> => {
+        const committedRender = new Promise<void>((resolve, reject) => {
+          if (resolveCommittedRender) {
+            reject(new Error('A write/render performance sample overlapped another sample'));
+            return;
+          }
+          resolveCommittedRender = resolve;
+        });
         const startedAt = performance.now();
         await writeCore(core, `PERF-WRITE-${index}\r\n`);
-        await settleCommittedFrame(core);
+        await committedRender;
         return performance.now() - startedAt;
       };
       for (let index = 0; index < 3; index += 1) await sampleWrite(index);

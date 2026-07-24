@@ -864,13 +864,28 @@ export class TerminalCore {
       if (settled) return;
       settled = true;
       operation.waiters = Math.max(0, operation.waiters - 1);
-      if (operation.waiters === 0 && !operation.started && !operation.cancelled) {
-        operation.cancelled = true;
-        operation.request.cancel();
-        if (this.initializationOperation === operation) {
-          this.initializationOperation = null;
-          if (!this.isDisposed) this.setState(TerminalState.IDLE);
+      if (operation.waiters !== 0 || operation.cancelled) return;
+
+      if (operation.started) {
+        if (
+          this.initializationOperation === operation
+          && !this.isDisposed
+          && this.state === TerminalState.INITIALIZING
+        ) {
+          operation.cancelled = true;
+          // Ghostty.load() cannot be cancelled. Abort the Core lifecycle so the
+          // owned runtime is discarded when that load settles, while the
+          // initialization permit remains held by the operation's finally path.
+          operation.lifecycleAbortController.abort();
         }
+        return;
+      }
+
+      operation.cancelled = true;
+      operation.request.cancel();
+      if (this.initializationOperation === operation) {
+        this.initializationOperation = null;
+        if (!this.isDisposed) this.setState(TerminalState.IDLE);
       }
     };
     return waitWithAbort(operation.promise, signal).finally(releaseWaiter);

@@ -144,6 +144,7 @@ const run = async () => {
       request: { kind: 'same-page-pressure' },
     });
     if (pressure.distinctConcurrentMemories !== 3) fail('Same-page pressure did not verify three distinct WASM memories');
+    if (pressure.hibernateMemoryReplaced !== true) fail('Hibernate/resume did not replace the owned WASM memory');
     if (pressure.scheduler?.active !== 0 || pressure.scheduler?.queued !== 0) {
       fail(`Initialization scheduler leaked work: ${JSON.stringify(pressure.scheduler)}`);
     }

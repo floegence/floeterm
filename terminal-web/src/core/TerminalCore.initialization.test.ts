@@ -200,6 +200,66 @@ describe('TerminalCore initialization', () => {
     core.dispose();
   });
 
+  it('cleans up a started initialization after its last caller aborts', async () => {
+    let resolveRuntime: ((runtime: { memory: WebAssembly.Memory }) => void) | undefined;
+    moduleState.runtimeLoad.mockImplementationOnce(() => new Promise(resolve => {
+      resolveRuntime = resolve;
+    }));
+    const container = createContainer();
+    const controller = new AbortController();
+    const core = new TerminalCore(container);
+
+    const initialization = core.initialize({ signal: controller.signal });
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(moduleState.runtimeLoad).toHaveBeenCalledTimes(1));
+
+    controller.abort();
+    await expect(initialization).rejects.toMatchObject({ name: 'AbortError' });
+    expect(getTerminalInitializationSchedulerStats()).toMatchObject({ active: 1 });
+
+    resolveRuntime?.({ memory: new WebAssembly.Memory({ initial: 1 }) });
+    await vi.runAllTimersAsync();
+    await vi.waitFor(() => expect(getTerminalInitializationSchedulerStats()).toMatchObject({
+      active: 0,
+      queued: 0,
+    }));
+
+    expect(core.getState()).toBe(TerminalState.IDLE);
+    expect(core.getResourceEstimate()).toMatchObject({
+      bufferBytes: 0,
+      cellCount: 0,
+      wasmMemoryBytes: 0,
+      estimatedBytes: 0,
+    });
+    expect(moduleState.terminalOptions).toHaveLength(0);
+    expect(container.childElementCount).toBe(0);
+    core.dispose();
+  });
+
+  it('keeps a started initialization alive while another caller is waiting', async () => {
+    let resolveRuntime: ((runtime: { memory: WebAssembly.Memory }) => void) | undefined;
+    moduleState.runtimeLoad.mockImplementationOnce(() => new Promise(resolve => {
+      resolveRuntime = resolve;
+    }));
+    const controller = new AbortController();
+    const core = new TerminalCore(createContainer());
+
+    const cancelled = core.initialize({ signal: controller.signal });
+    const remaining = core.initialize();
+    await vi.runOnlyPendingTimersAsync();
+    await vi.waitFor(() => expect(moduleState.runtimeLoad).toHaveBeenCalledTimes(1));
+
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    resolveRuntime?.({ memory: new WebAssembly.Memory({ initial: 1 }) });
+    await vi.runAllTimersAsync();
+    await expect(remaining).resolves.toBeUndefined();
+
+    expect(core.getState()).toBe(TerminalState.READY);
+    expect(moduleState.terminalOptions).toHaveLength(1);
+    core.dispose();
+  });
+
   it('cancels queued initialization when the core is disposed', async () => {
     const core = new TerminalCore(createContainer());
     const initializing = core.initialize({ priority: 'background' });
@@ -320,6 +380,15 @@ describe('TerminalCore initialization', () => {
     }));
     expect(peakLoads).toBe(3);
 
+    expect(cores.every(core => core.getState() === TerminalState.IDLE)).toBe(true);
+    expect(cores.every(core => {
+      const estimate = core.getResourceEstimate();
+      return estimate.bufferBytes === 0
+        && estimate.cellCount === 0
+        && estimate.wasmMemoryBytes === 0
+        && estimate.estimatedBytes === 0;
+    })).toBe(true);
+    expect(fixtures.every(({ container }) => container.childElementCount === 0)).toBe(true);
     cores.forEach(core => core.dispose());
     expect(document.querySelector('textarea')).toBeNull();
   });
