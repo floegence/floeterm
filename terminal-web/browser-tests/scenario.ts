@@ -443,6 +443,7 @@ const runPerformance = async (metric: Extract<ScenarioRequest, { kind: 'performa
     try {
       await initializeCore(core);
       const sampleWrite = async (index: number): Promise<number> => {
+        await nextFrame();
         const committedRender = new Promise<void>((resolve, reject) => {
           if (resolveCommittedRender) {
             reject(new Error('A write/render performance sample overlapped another sample'));
