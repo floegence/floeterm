@@ -24,6 +24,7 @@ class FakeStream implements TerminalByteStream {
   private readonly reads: Array<Uint8Array | null> = [];
   private readonly waiters: Array<(value: Uint8Array | null) => void> = [];
   closed = false;
+  closeEndsPendingRead = true;
 
   async read(): Promise<Uint8Array | null> {
     if (this.reads.length > 0) return this.reads.shift() ?? null;
@@ -37,7 +38,7 @@ class FakeStream implements TerminalByteStream {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.push(null);
+    if (this.closeEndsPendingRead) this.push(null);
   }
 
   async reset(error?: Error): Promise<void> {
@@ -205,7 +206,7 @@ describe('terminal live transport', () => {
     expect(input.sequence).toBe(1n);
     expect(new TextDecoder().decode(input.data)).toBe('xx');
 
-    const resizing = transport.resize('session', 120, 40);
+    const resizing = transport.resizeWithEffectiveGeometry('session', 120, 40);
     await waitUntil(() => stream.writes.length === 3);
     const resize = decodeResize(decodeSingleWrite(stream.writes[2]!));
     expect(resize).toEqual({ sequence: 1n, cols: 120, rows: 40 });
@@ -214,7 +215,35 @@ describe('terminal live transport', () => {
     await Promise.resolve();
     expect(settled).toBe(false);
     stream.push(encodeResizeApplied({ sequence: resize.sequence, geometryGeneration: 2n, outputSequenceBoundary: 4n, cols: 100, rows: 30 }));
-    await resizing;
+    await expect(resizing).resolves.toEqual({
+      runtimeAttachGeneration: 1,
+      requested: { cols: 120, rows: 40 },
+      effective: {
+        generation: 2,
+        outputSequenceBoundary: 4,
+        cols: 100,
+        rows: 30,
+      },
+    });
+  });
+
+  it('keeps the legacy resize API compatible while exposing structured geometry separately', async () => {
+    const { transport, streams } = createHarness();
+    const attaching = transport.attach('session', 80, 24);
+    await waitUntil(() => streams.length === 1);
+    await acknowledgeAttach(streams[0]!);
+    await attaching;
+
+    const resizing = transport.resize('session', 80, 24);
+    await waitUntil(() => streams[0]!.writes.length === 2);
+    streams[0]!.push(encodeResizeApplied({
+      sequence: 1n,
+      geometryGeneration: 1n,
+      outputSequenceBoundary: 4n,
+      cols: 80,
+      rows: 24,
+    }));
+    await expect(resizing).resolves.toBeUndefined();
   });
 
   it('emits exact ordered output metadata with the live protocol batch boundary', async () => {
@@ -274,6 +303,53 @@ describe('terminal live transport', () => {
     expect(second.attachGeneration).toBe(2n);
   });
 
+  it('fences output and geometry that arrive from a superseded attachment', async () => {
+    const { transport, eventSource, streams } = createHarness();
+    const dataEvents: unknown[] = [];
+    const geometryEvents: unknown[] = [];
+    const lifecycleEvents: unknown[] = [];
+    eventSource.onTerminalData('session', event => dataEvents.push(event));
+    eventSource.onTerminalGeometry?.('session', event => geometryEvents.push(event));
+    eventSource.onTerminalLiveAttachmentLifecycle('session', event => lifecycleEvents.push(event));
+
+    const firstAttach = transport.attachWithHistoryBoundary('session', 80, 24);
+    await waitUntil(() => streams.length === 1);
+    const oldStream = streams[0]!;
+    oldStream.closeEndsPendingRead = false;
+    await acknowledgeAttach(oldStream);
+    await firstAttach;
+
+    const secondAttach = transport.attachWithHistoryBoundary('session', 100, 30);
+    await waitUntil(() => streams.length === 2);
+    const newStream = streams[1]!;
+    await acknowledgeAttach(newStream, 4n, 2n);
+    await secondAttach;
+
+    oldStream.push(encodeOutputBatch({
+      geometryGeneration: 2n,
+      cols: 60,
+      rows: 18,
+      records: [{
+        sequence: 5n,
+        timestampMs: 10n,
+        data: new TextEncoder().encode('stale'),
+      }],
+    }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(dataEvents).toEqual([]);
+    expect(geometryEvents).toEqual([
+      { sessionId: 'session', generation: 1, outputSequenceBoundary: 4, cols: 80, rows: 24 },
+      { sessionId: 'session', generation: 1, outputSequenceBoundary: 4, cols: 80, rows: 24 },
+    ]);
+    expect(lifecycleEvents).toEqual([
+      { sessionId: 'session', runtimeAttachGeneration: 1, state: 'attached' },
+      { sessionId: 'session', runtimeAttachGeneration: 1, state: 'closed', reason: 'superseded' },
+      { sessionId: 'session', runtimeAttachGeneration: 2, state: 'attached' },
+    ]);
+  });
+
   it('closes attached streams when the connection epoch changes', async () => {
     const { transport, streams } = createHarness();
     transport.syncConnectionEpoch({ id: 1 });
@@ -321,6 +397,23 @@ describe('terminal live transport', () => {
     streams[0]!.push(null);
     await waitUntil(() => events.length === 1);
     expect(events[0]).toMatchObject({ type: 'error', error: 'terminal live stream closed' });
+  });
+
+  it('publishes attachment closure when a stream ends without a resize', async () => {
+    const { transport, eventSource, streams } = createHarness();
+    const lifecycleEvents: unknown[] = [];
+    eventSource.onTerminalLiveAttachmentLifecycle('session', event => lifecycleEvents.push(event));
+    const attaching = transport.attachWithHistoryBoundary('session', 80, 24);
+    await waitUntil(() => streams.length === 1);
+    await acknowledgeAttach(streams[0]!);
+    await attaching;
+
+    streams[0]!.push(null);
+    await waitUntil(() => lifecycleEvents.length === 2);
+    expect(lifecycleEvents).toEqual([
+      { sessionId: 'session', runtimeAttachGeneration: 1, state: 'attached' },
+      { sessionId: 'session', runtimeAttachGeneration: 1, state: 'closed', reason: 'stream_ended' },
+    ]);
   });
 
   it('emits session deletion without a transport error for SESSION_CLOSED', async () => {

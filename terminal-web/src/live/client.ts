@@ -72,10 +72,19 @@ export type TerminalLiveGeometry = Readonly<{
   rows: number;
 }>;
 
+export type TerminalLiveResizeResult = Readonly<{
+  requested: Readonly<{
+    cols: number;
+    rows: number;
+  }>;
+  effective: TerminalLiveGeometry;
+}>;
+
 export type TerminalLiveConnection = Readonly<{
   attached: TerminalLiveAttached;
   sendInput(data: Uint8Array): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
+  resizeWithEffectiveGeometry(cols: number, rows: number): Promise<TerminalLiveResizeResult>;
   close(): Promise<void>;
 }>;
 
@@ -126,7 +135,11 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
   private lastOutputSequence: bigint;
   private pendingGeometries: PendingGeometry[] = [];
   private writeTail: Promise<void> = Promise.resolve();
-  private readonly resizeWaiters = new Map<bigint, { resolve: () => void; reject: (error: Error) => void }>();
+  private readonly resizeWaiters = new Map<bigint, {
+    requested: TerminalLiveResizeResult['requested'];
+    resolve: (result: TerminalLiveResizeResult) => void;
+    reject: (error: Error) => void;
+  }>();
   private geometry: TerminalLiveGeometry;
   private closed = false;
   private failed = false;
@@ -193,11 +206,15 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
   }
 
   async resize(cols: number, rows: number): Promise<void> {
+    await this.resizeWithEffectiveGeometry(cols, rows);
+  }
+
+  async resizeWithEffectiveGeometry(cols: number, rows: number): Promise<TerminalLiveResizeResult> {
     if (this.closed) throw new Error('terminal live connection is closed');
     this.resizeSequence += 1n;
     const sequence = this.resizeSequence;
-    const applied = new Promise<void>((resolve, reject) => {
-      this.resizeWaiters.set(sequence, { resolve, reject });
+    const applied = new Promise<TerminalLiveResizeResult>((resolve, reject) => {
+      this.resizeWaiters.set(sequence, { requested: { cols, rows }, resolve, reject });
     });
     try {
       await this.enqueueWrite(() => this.stream.write(encodeResize({ sequence, cols, rows })));
@@ -333,7 +350,10 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
         const waiter = this.resizeWaiters.get(pending.resizeSequence);
         if (!waiter) continue;
         this.resizeWaiters.delete(pending.resizeSequence);
-        waiter.resolve();
+        waiter.resolve({
+          requested: waiter.requested,
+          effective: pending.geometry,
+        });
       }
     }
   }

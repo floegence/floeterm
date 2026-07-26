@@ -17,6 +17,7 @@ import {
   type ConnectTerminalLiveOptions,
   type TerminalByteStream,
   type TerminalLiveConnection,
+  type TerminalLiveResizeResult,
 } from './client.js';
 import { StreamKind } from './codec.js';
 
@@ -39,8 +40,41 @@ export type TerminalLiveAttachResult = TerminalAtomicAttachResult & Readonly<{
   runtimeAttachGeneration: number;
 }>;
 
+export type TerminalLiveResizeAppliedResult = TerminalLiveResizeResult & Readonly<{
+  runtimeAttachGeneration: number;
+}>;
+
+export type TerminalLiveAttachmentCloseReason =
+  | 'superseded'
+  | 'stream_ended'
+  | 'session_closed'
+  | 'error'
+  | 'detached'
+  | 'session_deleted'
+  | 'connection_epoch_changed'
+  | 'disposed';
+
+export type TerminalLiveAttachmentLifecycleEvent = Readonly<{
+  sessionId: TerminalID;
+  runtimeAttachGeneration: number;
+  state: 'attached' | 'closed';
+  reason?: TerminalLiveAttachmentCloseReason;
+}>;
+
+export interface TerminalLiveEventSource extends TerminalEventSource {
+  onTerminalLiveAttachmentLifecycle(
+    sessionId: TerminalID,
+    handler: (event: TerminalLiveAttachmentLifecycleEvent) => void,
+  ): () => void;
+}
+
 export type TerminalLiveTransport = Omit<TerminalAtomicTransport, 'attachWithHistoryBoundary'> & Readonly<{
   attachWithHistoryBoundary(sessionId: TerminalID, cols: number, rows: number): Promise<TerminalLiveAttachResult>;
+  resizeWithEffectiveGeometry(
+    sessionId: TerminalID,
+    cols: number,
+    rows: number,
+  ): Promise<TerminalLiveResizeAppliedResult>;
   forgetSession(sessionId: string): void;
   syncConnectionEpoch(key: object | null): void;
   dispose(): void;
@@ -56,7 +90,7 @@ export type CreateTerminalLiveTransportOptions = Readonly<{
 
 export type TerminalLiveTransportBundle = Readonly<{
   transport: TerminalLiveTransport;
-  eventSource: TerminalEventSource;
+  eventSource: TerminalLiveEventSource;
 }>;
 
 type LiveEntry = {
@@ -70,8 +104,9 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
   const listeners = new Map<string, Set<(event: TerminalDataEvent) => void>>();
   const deletionListeners = new Map<string, Set<() => void>>();
   const geometryListeners = new Map<string, Set<(event: TerminalGeometryEvent) => void>>();
+  const lifecycleListeners = new Map<string, Set<(event: TerminalLiveAttachmentLifecycleEvent) => void>>();
   const entries = new Map<string, LiveEntry>();
-  const attachEpochs = new Map<string, number>();
+  const activeGenerations = new Map<string, number>();
   let connectionEpochKey: object | null | undefined;
   let nextGeneration = 0;
   let disposed = false;
@@ -94,20 +129,32 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
     for (const listener of geometryListeners.get(sessionId) ?? []) listener(event);
   };
 
-  const closeEntry = (sessionId: string): void => {
+  const emitLifecycle = (event: TerminalLiveAttachmentLifecycleEvent): void => {
+    for (const listener of lifecycleListeners.get(event.sessionId) ?? []) listener(event);
+  };
+
+  const isCurrentGeneration = (sessionId: string, generation: number): boolean => (
+    !disposed && activeGenerations.get(sessionId) === generation
+  );
+
+  const closeEntry = (sessionId: string, reason: TerminalLiveAttachmentCloseReason): void => {
+    const generation = activeGenerations.get(sessionId);
+    if (generation === undefined) return;
+    activeGenerations.delete(sessionId);
     const entry = entries.get(sessionId);
-    if (!entry) return;
-    entries.delete(sessionId);
-    void entry.connection.close();
+    if (entry?.generation === generation) {
+      entries.delete(sessionId);
+      void entry.connection.close();
+    }
+    emitLifecycle({ sessionId, runtimeAttachGeneration: generation, state: 'closed', reason });
   };
 
   const attachWithHistoryBoundary = async (sessionId: string, cols: number, rows: number): Promise<TerminalLiveAttachResult> => {
     if (disposed) throw new Error('terminal live transport is disposed');
-    const epoch = (attachEpochs.get(sessionId) ?? 0) + 1;
-    attachEpochs.set(sessionId, epoch);
-    closeEntry(sessionId);
+    closeEntry(sessionId, 'superseded');
     nextGeneration += 1;
     const generation = nextGeneration;
+    activeGenerations.set(sessionId, generation);
     const connection = await connectTerminalLive({
       openStream: options.openStream,
       attach: {
@@ -118,6 +165,7 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
         rows,
       },
       onOutputBatch: records => {
+        if (!isCurrentGeneration(sessionId, generation)) return;
         for (const record of records) {
           const sequence = Number(record.sequence);
           const timestampMs = Number(record.timestampMs);
@@ -137,11 +185,15 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
           });
         }
       },
-      onGeometry: geometry => emitGeometry(sessionId, geometry),
+      onGeometry: geometry => {
+        if (!isCurrentGeneration(sessionId, generation)) return;
+        emitGeometry(sessionId, geometry);
+      },
       onClosed: reason => {
-        const current = entries.get(sessionId);
-        if (!current || current.generation !== generation) return;
-        entries.delete(sessionId);
+        if (!isCurrentGeneration(sessionId, generation)) return;
+        activeGenerations.delete(sessionId);
+        if (entries.get(sessionId)?.generation === generation) entries.delete(sessionId);
+        emitLifecycle({ sessionId, runtimeAttachGeneration: generation, state: 'closed', reason });
         if (reason === 'session_closed') {
           emitDeleted(sessionId);
           return;
@@ -154,23 +206,44 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
         });
       },
       onError: error => {
+        if (!isCurrentGeneration(sessionId, generation)) return;
         options.onError?.(sessionId, error);
-        const current = entries.get(sessionId);
-        if (current?.generation === generation) entries.delete(sessionId);
+        activeGenerations.delete(sessionId);
+        if (entries.get(sessionId)?.generation === generation) entries.delete(sessionId);
+        emitLifecycle({ sessionId, runtimeAttachGeneration: generation, state: 'closed', reason: 'error' });
         emit(sessionId, { sessionId, type: 'error', data: new Uint8Array(), error: error.message });
       },
     });
-    if (disposed || attachEpochs.get(sessionId) !== epoch) {
+    if (!isCurrentGeneration(sessionId, generation)) {
       await connection.close();
       const error = new Error('terminal live attach was superseded');
       error.name = 'AbortError';
       throw error;
     }
     entries.set(sessionId, { generation, connection });
+    emitLifecycle({ sessionId, runtimeAttachGeneration: generation, state: 'attached' });
     return {
       ...connection.attached,
       runtimeAttachGeneration: generation,
     };
+  };
+
+  const resizeWithEffectiveGeometry = async (
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ): Promise<TerminalLiveResizeAppliedResult> => {
+    const entry = entries.get(sessionId);
+    if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+      throw new Error('terminal live session is not attached');
+    }
+    const result = await entry.connection.resizeWithEffectiveGeometry(cols, rows);
+    if (!isCurrentGeneration(sessionId, entry.generation)) {
+      const error = new Error('terminal live resize was superseded');
+      error.name = 'AbortError';
+      throw error;
+    }
+    return { ...result, runtimeAttachGeneration: entry.generation };
   };
 
   const transport: TerminalLiveTransport = {
@@ -179,10 +252,9 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
     },
     attachWithHistoryBoundary,
     resize: async (sessionId, cols, rows) => {
-      const entry = entries.get(sessionId);
-      if (!entry) throw new Error('terminal live session is not attached');
-      await entry.connection.resize(cols, rows);
+      await resizeWithEffectiveGeometry(sessionId, cols, rows);
     },
+    resizeWithEffectiveGeometry,
     sendInput: async (sessionId, input) => {
       const entry = entries.get(sessionId);
       if (!entry) throw new Error('terminal live session is not attached');
@@ -195,11 +267,11 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
     createSession: options.control.createSession,
     deleteSession: options.control.deleteSession ? async sessionId => {
       await options.control.deleteSession!(sessionId);
-      closeEntry(sessionId);
+      closeEntry(sessionId, 'session_deleted');
       emitDeleted(sessionId);
     } : undefined,
     renameSession: options.control.renameSession,
-    forgetSession: closeEntry,
+    forgetSession: sessionId => closeEntry(sessionId, 'detached'),
     syncConnectionEpoch: key => {
       if (connectionEpochKey === undefined) {
         connectionEpochKey = key;
@@ -207,19 +279,20 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
       }
       if (connectionEpochKey === key) return;
       connectionEpochKey = key;
-      for (const sessionId of Array.from(entries.keys())) closeEntry(sessionId);
+      for (const sessionId of Array.from(activeGenerations.keys())) closeEntry(sessionId, 'connection_epoch_changed');
     },
     dispose: () => {
       if (disposed) return;
+      for (const sessionId of Array.from(activeGenerations.keys())) closeEntry(sessionId, 'disposed');
       disposed = true;
-      for (const sessionId of Array.from(entries.keys())) closeEntry(sessionId);
       listeners.clear();
       deletionListeners.clear();
       geometryListeners.clear();
+      lifecycleListeners.clear();
     },
   };
 
-  const eventSource: TerminalEventSource = {
+  const eventSource: TerminalLiveEventSource = {
     onTerminalData: (sessionId, handler) => {
       const set = listeners.get(sessionId) ?? new Set();
       set.add(handler);
@@ -251,6 +324,15 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
       return () => {
         set.delete(handler);
         if (set.size === 0) geometryListeners.delete(sessionId);
+      };
+    },
+    onTerminalLiveAttachmentLifecycle: (sessionId, handler) => {
+      const set = lifecycleListeners.get(sessionId) ?? new Set();
+      set.add(handler);
+      lifecycleListeners.set(sessionId, set);
+      return () => {
+        set.delete(handler);
+        if (set.size === 0) lifecycleListeners.delete(sessionId);
       };
     },
     onSessionDeleted: (sessionId, handler) => {

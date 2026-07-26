@@ -249,11 +249,22 @@ describe('terminal live client', () => {
     const geometries: Array<Readonly<{ generation: number; cols: number; rows: number }>> = [];
     const connection = await connect(stream, () => undefined, geometry => geometries.push(geometry));
     let settled = false;
-    const resized = connection.resize(120, 40).then(() => { settled = true; });
+    const resized = connection.resizeWithEffectiveGeometry(120, 40).then(result => {
+      settled = true;
+      return result;
+    });
     await waitUntil(() => stream.writes.length === 2);
     expect(settled).toBe(false);
     stream.push(encodeResizeApplied({ sequence: 1n, geometryGeneration: 2n, outputSequenceBoundary: 4n, cols: 100, rows: 30 }));
-    await resized;
+    await expect(resized).resolves.toEqual({
+      requested: { cols: 120, rows: 40 },
+      effective: {
+        generation: 2,
+        outputSequenceBoundary: 4,
+        cols: 100,
+        rows: 30,
+      },
+    });
     expect(settled).toBe(true);
     expect(geometries[geometries.length - 1]).toEqual({
       generation: 2,
@@ -261,6 +272,35 @@ describe('terminal live client', () => {
       cols: 100,
       rows: 30,
     });
+  });
+
+  it('returns a same-generation resize acknowledgement without re-emitting geometry', async () => {
+    const stream = new FakeStream();
+    const geometries: Array<Readonly<{ generation: number; cols: number; rows: number }>> = [];
+    const connection = await connect(stream, () => undefined, geometry => geometries.push(geometry));
+
+    const resized = connection.resizeWithEffectiveGeometry(80, 24);
+    await waitUntil(() => stream.writes.length === 2);
+    stream.push(encodeResizeApplied({
+      sequence: 1n,
+      geometryGeneration: 1n,
+      outputSequenceBoundary: 4n,
+      cols: 80,
+      rows: 24,
+    }));
+
+    await expect(resized).resolves.toEqual({
+      requested: { cols: 80, rows: 24 },
+      effective: {
+        generation: 1,
+        outputSequenceBoundary: 4,
+        cols: 80,
+        rows: 24,
+      },
+    });
+    expect(geometries).toEqual([
+      { generation: 1, outputSequenceBoundary: 4, cols: 80, rows: 24 },
+    ]);
   });
 
   it('applies unsolicited geometry changes without waiting for output', async () => {

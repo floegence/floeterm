@@ -287,6 +287,18 @@ const controller = createTerminalInstance({
 
 The live transport applies `ATTACHED`, `GEOMETRY_CHANGED`, `RESIZE_APPLIED`, and `OUTPUT_BATCH` geometry monotonically. Container resize notifications still report each view's own capacity to the server.
 
+Hosts that need to explain shared PTY geometry can request the structured, boundary-ordered resize result instead of guessing from the latest geometry event:
+
+```ts
+const applied = await transport.resizeWithEffectiveGeometry(sessionId, localCols, localRows);
+
+console.log(applied.runtimeAttachGeneration);
+console.log(applied.requested); // This view's requested grid.
+console.log(applied.effective); // The shared grid after its output boundary.
+```
+
+The existing `transport.resize()` remains available and resolves at the same boundary without returning the result. `eventSource.onTerminalLiveAttachmentLifecycle()` reports the exact runtime attach generation entering `attached` or `closed`. Output, geometry, resize results, errors, and close callbacks from superseded generations are fenced before they reach host listeners.
+
 Hosts with overlay scrollbars can remove the default ghostty-web scrollbar reserve:
 
 ```ts

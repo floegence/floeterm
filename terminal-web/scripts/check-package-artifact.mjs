@@ -10,7 +10,7 @@ import ts from 'typescript';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const EXPECTED_PACKAGE_VERSION = '0.10.0';
+const EXPECTED_PACKAGE_VERSION = '0.10.1';
 const EXPECTED_GHOSTTY_WEB_VERSION = '0.4.0-next.14.g6a1a50d';
 const EXPECTED_TERMINAL_THEME_IDS = [
   'dark', 'light', 'solarizedDark', 'monokai', 'tokyoNight',
@@ -626,6 +626,7 @@ try {
       "const sessions = await import('@floegence/floeterm-terminal-web/sessions')",
       "const history = await import('@floegence/floeterm-terminal-web/history')",
       "const preload = await import('@floegence/floeterm-terminal-web/preload')",
+      "const live = await import('@floegence/floeterm-terminal-web/live')",
       "if (typeof api.TerminalCore !== 'function') throw new Error('TerminalCore export is unavailable')",
       "if (typeof api.TerminalCore.prototype.setScrollbarOptions !== 'function') throw new Error('TerminalCore scrollbar setter is unavailable')",
       "if (api.normalizeTerminalForegroundCommandDisplayName('top') !== 'top') throw new Error('foreground command sanitizer export is unavailable')",
@@ -635,6 +636,7 @@ try {
       "if (sessions.classifyTerminalAgentCli('claude') !== 'claude') throw new Error('sessions agent CLI classifier export is unavailable')",
       "if (typeof history.preparePagedTerminalHistory !== 'function') throw new Error('history export is unavailable')",
       "if (typeof preload.preloadTerminalResources !== 'function') throw new Error('preload export is unavailable')",
+      "if (typeof live.createTerminalLiveTransport !== 'function') throw new Error('live transport export is unavailable')",
       "if (api.TERMINAL_THEME_NAMES.length !== 20) throw new Error('terminal theme catalog size is unavailable')",
       "if (api.TERMINAL_THEME_DEFINITIONS.length !== 20) throw new Error('terminal theme definitions export is unavailable')",
       "if (!Object.isFrozen(api.TERMINAL_THEME_NAMES) || !Object.isFrozen(api.TERMINAL_THEME_DEFINITIONS)) throw new Error('terminal theme catalog must be frozen')",
@@ -696,6 +698,11 @@ import {
   type PreparedPagedTerminalHistory,
 } from '@floegence/floeterm-terminal-web/history';
 import { preloadTerminalResources } from '@floegence/floeterm-terminal-web/preload';
+import {
+  createTerminalLiveTransport,
+  type TerminalLiveAttachmentLifecycleEvent,
+  type TerminalLiveResizeAppliedResult,
+} from '@floegence/floeterm-terminal-web/live';
 
 const priority: TerminalInitializationPriority = 'interactive';
 const agentCli: TerminalAgentCliIdentity | null = classifyTerminalAgentCli('opencode');
@@ -721,6 +728,11 @@ const scrollbarOptions: TerminalScrollbarOptions = {
   minThumbPx: 24,
   ariaLabel: 'Terminal history',
 };
+const attachmentLifecycle: TerminalLiveAttachmentLifecycleEvent | undefined = undefined;
+const appliedResize: TerminalLiveResizeAppliedResult | undefined = undefined;
+void createTerminalLiveTransport;
+void attachmentLifecycle;
+void appliedResize;
 const terminalConfig: TerminalConfig = {
   scrollbar: scrollbarOptions,
 };

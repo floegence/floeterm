@@ -35,6 +35,8 @@ export type {
   TerminalLiveAttached,
   TerminalLiveCloseReason,
   TerminalLiveConnection,
+  TerminalLiveGeometry,
+  TerminalLiveResizeResult,
 } from '../live/client.js';
 export type {
   Attach,
@@ -50,8 +52,12 @@ export type {
 export type {
   CreateTerminalLiveTransportOptions,
   OpenTerminalLiveStream,
+  TerminalLiveAttachmentCloseReason,
+  TerminalLiveAttachmentLifecycleEvent,
   TerminalLiveAttachResult,
   TerminalLiveControlPlane,
+  TerminalLiveEventSource,
+  TerminalLiveResizeAppliedResult,
   TerminalLiveTransport,
   TerminalLiveTransportBundle,
 } from '../live/transport.js';
