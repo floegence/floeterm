@@ -11,7 +11,27 @@ class MockTerminal {
   rows = 24;
   options: Record<string, unknown> = {};
   buffer = { active: { length: 0 } };
+  element?: HTMLElement;
+  renderer = { render: vi.fn(), getMetrics: () => ({ width: 8, height: 16 }) };
+  wasmTerm = { isAlternateScreen: () => false };
   private dataHandler: ((data: string) => void) | null = null;
+
+  handleMouseDown() {}
+  showScrollbar() {}
+  hideScrollbar() {}
+  fadeInScrollbar() {}
+  fadeOutScrollbar() {}
+  animateScroll() {}
+  targetViewportY = 0;
+  getViewportY() { return 0; }
+  getScrollbackLength() { return 0; }
+  isAlternateScreen() { return false; }
+  scrollToLine(_line: number) {}
+  scrollToTop() {}
+  scrollToBottom() {}
+  scrollLines(_amount: number) {}
+  scrollPages(_amount: number) {}
+  onScroll() { return { dispose: () => {} }; }
 
   constructor() {
     terminalInstance = this;
@@ -19,6 +39,7 @@ class MockTerminal {
 
   loadAddon(addon: { __terminal?: MockTerminal }) { addon.__terminal = this; }
   open(container: HTMLElement) {
+    this.element = container;
     const textarea = document.createElement('textarea');
     textarea.setAttribute('aria-label', 'Terminal input');
     container.appendChild(textarea);

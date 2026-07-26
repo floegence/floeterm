@@ -10,8 +10,27 @@ vi.mock('ghostty-web', () => {
     rows: number;
     options: any;
     buffer: any;
+    renderer = { render: vi.fn(), getMetrics: () => ({ width: 8, height: 16 }) };
+    wasmTerm = { isAlternateScreen: () => false };
     element: HTMLElement | null = null;
     private resizeHandler: ((size: { cols: number; rows: number }) => void) | null = null;
+
+    handleMouseDown() {}
+    showScrollbar() {}
+    hideScrollbar() {}
+    fadeInScrollbar() {}
+    fadeOutScrollbar() {}
+    animateScroll() {}
+    targetViewportY = 0;
+    getViewportY() { return 0; }
+    getScrollbackLength() { return 0; }
+    isAlternateScreen() { return false; }
+    scrollToLine(_line: number) {}
+    scrollToTop() {}
+    scrollToBottom() {}
+    scrollLines(_amount: number) {}
+    scrollPages(_amount: number) {}
+    onScroll() { return { dispose: () => {} }; }
 
     constructor(opts: any) {
       this.cols = typeof opts?.cols === 'number' ? opts.cols : 80;

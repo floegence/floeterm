@@ -10,7 +10,7 @@ import ts from 'typescript';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const EXPECTED_PACKAGE_VERSION = '0.9.0';
+const EXPECTED_PACKAGE_VERSION = '0.10.0';
 const EXPECTED_GHOSTTY_WEB_VERSION = '0.4.0-next.14.g6a1a50d';
 const EXPECTED_TERMINAL_THEME_IDS = [
   'dark', 'light', 'solarizedDark', 'monokai', 'tokyoNight',
@@ -485,6 +485,100 @@ async function assertGhosttyScrollbackCompatibilityArtifact(installedPackageRoot
   }
 }
 
+async function assertGhosttyScrollbarArtifact(installedPackageRoot) {
+  const overlayModule = await import(pathToFileURL(path.join(
+    installedPackageRoot,
+    'dist/core/TerminalScrollbarOverlay.js',
+  )).href);
+  const compatModule = await import(pathToFileURL(path.join(
+    installedPackageRoot,
+    'dist/internal/GhosttyScrollbarCompat.js',
+  )).href);
+  const normalized = overlayModule.normalizeTerminalScrollbarOptions({
+    visibility: 'persistent',
+    minThumbPx: 24,
+    ariaLabel: 'Terminal history',
+  });
+  if (
+    normalized.visibility !== 'persistent'
+    || normalized.minThumbPx !== 24
+    || normalized.ariaLabel !== 'Terminal history'
+  ) {
+    throw new Error('installed terminal scrollbar option contract is invalid');
+  }
+  for (const invalid of [
+    null,
+    'persistent',
+    [],
+    { visibility: 'always' },
+    { minThumbPx: 15 },
+    { minThumbPx: '24' },
+    { minThumbPx: Number.NaN },
+    { minThumbPx: Number.POSITIVE_INFINITY },
+    { ariaLabel: ' ' },
+  ]) {
+    let rejected = false;
+    try {
+      overlayModule.normalizeTerminalScrollbarOptions(invalid);
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) throw new Error(`installed scrollbar validator accepted ${JSON.stringify(invalid)}`);
+  }
+
+  const PreviousHTMLElement = globalThis.HTMLElement;
+  class ArtifactHTMLElement {}
+  globalThis.HTMLElement = ArtifactHTMLElement;
+  try {
+    const terminal = {
+      ...Object.fromEntries([
+        'handleMouseDown', 'showScrollbar', 'hideScrollbar', 'fadeInScrollbar', 'fadeOutScrollbar',
+        'getViewportY', 'getScrollbackLength', 'scrollToLine', 'scrollToTop', 'scrollToBottom',
+        'scrollLines', 'scrollPages', 'onScroll',
+      ].map(name => [name, () => {}])),
+      animateScroll: () => {},
+      targetViewportY: 0,
+      element: new ArtifactHTMLElement(),
+      wasmTerm: { isAlternateScreen: () => false },
+    };
+    compatModule.suppressPinnedGhosttyScrollbarBeforeOpen(terminal);
+    compatModule.installPinnedGhosttyAlternateScreenProjection(terminal);
+    if (terminal.isAlternateScreen() !== false) {
+      throw new Error('installed pinned alternate-screen projection is invalid');
+    }
+    const calls = [];
+    const renderer = { render: (...args) => calls.push(args) };
+    compatModule.suppressPinnedGhosttyScrollbarRenderer(renderer);
+    renderer.render('buffer', true, 9, 'provider', 0.75);
+    if (calls.length !== 1 || calls[0][4] !== 0) {
+      throw new Error('installed pinned Ghostty renderer suppression is invalid');
+    }
+    for (const [detail, mutate] of [
+      ['scrollPages', value => { delete value.scrollPages; }],
+      ['element', value => { value.element = {}; }],
+      ['wasmTerm', value => { delete value.wasmTerm; }],
+      ['wasmTerm.isAlternateScreen', value => { value.wasmTerm = {}; }],
+    ]) {
+      const invalid = { ...terminal, wasmTerm: { ...terminal.wasmTerm } };
+      mutate(invalid);
+      let rejected = false;
+      try {
+        if (detail === 'scrollPages') {
+          compatModule.suppressPinnedGhosttyScrollbarBeforeOpen(invalid);
+        } else {
+          compatModule.installPinnedGhosttyAlternateScreenProjection(invalid);
+        }
+      } catch {
+        rejected = true;
+      }
+      if (!rejected) throw new Error(`installed pinned Ghostty shape guard accepted invalid ${detail}`);
+    }
+  } finally {
+    if (PreviousHTMLElement === undefined) delete globalThis.HTMLElement;
+    else globalThis.HTMLElement = PreviousHTMLElement;
+  }
+}
+
 try {
   const { stdout } = await execFileAsync(process.execPath, [npmCliPath,
     'pack',
@@ -516,6 +610,9 @@ try {
     path.join(temporaryRoot, 'node_modules', '@floegence', 'floeterm-terminal-web'),
     temporaryRoot,
   );
+  await assertGhosttyScrollbarArtifact(
+    path.join(temporaryRoot, 'node_modules', '@floegence', 'floeterm-terminal-web'),
+  );
 
   await writeFile(path.join(temporaryRoot, 'package.json'), `${JSON.stringify({
     private: true,
@@ -530,6 +627,7 @@ try {
       "const history = await import('@floegence/floeterm-terminal-web/history')",
       "const preload = await import('@floegence/floeterm-terminal-web/preload')",
       "if (typeof api.TerminalCore !== 'function') throw new Error('TerminalCore export is unavailable')",
+      "if (typeof api.TerminalCore.prototype.setScrollbarOptions !== 'function') throw new Error('TerminalCore scrollbar setter is unavailable')",
       "if (api.normalizeTerminalForegroundCommandDisplayName('top') !== 'top') throw new Error('foreground command sanitizer export is unavailable')",
       "if (api.classifyTerminalAgentCli('CODEX.exe') !== 'codex') throw new Error('agent CLI classifier export is unavailable')",
       "if (typeof sessions.TerminalSessionsCoordinator !== 'function') throw new Error('sessions export is unavailable')",
@@ -580,7 +678,9 @@ import {
   type TerminalThemeDefinition,
   type TerminalThemeName,
   type TerminalInitializationPriority,
+  type TerminalConfig,
   type TerminalResourceEstimate,
+  type TerminalScrollbarOptions,
 } from '@floegence/floeterm-terminal-web';
 import {
   TerminalSessionsCoordinator,
@@ -616,6 +716,14 @@ const resourceEstimate: TerminalResourceEstimate = {
   estimatedBytes: 65_536,
   rendererType: 'canvas',
 };
+const scrollbarOptions: TerminalScrollbarOptions = {
+  visibility: 'persistent',
+  minThumbPx: 24,
+  ariaLabel: 'Terminal history',
+};
+const terminalConfig: TerminalConfig = {
+  scrollbar: scrollbarOptions,
+};
 // @ts-expect-error wasmMemoryBytes is required in the published contract
 const incompleteResourceEstimate: TerminalResourceEstimate = {
   bufferBytes: 0,
@@ -623,7 +731,7 @@ const incompleteResourceEstimate: TerminalResourceEstimate = {
   estimatedBytes: 0,
   rendererType: 'canvas',
 };
-void [TerminalCore, classifyTerminalAgentCli, normalizeTerminalForegroundCommandDisplayName, classifySessionAgentCli, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, agentCli, sessionAgentCli, prepared, outcome, session, coordinator, themeName, appearance, colors, definition, resourceEstimate, incompleteResourceEstimate];
+void [TerminalCore, classifyTerminalAgentCli, normalizeTerminalForegroundCommandDisplayName, classifySessionAgentCli, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, agentCli, sessionAgentCli, prepared, outcome, session, coordinator, themeName, appearance, colors, definition, resourceEstimate, incompleteResourceEstimate, scrollbarOptions, terminalConfig];
 if (TERMINAL_THEME_NAMES.length !== 20) throw new Error('terminal theme type export is unavailable');
 if (TERMINAL_THEME_DEFINITIONS.length !== 20) throw new Error('terminal theme definitions type export is unavailable');
 if (!isTerminalThemeName('polarVeil')) throw new Error('terminal theme type validator is unavailable');

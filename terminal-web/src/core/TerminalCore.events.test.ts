@@ -42,10 +42,30 @@ vi.mock('ghostty-web', () => {
     rows: number;
     options: any;
     buffer: any;
+    element?: HTMLElement;
+    renderer = { render: vi.fn(), getMetrics: () => ({ width: 8, height: 16 }) };
+    wasmTerm = { isAlternateScreen: () => false };
     linkDetector: MockLinkDetector | null = null;
     registeredLinkProviders: TerminalLinkProvider[] = [];
     private bellHandlers = new Set<() => void>();
     private titleHandlers = new Set<(title: string) => void>();
+
+    handleMouseDown() {}
+    showScrollbar() {}
+    hideScrollbar() {}
+    fadeInScrollbar() {}
+    fadeOutScrollbar() {}
+    animateScroll() {}
+    targetViewportY = 0;
+    getViewportY() { return 0; }
+    getScrollbackLength() { return 0; }
+    isAlternateScreen() { return false; }
+    scrollToLine(_line: number) {}
+    scrollToTop() {}
+    scrollToBottom() {}
+    scrollLines(_amount: number) {}
+    scrollPages(_amount: number) {}
+    onScroll() { return { dispose: () => {} }; }
 
     constructor(opts: any) {
       this.cols = typeof opts?.cols === 'number' ? opts.cols : 80;
@@ -59,6 +79,7 @@ vi.mock('ghostty-web', () => {
     }
 
     open(container: HTMLElement) {
+      this.element = container;
       const textarea = document.createElement('textarea');
       textarea.setAttribute('aria-label', 'Terminal input');
       container.appendChild(textarea);

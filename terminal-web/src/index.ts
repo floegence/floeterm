@@ -81,6 +81,8 @@ export type {
   TerminalCopySelectionResult,
   TerminalCopySelectionSource,
   TerminalResponsiveConfig,
+  TerminalScrollbarOptions,
+  TerminalScrollbarVisibility,
   TerminalRuntimeLineSnapshot,
   TerminalRestorableSnapshot,
   TerminalRestorableSnapshotOptions,

@@ -37,6 +37,8 @@ type FloetermPerfHarness = {
   sendInput(data: string): void;
   clear(): void;
   serialize(): string;
+  getSelectionText(): string;
+  hasSelection(): boolean;
   getTerminalInfo(): ReturnType<TerminalManagerActions['getTerminalInfo']>;
   getSnapshot(): TerminalInstanceSnapshot;
   getFabricDiagnostics(): TerminalFabricDiagnostics;
@@ -335,6 +337,8 @@ const SingleTerminalPane = (props: {
       sendInput: data => terminal.actions().sendInput(data),
       clear: () => terminal.actions().clear(),
       serialize: () => terminal.actions().serialize(),
+      getSelectionText: () => terminal.actions().getSelectionText(),
+      hasSelection: () => terminal.actions().hasSelection(),
       getTerminalInfo: () => terminal.actions().getTerminalInfo(),
       getSnapshot: () => terminal.snapshot(),
       getFabricDiagnostics: () => getTerminalFabricDiagnostics(),
@@ -596,6 +600,8 @@ const MirrorTerminalConnection = (props: {
     sendInput: data => terminal.actions().sendInput(data),
     clear: () => terminal.actions().clear(),
     serialize: () => terminal.actions().serialize(),
+    getSelectionText: () => terminal.actions().getSelectionText(),
+    hasSelection: () => terminal.actions().hasSelection(),
     getTerminalInfo: () => terminal.actions().getTerminalInfo(),
     getSnapshot: () => terminal.snapshot(),
     getFabricDiagnostics: () => getTerminalFabricDiagnostics(),

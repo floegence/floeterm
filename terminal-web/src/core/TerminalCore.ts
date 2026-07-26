@@ -24,6 +24,7 @@ import {
   type TerminalAppearance,
   type TerminalLinkProvider,
   type TerminalResponsiveConfig,
+  type TerminalScrollbarOptions,
   type TerminalSelectionSnapshot,
   type TerminalRuntimeLineSnapshot,
   type TerminalRestorableSnapshot,
@@ -56,12 +57,22 @@ import {
   validateTerminalScrollbackRows,
 } from '../internal/GhosttyScrollbackCompat.js';
 import {
+  installPinnedGhosttyAlternateScreenProjection,
+  suppressPinnedGhosttyScrollbarBeforeOpen,
+  suppressPinnedGhosttyScrollbarRenderer,
+} from '../internal/GhosttyScrollbarCompat.js';
+import {
   createUnicodeSafeUrlProviderTerminal,
   type UrlProviderTerminal,
 } from '../internal/UnicodeSafeUrlProvider.js';
 import { resolveTerminalInputElement, TerminalInputBridge } from './TerminalInputBridge.js';
 import { terminalRenderScheduler, type TerminalRenderTask } from './TerminalRenderScheduler.js';
 import { scheduleUiTurn, type ScheduledTurnCancel } from '../internal/scheduleUiTurn.js';
+import { parseThemeColor, type RgbColor } from '../utils/themeColor.js';
+import {
+  normalizeTerminalScrollbarOptions,
+  TerminalScrollbarOverlay,
+} from './TerminalScrollbarOverlay.js';
 
 type terminal_search_match = {
   row: number;
@@ -106,7 +117,12 @@ type ghostty_disposable = {
 
 type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
   getScrollbackLength?: () => number;
+  getViewportY?: () => number;
   scrollLines?: (amount: number) => void;
+  scrollPages?: (amount: number) => void;
+  scrollToLine?: (line: number) => void;
+  scrollToTop?: () => void;
+  scrollToBottom?: () => void;
   isAlternateScreen?: () => boolean;
   input?: (data: string, wasUserInput?: boolean) => void;
   onBell?: (handler: () => void) => ghostty_disposable;
@@ -151,12 +167,6 @@ type ghostty_renderer_with_row_cache = {
   setCursorBlink?: (enabled: boolean) => unknown;
 };
 
-type rgb_color = {
-  r: number;
-  g: number;
-  b: number;
-};
-
 const TERMINAL_SNAPSHOT_VERSION = 1 as const;
 const DEFAULT_TERMINAL_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024;
 const ESTIMATED_RENDERER_BYTES = 4 * 1024 * 1024;
@@ -165,8 +175,8 @@ const SNAPSHOT_RESET_PREFIX = '\x1bc\x1b[2J\x1b[H';
 const encodedByteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
 
 type terminal_theme_color_translator = {
-  fg: Map<string, rgb_color>;
-  bg: Map<string, rgb_color>;
+  fg: Map<string, RgbColor>;
+  bg: Map<string, RgbColor>;
 };
 
 type terminal_resize_reason = 'observer' | 'focus' | 'force' | 'post_init' | 'font';
@@ -356,50 +366,7 @@ const mapThemeToGhostty = (theme: Record<string, unknown> | undefined): Record<s
   return mapped;
 };
 
-function normalizeThemeColor(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  const shortHex = /^#([0-9a-fA-F]{3})$/.exec(trimmed);
-  if (shortHex) {
-    const [r, g, b] = shortHex[1].split('');
-    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
-  }
-
-  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
-    return trimmed.toLowerCase();
-  }
-
-  const rgb = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/.exec(trimmed);
-  if (!rgb) {
-    return null;
-  }
-
-  const channels = rgb.slice(1).map(channel => Number(channel));
-  if (channels.some(channel => !Number.isInteger(channel) || channel < 0 || channel > 255)) {
-    return null;
-  }
-
-  return `#${channels.map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
-}
-
-function parseThemeColor(value: string | undefined): rgb_color | null {
-  const normalized = normalizeThemeColor(value);
-  if (!normalized) {
-    return null;
-  }
-
-  const hex = normalized.slice(1);
-  return {
-    r: Number.parseInt(hex.slice(0, 2), 16),
-    g: Number.parseInt(hex.slice(2, 4), 16),
-    b: Number.parseInt(hex.slice(4, 6), 16),
-  };
-}
-
-function colorKey(color: rgb_color): string {
+function colorKey(color: RgbColor): string {
   return `${color.r},${color.g},${color.b}`;
 }
 
@@ -413,12 +380,12 @@ function cellColorKey(cell: ghostty_cell_like, prefix: 'fg' | 'bg'): string | nu
   return `${r},${g},${b}`;
 }
 
-function colorsEqual(left: rgb_color, right: rgb_color): boolean {
+function colorsEqual(left: RgbColor, right: RgbColor): boolean {
   return left.r === right.r && left.g === right.g && left.b === right.b;
 }
 
 function setColorTranslation(
-  map: Map<string, rgb_color>,
+  map: Map<string, RgbColor>,
   source: Record<string, string>,
   target: Record<string, string>,
   key: string,
@@ -435,8 +402,8 @@ function buildThemeColorTranslator(
   source: Record<string, string>,
   target: Record<string, string>,
 ): terminal_theme_color_translator | null {
-  const fg = new Map<string, rgb_color>();
-  const bg = new Map<string, rgb_color>();
+  const fg = new Map<string, RgbColor>();
+  const bg = new Map<string, RgbColor>();
 
   for (const key of TERMINAL_THEME_PALETTE_KEYS) {
     setColorTranslation(fg, source, target, key);
@@ -655,6 +622,7 @@ export class TerminalCore {
   private inputElement: HTMLTextAreaElement | null = null;
   private viewportHost: HTMLDivElement | null = null;
   private renderHost: HTMLDivElement | null = null;
+  private scrollbarOverlay: TerminalScrollbarOverlay | null = null;
 
   private resizeObserver: ResizeObserver | null = null;
   private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -692,6 +660,7 @@ export class TerminalCore {
   private suppressResizeNotifications = false;
   private clearResizeSuppressionRaf: number | null = null;
   private readonly scrollbackRows: number;
+  private scrollbarOptions: Required<TerminalScrollbarOptions>;
 
   private hasFocus = false;
   private resizeNotifySeq = 0;
@@ -745,6 +714,7 @@ export class TerminalCore {
     this.eventHandlers = eventHandlers;
     this.clipboard = TerminalCore.normalizeClipboardConfig(config?.clipboard);
     this.fit = TerminalCore.normalizeFitConfig(config?.fit);
+    this.scrollbarOptions = normalizeTerminalScrollbarOptions(config?.scrollbar);
     this.logger = logger ?? noopLogger;
     this.responsive = TerminalCore.normalizeResponsiveConfig(config?.responsive);
     this.logicalFontSize = TerminalCore.normalizeFontSize(config?.fontSize);
@@ -755,6 +725,7 @@ export class TerminalCore {
       ...(explicitCols === undefined ? {} : { cols: explicitCols }),
       fixedDimensions: this.fixedDimensions,
       scrollback: this.scrollbackRows,
+      scrollbar: this.scrollbarOptions,
     };
     this.renderTask = {
       id: TerminalCore.nextRenderTaskId,
@@ -898,6 +869,8 @@ export class TerminalCore {
     this.resizeObserver = null;
     this.disposeInputBridge();
     this.disposeTerminalEventListeners();
+    this.scrollbarOverlay?.dispose();
+    this.scrollbarOverlay = null;
     this.fabricView?.dispose();
     this.fabricView = null;
     this.terminal?.dispose();
@@ -999,7 +972,11 @@ export class TerminalCore {
     const renderHost = this.ensurePresentationHosts();
     this.applyPresentationScaleStyles();
     this.installDemandRenderPatchBeforeOpen();
+    suppressPinnedGhosttyScrollbarBeforeOpen(this.terminal as unknown as Record<string, unknown>);
     this.terminal.open(renderHost);
+    installPinnedGhosttyAlternateScreenProjection(this.terminal as unknown as Record<string, unknown>);
+    const renderer = (this.terminal as unknown as { renderer?: ghostty_renderer_with_row_cache }).renderer;
+    suppressPinnedGhosttyScrollbarRenderer(renderer ?? {});
     this.installLinkDetector();
     if (this.config.rendererType === 'webgl') {
       const canvas = (this.terminal as unknown as { renderer?: { getCanvas?: () => HTMLCanvasElement | null } })
@@ -1012,6 +989,7 @@ export class TerminalCore {
     this.patchSelectionManagerClipboardBehavior();
     this.patchSelectionManagerRenderingBehavior();
     this.setupInputBridge(renderHost);
+    this.mountScrollbarOverlay();
     this.applyRegisteredLinkProviders();
     void this.refreshFontMetricsAfterLoad('open');
   }
@@ -1029,6 +1007,36 @@ export class TerminalCore {
 
     body.appendChild(input);
     this.inputElement = input;
+  }
+
+  private mountScrollbarOverlay(): void {
+    if (!this.terminal || !this.viewportHost || !this.renderHost) {
+      throw new Error('Terminal scrollbar requires an initialized presentation host');
+    }
+    this.scrollbarOverlay?.dispose();
+    const terminal = this.terminal;
+    const surfaceId = `${this.fabricViewId}-surface`;
+    this.renderHost.id = surfaceId;
+    this.scrollbarOverlay = new TerminalScrollbarOverlay(
+      this.viewportHost,
+      {
+        get rows() {
+          return terminal.rows;
+        },
+        getScrollbackLength: () => terminal.getScrollbackLength!(),
+        getViewportY: () => terminal.getViewportY!(),
+        isAlternateScreen: () => terminal.isAlternateScreen!(),
+        scrollToLine: line => terminal.scrollToLine!(line),
+        scrollToTop: () => terminal.scrollToTop!(),
+        scrollToBottom: () => terminal.scrollToBottom!(),
+        scrollLines: amount => terminal.scrollLines!(amount),
+        scrollPages: amount => terminal.scrollPages!(amount),
+        focusTerminal: () => this.scheduleInputSurfaceRefocus({ preventScroll: true }),
+      },
+      this.scrollbarOptions,
+      surfaceId,
+    );
+    this.scrollbarOverlay.setBackgroundColor(this.terminalThemeSource.background);
   }
 
   private installLinkDetector(): void {
@@ -1114,7 +1122,13 @@ export class TerminalCore {
       return null;
     }
 
-    const cols = Math.floor(Number(geometry.cols));
+    const cellWidth = Number(geometry.cellWidth);
+    const hostWidth = Number(this.viewportHost?.clientWidth ?? this.container.clientWidth);
+    const visibleCellWidth = cellWidth / this.presentationScale;
+    const cols = Number.isFinite(hostWidth) && hostWidth > 0
+      && Number.isFinite(visibleCellWidth) && visibleCellWidth > 0
+      ? Math.floor(Math.max(0, hostWidth - this.fit.scrollbarReservePx) / visibleCellWidth)
+      : Math.floor(Number(geometry.cols));
     const rows = Math.floor(Number(geometry.rows));
     if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) {
       return null;
@@ -2129,6 +2143,8 @@ export class TerminalCore {
     if (typeof this.terminal.onScroll === 'function') {
       const disposable = this.terminal.onScroll(() => {
         this.syncImeInputAnchor();
+        this.scrollbarOverlay?.reveal();
+        this.scrollbarOverlay?.sync();
         this.requestDemandRender(false);
       });
       this.trackTerminalEventDisposable(disposable);
@@ -2462,6 +2478,7 @@ export class TerminalCore {
         } else {
           this.requestDemandRender(shouldForceAfterWrite);
         }
+        this.scrollbarOverlay?.sync();
         callback?.();
         probe?.onTerminalWriteProfile?.({
           totalMs: performance.now() - profileStartedAt,
@@ -3522,11 +3539,20 @@ export class TerminalCore {
     }
   }
 
+  setScrollbarOptions(options: Partial<TerminalScrollbarOptions>): void {
+    normalizeTerminalScrollbarOptions(options);
+    const next = normalizeTerminalScrollbarOptions({ ...this.scrollbarOptions, ...options });
+    this.scrollbarOptions = next;
+    this.config = { ...this.config, scrollbar: next };
+    this.scrollbarOverlay?.setOptions(next);
+  }
+
   setTheme(theme: Record<string, unknown>): void {
     const mapped = mapThemeToGhostty(theme);
     // Persist latest theme so a future re-initialization can reuse it.
     this.config = { ...this.config, theme: mapped };
     this.themeColorTranslator = buildThemeColorTranslator(this.terminalThemeSource, mapped);
+    this.scrollbarOverlay?.setBackgroundColor(mapped.background);
 
     if (!this.terminal) {
       return;
@@ -3690,6 +3716,8 @@ export class TerminalCore {
     this.disposeInputBridge();
     this.disposeTerminalEventListeners();
     this.disposeSearchOverlay();
+    this.scrollbarOverlay?.dispose();
+    this.scrollbarOverlay = null;
     this.fabricAttachSeq += 1;
     this.cancelFabricAttachSchedule?.();
     this.cancelFabricAttachSchedule = null;
@@ -4027,6 +4055,7 @@ export class TerminalCore {
         terminalAny.cursorMoveEmitter?.fire?.();
       }
       this.syncImeInputAnchor();
+      this.scrollbarOverlay?.sync();
       const durationMs = performance.now() - startedAt;
       getPerfProbe()?.onTerminalRender?.(durationMs);
       if (

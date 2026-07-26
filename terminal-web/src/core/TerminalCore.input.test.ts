@@ -24,6 +24,22 @@ vi.mock('ghostty-web', () => {
     };
     selectionText = '';
 
+    handleMouseDown() {}
+    showScrollbar() {}
+    hideScrollbar() {}
+    fadeInScrollbar() {}
+    fadeOutScrollbar() {}
+    animateScroll() {}
+    targetViewportY = 0;
+    getViewportY() { return 0; }
+    getScrollbackLength() { return 0; }
+    isAlternateScreen() { return false; }
+    scrollToLine(_line: number) {}
+    scrollToTop() {}
+    scrollToBottom() {}
+    scrollLines(_amount: number) {}
+    scrollPages(_amount: number) {}
+
     constructor(opts: any) {
       this.cols = typeof opts?.cols === 'number' ? opts.cols : 80;
       this.rows = typeof opts?.rows === 'number' ? opts.rows : 24;
@@ -37,6 +53,7 @@ vi.mock('ghostty-web', () => {
       };
       this.wasmTerm = {
         getCursor: () => this.cursor,
+        isAlternateScreen: () => false,
       };
       const copySpy = vi.fn().mockResolvedValue(undefined);
       this.selectionManager = {

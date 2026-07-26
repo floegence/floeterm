@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = path.resolve(packageRoot, '..');
-const expectedPackageVersion = '0.9.0';
+const expectedPackageVersion = '0.10.0';
 const expectedGhosttyVersion = '0.4.0-next.14.g6a1a50d';
 
 async function readJson(filePath) {

@@ -60,6 +60,14 @@ export interface TerminalFitConfig {
   scrollbarReservePx?: number;
 }
 
+export type TerminalScrollbarVisibility = 'auto' | 'persistent' | 'hidden';
+
+export interface TerminalScrollbarOptions {
+  visibility?: TerminalScrollbarVisibility;
+  minThumbPx?: number;
+  ariaLabel?: string;
+}
+
 export interface TerminalClipboardConfig {
   /**
    * When true, mouse selection follows the upstream terminal default and copies
@@ -126,6 +134,7 @@ export interface TerminalConfig {
   fontSize?: number;
   fontFamily?: string;
   fit?: TerminalFitConfig;
+  scrollbar?: TerminalScrollbarOptions;
   presentationScale?: number;
   cursorBlink?: boolean;
   /**
@@ -266,6 +275,7 @@ export interface TerminalCoreLike {
   forceResize(): void;
   setFixedDimensions(dimensions: TerminalDimensions | null): void;
   setAppearance?(appearance: TerminalAppearance): void;
+  setScrollbarOptions?(options: Partial<TerminalScrollbarOptions>): void;
   setTheme(theme: Record<string, unknown>): void;
   setFontSize(size: number): void;
   setPresentationScale(scale: number): void;

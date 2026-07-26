@@ -22,6 +22,26 @@ vi.mock('ghostty-web', () => {
     rows = 24;
     options: Record<string, unknown> = {};
     buffer = { active: { length: 0 } };
+    element?: HTMLElement;
+    renderer = { render: vi.fn(), getMetrics: () => ({ width: 8, height: 16 }) };
+    wasmTerm = { isAlternateScreen: () => false };
+
+    handleMouseDown() {}
+    showScrollbar() {}
+    hideScrollbar() {}
+    fadeInScrollbar() {}
+    fadeOutScrollbar() {}
+    animateScroll() {}
+    targetViewportY = 0;
+    getViewportY() { return 0; }
+    getScrollbackLength() { return 0; }
+    isAlternateScreen() { return false; }
+    scrollToLine(_line: number) {}
+    scrollToTop() {}
+    scrollToBottom() {}
+    scrollLines(_amount: number) {}
+    scrollPages(_amount: number) {}
+    onScroll() { return { dispose: () => {} }; }
 
     constructor(options: Record<string, unknown> = {}) {
       if (moduleState.constructorFailures > 0) {
@@ -34,6 +54,7 @@ vi.mock('ghostty-web', () => {
 
     loadAddon(addon: { __terminal?: MockTerminal }) { addon.__terminal = this; }
     open(container: HTMLElement) {
+      this.element = container;
       const textarea = document.createElement('textarea');
       textarea.setAttribute('aria-label', 'Terminal input');
       container.appendChild(textarea);
@@ -106,6 +127,27 @@ describe('TerminalCore initialization', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     document.body.replaceChildren();
+  });
+
+  it('rejects invalid scrollbar config before loading runtime or creating DOM', () => {
+    const initialChildren = document.body.childElementCount;
+    for (const scrollbar of [null, 'auto', [], { minThumbPx: '24' }, { minThumbPx: Number.NaN }]) {
+      expect(() => new TerminalCore(document.createElement('div'), {
+        scrollbar: scrollbar as never,
+      })).toThrow(/scrollbar/i);
+    }
+    expect(moduleState.runtimeLoad).not.toHaveBeenCalled();
+    expect(moduleState.terminalOptions).toHaveLength(0);
+    expect(document.body.childElementCount).toBe(initialChildren);
+  });
+
+  it('rejects invalid runtime scrollbar option patches before changing state', () => {
+    const core = new TerminalCore(document.createElement('div'));
+    for (const options of [null, 'auto', [], { minThumbPx: '24' }, { minThumbPx: Number.NaN }]) {
+      expect(() => core.setScrollbarOptions(options as never)).toThrow(/scrollbar/i);
+    }
+    expect(moduleState.runtimeLoad).not.toHaveBeenCalled();
+    expect(moduleState.terminalOptions).toHaveLength(0);
   });
 
   it('keeps a claimed preload load scheduled until it settles after abort and dispose', async () => {

@@ -134,6 +134,20 @@ vi.mock('ghostty-web', () => {
     dirtyRows = new Set([0, 1]);
     wasmTerm: any;
 
+    handleMouseDown() {}
+    showScrollbar() {}
+    hideScrollbar() {}
+    fadeInScrollbar() {}
+    fadeOutScrollbar() {}
+    animateScroll() {}
+    targetViewportY = 0;
+    getViewportY() { return this.viewportY; }
+    isAlternateScreen() { return false; }
+    scrollToLine(line: number) { this.viewportY = line; }
+    scrollToTop() { this.viewportY = this.scrollbackLength; }
+    scrollToBottom() { this.viewportY = 0; }
+    scrollPages(amount: number) { this.scrollLines(amount * this.rows); }
+
     constructor(opts: any) {
       this.cols = typeof opts?.cols === 'number' ? opts.cols : 80;
       this.rows = typeof opts?.rows === 'number' ? opts.rows : 24;
@@ -153,6 +167,7 @@ vi.mock('ghostty-web', () => {
         clearDirty: () => {
           this.dirtyRows.clear();
         },
+        isAlternateScreen: () => false,
       };
       this.renderSpy = vi.fn(function (this: any, buffer: any, forceAll = false) {
         this.currentBuffer = buffer;
@@ -370,6 +385,29 @@ describe('TerminalCore demand rendering', () => {
     expect(terminal.renderSpy).toHaveBeenCalledTimes(renderCountAfterInit);
 
     core.dispose();
+  });
+
+  it('mounts, updates, and disposes the renderer-neutral scrollbar projection', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    const viewportHost = (core as unknown as { viewportHost: HTMLDivElement }).viewportHost;
+    Object.defineProperty(viewportHost, 'clientHeight', { configurable: true, value: 400 });
+    terminal.scrollbackLength = 100;
+    terminal.viewportY = 0;
+    terminal.scrollEmitter.fire(0);
+
+    const scrollbar = viewportHost.querySelector<HTMLElement>('[role="scrollbar"]');
+    expect(scrollbar).not.toBeNull();
+    expect(scrollbar?.hidden).toBe(false);
+    expect(scrollbar?.getAttribute('aria-valuenow')).toBe('100');
+    expect(scrollbar?.getAttribute('aria-controls')).toBe((core as any).renderHost.id);
+
+    core.setScrollbarOptions({ visibility: 'persistent', ariaLabel: 'Terminal history' });
+    expect(scrollbar?.getAttribute('aria-label')).toBe('Terminal history');
+    expect(scrollbar?.dataset.visible).toBe('true');
+
+    core.dispose();
+    expect(document.querySelector('[data-floeterm-scrollbar]')).toBeNull();
   });
 
   it('renders once for terminal output and coalesces writes on one frame', async () => {

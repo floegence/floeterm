@@ -53,6 +53,27 @@ const core = new TerminalCore(
 await core.initialize();
 ```
 
+Floeterm projects one renderer-neutral DOM scrollbar for both canvas and WebGL terminals while Ghostty remains the only scrollback and viewport owner:
+
+```ts
+const core = new TerminalCore(container, {
+  rendererType: 'webgl',
+  fit: { scrollbarReservePx: 15 },
+  scrollbar: {
+    visibility: 'persistent', // "auto" by default, or "hidden"
+    minThumbPx: 24,
+    ariaLabel: 'Terminal history',
+  },
+});
+
+// Keep a long-lived Core aligned with a runtime locale change.
+core.setScrollbarOptions({ ariaLabel: localizedTerminalHistoryLabel });
+```
+
+The scrollbar uses a 12px visual and fine-pointer rail. Reserve at least 12px when the last terminal column must remain fully unobstructed; the default 15px reserve provides a stable gutter. An explicit `scrollbarReservePx: 0` remains supported as an overlay mode and may cover the rightmost 12px. The visual overlay itself never owns pointer hit testing: Floeterm captures fine-pointer track and thumb gestures at the viewport boundary, while wheel and touch events continue to target Ghostty's terminal surface exactly once. `persistent` automatically behaves as `auto` on coarse-pointer-only devices. Mixed-pointer devices keep mouse and pen interaction without creating a dead touch strip.
+
+`auto` reveals on terminal wheel activity, keyboard focus, or fine-pointer movement into the right-edge rail, then fades after 1,200ms of inactivity. `persistent` remains visible on fine-pointer layouts and `hidden` removes the control from pointer, tab, and accessibility access. Alternate-screen programs and empty buffers also hide it. Theme-derived idle and hover/focus colors meet 3:1 and 4.5:1 contrast targets. Drag color targets 7:1; when that ratio is mathematically impossible against the configured background, Floeterm chooses whichever of black or white provides the highest available contrast. Forced-colors and reduced-motion preferences are honored.
+
 After a host-owned layout transition or history recovery, request an explicit
 presentation fence before declaring the terminal surface ready:
 
@@ -132,7 +153,7 @@ the foreground revision that was active at that exact byte boundary.
 - Each `TerminalCore` owns an isolated `ghostty-web` WASM runtime; consumers must not provide or share a Ghostty runtime.
 - `scrollback` is measured in terminal buffer rows, including separately wrapped rows, and accepts integers from 1 through 10,000. Within the supported geometry, Floeterm preserves at least the requested number of buffer rows; it does not trim to an exact physical row count. Floeterm maps that contract to a bounded byte budget for the exact pinned `ghostty-web@0.4.0-next.14.g6a1a50d` release, which currently interprets the value as bytes. The 81,920,000-byte cap limits Ghostty's scrollback arena, not the total memory of a WASM runtime. The mapping is temporary and must be reviewed and removed or updated with any Ghostty upgrade.
 - Supported terminal geometry is limited to 500 columns. Explicit dimensions above that limit fail, while automatic fitting reports at most 500 columns.
-- Consumer dependency overrides for `ghostty-web` are unsupported. Floeterm's compatibility guard requires the exact package pin so an upstream behavior change cannot silently apply the row-to-byte mapping twice.
+- Consumer dependency overrides for `ghostty-web` are unsupported. Floeterm's compatibility guard requires the exact package pin so an upstream behavior change cannot silently apply the row-to-byte mapping twice or reactivate the native canvas scrollbar beneath the renderer-neutral DOM control.
 - `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and composition input continue to work on touch devices.
 - The hidden terminal input is mounted in the document viewport plane and anchored from rendered cursor geometry, so native IME candidate windows stay aligned without expanding transformed terminal hosts.
 - Programmatic terminal focus uses no-scroll focus by default, keeping embedded terminals stable inside scaled, projected, or otherwise transformed host surfaces.

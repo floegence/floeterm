@@ -3,6 +3,8 @@ import { PNG } from 'pngjs';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
 
+const TERMINAL_SCROLLBAR_RESERVE_PX = 15;
+
 const inkRows = imageBuffer => {
   const image = PNG.sync.read(imageBuffer);
   const colorCounts = new Map();
@@ -29,7 +31,7 @@ const inkRows = imageBuffer => {
   return { width: image.width, height: image.height, occupied };
 };
 
-const readRendererGeometry = page => page.evaluate(() => {
+const readRendererGeometry = page => page.evaluate(scrollbarReservePx => {
   const target = document.querySelector('.floeterm-beamterm-canvas');
   const info = window.__floetermPerfHarness.getTerminalInfo();
   if (!(target instanceof HTMLCanvasElement) || !info) throw new Error('renderer geometry is unavailable');
@@ -54,10 +56,13 @@ const readRendererGeometry = page => page.evaluate(() => {
     rows: info.rows,
     expectedCellWidth,
     expectedCellHeight,
-    expectedCols: Math.floor(target.width / expectedCellWidth),
+    scrollbarReservePx,
+    expectedCols: Math.floor(
+      (target.width - scrollbarReservePx) / expectedCellWidth,
+    ),
     expectedRows: Math.floor(target.height / expectedCellHeight),
   };
-});
+}, TERMINAL_SCROLLBAR_RESERVE_PX);
 
 const expectTypographicGeometry = geometry => {
   expect(geometry.dpr).toBe(1);
@@ -65,6 +70,11 @@ const expectTypographicGeometry = geometry => {
   expect(geometry.backingHeight).toBe(Math.round(geometry.cssHeight));
   expect(geometry.cols).toBe(geometry.expectedCols);
   expect(geometry.rows).toBe(geometry.expectedRows);
+  const gridRight = geometry.cols * geometry.expectedCellWidth;
+  expect(gridRight).toBeLessThanOrEqual(geometry.backingWidth - geometry.scrollbarReservePx);
+  expect(gridRight + geometry.expectedCellWidth).toBeGreaterThan(
+    geometry.backingWidth - geometry.scrollbarReservePx,
+  );
 };
 
 const expectSeparatedRows = (pixels, minimumRows, cellHeight) => {

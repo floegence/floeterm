@@ -46,6 +46,18 @@ const openSharedSessionPage = async (page, sessionId, viewport) => {
   }, sessionId);
 };
 
+const forceResizeAfterCommittedLayout = async page => {
+  await page.bringToFront();
+  await page.evaluate(() => new Promise(resolve => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.__floetermPerfHarness.forceResize();
+        resolve();
+      });
+    });
+  }));
+};
+
 const readPageState = page => page.evaluate(() => {
   const harness = window.__floetermPerfHarness;
   const runtime = document.querySelector('[data-testid="demo-runtime-state"]');
@@ -74,11 +86,12 @@ const readGeometryState = page => page.evaluate(() => {
 });
 
 const expectConverged = async (firstPage, secondPage) => {
+  let convergedSnapshot = null;
   await expect.poll(async () => {
     const [first, second] = await Promise.all([readGeometryState(firstPage), readGeometryState(secondPage)]);
     const expectedCols = Math.min(first.host.cols, second.host.cols);
     const expectedRows = Math.min(first.host.rows, second.host.rows);
-    return first.effective?.cols === expectedCols
+    const isConverged = first.effective?.cols === expectedCols
       && first.effective?.rows === expectedRows
       && second.effective?.cols === expectedCols
       && second.effective?.rows === expectedRows
@@ -88,13 +101,18 @@ const expectConverged = async (firstPage, secondPage) => {
       && second.geometry.rows === expectedRows
       && first.geometry.generation === second.geometry.generation
       && first.geometry.generation > 0;
+    if (isConverged) {
+      convergedSnapshot = {
+        first,
+        second,
+        expected: { cols: expectedCols, rows: expectedRows },
+      };
+    }
+    return isConverged;
   }).toBe(true);
 
-  const [first, second] = await Promise.all([readGeometryState(firstPage), readGeometryState(secondPage)]);
-  const expected = {
-    cols: Math.min(first.host.cols, second.host.cols),
-    rows: Math.min(first.host.rows, second.host.rows),
-  };
+  if (!convergedSnapshot) throw new Error('converged geometry snapshot is unavailable');
+  const { first, second, expected } = convergedSnapshot;
   expect(first.effective).toMatchObject(expected);
   expect(second.effective).toMatchObject(expected);
   expect(first.geometry).toMatchObject({ ...expected, generation: second.geometry.generation });
@@ -113,6 +131,8 @@ test('keeps one session correct while two independent pages resize and stream ou
       openSharedSessionPage(page, session.id, { width: 1500, height: 650 }),
       openSharedSessionPage(secondPage, session.id, { width: 900, height: 1000 }),
     ]);
+    await forceResizeAfterCommittedLayout(page);
+    await forceResizeAfterCommittedLayout(secondPage);
 
     expect(await page.getByRole('button', { name: 'restart', exact: true }).isDisabled()).toBe(true);
     expect(await secondPage.getByRole('button', { name: 'restart', exact: true }).isDisabled()).toBe(true);
@@ -134,10 +154,8 @@ test('keeps one session correct while two independent pages resize and stream ou
         page.setViewportSize(firstViewport),
         secondPage.setViewportSize(secondViewport),
       ]);
-      await page.bringToFront();
-      await page.evaluate(() => window.__floetermPerfHarness.forceResize());
-      await secondPage.bringToFront();
-      await secondPage.evaluate(() => window.__floetermPerfHarness.forceResize());
+      await forceResizeAfterCommittedLayout(page);
+      await forceResizeAfterCommittedLayout(secondPage);
       await expect.poll(async () => {
         const [first, second] = await Promise.all([readGeometryState(page), readGeometryState(secondPage)]);
         return {
