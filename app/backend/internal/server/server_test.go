@@ -76,21 +76,46 @@ func TestAPISessionInfoIncludesOutputActivity(t *testing.T) {
 	}
 }
 
-func readLiveFrame(t *testing.T, ctx context.Context, conn *websocket.Conn) livev1.Frame {
+type liveTestConnection struct {
+	conn    *websocket.Conn
+	decoder *livev1.Decoder
+	pending []livev1.Frame
+}
+
+func newLiveTestConnection(conn *websocket.Conn) *liveTestConnection {
+	return &liveTestConnection{
+		conn:    conn,
+		decoder: livev1.NewDecoder(),
+	}
+}
+
+func (c *liveTestConnection) Write(ctx context.Context, messageType websocket.MessageType, data []byte) error {
+	return c.conn.Write(ctx, messageType, data)
+}
+
+func (c *liveTestConnection) Close(status websocket.StatusCode, reason string) error {
+	return c.conn.Close(status, reason)
+}
+
+func readLiveFrame(t *testing.T, ctx context.Context, conn *liveTestConnection) livev1.Frame {
 	t.Helper()
-	messageType, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("read websocket: %v", err)
+	for len(conn.pending) == 0 {
+		messageType, data, err := conn.conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read websocket: %v", err)
+		}
+		if messageType != websocket.MessageBinary {
+			t.Fatalf("message type=%v, want binary", messageType)
+		}
+		frames, err := conn.decoder.Push(data)
+		if err != nil {
+			t.Fatalf("decode live frames: %v", err)
+		}
+		conn.pending = append(conn.pending, frames...)
 	}
-	if messageType != websocket.MessageBinary {
-		t.Fatalf("message type=%v, want binary", messageType)
-	}
-	decoder := livev1.NewDecoder()
-	frames, err := decoder.Push(data)
-	if err != nil || len(frames) != 1 {
-		t.Fatalf("decode frames=%d err=%v", len(frames), err)
-	}
-	return frames[0]
+	frame := conn.pending[0]
+	conn.pending = conn.pending[1:]
+	return frame
 }
 
 func attachLiveTestConnection(
@@ -99,7 +124,7 @@ func attachLiveTestConnection(
 	baseURL string,
 	sessionID string,
 	connectionID string,
-) *websocket.Conn {
+) *liveTestConnection {
 	t.Helper()
 	conn, _, err := websocket.Dial(ctx, "ws"+baseURL[len("http"):]+"/ws", nil)
 	if err != nil {
@@ -120,14 +145,15 @@ func attachLiveTestConnection(
 		_ = conn.Close(websocket.StatusInternalError, "attach write failed")
 		t.Fatal(err)
 	}
-	if _, err := livev1.DecodeAttached(readLiveFrame(t, ctx, conn)); err != nil {
+	liveConn := newLiveTestConnection(conn)
+	if _, err := livev1.DecodeAttached(readLiveFrame(t, ctx, liveConn)); err != nil {
 		_ = conn.Close(websocket.StatusInternalError, "attach decode failed")
 		t.Fatal(err)
 	}
-	return conn
+	return liveConn
 }
 
-func readOutputContaining(t *testing.T, ctx context.Context, conn *websocket.Conn, marker []byte) livev1.OutputRecord {
+func readOutputContaining(t *testing.T, ctx context.Context, conn *liveTestConnection, marker []byte) livev1.OutputRecord {
 	t.Helper()
 	for {
 		frame := readLiveFrame(t, ctx, conn)
@@ -160,7 +186,8 @@ func TestServerEndToEndBinaryLiveEchoAndResize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "done")
+	liveConn := newLiveTestConnection(conn)
+	defer liveConn.Close(websocket.StatusNormalClosure, "done")
 
 	attach, err := livev1.EncodeAttach(livev1.Attach{
 		AttachGeneration: 1,
@@ -175,7 +202,7 @@ func TestServerEndToEndBinaryLiveEchoAndResize(t *testing.T) {
 	if err := conn.Write(ctx, websocket.MessageBinary, attach); err != nil {
 		t.Fatal(err)
 	}
-	attached, err := livev1.DecodeAttached(readLiveFrame(t, ctx, conn))
+	attached, err := livev1.DecodeAttached(readLiveFrame(t, ctx, liveConn))
 	if err != nil || attached.HistoryGeneration == 0 {
 		t.Fatalf("attached=%+v err=%v", attached, err)
 	}
@@ -188,7 +215,7 @@ func TestServerEndToEndBinaryLiveEchoAndResize(t *testing.T) {
 		t.Fatal(err)
 	}
 	for {
-		frame := readLiveFrame(t, ctx, conn)
+		frame := readLiveFrame(t, ctx, liveConn)
 		if frame.Type != livev1.FrameOutputBatch {
 			continue
 		}
@@ -213,7 +240,7 @@ func TestServerEndToEndBinaryLiveEchoAndResize(t *testing.T) {
 		t.Fatal(err)
 	}
 	for {
-		frame := readLiveFrame(t, ctx, conn)
+		frame := readLiveFrame(t, ctx, liveConn)
 		if frame.Type != livev1.FrameResizeApplied {
 			continue
 		}
@@ -248,7 +275,7 @@ func TestServerKeepsDistinctLiveConnectionsOnTheSameSessionUsable(t *testing.T) 
 	if firstRecord.Sequence != secondRecord.Sequence || !bytes.Equal(firstRecord.Data, secondRecord.Data) {
 		t.Fatalf("multi-page output diverged: first=%+v second=%+v", firstRecord, secondRecord)
 	}
-	for index, connection := range []*websocket.Conn{first, second} {
+	for index, connection := range []*liveTestConnection{first, second} {
 		resize, err := livev1.EncodeResize(livev1.Resize{
 			Sequence: 1,
 			Cols:     uint32(100 + index*20),
@@ -400,17 +427,18 @@ func TestServerHistoryRemainsControlPlaneAfterLiveDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	liveConn := newLiveTestConnection(conn)
 	attach, _ := livev1.EncodeAttach(livev1.Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: created.ID, ConnectionID: "c1"})
 	if err := conn.Write(ctx, websocket.MessageBinary, attach); err != nil {
 		t.Fatal(err)
 	}
-	_ = readLiveFrame(t, ctx, conn)
+	_ = readLiveFrame(t, ctx, liveConn)
 	input, _ := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("history-line\n")})
 	if err := conn.Write(ctx, websocket.MessageBinary, input); err != nil {
 		t.Fatal(err)
 	}
 	for {
-		frame := readLiveFrame(t, ctx, conn)
+		frame := readLiveFrame(t, ctx, liveConn)
 		if frame.Type != livev1.FrameOutputBatch {
 			continue
 		}

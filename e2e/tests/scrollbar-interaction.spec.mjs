@@ -85,6 +85,9 @@ test('uses real mouse, wheel, keyboard, focus, selection, and media preferences'
   await expect.poll(() => page.evaluate(() => window.__floetermPerfHarness.hasSelection())).toBe(true);
   expect((await page.evaluate(() => window.__floetermPerfHarness.getSelectionText())).length).toBeGreaterThan(0);
 
+  await terminal.focus();
+  await expect(page.locator(':focus')).toHaveAttribute('aria-label', 'Terminal input');
+
   await page.mouse.move(rightEdgeX, centerY);
   await expect(scrollbar).toHaveAttribute('data-hovered', 'true');
   await page.mouse.move(surfaceBox.x - 8, surfaceBox.y - 8);

@@ -132,7 +132,7 @@ test('keeps independent viewport sizes on one shared terminal grid and screen st
   ).toString('hex');
   await page.evaluate(hex => {
     window.__floetermMirrorHarness.getViews()[0].sendInput(
-      `python3 -c "import os;os.write(1,bytes.fromhex('${hex}'))"\r`,
+      `PS1=''; python3 -c "import os;os.write(1,bytes.fromhex('${hex}'))"\r`,
     );
   }, consistencyPayloadHex);
   await page.waitForFunction(marker => (
