@@ -727,7 +727,7 @@ func TestActiveRemoteContextRejectsForgedPTYLifecycleUntilAuthenticatedLocalExit
 	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	session := newExecutionContextTestSession()
 	session.shellLifecycleNonce = nonce
-	session.shellLifecycleAuthActive = true
+	session.shellLifecycleAuthState = shellLifecycleAuthAuthenticated
 	session.updateForegroundCommand(ForegroundCommandRunning, "ssh")
 	session.processRawPTYData([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=remote-1;location=remote;authority=host.example;user=root;application=shell\a"))
 	session.processRawPTYData([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex\a"))
@@ -776,6 +776,42 @@ func TestUnsupportedShellRemoteCandidateCanUseLegacyLifecycleExit(t *testing.T) 
 	local := session.ToSessionInfo()
 	if local.ExecutionContext.Location.Kind != TerminalLocationLocal || local.ForegroundCommand.Phase != ForegroundCommandIdle {
 		t.Fatalf("legacy lifecycle could not leave remote candidate: %+v", local)
+	}
+}
+
+func TestPendingLifecycleHandshakeUsesLegacyExitAndOnlyReadinessAuthenticates(t *testing.T) {
+	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	bootstrapDir := t.TempDir()
+	bootstrapPath := filepath.Join(bootstrapDir, "bashrc")
+	if err := os.WriteFile(bootstrapPath, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := newExecutionContextTestSession()
+	session.shellLifecycleNonce = nonce
+	session.shellLifecycleAuthState = shellLifecycleAuthPending
+	session.shellLifecycleBootstrap = &shellLifecycleBootstrap{dir: bootstrapDir, file: bootstrapPath}
+
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=prompt_ready\a"))
+	if session.shellLifecycleAuthState != shellLifecycleAuthPending {
+		t.Fatalf("prompt marker authenticated pending integration: state=%d", session.shellLifecycleAuthState)
+	}
+	session.processRawPTYData([]byte("\x1b]633;B\a\x1b]633;P;FloetermProgram=ssh\a\x1b]633;C\a"))
+	session.processRawPTYData([]byte("\x1b]633;D;0\a\x1b]633;A\a"))
+	legacy := session.ToSessionInfo()
+	if legacy.ExecutionContext.Location.Kind != TerminalLocationLocal || legacy.ForegroundCommand.Phase != ForegroundCommandIdle {
+		t.Fatalf("pending integration pinned remote context: %+v", legacy)
+	}
+
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermLifecycle=v1;nonce=" + strings.Repeat("f", 64) + ";event=integration_ready\a"))
+	if session.shellLifecycleAuthState != shellLifecycleAuthPending {
+		t.Fatalf("wrong readiness marker changed state: %d", session.shellLifecycleAuthState)
+	}
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=integration_ready\a"))
+	if session.shellLifecycleAuthState != shellLifecycleAuthAuthenticated {
+		t.Fatalf("correct readiness marker did not authenticate: state=%d", session.shellLifecycleAuthState)
+	}
+	if _, err := os.Stat(bootstrapPath); !os.IsNotExist(err) {
+		t.Fatalf("authenticated handshake retained bootstrap: err=%v", err)
 	}
 }
 

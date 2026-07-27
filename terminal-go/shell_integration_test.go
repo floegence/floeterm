@@ -82,6 +82,8 @@ func shellIntegrationSignalLabel(kind shellIntegrationSignalKind) string {
 		return "work"
 	case shellIntegrationTitle:
 		return "title"
+	case shellIntegrationReady:
+		return "integration-ready"
 	default:
 		return "unknown"
 	}
@@ -214,7 +216,7 @@ func TestShellIntegrationProgramMarkerIsBoundedAndSafe(t *testing.T) {
 
 func TestShellIntegrationLifecycleMarkerRequiresStrictNonceAndEvent(t *testing.T) {
 	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	for _, event := range []string{"command_finished", "prompt_ready"} {
+	for _, event := range []string{"integration_ready", "command_finished", "prompt_ready"} {
 		signal, source, invalid, recognized := parseShellIntegrationSignalPayload(
 			"633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=" + event,
 		)

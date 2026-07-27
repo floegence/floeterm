@@ -2,6 +2,8 @@ package terminal
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -28,6 +30,18 @@ func (w *requiredShellInitWriter) EnsureShellInitFiles(string) error {
 	w.calls++
 	return nil
 }
+
+type failingAuthenticatedShellInitWriter struct {
+	baseDir string
+	err     error
+}
+
+func (w failingAuthenticatedShellInitWriter) ShouldEnsureShellInit(string) bool { return true }
+func (w failingAuthenticatedShellInitWriter) EnsureShellInitFiles(string) error { return w.err }
+func (w failingAuthenticatedShellInitWriter) authenticatedShellInitBaseDir() string {
+	return w.baseDir
+}
+func (w failingAuthenticatedShellInitWriter) authenticatedShellInitEnabled() bool { return true }
 
 func TestShellArgsProviderEmptySliceSkipsLoginFallback(t *testing.T) {
 	manager := NewManager(ManagerConfig{
@@ -168,7 +182,7 @@ func TestDefaultShellIntegrationCanEnableCommandLifecycleWithoutPathPrepend(t *t
 		t.Fatalf("unexpected env without PATH prepend: %#v", env)
 	}
 	if !provider.CommandLifecycleEnabled() {
-		t.Fatal("command lifecycle provider did not advertise authentication support")
+		t.Fatal("command lifecycle provider did not preserve its requested lifecycle setting")
 	}
 	manager := NewManager(ManagerConfig{
 		Logger:            NopLogger{},
@@ -179,11 +193,207 @@ func TestDefaultShellIntegrationCanEnableCommandLifecycleWithoutPathPrepend(t *t
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
-	if !validShellLifecycleNonce(session.shellLifecycleNonce) {
-		t.Fatalf("enabled lifecycle session nonce is invalid: %q", session.shellLifecycleNonce)
+	if session.shellLifecycleNonce != "" || session.shellLifecycleAuthState != shellLifecycleAuthLegacy {
+		t.Fatalf("dormant session created lifecycle credentials before shell validation: nonce=%q state=%d", session.shellLifecycleNonce, session.shellLifecycleAuthState)
 	}
 	if err := manager.DeleteSession(session.ID); err != nil {
 		t.Fatalf("DeleteSession failed: %v", err)
+	}
+}
+
+func TestAuthenticatedShellArgsUsePrivateBootstrapWithoutProcessCredentials(t *testing.T) {
+	const nonceLength = 64
+	baseDir := filepath.Join(t.TempDir(), "shell init 'quoted")
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home 'quoted"))
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	if err := writer.EnsureShellInitFiles(""); err != nil {
+		t.Fatal(err)
+	}
+	provider := DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true}
+	for _, shell := range []string{"/bin/bash", "/bin/zsh"} {
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			args, env, bootstrap, nonce, err := provider.prepareAuthenticatedShellArgsContext(context.Background(), shell, "", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bootstrap == nil || len(nonce) != nonceLength || !validShellLifecycleNonce(nonce) {
+				t.Fatalf("bootstrap=%+v nonce length=%d", bootstrap, len(nonce))
+			}
+			t.Cleanup(bootstrap.cleanup)
+			dirInfo, err := os.Stat(bootstrap.dir)
+			if err != nil || dirInfo.Mode().Perm() != 0o700 {
+				t.Fatalf("bootstrap directory mode=%v err=%v", dirInfo, err)
+			}
+			fileInfo, err := os.Stat(bootstrap.file)
+			if err != nil || fileInfo.Mode().Perm() != 0o600 {
+				t.Fatalf("bootstrap file mode=%v err=%v", fileInfo, err)
+			}
+			bootstrapContent, err := os.ReadFile(bootstrap.file)
+			if err != nil || !bytes.Contains(bootstrapContent, []byte(nonce)) {
+				t.Fatalf("bootstrap does not contain its private credential: err=%v", err)
+			}
+			if strings.Contains(strings.Join(args, "\x00"), nonce) || strings.Contains(strings.Join(env, "\x00"), nonce) || envValue(env, shellLifecycleNonceEnvKey) != "" {
+				t.Fatalf("credential escaped to argv/env: args=%v env=%v", args, env)
+			}
+			sharedPath := newShellInitPaths(baseDir).BashRC()
+			if detectShellType(shell) == shellTypeZsh {
+				sharedPath = newShellInitPaths(baseDir).ZshRC()
+			}
+			shared, err := os.ReadFile(sharedPath)
+			if err != nil || bytes.Contains(shared, []byte(nonce)) {
+				t.Fatalf("shared init retained session credential: err=%v", err)
+			}
+		})
+	}
+}
+
+func TestAuthenticatedShellArgsRejectMissingStaleAndTamperedInit(t *testing.T) {
+	baseDir := t.TempDir()
+	provider := DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true}
+	paths := newShellInitPaths(baseDir)
+	for _, test := range []struct {
+		name    string
+		prepare func() error
+	}{
+		{name: "missing", prepare: func() error { return nil }},
+		{name: "old contract", prepare: func() error {
+			return os.WriteFile(paths.BashRC(), []byte("# floeterm shell integration version 1\n"), 0o644)
+		}},
+		{name: "tampered current contract", prepare: func() error {
+			return os.WriteFile(paths.BashRC(), []byte(bashInitScript(true)+"# modified\n"), 0o644)
+		}},
+		{name: "symbolic link", prepare: func() error {
+			target := filepath.Join(t.TempDir(), "current-bashrc")
+			if err := os.WriteFile(target, []byte(bashInitScript(true)), 0o644); err != nil {
+				return err
+			}
+			return os.Symlink(target, paths.BashRC())
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.MkdirAll(paths.BaseDir(), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			_ = os.Remove(paths.BashRC())
+			if err := test.prepare(); err != nil {
+				t.Fatal(err)
+			}
+			args, env, bootstrap, nonce, err := provider.prepareAuthenticatedShellArgsContext(context.Background(), "/bin/bash", "", true)
+			if err == nil || args != nil || env != nil || bootstrap != nil || nonce != "" {
+				t.Fatalf("untrusted init selected: args=%v env=%v bootstrap=%+v nonce=%q err=%v", args, env, bootstrap, nonce, err)
+			}
+		})
+	}
+}
+
+func TestMismatchedShellInitOwnersCannotEnableAuthentication(t *testing.T) {
+	config := newSessionConfig(ManagerConfig{
+		ShellArgsProvider: DefaultShellArgsProvider{ShellInitBaseDir: filepath.Join(t.TempDir(), "provider"), EnableCommandLifecycle: true},
+		ShellInitWriter:   DefaultShellInitWriter{BaseDir: filepath.Join(t.TempDir(), "writer"), EnableCommandLifecycle: true},
+	})
+	if config.shellLifecycleAuthEnabled {
+		t.Fatal("mismatched provider and writer directories enabled authentication")
+	}
+}
+
+func TestShellInitWriterRefusesSymbolicLinkTarget(t *testing.T) {
+	baseDir := t.TempDir()
+	paths := newShellInitPaths(baseDir)
+	if err := os.MkdirAll(paths.ZshDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(target, []byte("do not replace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, paths.BashRC()); err != nil {
+		t.Fatal(err)
+	}
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	if err := writer.EnsureShellInitFiles(""); err == nil {
+		t.Fatal("writer accepted symbolic link target")
+	}
+	content, err := os.ReadFile(target)
+	if err != nil || string(content) != "do not replace" {
+		t.Fatalf("symbolic link target changed: content=%q err=%v", content, err)
+	}
+}
+
+func TestWriterFailureKeepsActivationInLegacyMode(t *testing.T) {
+	baseDir := t.TempDir()
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	if err := writer.EnsureShellInitFiles(""); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(ManagerConfig{
+		Logger:            NopLogger{},
+		ShellResolver:     testShellResolver{shell: "/bin/bash"},
+		ShellArgsProvider: DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true},
+		ShellInitWriter: failingAuthenticatedShellInitWriter{
+			baseDir: baseDir,
+			err:     errors.New("injected writer failure"),
+		},
+	})
+	session, err := manager.CreateSession("legacy", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capturedArgs, capturedEnv []string
+	session.startPTYProcess = func(cmd *exec.Cmd, _ *pty.Winsize) (*os.File, error) {
+		capturedArgs = append([]string(nil), cmd.Args...)
+		capturedEnv = append([]string(nil), cmd.Env...)
+		return nil, errors.New("stop after inspection")
+	}
+	if err := manager.ActivateSession(session.ID, 80, 24); err == nil {
+		t.Fatal("activation unexpectedly succeeded")
+	}
+	if got := strings.Join(capturedArgs, " "); got != "/bin/bash -l" {
+		t.Fatalf("writer failure did not use login-shell fallback: %v", capturedArgs)
+	}
+	if envValue(capturedEnv, shellLifecycleNonceEnvKey) != "" {
+		t.Fatalf("writer failure injected lifecycle credential: %v", capturedEnv)
+	}
+	if session.shellLifecycleAuthState != shellLifecycleAuthLegacy || session.shellLifecycleNonce != "" || session.shellLifecycleBootstrap != nil {
+		t.Fatalf("writer failure enabled authentication: state=%d nonce=%q bootstrap=%+v", session.shellLifecycleAuthState, session.shellLifecycleNonce, session.shellLifecycleBootstrap)
+	}
+}
+
+func TestPTYStartFailureCleansPrivateBootstrap(t *testing.T) {
+	baseDir := t.TempDir()
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	provider := DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true}
+	manager := NewManager(ManagerConfig{
+		Logger: NopLogger{}, ShellResolver: testShellResolver{shell: "/bin/bash"},
+		ShellArgsProvider: provider, ShellInitWriter: writer,
+	})
+	session, err := manager.CreateSession("cleanup", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bootstrapPath string
+	var capturedArgs, capturedEnv []string
+	session.startPTYProcess = func(cmd *exec.Cmd, _ *pty.Winsize) (*os.File, error) {
+		capturedArgs = append([]string(nil), cmd.Args...)
+		capturedEnv = append([]string(nil), cmd.Env...)
+		if len(cmd.Args) >= 3 {
+			bootstrapPath = cmd.Args[2]
+		}
+		return nil, errors.New("injected PTY start failure")
+	}
+	if err := manager.ActivateSession(session.ID, 80, 24); err == nil {
+		t.Fatal("activation unexpectedly succeeded")
+	}
+	if len(capturedArgs) != 3 || capturedArgs[1] != "--rcfile" {
+		t.Fatalf("unexpected authenticated bash args: %v", capturedArgs)
+	}
+	if envValue(capturedEnv, shellLifecycleNonceEnvKey) != "" {
+		t.Fatalf("credential escaped to environment: %v", capturedEnv)
+	}
+	if bootstrapPath == "" {
+		t.Fatal("activation did not create a private bootstrap")
+	}
+	if _, err := os.Stat(bootstrapPath); !os.IsNotExist(err) {
+		t.Fatalf("failed activation retained bootstrap: %s err=%v", bootstrapPath, err)
 	}
 }
 
@@ -266,15 +476,13 @@ func TestCommandLifecycleNonceRemainsPrivateAcrossRepeatedLoads(t *testing.T) {
 }
 
 func TestAuthenticatedLifecycleNonceIsNotPublishedByShellTracing(t *testing.T) {
-	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	tests := []struct {
-		name   string
-		shell  string
-		script string
-		args   []string
+		name  string
+		shell string
+		args  []string
 	}{
-		{name: "bash", shell: "/bin/bash", script: bashCommandLifecycleScript(), args: []string{"--noprofile", "--norc", "-x", "-c", `. "$1"; __floeterm_terminal_authenticated_lifecycle prompt_ready`, "probe"}},
-		{name: "zsh", shell: "/bin/zsh", script: zshCommandLifecycleScript(), args: []string{"-f", "-x", "-c", `. "$1"; __floeterm_terminal_authenticated_lifecycle prompt_ready`, "probe"}},
+		{name: "bash", shell: "/bin/bash", args: []string{"--noprofile", "--norc", "-x", "-c", `. "$1"`, "probe"}},
+		{name: "zsh", shell: "/bin/zsh", args: []string{"-f", "-x", "-c", `. "$1"`, "probe"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -282,14 +490,26 @@ func TestAuthenticatedLifecycleNonceIsNotPublishedByShellTracing(t *testing.T) {
 			if err != nil {
 				t.Skipf("%s unavailable: %v", test.name, err)
 			}
-			scriptPath := filepath.Join(t.TempDir(), "lifecycle-"+test.name)
-			if err := os.WriteFile(scriptPath, []byte(test.script), 0o600); err != nil {
+			homeDir := t.TempDir()
+			t.Setenv("HOME", homeDir)
+			baseDir := t.TempDir()
+			writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+			if err := writer.EnsureShellInitFiles(""); err != nil {
 				t.Fatal(err)
 			}
+			provider := DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true}
+			_, shellEnv, bootstrap, nonce, err := provider.prepareAuthenticatedShellArgsContext(context.Background(), shellPath, "", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(bootstrap.cleanup)
 			args := append([]string(nil), test.args...)
-			args = append(args, scriptPath)
+			args = append(args, bootstrap.file)
 			cmd := exec.Command(shellPath, args...)
-			cmd.Env = replaceEnvironmentValues(os.Environ(), map[string]string{shellLifecycleNonceEnvKey: nonce})
+			cmd.Env = mergeShellLifecycleEnvironment(
+				replaceEnvironmentValues(os.Environ(), map[string]string{"HOME": homeDir}),
+				shellEnv,
+			)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("trace probe failed: %v\n%s", err, output)
@@ -305,8 +525,7 @@ func TestAuthenticatedLifecycleNonceIsNotPublishedByShellTracing(t *testing.T) {
 	}
 }
 
-func TestShellLifecycleNonceIsInjectedOnlyForSupportedShells(t *testing.T) {
-	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+func TestShellLifecycleCredentialsAreRemovedFromProcessEnvironment(t *testing.T) {
 	pollutedBase := []string{
 		"BASE=1",
 		shellLifecycleNonceEnvKey + "=parent",
@@ -322,18 +541,15 @@ func TestShellLifecycleNonceIsInjectedOnlyForSupportedShells(t *testing.T) {
 		shellLifecycleCaptureKey + "=provider",
 		shellLifecycleLoadedKey + "=provider",
 	}
-	for _, test := range []struct {
-		shell     string
-		wantNonce bool
-	}{
-		{shell: "/bin/bash", wantNonce: true},
-		{shell: "/bin/zsh", wantNonce: true},
-		{shell: "/usr/bin/fish", wantNonce: false},
-		{shell: "/bin/sh", wantNonce: false},
-		{shell: "/opt/tools/custom-shell", wantNonce: false},
+	for _, shell := range []string{
+		"/bin/bash",
+		"/bin/zsh",
+		"/usr/bin/fish",
+		"/bin/sh",
+		"/opt/tools/custom-shell",
 	} {
-		t.Run(filepath.Base(test.shell), func(t *testing.T) {
-			env := mergeShellLifecycleEnvironment(append(pollutedBase, "OVERRIDE=parent"), pollutedProvider, test.shell, nonce)
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			env := mergeShellLifecycleEnvironment(append(pollutedBase, "OVERRIDE=parent"), pollutedProvider)
 			if !contains(env, "BASE=1") || !contains(env, "PROVIDER=1") {
 				t.Fatalf("ordinary environment entries were lost: %v", env)
 			}
@@ -345,12 +561,8 @@ func TestShellLifecycleNonceIsInjectedOnlyForSupportedShells(t *testing.T) {
 					t.Fatalf("private shell variable %s escaped sanitization: %v", key, env)
 				}
 			}
-			gotNonce := envValue(env, shellLifecycleNonceEnvKey)
-			if test.wantNonce && gotNonce != nonce {
-				t.Fatalf("supported shell nonce = %q, want authenticated session nonce", gotNonce)
-			}
-			if !test.wantNonce && gotNonce != "" {
-				t.Fatalf("unsupported shell received lifecycle nonce: %v", env)
+			if gotNonce := envValue(env, shellLifecycleNonceEnvKey); gotNonce != "" {
+				t.Fatalf("shell received lifecycle nonce in its environment: %v", env)
 			}
 		})
 	}
@@ -612,7 +824,11 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true}
-	args, shellEnv := provider.GetShellArgs(zshPath, "")
+	args, shellEnv, bootstrap, nonce, err := provider.prepareAuthenticatedShellArgsContext(context.Background(), zshPath, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(bootstrap.cleanup)
 	if args == nil || len(args) != 0 {
 		t.Fatalf("zsh provider args = %v, want native global config without login fallback", args)
 	}
@@ -622,7 +838,7 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 		"TERM":                 "xterm-256color",
 		"skip_global_compinit": "1",
 	})
-	cmd.Env = mergeShellLifecycleEnvironment(baseEnv, shellEnv, zshPath, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	cmd.Env = mergeShellLifecycleEnvironment(baseEnv, shellEnv)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -639,6 +855,9 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 	go func() { _, _ = io.Copy(capture, ptmx) }()
 	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;A\a", "__FLOETERM_ZSH_PROMPT__")
 	startup := capture.String()
+	if !strings.Contains(startup, "\x1b]633;P;FloetermLifecycle=v1;nonce="+nonce+";event=integration_ready\a") {
+		t.Fatalf("zsh bootstrap did not publish authenticated readiness: %q", startup)
+	}
 	if !strings.Contains(startup, "__FLOETERM_ZSH_USER_ENV__") {
 		t.Fatalf("generated zsh init did not load user config: %q", startup)
 	}
@@ -663,6 +882,56 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 		"\x1b]633;D;0\a",
 		"\x1b]633;A\a",
 	})
+}
+
+func TestRealZshLifecycleReadinessRequiresBothHookArrays(t *testing.T) {
+	zshPath, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skipf("zsh unavailable: %v", err)
+	}
+	for _, test := range []struct {
+		name      string
+		userRC    string
+		wantReady bool
+	}{
+		{name: "empty fpath uses native hook arrays", userRC: "fpath=()\n", wantReady: true},
+		{name: "readonly precmd array rejects partial install", userRC: "typeset -gra precmd_functions=()\n", wantReady: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			homeDir := t.TempDir()
+			t.Setenv("HOME", homeDir)
+			if err := os.WriteFile(filepath.Join(homeDir, ".zshrc"), []byte(test.userRC), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			baseDir := t.TempDir()
+			writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+			if err := writer.EnsureShellInitFiles(""); err != nil {
+				t.Fatal(err)
+			}
+			provider := DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true}
+			_, shellEnv, bootstrap, nonce, err := provider.prepareAuthenticatedShellArgsContext(context.Background(), zshPath, "", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(bootstrap.cleanup)
+			cmd := exec.Command(zshPath, "-f", "-c", `. "$1"; print -r -- "HOOKS=${preexec_functions[(Ie)__floeterm_terminal_preexec]}:${precmd_functions[(Ie)__floeterm_terminal_precmd]}"`, "probe", bootstrap.file)
+			cmd.Env = mergeShellLifecycleEnvironment(
+				replaceEnvironmentValues(os.Environ(), map[string]string{"HOME": homeDir}),
+				shellEnv,
+			)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("zsh integration probe failed: %v\n%s", err, output)
+			}
+			marker := []byte("\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=integration_ready\a")
+			if got := bytes.Contains(output, marker); got != test.wantReady {
+				t.Fatalf("readiness=%v, want %v: %q", got, test.wantReady, output)
+			}
+			if !test.wantReady && !bytes.Contains(output, []byte("HOOKS=0:0")) {
+				t.Fatalf("failed hook installation retained a partial hook: %q", output)
+			}
+		})
+	}
 }
 
 func TestRealFishProviderPreservesNativeUserConfiguration(t *testing.T) {
@@ -701,7 +970,7 @@ func TestRealFishProviderPreservesNativeUserConfiguration(t *testing.T) {
 	cmd := exec.Command(fishPath, args...)
 	baseEnv := replaceEnvironmentValues(os.Environ(), map[string]string{"HOME": homeDir, "TERM": "xterm-256color"})
 	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	cmd.Env = mergeShellLifecycleEnvironment(baseEnv, shellEnv, fishPath, nonce)
+	cmd.Env = mergeShellLifecycleEnvironment(baseEnv, shellEnv)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("fish provider probe failed: %v\n%s", err, output)

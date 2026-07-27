@@ -151,7 +151,7 @@ func removeEnvKey(env []string, key string) []string {
 	return filtered
 }
 
-func mergeShellLifecycleEnvironment(env, shellEnv []string, shell, nonce string) []string {
+func mergeShellLifecycleEnvironment(env, shellEnv []string) []string {
 	for _, key := range []string{shellLifecycleNonceEnvKey, shellLifecycleNonceVarKey, shellLifecycleCaptureKey, shellLifecycleLoadedKey} {
 		env = removeEnvKey(env, key)
 		shellEnv = removeEnvKey(shellEnv, key)
@@ -162,10 +162,11 @@ func mergeShellLifecycleEnvironment(env, shellEnv []string, shell, nonce string)
 		}
 	}
 	env = append(env, shellEnv...)
-	if nonce != "" && supportsAuthenticatedShellLifecycle(shell) {
-		env = append(env, shellLifecycleNonceEnvKey+"="+nonce)
-	}
 	return env
+}
+
+type authenticatedShellArgsProvider interface {
+	prepareAuthenticatedShellArgsContext(context.Context, string, string, bool) ([]string, []string, *shellLifecycleBootstrap, string, error)
 }
 
 func shellArgsForActivation(ctx context.Context, provider ShellArgsProvider, shell string, pathPrepend string) ([]string, []string, error) {
@@ -177,6 +178,20 @@ func shellArgsForActivation(ctx context.Context, provider ShellArgsProvider, she
 	}
 	args, env := provider.GetShellArgs(shell, pathPrepend)
 	return args, env, nil
+}
+
+func sessionShellArgsForActivation(
+	ctx context.Context,
+	provider ShellArgsProvider,
+	shell string,
+	pathPrepend string,
+	requestAuthentication bool,
+) ([]string, []string, *shellLifecycleBootstrap, string, error) {
+	if authenticated, ok := provider.(authenticatedShellArgsProvider); ok {
+		return authenticated.prepareAuthenticatedShellArgsContext(ctx, shell, pathPrepend, requestAuthentication)
+	}
+	args, env, err := shellArgsForActivation(ctx, provider, shell, pathPrepend)
+	return args, env, nil, "", err
 }
 
 func (s *Session) runPTYActivation(activation *sessionActivation, cols, rows int) {
@@ -219,21 +234,46 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	if requirement, ok := s.config.shellInitWriter.(ShellInitRequirement); ok {
 		shouldEnsureShellInit = requirement.ShouldEnsureShellInit(pathPrepend)
 	}
+	shellInitReady := false
 	if shouldEnsureShellInit && s.config.shellInitWriter != nil {
 		if err := ensureShellInitForActivation(activation.ctx, s.config.shellInitWriter, pathPrepend); err != nil {
 			if sessionContextDone(activation.ctx) {
 				return errSessionClosed
 			}
 			s.config.logger.Warn("Failed to ensure shell init files", "error", err)
+		} else {
+			shellInitReady = true
 		}
 	}
 
-	shellArgs, shellEnv, err := shellArgsForActivation(activation.ctx, s.config.shellArgsProvider, shell, pathPrepend)
+	var shellArgs, shellEnv []string
+	var bootstrap *shellLifecycleBootstrap
+	var lifecycleNonce string
+	if s.config.shellLifecycleAuthEnabled && !shellInitReady {
+		s.config.logger.Warn("Shell integration initialization failed; using login shell")
+	} else {
+		shellArgs, shellEnv, bootstrap, lifecycleNonce, err = sessionShellArgsForActivation(
+			activation.ctx,
+			s.config.shellArgsProvider,
+			shell,
+			pathPrepend,
+			s.config.shellLifecycleAuthEnabled,
+		)
+	}
 	if err != nil {
 		if sessionContextDone(activation.ctx) {
 			return errSessionClosed
 		}
-		return fmt.Errorf("failed to build shell arguments: %w", err)
+		if _, authenticated := s.config.shellArgsProvider.(authenticatedShellArgsProvider); !authenticated {
+			return fmt.Errorf("failed to build shell arguments: %w", err)
+		}
+		s.config.logger.Warn("Authenticated shell integration unavailable; using login shell", "error", err)
+		shellArgs = nil
+		shellEnv = nil
+		lifecycleNonce = ""
+	}
+	if bootstrap != nil {
+		defer func() { bootstrap.cleanup() }()
 	}
 
 	var cmd *exec.Cmd
@@ -262,9 +302,10 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	}
 	s.mu.Unlock()
 
-	env = mergeShellLifecycleEnvironment(env, shellEnv, shell, s.shellLifecycleNonce)
+	env = mergeShellLifecycleEnvironment(env, shellEnv)
 	s.mu.Lock()
-	s.shellLifecycleAuthActive = s.shellLifecycleNonce != "" && supportsAuthenticatedShellLifecycle(shell)
+	s.shellLifecycleNonce = ""
+	s.shellLifecycleAuthState = shellLifecycleAuthLegacy
 	s.mu.Unlock()
 	env = append(env,
 		"TERM="+s.config.terminalEnv.Term,
@@ -309,6 +350,12 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	}
 	s.PTY = ptmx
 	s.Cmd = cmd
+	s.shellLifecycleBootstrap = bootstrap
+	s.shellLifecycleNonce = lifecycleNonce
+	if bootstrap != nil {
+		s.shellLifecycleAuthState = shellLifecycleAuthPending
+	}
+	bootstrap = nil
 	s.isActive = true
 	s.lastAppliedCols = cols
 	s.lastAppliedRows = rows
@@ -426,7 +473,9 @@ func (s *Session) waitProcessExit(cmd *exec.Cmd, ptyFile *os.File, readerDone ch
 	}
 	onExit := s.onExit
 	sessionID := s.ID
+	bootstraps := s.takeShellLifecycleBootstrapsLocked()
 	s.mu.Unlock()
+	cleanupShellLifecycleBootstraps(bootstraps)
 
 	if onExit != nil {
 		onExit(sessionID)
@@ -458,6 +507,7 @@ func (s *Session) cleanup() {
 	ptyFile := s.PTY
 	cmd := s.Cmd
 	waitDone := s.procWaitDone
+	bootstraps := s.takeShellLifecycleBootstrapsLocked()
 	s.PTY = nil
 	s.Cmd = nil
 	s.isActive = false
@@ -468,6 +518,7 @@ func (s *Session) cleanup() {
 	}
 	liveSubscribers := s.detachLiveSubscribersForClose()
 	s.mu.Unlock()
+	cleanupShellLifecycleBootstraps(bootstraps)
 
 	activation.complete(errSessionClosed)
 	for _, subscriber := range liveSubscribers {
@@ -497,6 +548,25 @@ func (s *Session) cleanup() {
 	}
 
 	s.config.logger.Info("Cleaned up session", "sessionID", s.ID)
+}
+
+func (s *Session) takeShellLifecycleBootstrapsLocked() []*shellLifecycleBootstrap {
+	bootstraps := make([]*shellLifecycleBootstrap, 0, 2)
+	if s.shellLifecycleBootstrap != nil {
+		bootstraps = append(bootstraps, s.shellLifecycleBootstrap)
+		s.shellLifecycleBootstrap = nil
+	}
+	if s.shellLifecycleBootstrapStale != nil {
+		bootstraps = append(bootstraps, s.shellLifecycleBootstrapStale)
+		s.shellLifecycleBootstrapStale = nil
+	}
+	return bootstraps
+}
+
+func cleanupShellLifecycleBootstraps(bootstraps []*shellLifecycleBootstrap) {
+	for _, bootstrap := range bootstraps {
+		bootstrap.cleanup()
+	}
 }
 
 // GetHistoryChunks returns raw chunks from the ring buffer.

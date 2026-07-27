@@ -1,6 +1,9 @@
 package terminal
 
-import "time"
+import (
+	"path/filepath"
+	"time"
+)
 
 // ManagerConfig defines defaults used for all sessions created by a manager.
 type ManagerConfig struct {
@@ -106,9 +109,17 @@ type sessionConfig struct {
 
 func newSessionConfig(cfg ManagerConfig) sessionConfig {
 	cfg = cfg.applyDefaults()
-	lifecycleProvider, lifecycleAuthEnabled := cfg.ShellArgsProvider.(interface {
-		CommandLifecycleEnabled() bool
+	lifecycleProvider, providerSupportsAuth := cfg.ShellArgsProvider.(interface {
+		authenticatedShellInitBaseDir() string
+		authenticatedShellInitEnabled() bool
 	})
+	lifecycleWriter, writerSupportsAuth := cfg.ShellInitWriter.(interface {
+		authenticatedShellInitBaseDir() string
+		authenticatedShellInitEnabled() bool
+	})
+	lifecycleAuthEnabled := providerSupportsAuth && writerSupportsAuth &&
+		lifecycleProvider.authenticatedShellInitEnabled() && lifecycleWriter.authenticatedShellInitEnabled() &&
+		filepath.Clean(lifecycleProvider.authenticatedShellInitBaseDir()) == filepath.Clean(lifecycleWriter.authenticatedShellInitBaseDir())
 	return sessionConfig{
 		logger:                      cfg.Logger,
 		envProvider:                 cfg.EnvProvider,
@@ -121,6 +132,6 @@ func newSessionConfig(cfg ManagerConfig) sessionConfig {
 		historyBufferMaxBytes:       cfg.HistoryBufferMaxBytes,
 		outputActivityQuietDuration: cfg.OutputActivityQuietDuration,
 		terminalEnv:                 cfg.TerminalEnv,
-		shellLifecycleAuthEnabled:   lifecycleAuthEnabled && lifecycleProvider.CommandLifecycleEnabled(),
+		shellLifecycleAuthEnabled:   lifecycleAuthEnabled,
 	}
 }

@@ -94,15 +94,24 @@ args := terminal.DefaultShellArgsProvider{
 
 Lifecycle mode works even when no PATH prepend is required. Bash, Zsh, and Fish receive native hooks; POSIX fallback shells retain their original profile behavior without unsafe command-hook emulation.
 
-Each enabled Bash or Zsh session authenticates its local command-finished
-and prompt-ready markers with a private random nonce. The generated init captures
-the nonce into a non-exported shell variable and removes it from the environment
-before user configuration runs. Native system startup files still run in their
-platform-defined order and remain part of the trusted local-shell boundary.
-Repeated init loads do not re-run user configuration or duplicate hooks. Fish,
-POSIX, and unknown fallback shells never receive the nonce and retain the legacy,
-unauthenticated lifecycle behavior instead of enforcing a remote floor they
-cannot authenticate.
+Each enabled Bash or Zsh activation validates the generated shared init against
+the current contract bytes, creates a `0700` session-private bootstrap with a
+`0600` rc file, and places a private random nonce in a non-exported, read-only
+shell variable. The nonce is never added to process arguments or environment
+variables and the shared init contains no session credential. Shared init files
+are installed by same-directory atomic rename and symbolic-link targets are
+rejected. Native system startup files still run in their platform-defined order
+and remain part of the trusted local-shell boundary. Repeated init loads do not
+re-run user configuration or duplicate hooks.
+
+Authentication starts in a pending compatibility state. Only the nonce-matched
+`integration_ready` marker emitted after hook installation advances the session
+to authenticated mode and removes the private bootstrap. Missing, stale,
+truncated, modified, or unloadable integration files never authenticate; while
+pending, ordinary lifecycle markers retain legacy behavior so an SSH candidate
+cannot become permanently pinned. An authenticated session never silently
+downgrades. Fish, POSIX, custom providers, and unknown fallback shells never
+receive a nonce and always retain legacy lifecycle behavior.
 For those authenticated sessions, while an execution-context frame reports a
 remote location, unauthenticated prompt, command, and program markers from PTY
 output cannot end or replace the foreground epoch. This keeps a remote location

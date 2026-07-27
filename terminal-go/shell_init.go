@@ -16,6 +16,7 @@ const (
 	shellLifecycleCaptureKey  = "__FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED"
 	shellLifecycleLoadedKey   = "__FLOETERM_COMMAND_LIFECYCLE_LOADED"
 	defaultShellInitFolder    = "shell-init"
+	shellInitVersionMarker    = "# floeterm shell integration version 2"
 )
 
 type shellType string
@@ -89,6 +90,14 @@ type DefaultShellInitWriter struct {
 	EnableCommandLifecycle bool
 }
 
+func (w DefaultShellInitWriter) authenticatedShellInitBaseDir() string {
+	return newShellInitPaths(w.BaseDir).BaseDir()
+}
+
+func (w DefaultShellInitWriter) authenticatedShellInitEnabled() bool {
+	return w.EnableCommandLifecycle
+}
+
 // ShouldEnsureShellInit reports whether the generated integration files are
 // needed for PATH injection or command lifecycle hooks.
 func (w DefaultShellInitWriter) ShouldEnsureShellInit(pathPrepend string) bool {
@@ -139,8 +148,143 @@ func writeFileContext(ctx context.Context, path string, content string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to replace symbolic link %s", filepath.Base(path))
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect %s: %w", filepath.Base(path), err)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary %s: %w", filepath.Base(path), err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	failed := true
+	defer func() {
+		if failed {
+			_ = temporary.Close()
+		}
+	}()
+	if err := temporary.Chmod(0o644); err != nil {
+		return fmt.Errorf("failed to set permissions on %s: %w", filepath.Base(path), err)
+	}
+	if _, err := temporary.WriteString(content); err != nil {
 		return fmt.Errorf("failed to write %s: %w", filepath.Base(path), err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("failed to sync %s: %w", filepath.Base(path), err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("failed to close %s: %w", filepath.Base(path), err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to replace symbolic link %s", filepath.Base(path))
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect %s: %w", filepath.Base(path), err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("failed to install %s: %w", filepath.Base(path), err)
+	}
+	failed = false
+	return nil
+}
+
+type shellLifecycleBootstrap struct {
+	dir  string
+	file string
+}
+
+func (b *shellLifecycleBootstrap) cleanup() {
+	if b == nil {
+		return
+	}
+	if b.file != "" {
+		_ = os.Remove(b.file)
+	}
+	if b.dir != "" {
+		_ = os.Remove(b.dir)
+	}
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func createShellLifecycleBootstrap(ctx context.Context, shellPath, sharedInitPath, nonce string) (*shellLifecycleBootstrap, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !validShellLifecycleNonce(nonce) || !supportsAuthenticatedShellLifecycle(shellPath) {
+		return nil, fmt.Errorf("authenticated shell lifecycle bootstrap is unavailable")
+	}
+	dir, err := os.MkdirTemp("", "floeterm-shell-bootstrap-")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create shell lifecycle bootstrap directory: %w", err)
+	}
+	bootstrap := &shellLifecycleBootstrap{dir: dir}
+	defer func() {
+		if bootstrap.file == "" {
+			bootstrap.cleanup()
+		}
+	}()
+
+	var fileName, script string
+	switch detectShellType(shellPath) {
+	case shellTypeBash:
+		fileName = "bashrc"
+		script = `#!/bin/bash
+# Per-session Floeterm lifecycle bootstrap. Removed after the initial handshake.
+__floeterm_terminal_restore_xtrace=0
+case "$-" in
+    *x*) __floeterm_terminal_restore_xtrace=1; set +x ;;
+esac
+unset FLOETERM_SHELL_LIFECYCLE_NONCE __floeterm_terminal_lifecycle_nonce
+readonly __floeterm_terminal_lifecycle_nonce=` + shellSingleQuote(nonce) + `
+readonly __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED=1
+if [ "$__floeterm_terminal_restore_xtrace" = "1" ]; then
+    set -x
+fi
+unset __floeterm_terminal_restore_xtrace
+source ` + shellSingleQuote(sharedInitPath) + `
+`
+	case shellTypeZsh:
+		fileName = ".zshrc"
+		script = `# Per-session Floeterm lifecycle bootstrap. Removed after the initial handshake.
+typeset -g __floeterm_terminal_restore_xtrace=0
+if [[ -o xtrace ]]; then
+    unsetopt xtrace
+    typeset -g __floeterm_terminal_restore_xtrace=1
+fi
+unset FLOETERM_SHELL_LIFECYCLE_NONCE __floeterm_terminal_lifecycle_nonce
+typeset -gr __floeterm_terminal_lifecycle_nonce=` + shellSingleQuote(nonce) + `
+typeset -gr __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED=1
+if [[ "$__floeterm_terminal_restore_xtrace" = "1" ]]; then
+    setopt xtrace
+fi
+unset __floeterm_terminal_restore_xtrace
+source ` + shellSingleQuote(sharedInitPath) + `
+`
+	default:
+		return nil, fmt.Errorf("authenticated shell lifecycle bootstrap is unavailable")
+	}
+
+	path := filepath.Join(dir, fileName)
+	if err := writePrivateFileContext(ctx, path, script); err != nil {
+		return nil, err
+	}
+	bootstrap.file = path
+	return bootstrap, nil
+}
+
+func writePrivateFileContext(ctx context.Context, path, content string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("failed to write private shell bootstrap: %w", err)
 	}
 	return nil
 }
@@ -148,6 +292,7 @@ func writeFileContext(ctx context.Context, path string, content string) error {
 func bashInitScript(enableCommandLifecycle bool) string {
 	script := `#!/bin/bash
 # floeterm shell integration - auto-generated, do not edit.
+` + shellInitVersionMarker + `
 
 `
 	if enableCommandLifecycle {
@@ -186,6 +331,7 @@ func zshInitScript(enableCommandLifecycle bool) string {
 
 func zshInitScriptForHome(enableCommandLifecycle bool, homeDir string) string {
 	script := `# floeterm shell integration - auto-generated, do not edit.
+` + shellInitVersionMarker + `
 
 `
 	if enableCommandLifecycle {
@@ -457,6 +603,7 @@ __floeterm_terminal_precmd"
             ;;
     esac
     unset __floeterm_terminal_prompt_command_declaration
+    __floeterm_terminal_authenticated_lifecycle integration_ready
 fi
 `
 }
@@ -537,15 +684,36 @@ __floeterm_terminal_precmd() {
 
 if [[ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]]; then
     typeset -gr __FLOETERM_COMMAND_LIFECYCLE_LOADED=1
-    autoload -Uz add-zsh-hook 2>/dev/null || true
-    if typeset -f add-zsh-hook >/dev/null 2>&1; then
-        add-zsh-hook preexec __floeterm_terminal_preexec
-        add-zsh-hook precmd __floeterm_terminal_precmd
-    else
-        typeset -ga preexec_functions precmd_functions
-        preexec_functions+=(__floeterm_terminal_preexec)
-        precmd_functions+=(__floeterm_terminal_precmd)
+    typeset -g __floeterm_terminal_hooks_installed=0
+    if typeset -ga preexec_functions precmd_functions 2>/dev/null; then
+        typeset -g __floeterm_terminal_preexec_declaration __floeterm_terminal_precmd_declaration
+        typeset -g __floeterm_terminal_preexec_flags __floeterm_terminal_precmd_flags
+        __floeterm_terminal_preexec_declaration="$(typeset -p preexec_functions 2>/dev/null)"
+        __floeterm_terminal_precmd_declaration="$(typeset -p precmd_functions 2>/dev/null)"
+        __floeterm_terminal_preexec_flags="${${(z)__floeterm_terminal_preexec_declaration}[2]}"
+        __floeterm_terminal_precmd_flags="${${(z)__floeterm_terminal_precmd_declaration}[2]}"
+        if [[ "$__floeterm_terminal_preexec_flags" != *r* && "$__floeterm_terminal_precmd_flags" != *r* ]]; then
+            typeset -ga __floeterm_terminal_original_preexec_functions __floeterm_terminal_original_precmd_functions
+            __floeterm_terminal_original_preexec_functions=("${preexec_functions[@]}")
+            __floeterm_terminal_original_precmd_functions=("${precmd_functions[@]}")
+            if preexec_functions=("${(@)preexec_functions:#__floeterm_terminal_preexec}" __floeterm_terminal_preexec) 2>/dev/null &&
+               precmd_functions=("${(@)precmd_functions:#__floeterm_terminal_precmd}" __floeterm_terminal_precmd) 2>/dev/null &&
+               (( ${preexec_functions[(Ie)__floeterm_terminal_preexec]} > 0 )) &&
+               (( ${precmd_functions[(Ie)__floeterm_terminal_precmd]} > 0 )); then
+                __floeterm_terminal_hooks_installed=1
+            else
+                preexec_functions=("${__floeterm_terminal_original_preexec_functions[@]}") 2>/dev/null || true
+                precmd_functions=("${__floeterm_terminal_original_precmd_functions[@]}") 2>/dev/null || true
+            fi
+            unset __floeterm_terminal_original_preexec_functions __floeterm_terminal_original_precmd_functions
+        fi
+        unset __floeterm_terminal_preexec_declaration __floeterm_terminal_precmd_declaration
+        unset __floeterm_terminal_preexec_flags __floeterm_terminal_precmd_flags
     fi
+    if [[ "$__floeterm_terminal_hooks_installed" = "1" ]]; then
+        __floeterm_terminal_authenticated_lifecycle integration_ready
+    fi
+    unset __floeterm_terminal_hooks_installed
 fi
 `
 }

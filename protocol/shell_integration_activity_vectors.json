@@ -117,6 +117,14 @@
       "terminalWebTokens": []
     },
     {
+      "name": "authenticated integration readiness has no display",
+      "chunks": ["\u001b]633;P;FloetermLifecycle=v1;nonce=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;event=integration_ready\u0007"],
+      "tokens": [
+        "signal:integration-ready"
+      ],
+      "terminalWebTokens": []
+    },
+    {
       "name": "context and work markers are ordered metadata",
       "chunks": [
         "left\u001b]633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex\u0007",

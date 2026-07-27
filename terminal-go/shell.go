@@ -3,6 +3,7 @@ package terminal
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -134,6 +135,69 @@ func resolveShellFromPasswd(logger Logger) string {
 type DefaultShellArgsProvider struct {
 	ShellInitBaseDir       string
 	EnableCommandLifecycle bool
+}
+
+func (p DefaultShellArgsProvider) authenticatedShellInitBaseDir() string {
+	return newShellInitPaths(p.ShellInitBaseDir).BaseDir()
+}
+
+func (p DefaultShellArgsProvider) authenticatedShellInitEnabled() bool {
+	return p.EnableCommandLifecycle
+}
+
+func (p DefaultShellArgsProvider) prepareAuthenticatedShellArgsContext(
+	ctx context.Context,
+	shellPath string,
+	pathPrepend string,
+	requestAuthentication bool,
+) (args []string, env []string, bootstrap *shellLifecycleBootstrap, nonce string, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, "", err
+	}
+	if !requestAuthentication || !p.EnableCommandLifecycle || !supportsAuthenticatedShellLifecycle(shellPath) {
+		args, env := p.GetShellArgs(shellPath, pathPrepend)
+		return args, env, nil, "", nil
+	}
+
+	paths := newShellInitPaths(p.ShellInitBaseDir)
+	var sharedInitPath, expected string
+	switch detectShellType(shellPath) {
+	case shellTypeBash:
+		sharedInitPath = paths.BashRC()
+		expected = bashInitScript(true)
+	case shellTypeZsh:
+		sharedInitPath = paths.ZshRC()
+		expected = zshInitScript(true)
+	default:
+		return nil, nil, nil, "", nil
+	}
+	info, statErr := os.Lstat(sharedInitPath)
+	if statErr != nil || !info.Mode().IsRegular() {
+		return nil, nil, nil, "", fmt.Errorf("current authenticated shell integration is unavailable")
+	}
+	content, readErr := os.ReadFile(sharedInitPath)
+	if readErr != nil || string(content) != expected || !strings.Contains(string(content), shellInitVersionMarker) {
+		return nil, nil, nil, "", fmt.Errorf("current authenticated shell integration is unavailable")
+	}
+	nonce, err = generateShellLifecycleNonce()
+	if err != nil {
+		return nil, nil, nil, "", fmt.Errorf("failed to create shell lifecycle credential: %w", err)
+	}
+
+	bootstrap, err = createShellLifecycleBootstrap(ctx, shellPath, sharedInitPath, nonce)
+	if err != nil {
+		return nil, nil, nil, "", err
+	}
+	_, env = p.GetShellArgs(shellPath, pathPrepend)
+	switch detectShellType(shellPath) {
+	case shellTypeBash:
+		args = []string{"--rcfile", bootstrap.file}
+	case shellTypeZsh:
+		env = removeEnvKey(env, "ZDOTDIR")
+		env = append(env, "ZDOTDIR="+bootstrap.dir)
+		args = []string{}
+	}
+	return args, env, bootstrap, nonce, nil
 }
 
 func (p DefaultShellArgsProvider) CommandLifecycleEnabled() bool {

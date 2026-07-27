@@ -28,6 +28,15 @@ const (
 	shellIntegrationContext
 	shellIntegrationWork
 	shellIntegrationTitle
+	shellIntegrationReady
+)
+
+type shellLifecycleAuthState uint8
+
+const (
+	shellLifecycleAuthLegacy shellLifecycleAuthState = iota
+	shellLifecycleAuthPending
+	shellLifecycleAuthAuthenticated
 )
 
 type shellIntegrationSignal struct {
@@ -307,6 +316,8 @@ func parseFloetermLifecyclePayload(payload string) (shellIntegrationSignalKind, 
 		return 0, "", false
 	}
 	switch fields["event"] {
+	case "integration_ready":
+		return shellIntegrationReady, fields["nonce"], true
 	case "command_finished":
 		return shellIntegrationCommandFinished, fields["nonce"], true
 	case "prompt_ready":
@@ -329,13 +340,30 @@ func validShellLifecycleNonce(value string) bool {
 }
 
 func (s *Session) acceptsShellLifecycleSignalLocked(signal shellIntegrationSignal) bool {
-	if !s.shellLifecycleAuthActive || !s.hasActiveRemoteLocationLocked() {
+	if signal.lifecycleNonce != "" {
+		if len(signal.lifecycleNonce) != len(s.shellLifecycleNonce) ||
+			subtle.ConstantTimeCompare([]byte(signal.lifecycleNonce), []byte(s.shellLifecycleNonce)) != 1 {
+			return false
+		}
+		if s.shellLifecycleAuthState != shellLifecycleAuthAuthenticated {
+			if signal.kind != shellIntegrationReady || s.shellLifecycleAuthState != shellLifecycleAuthPending || s.shellLifecycleBootstrap == nil {
+				return false
+			}
+			s.shellLifecycleAuthState = shellLifecycleAuthAuthenticated
+			s.shellLifecycleBootstrapStale = s.shellLifecycleBootstrap
+			s.shellLifecycleBootstrap = nil
+		}
 		return true
 	}
-	if len(signal.lifecycleNonce) != len(s.shellLifecycleNonce) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(signal.lifecycleNonce), []byte(s.shellLifecycleNonce)) == 1
+	return s.shellLifecycleAuthState != shellLifecycleAuthAuthenticated || !s.hasActiveRemoteLocationLocked()
+}
+
+func (s *Session) cleanupStaleShellLifecycleBootstrap() {
+	s.mu.Lock()
+	bootstrap := s.shellLifecycleBootstrapStale
+	s.shellLifecycleBootstrapStale = nil
+	s.mu.Unlock()
+	bootstrap.cleanup()
 }
 
 func (s *Session) checkShellIntegrationChange(chunk []byte) {
@@ -374,6 +402,12 @@ func (s *Session) checkShellIntegrationChange(chunk []byte) {
 		}
 		signal := token.signal
 		switch signal.kind {
+		case shellIntegrationReady:
+			s.mu.Lock()
+			if !s.closed {
+				_ = s.acceptsShellLifecycleSignalLocked(signal)
+			}
+			s.mu.Unlock()
 		case shellIntegrationCwd:
 			if signal.remote {
 				s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyOSC7Locked(signal, now) })
@@ -424,6 +458,7 @@ func (s *Session) checkShellIntegrationChange(chunk []byte) {
 			s.mu.Unlock()
 			s.updateForegroundCommandFromShell(signal, ForegroundCommandIdle, "")
 		}
+		s.cleanupStaleShellLifecycleBootstrap()
 	}
 }
 
