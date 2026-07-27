@@ -309,6 +309,8 @@ export interface TerminalSessionInfo {
   isActive: boolean;
   foregroundCommand?: TerminalForegroundCommandInfo;
   outputActivity?: TerminalOutputActivityInfo;
+  executionContext?: TerminalExecutionContextInfo;
+  workState?: TerminalWorkStateInfo;
 }
 
 export type TerminalForegroundCommandPhase = 'unknown' | 'idle' | 'running';
@@ -324,6 +326,44 @@ export type TerminalOutputActivityPhase = 'unknown' | 'streaming' | 'settled';
 
 export interface TerminalOutputActivityInfo {
   phase: TerminalOutputActivityPhase;
+  revision: number;
+  updatedAtMs: number;
+}
+
+export type TerminalLocationKind = 'unknown' | 'local' | 'remote';
+export type TerminalLocationPhase = 'unknown' | 'opening' | 'ready';
+export type TerminalContextSource = 'unknown' | 'shell_integration' | 'osc7' | 'osc_title' | 'foreground_candidate';
+export type TerminalApplicationKind = 'unknown' | 'shell' | 'agent_cli' | 'interactive_app';
+
+export interface TerminalLocationInfo {
+  kind: TerminalLocationKind;
+  phase: TerminalLocationPhase;
+  label: string;
+  authority: string;
+  workingDirectory: string;
+  source: TerminalContextSource;
+}
+
+export interface TerminalApplicationInfo {
+  kind: TerminalApplicationKind;
+  identity: string;
+  displayName: string;
+}
+
+export interface TerminalExecutionContextInfo {
+  location: TerminalLocationInfo;
+  application: TerminalApplicationInfo;
+  revision: number;
+  updatedAtMs: number;
+}
+
+export type TerminalWorkPhase = 'unknown' | 'idle' | 'working' | 'waiting_user';
+
+export interface TerminalWorkStateInfo {
+  phase: TerminalWorkPhase;
+  source: '' | 'semantic';
+  contextRevision: number;
+  foregroundCommandRevision: number;
   revision: number;
   updatedAtMs: number;
 }
@@ -362,6 +402,16 @@ export interface TerminalForegroundCommandUpdateEvent {
 export interface TerminalOutputActivityUpdateEvent {
   sessionId: TerminalID;
   outputActivity: TerminalOutputActivityInfo;
+}
+
+export interface TerminalExecutionContextUpdateEvent {
+  sessionId: TerminalID;
+  executionContext: TerminalExecutionContextInfo;
+}
+
+export interface TerminalWorkStateUpdateEvent {
+  sessionId: TerminalID;
+  workState: TerminalWorkStateInfo;
 }
 
 // TerminalTransport is a neutral interface that defines request-style APIs.
@@ -436,6 +486,14 @@ export interface TerminalEventSource {
   onTerminalOutputActivityUpdate?(
     sessionId: TerminalID,
     handler: (event: TerminalOutputActivityUpdateEvent) => void,
+  ): () => void;
+  onTerminalExecutionContextUpdate?(
+    sessionId: TerminalID,
+    handler: (event: TerminalExecutionContextUpdateEvent) => void,
+  ): () => void;
+  onTerminalWorkStateUpdate?(
+    sessionId: TerminalID,
+    handler: (event: TerminalWorkStateUpdateEvent) => void,
   ): () => void;
   onTerminalGeometry?(sessionId: TerminalID, handler: (event: TerminalGeometryEvent) => void): () => void;
   onSessionDeleted?(sessionId: TerminalID, handler: () => void): () => void;

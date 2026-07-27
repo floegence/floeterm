@@ -113,10 +113,29 @@ Implement `TerminalSessionMetadataEventHandler` in addition to
 Implement the optional `TerminalOutputActivityEventHandler` to receive only
 low-frequency output phase boundaries; steady streaming output resets one
 session timer without publishing one metadata event per PTY chunk.
+Implement `TerminalExecutionContextEventHandler` and
+`TerminalSemanticWorkStateEventHandler` for their independent revision streams;
+context/work changes do not widen the legacy command-metadata callback.
 The state is owned by the session and remains available from `ListSessions`
 even when no renderer is attached or the originating OSC marker has fallen out
 of retained history. This is interactive-shell lifecycle state, not an
 operating-system foreground-process probe.
+
+`TerminalSessionInfo.ExecutionContext` independently describes the display-only
+location and long-lived application. A foreground `ssh` basename creates a
+`remote/opening` candidate; a valid remote OSC 7 authority or strict
+`FloetermContext=v1` marker can advance it to `remote/ready`. Remote paths remain
+inside `ExecutionContext.Location.WorkingDirectory` and never overwrite the
+session's local `WorkingDir` or `Name`. Standard OSC 0/2/7 controls remain in the
+PTY stream for renderer compatibility and do not count as display output.
+
+Structured producers may publish `FloetermWork=v1` for an active, topmost Agent
+context frame. Accepted work snapshots are stamped with the current context and
+foreground-command revisions. Unknown fields, stale or reused frame IDs,
+out-of-order stack operations, producer-supplied revisions, and payloads over
+the 4 KiB framing limit fail closed. Context, title, path, identity, and work
+values are untrusted presentation metadata and must not drive filesystem,
+network, authentication, or authorization decisions.
 
 Custom `ShellInitWriter` implementations that also need to run without a PATH prepend can implement `ShellInitRequirement`. Existing writers keep the previous PATH-triggered behavior.
 
@@ -125,7 +144,7 @@ Custom `ShellInitWriter` implementations that also need to run without a PATH pr
 - `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession` or the caller-cancellable `ActivateSessionContext`.
 - Configure defaults via `ManagerConfig` (history buffer size, env, and filters). The legacy resize suppression duration fields are deprecated; resize never drops terminal history.
 - PTYs start at the effective attached viewport, preserve their last size after the final detach, and skip redundant same-size resizes.
-- Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and `OSC 7 file://...`) and ignores generic title-only OSC updates.
+- Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and local `OSC 7 file://...`) and ignores generic title-only OSC updates. Remote OSC 7 paths are display-only execution context.
 - Cwd parsing is stream-safe across PTY read chunks, so fragmented fullscreen/TUI control sequences do not trigger false working-directory parse failures.
 - Shell metadata parsing is bounded to 4 KiB of pending data. Program labels use a strict 64-byte ASCII allowlist, and ordinary PTY output publishes only output phase boundaries rather than one metadata update per chunk.
 - `NewStdLogger` colorizes output by level when writing to a TTY (disable via `NO_COLOR=1` or `FLOETERM_LOG_COLOR=0`).

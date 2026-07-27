@@ -14,8 +14,10 @@ import type { TerminalByteStream } from './client.js';
 import { createTerminalLiveTransport } from './transport.js';
 import type {
   TerminalEventSource,
+  TerminalExecutionContextUpdateEvent,
   TerminalForegroundCommandUpdateEvent,
   TerminalOutputActivityUpdateEvent,
+  TerminalWorkStateUpdateEvent,
 } from '../types.js';
 
 class FakeStream implements TerminalByteStream {
@@ -174,6 +176,56 @@ describe('terminal live transport', () => {
     expect(observer).toHaveBeenCalledWith(event);
     stop?.();
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('forwards execution context and semantic work control events', () => {
+    let contextHandler: ((event: TerminalExecutionContextUpdateEvent) => void) | undefined;
+    let workHandler: ((event: TerminalWorkStateUpdateEvent) => void) | undefined;
+    const stopContext = vi.fn();
+    const stopWork = vi.fn();
+    const controlEvents: TerminalEventSource = {
+      onTerminalData: () => () => undefined,
+      onTerminalExecutionContextUpdate: (sessionId, handler) => {
+        expect(sessionId).toBe('session');
+        contextHandler = handler;
+        return stopContext;
+      },
+      onTerminalWorkStateUpdate: (sessionId, handler) => {
+        expect(sessionId).toBe('session');
+        workHandler = handler;
+        return stopWork;
+      },
+    };
+    const { eventSource } = createHarness(controlEvents);
+    const contextObserver = vi.fn();
+    const workObserver = vi.fn();
+    const unsubscribeContext = eventSource.onTerminalExecutionContextUpdate?.('session', contextObserver);
+    const unsubscribeWork = eventSource.onTerminalWorkStateUpdate?.('session', workObserver);
+    const contextEvent: TerminalExecutionContextUpdateEvent = {
+      sessionId: 'session',
+      executionContext: {
+        location: { kind: 'remote', phase: 'ready', label: 'root@host.example', authority: 'host.example', workingDirectory: '/root', source: 'osc7' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+        revision: 4,
+        updatedAtMs: 40,
+      },
+    };
+    const workEvent: TerminalWorkStateUpdateEvent = {
+      sessionId: 'session',
+      workState: {
+        phase: 'working', source: 'semantic', contextRevision: 4,
+        foregroundCommandRevision: 2, revision: 3, updatedAtMs: 30,
+      },
+    };
+    contextHandler?.(contextEvent);
+    workHandler?.(workEvent);
+
+    expect(contextObserver).toHaveBeenCalledWith(contextEvent);
+    expect(workObserver).toHaveBeenCalledWith(workEvent);
+    unsubscribeContext?.();
+    unsubscribeWork?.();
+    expect(stopContext).toHaveBeenCalledOnce();
+    expect(stopWork).toHaveBeenCalledOnce();
   });
 
   it('opens one live_v1 stream and forwards input and acknowledged resize', async () => {

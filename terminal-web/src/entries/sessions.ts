@@ -1,4 +1,8 @@
 export { TerminalSessionsCoordinator } from '../sessions/TerminalSessionsCoordinator.js';
+export {
+  normalizeTerminalExecutionContextInfo,
+  normalizeTerminalWorkStateInfo,
+} from '../sessions/TerminalSessionsCoordinator.js';
 export { normalizeTerminalForegroundCommandDisplayName } from '../sessions/TerminalForegroundCommandMetadata.js';
 export { classifyTerminalAgentCli } from '../sessions/TerminalAgentCliMetadata.js';
 export type { TerminalAgentCliIdentity } from '../sessions/TerminalAgentCliMetadata.js';
@@ -12,5 +16,16 @@ export type {
   TerminalOutputActivityPhase,
   TerminalOutputActivityUpdateEvent,
   TerminalSessionInfo,
+  TerminalExecutionContextInfo,
+  TerminalLocationInfo,
+  TerminalLocationKind,
+  TerminalLocationPhase,
+  TerminalContextSource,
+  TerminalApplicationInfo,
+  TerminalApplicationKind,
+  TerminalExecutionContextUpdateEvent,
+  TerminalWorkStateInfo,
+  TerminalWorkPhase,
+  TerminalWorkStateUpdateEvent,
   TerminalTransport,
 } from '../types.js';

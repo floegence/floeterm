@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "cases": [
+    { "name": "remote shell", "kind": "context", "valid": true, "canonicalAuthority": "host.example", "payload": "633;P;FloetermContext=v1;action=push;frame_id=remote-1;location=remote;authority=HOST.example.;user=root;cwd=%2Froot%2Fa%2Bb;application=shell" },
+    { "name": "ipv6 remote shell", "kind": "context", "valid": true, "canonicalAuthority": "[2001:db8::1]", "payload": "633;P;FloetermContext=v1;action=push;frame_id=remote-2;location=remote;authority=%5B2001%3ADB8%3A0%3A0%3A0%3A0%3A0%3A1%5D;application=shell" },
+    { "name": "non-mapped ffff ipv6", "kind": "context", "valid": true, "canonicalAuthority": "[::ffff:0:c000:201]", "payload": "633;P;FloetermContext=v1;action=push;frame_id=remote-ffff;location=remote;authority=%5B%3A%3Affff%3A0%3A192.0.2.1%5D;application=shell" },
+    { "name": "ipv4 remote shell", "kind": "context", "valid": true, "canonicalAuthority": "192.0.2.1", "payload": "633;P;FloetermContext=v1;action=push;frame_id=remote-3;location=remote;authority=192.0.2.1;application=shell" },
+    { "name": "agent application", "kind": "context", "valid": true, "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex" },
+    { "name": "reordered context fields", "kind": "context", "valid": true, "canonicalAuthority": "host.example", "payload": "633;P;FloetermContext=v1;application=shell;authority=HOST.EXAMPLE;frame_id=reordered;action=push;location=remote" },
+    { "name": "strict pop", "kind": "context", "valid": true, "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-1" },
+    { "name": "semantic waiting", "kind": "work", "valid": true, "payload": "633;P;FloetermWork=v1;frame_id=agent-1;phase=waiting_user" },
+    { "name": "unknown context version", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v2;action=push;frame_id=x;application=shell" },
+    { "name": "duplicate field", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;frame_id=x;application=shell" },
+    { "name": "unknown field", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;application=shell;revision=1" },
+    { "name": "userinfo authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=root%40host.example;application=shell" },
+    { "name": "port authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=host.example%3A22;application=shell" },
+    { "name": "encoded slash authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=host.example%2Fevil;application=shell" },
+    { "name": "query authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=host.example%3Fx;application=shell" },
+    { "name": "fragment authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=host.example%23x;application=shell" },
+    { "name": "malformed numeric authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=999.1.1.1;application=shell" },
+    { "name": "leading zero ipv4 authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=01.2.3.4;application=shell" },
+    { "name": "short numeric dotted authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=1.2.3;application=shell" },
+    { "name": "unbracketed ipv6 authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=2001%3Adb8%3A%3A1;application=shell" },
+    { "name": "zoned ipv6 authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=%5Bfe80%3A%3A1%25en0%5D;application=shell" },
+    { "name": "loopback authority", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=127.0.0.1;application=shell" },
+    { "name": "invalid ipv6", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=%5B2001%3Azz%3A%3A1%5D;application=shell" },
+    { "name": "mapped loopback ipv6", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=%5B%3A%3Affff%3A127.0.0.1%5D;application=shell" },
+    { "name": "mapped remote ipv6", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=%5B%3A%3Affff%3A192.0.2.1%5D;application=shell" },
+    { "name": "remote tilde", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=host.example;cwd=~%2Fsecret;application=shell" },
+    { "name": "encoded soft hyphen", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=host.example;user=ro%C2%ADot;application=shell" },
+    { "name": "invalid utf8 percent", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;location=remote;authority=host.example;user=%FF;application=shell" },
+    { "name": "identity without application", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;identity=codex" },
+    { "name": "unknown agent identity", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=x;application=agent_cli;identity=unknown" },
+    { "name": "oversized frame id", "kind": "context", "valid": false, "payload": "633;P;FloetermContext=v1;action=push;frame_id=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx;application=shell" },
+    { "name": "work supplied revision", "kind": "work", "valid": false, "payload": "633;P;FloetermWork=v1;frame_id=agent-1;phase=working;revision=1" },
+    { "name": "unknown work phase", "kind": "work", "valid": false, "payload": "633;P;FloetermWork=v1;frame_id=agent-1;phase=complete" }
+  ],
+  "stateCases": [
+    {
+      "name": "same-value replace preserves work epoch",
+      "payloads": [
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex",
+        "633;P;FloetermWork=v1;frame_id=agent-a;phase=working",
+        "633;P;FloetermContext=v1;action=replace;frame_id=agent-a;application=agent_cli;identity=codex"
+      ],
+      "expected": { "contextRevision": 3, "workRevision": 1, "workPhase": "working", "topFrameId": "agent-a", "depth": 3 }
+    },
+    {
+      "name": "duplicate non-top frame cannot displace top",
+      "payloads": [
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex",
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-b;application=agent_cli;identity=codex",
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex",
+        "633;P;FloetermWork=v1;frame_id=agent-b;phase=working"
+      ],
+      "expected": { "contextRevision": 4, "workRevision": 1, "workPhase": "working", "topFrameId": "agent-b", "depth": 4 }
+    },
+    {
+      "name": "delayed ABA pop cannot remove restored parent",
+      "payloads": [
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex",
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-b;application=agent_cli;identity=codex",
+        "633;P;FloetermContext=v1;action=pop;frame_id=agent-b",
+        "633;P;FloetermContext=v1;action=pop;frame_id=agent-b",
+        "633;P;FloetermWork=v1;frame_id=agent-a;phase=waiting_user"
+      ],
+      "expected": { "contextRevision": 5, "workRevision": 1, "workPhase": "waiting_user", "topFrameId": "agent-a", "depth": 3 }
+    },
+    {
+      "name": "stale work is fenced to the top frame",
+      "payloads": [
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex",
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-b;application=agent_cli;identity=codex",
+        "633;P;FloetermWork=v1;frame_id=agent-a;phase=working"
+      ],
+      "expected": { "contextRevision": 4, "workRevision": 0, "workPhase": "unknown", "topFrameId": "agent-b", "depth": 4 }
+    },
+    {
+      "name": "identity replace fails closed",
+      "payloads": [
+        "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex",
+        "633;P;FloetermContext=v1;action=replace;frame_id=agent-a;application=agent_cli;identity=claude"
+      ],
+      "expected": { "contextRevision": 3, "workRevision": 0, "workPhase": "unknown", "topFrameId": "agent-a", "depth": 3 }
+    },
+    {
+      "name": "frame capacity rejects overflow",
+      "payloads": [
+        "633;P;FloetermContext=v1;action=push;frame_id=f01;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f02;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f03;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f04;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f05;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f06;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f07;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f08;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f09;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f10;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f11;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f12;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f13;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=f14;application=shell",
+        "633;P;FloetermContext=v1;action=push;frame_id=overflow;application=shell"
+      ],
+      "expected": { "contextRevision": 16, "workRevision": 0, "workPhase": "unknown", "topFrameId": "f14", "depth": 16 }
+    }
+  ],
+  "transitionCases": [
+    {
+      "name": "top duplicate and same-id conflict are no-ops",
+      "steps": [
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex", "changed": true, "contextRevision": 3, "workRevision": 0, "topFrameId": "agent-a", "depth": 3 },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex", "changed": false, "contextRevision": 3, "workRevision": 0, "topFrameId": "agent-a", "depth": 3 },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=claude", "changed": false, "contextRevision": 3, "workRevision": 0, "topFrameId": "agent-a", "depth": 3 }
+      ]
+    },
+    {
+      "name": "wrong pop underflow and delayed pop are no-ops",
+      "steps": [
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex", "changed": true, "contextRevision": 3, "workRevision": 0, "topFrameId": "agent-a", "depth": 3 },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-b;application=agent_cli;identity=codex", "changed": true, "contextRevision": 4, "workRevision": 0, "topFrameId": "agent-b", "depth": 4 },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-a", "changed": false, "contextRevision": 4, "workRevision": 0, "topFrameId": "agent-b", "depth": 4 },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-b", "changed": true, "contextRevision": 5, "workRevision": 0, "topFrameId": "agent-a", "depth": 3 },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-a", "changed": true, "contextRevision": 6, "workRevision": 0, "topFrameId": "@ssh-candidate", "depth": 2 },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-a", "changed": false, "contextRevision": 6, "workRevision": 0, "topFrameId": "@ssh-candidate", "depth": 2 }
+      ]
+    },
+    {
+      "name": "retired id reuse and ABA pop cannot affect a different frame",
+      "steps": [
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex", "changed": true, "contextRevision": 3, "workRevision": 0, "topFrameId": "agent-a", "depth": 3 },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-a", "changed": true, "contextRevision": 4, "workRevision": 0, "topFrameId": "@ssh-candidate", "depth": 2 },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex", "changed": false, "contextRevision": 4, "workRevision": 0, "topFrameId": "@ssh-candidate", "depth": 2 },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-b;application=agent_cli;identity=codex", "changed": true, "contextRevision": 5, "workRevision": 0, "topFrameId": "agent-b", "depth": 3 },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-a", "changed": false, "contextRevision": 5, "workRevision": 0, "topFrameId": "agent-b", "depth": 3 }
+      ]
+    },
+    {
+      "name": "cross-epoch stale pop is a no-op",
+      "steps": [
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=old-agent;application=agent_cli;identity=codex", "changed": true, "contextRevision": 3, "workRevision": 0, "topFrameId": "old-agent", "depth": 3 },
+        { "operation": "reset_foreground", "changed": true, "contextRevision": 5, "workRevision": 0, "topFrameId": "@ssh-candidate", "depth": 2 },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=old-agent", "changed": false, "contextRevision": 5, "workRevision": 0, "topFrameId": "@ssh-candidate", "depth": 2 }
+      ]
+    },
+    {
+      "name": "omitted dimensions inherit and host change clears presentation",
+      "steps": [
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=remote-a;location=remote;authority=outer.example;user=root;cwd=%2Fouter;application=shell", "changed": true, "contextRevision": 3, "workRevision": 0, "topFrameId": "remote-a", "depth": 3, "authority": "outer.example", "label": "root@outer.example", "cwd": "/outer" },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-a;application=agent_cli;identity=codex", "changed": true, "contextRevision": 4, "workRevision": 0, "topFrameId": "agent-a", "depth": 4, "authority": "outer.example", "label": "root@outer.example", "cwd": "/outer" },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-a", "changed": true, "contextRevision": 5, "workRevision": 0, "topFrameId": "remote-a", "depth": 3, "authority": "outer.example", "label": "root@outer.example", "cwd": "/outer" },
+        { "payload": "633;P;FloetermContext=v1;action=replace;frame_id=remote-a;location=remote;authority=inner.example", "changed": true, "contextRevision": 6, "workRevision": 0, "topFrameId": "remote-a", "depth": 3, "authority": "inner.example", "label": "inner.example", "cwd": "" }
+      ]
+    },
+    {
+      "name": "old Agent pop new Agent push fences stale old work",
+      "steps": [
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=old-agent;application=agent_cli;identity=codex", "changed": true, "contextRevision": 3, "workRevision": 0, "topFrameId": "old-agent", "depth": 3 },
+        { "payload": "633;P;FloetermWork=v1;frame_id=old-agent;phase=working", "changed": true, "contextRevision": 3, "workRevision": 1, "topFrameId": "old-agent", "depth": 3 },
+        { "payload": "633;P;FloetermContext=v1;action=pop;frame_id=old-agent", "changed": true, "contextRevision": 4, "workRevision": 2, "topFrameId": "@ssh-candidate", "depth": 2 },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=new-agent;application=agent_cli;identity=claude", "changed": true, "contextRevision": 5, "workRevision": 2, "topFrameId": "new-agent", "depth": 3 },
+        { "payload": "633;P;FloetermWork=v1;frame_id=old-agent;phase=waiting_user", "changed": false, "contextRevision": 5, "workRevision": 2, "topFrameId": "new-agent", "depth": 3 }
+      ]
+    },
+    {
+      "name": "depth and seen-id exhaustion reject overflow",
+      "steps": [
+        { "operation": "fill_depth", "changed": true, "contextRevision": 16, "workRevision": 0, "topFrameId": "depth-14", "depth": 16 },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=depth-overflow;application=shell", "changed": false, "contextRevision": 16, "workRevision": 0, "topFrameId": "depth-14", "depth": 16 }
+      ]
+    },
+    {
+      "name": "seen-id tombstones reject overflow",
+      "steps": [
+        { "operation": "fill_seen", "changed": true, "contextRevision": 130, "workRevision": 0, "topFrameId": "@ssh-candidate", "depth": 2 },
+        { "payload": "633;P;FloetermContext=v1;action=push;frame_id=seen-overflow;application=shell", "changed": false, "contextRevision": 130, "workRevision": 0, "topFrameId": "@ssh-candidate", "depth": 2 }
+      ]
+    }
+  ]
+}

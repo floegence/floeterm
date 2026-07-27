@@ -103,9 +103,17 @@ func TestParseOSC7DecodesEncodedPaths(t *testing.T) {
 
 	session := &Session{config: sessionConfig{logger: NopLogger{}}}
 	encoded := strings.ReplaceAll(path, " ", "%20")
-	osc7 := "\x1b]7;file://host" + encoded + "\x1b\\"
+	osc7 := "\x1b]7;file://localhost" + encoded + "\x1b\\"
 	if got := session.parseWorkingDirectory(osc7); got != path {
 		t.Fatalf("expected decoded OSC7 path %q, got %q", path, got)
+	}
+}
+
+func TestParseOSC7DoesNotTreatRemotePathAsLocalWorkingDirectory(t *testing.T) {
+	session := &Session{config: sessionConfig{logger: NopLogger{}}}
+	osc7 := "\x1b]7;file://remote.example/root/project\x1b\\"
+	if got := session.parseWorkingDirectory(osc7); got != "" {
+		t.Fatalf("remote OSC7 path became local cwd: %q", got)
 	}
 }
 

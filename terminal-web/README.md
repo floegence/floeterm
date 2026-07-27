@@ -53,6 +53,14 @@ const core = new TerminalCore(
 await core.initialize();
 ```
 
+Session catalogs can carry independent `executionContext`, `workState`,
+`foregroundCommand`, and `outputActivity` snapshots. The coordinator fences
+each dimension by its own monotonic revision. `TerminalShellIntegrationParser`
+filters strict `FloetermContext=v1` and `FloetermWork=v1` metadata from renderer
+display data while returning ordered structured events; standard OSC title and
+OSC 7 controls remain untouched so replay preserves normal terminal semantics.
+Hosts must treat every context value as untrusted presentation metadata.
+
 Floeterm projects one renderer-neutral DOM scrollbar for both canvas and WebGL terminals while Ghostty remains the only scrollback and viewport owner:
 
 ```ts
@@ -138,6 +146,10 @@ const parser = new TerminalShellIntegrationParser();
 const { displayData, events, tokens } = parser.parse(chunk);
 core.write(displayData);
 ```
+
+When the host has an authoritative PTY hostname, pass it explicitly as
+`new TerminalShellIntegrationParser({ localHostname })` to reject same-host
+remote hints. The parser never infers the PTY host from the browser page origin.
 
 The parser recognizes OSC 633 prompt/command/cwd markers and Floeterm's safe
 program label. Recognized metadata is removed from display output, unknown OSC

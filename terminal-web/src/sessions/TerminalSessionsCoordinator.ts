@@ -1,6 +1,10 @@
-import type { Logger, TerminalForegroundCommandInfo, TerminalOutputActivityInfo, TerminalSessionInfo, TerminalTransport } from '../types.js';
+import type {
+  Logger, TerminalExecutionContextInfo, TerminalForegroundCommandInfo, TerminalOutputActivityInfo,
+  TerminalSessionInfo, TerminalTransport, TerminalWorkStateInfo,
+} from '../types.js';
 import { noopLogger } from '../utils/logger.js';
 import { normalizeTerminalForegroundCommandDisplayName } from './TerminalForegroundCommandMetadata.js';
+import { normalizeTerminalRemoteAuthority, normalizeTerminalRemotePath } from './TerminalExecutionContextMetadata.js';
 
 export type TerminalSessionsCoordinatorOptions = {
   transport: TerminalTransport;
@@ -71,12 +75,184 @@ const validateOutputActivityUpdate = (value: unknown): TerminalOutputActivityInf
   return { phase, revision: Number(revision), updatedAtMs: Number(updatedAtMs) };
 };
 
-const normalizeSession = (raw: TerminalSessionInfo): TerminalSessionInfo => ({
-  ...raw,
-  id: String(raw?.id ?? '').trim(),
-  foregroundCommand: normalizeForegroundCommand(raw?.foregroundCommand),
-  outputActivity: normalizeOutputActivity(raw?.outputActivity),
+const unknownExecutionContext = (): TerminalExecutionContextInfo => ({
+  location: { kind: 'unknown', phase: 'unknown', label: '', authority: '', workingDirectory: '', source: 'unknown' },
+  application: { kind: 'unknown', identity: '', displayName: '' },
+  revision: 0,
+  updatedAtMs: 0,
 });
+
+const validRemoteLocationLabel = (label: string, authority: string): boolean => {
+  if (!label || label === authority) return true;
+  if (!authority || !label.endsWith(`@${authority}`)) return false;
+  const user = label.slice(0, -(authority.length + 1));
+  return /^[A-Za-z0-9._-]{1,64}$/.test(user);
+};
+
+const validRemoteOpeningTitle = (label: string): boolean => {
+  if (!label) return false;
+  const separator = label.indexOf('@');
+  const user = separator >= 0 ? label.slice(0, separator) : '';
+  const authority = separator >= 0 ? label.slice(separator + 1) : label;
+  if (separator >= 0 && (!/^[A-Za-z0-9._-]{1,64}$/.test(user) || authority.includes('@'))) return false;
+  return normalizeTerminalRemoteAuthority(authority) === authority;
+};
+
+export const normalizeTerminalExecutionContextInfo = (
+  value: TerminalSessionInfo['executionContext'],
+): TerminalExecutionContextInfo => validateExecutionContextUpdate(value) ?? unknownExecutionContext();
+const normalizeExecutionContext = normalizeTerminalExecutionContextInfo;
+
+const validateExecutionContextUpdate = (value: unknown): TerminalExecutionContextInfo | null => {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  const location = candidate.location as Record<string, unknown> | undefined;
+  const application = candidate.application as Record<string, unknown> | undefined;
+  if (!location || !application) return null;
+  if (!['unknown', 'local', 'remote'].includes(String(location.kind))) return null;
+  if (!['unknown', 'opening', 'ready'].includes(String(location.phase))) return null;
+  if (!['unknown', 'shell_integration', 'osc7', 'osc_title', 'foreground_candidate'].includes(String(location.source))) return null;
+  if (!['unknown', 'shell', 'agent_cli', 'interactive_app'].includes(String(application.kind))) return null;
+  for (const field of ['label', 'authority', 'workingDirectory'] as const) {
+    if (typeof location[field] !== 'string') return null;
+    if (/\p{Cc}|\p{Cf}/u.test(location[field] as string)) return null;
+  }
+  for (const field of ['identity', 'displayName'] as const) {
+    if (typeof application[field] !== 'string') return null;
+    if (/\p{Cc}|\p{Cf}/u.test(application[field] as string)) return null;
+  }
+  if (!Number.isSafeInteger(candidate.revision) || Number(candidate.revision) < 0) return null;
+  if (!Number.isSafeInteger(candidate.updatedAtMs) || Number(candidate.updatedAtMs) < 0) return null;
+  if (new TextEncoder().encode(String(location.label)).byteLength > 128) return null;
+  const locationKind = String(location.kind);
+  const locationPhase = String(location.phase);
+  const authority = String(location.authority);
+  const label = String(location.label);
+  const workingDirectory = String(location.workingDirectory);
+  const applicationKind = String(application.kind);
+  const identity = String(application.identity);
+  const displayName = String(application.displayName);
+  const locationSource = String(location.source);
+  if (locationKind === 'unknown' && (
+    locationPhase !== 'unknown' || locationSource !== 'unknown' || label || authority || workingDirectory
+  )) return null;
+  if (locationKind === 'local' && (
+    locationPhase !== 'ready' || locationSource !== 'shell_integration' || label || authority
+  )) return null;
+  if (locationKind === 'remote') {
+    if (locationPhase === 'opening') {
+      if (authority) return null;
+      if (locationSource === 'foreground_candidate') {
+        if (label !== 'SSH' || workingDirectory) return null;
+      } else if (locationSource === 'shell_integration') {
+        if ((!workingDirectory || normalizeTerminalRemotePath(workingDirectory) !== workingDirectory)
+          || (label !== 'SSH' && !validRemoteOpeningTitle(label))) return null;
+      } else if (locationSource === 'osc_title') {
+        if (!validRemoteOpeningTitle(label)) return null;
+      } else {
+        return null;
+      }
+    } else if (locationPhase === 'ready') {
+      if (!['shell_integration', 'osc7', 'osc_title'].includes(locationSource)
+        || !authority || normalizeTerminalRemoteAuthority(authority) !== authority
+        || !validRemoteLocationLabel(label, authority)) return null;
+    } else {
+      return null;
+    }
+  }
+  if (workingDirectory && normalizeTerminalRemotePath(workingDirectory) !== workingDirectory) return null;
+  if (applicationKind === 'unknown' && (identity || displayName)) return null;
+  if (applicationKind === 'shell' && (identity || displayName)) return null;
+  if (applicationKind === 'agent_cli' && AGENT_CONTEXT_DISPLAY_NAMES.get(identity) !== displayName) return null;
+  if (applicationKind !== 'agent_cli' && identity) return null;
+  if (new TextEncoder().encode(displayName).byteLength > 128) return null;
+  return {
+    location: {
+      kind: location.kind as TerminalExecutionContextInfo['location']['kind'],
+      phase: location.phase as TerminalExecutionContextInfo['location']['phase'],
+      label: String(location.label), authority: String(location.authority),
+      workingDirectory: String(location.workingDirectory),
+      source: location.source as TerminalExecutionContextInfo['location']['source'],
+    },
+    application: {
+      kind: application.kind as TerminalExecutionContextInfo['application']['kind'],
+      identity: String(application.identity), displayName: String(application.displayName),
+    },
+    revision: Number(candidate.revision), updatedAtMs: Number(candidate.updatedAtMs),
+  };
+};
+
+const AGENT_CONTEXT_DISPLAY_NAMES = new Map<string, string>([
+  ['codex', 'Codex'], ['claude', 'Claude Code'], ['opencode', 'OpenCode'], ['kimi', 'Kimi'],
+  ['gemini', 'Gemini'], ['qwen', 'Qwen'], ['copilot', 'Copilot'], ['cline', 'Cline'],
+  ['roo', 'Roo'], ['vibe', 'Vibe'], ['cursor', 'Cursor'], ['junie', 'Junie'],
+  ['kiro', 'Kiro'], ['openhands', 'OpenHands'], ['trae', 'Trae'], ['kilo', 'Kilo Code'],
+]);
+
+
+const unknownWorkState = (): TerminalWorkStateInfo => ({
+  phase: 'unknown', source: '', contextRevision: 0, foregroundCommandRevision: 0,
+  revision: 0, updatedAtMs: 0,
+});
+
+export const normalizeTerminalWorkStateInfo = (value: TerminalSessionInfo['workState']): TerminalWorkStateInfo => (
+  validateWorkStateUpdate(value) ?? unknownWorkState()
+);
+const normalizeWorkState = normalizeTerminalWorkStateInfo;
+
+const validateWorkStateUpdate = (value: unknown): TerminalWorkStateInfo | null => {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  if (!['unknown', 'idle', 'working', 'waiting_user'].includes(String(candidate.phase))) return null;
+  if (candidate.source !== '' && candidate.source !== 'semantic') return null;
+  for (const field of ['contextRevision', 'foregroundCommandRevision', 'revision', 'updatedAtMs'] as const) {
+    if (!Number.isSafeInteger(candidate[field]) || Number(candidate[field]) < 0) return null;
+  }
+  if (candidate.phase === 'unknown' && (candidate.source !== '' || candidate.contextRevision !== 0 || candidate.foregroundCommandRevision !== 0)) return null;
+  if (candidate.phase !== 'unknown' && candidate.source !== 'semantic') return null;
+  return {
+    phase: candidate.phase as TerminalWorkStateInfo['phase'], source: candidate.source as TerminalWorkStateInfo['source'],
+    contextRevision: Number(candidate.contextRevision), foregroundCommandRevision: Number(candidate.foregroundCommandRevision),
+    revision: Number(candidate.revision), updatedAtMs: Number(candidate.updatedAtMs),
+  };
+};
+
+const projectWorkState = (
+  work: TerminalWorkStateInfo,
+  context: TerminalExecutionContextInfo,
+  command: TerminalForegroundCommandInfo,
+): TerminalWorkStateInfo => {
+  if (work.phase === 'unknown' || (
+    work.contextRevision === context.revision
+    && work.foregroundCommandRevision === command.revision
+  )) return work;
+  return { ...work, phase: 'unknown', source: '', contextRevision: 0, foregroundCommandRevision: 0 };
+};
+
+const workMatchesFences = (
+  work: TerminalWorkStateInfo,
+  context: TerminalExecutionContextInfo,
+  command: TerminalForegroundCommandInfo,
+): boolean => work.phase === 'unknown' || (
+  work.contextRevision === context.revision
+  && work.foregroundCommandRevision === command.revision
+);
+
+const normalizeSession = (raw: TerminalSessionInfo): TerminalSessionInfo => {
+  const foregroundCommand = normalizeForegroundCommand(raw?.foregroundCommand);
+  const executionContext = normalizeExecutionContext(raw?.executionContext);
+  const candidateWork = normalizeWorkState(raw?.workState);
+  const workState = workMatchesFences(candidateWork, executionContext, foregroundCommand)
+    ? candidateWork : unknownWorkState();
+  return {
+    ...raw,
+    id: String(raw?.id ?? '').trim(),
+    foregroundCommand,
+    outputActivity: normalizeOutputActivity(raw?.outputActivity),
+    executionContext,
+    workState,
+  };
+};
 
 const normalizeSessions = (list: TerminalSessionInfo[]): TerminalSessionInfo[] => {
   const byId = new Map<string, TerminalSessionInfo>();
@@ -102,14 +278,24 @@ const preferCurrentSessionMetadata = (
   const incomingCommand = normalizeForegroundCommand(incoming.foregroundCommand);
   const currentOutput = normalizeOutputActivity(current.outputActivity);
   const incomingOutput = normalizeOutputActivity(incoming.outputActivity);
+  const currentContext = normalizeExecutionContext(current.executionContext);
+  const incomingContext = normalizeExecutionContext(incoming.executionContext);
+  const currentWork = normalizeWorkState(current.workState);
+  const incomingWork = normalizeWorkState(incoming.workState);
+  const foregroundCommand = incomingCommand.revision <= currentCommand.revision ? currentCommand : incomingCommand;
+  const executionContext = incomingContext.revision <= currentContext.revision ? currentContext : incomingContext;
+  const currentWorkForFences = projectWorkState(currentWork, executionContext, foregroundCommand);
+  const incomingWorkMatches = workMatchesFences(incomingWork, executionContext, foregroundCommand);
+  const selectedWork = incomingWorkMatches && incomingWork.revision > currentWorkForFences.revision
+    ? incomingWork : currentWorkForFences;
   return {
     ...incoming,
-    foregroundCommand: incomingCommand.revision <= currentCommand.revision
-      ? currentCommand
-      : incomingCommand,
+    foregroundCommand,
     outputActivity: incomingOutput.revision <= currentOutput.revision
       ? currentOutput
       : incomingOutput,
+    executionContext,
+    workState: selectedWork,
   };
 };
 
@@ -145,6 +331,12 @@ const sessionsEqual = (a: TerminalSessionInfo[], b: TerminalSessionInfo[]): bool
     if (oa.phase !== ob.phase) return false;
     if (oa.revision !== ob.revision) return false;
     if (oa.updatedAtMs !== ob.updatedAtMs) return false;
+    const xa = normalizeExecutionContext(sa.executionContext);
+    const xb = normalizeExecutionContext(sb.executionContext);
+    if (JSON.stringify(xa) !== JSON.stringify(xb)) return false;
+    const wa = normalizeWorkState(sa.workState);
+    const wb = normalizeWorkState(sb.workState);
+    if (JSON.stringify(wa) !== JSON.stringify(wb)) return false;
   }
   return true;
 };
@@ -166,6 +358,9 @@ export class TerminalSessionsCoordinator {
 
   private pendingDeletions = new Set<string>();
   private disposed = false;
+  private metadataConflictKeys = new Set<string>();
+  private metadataReconcileQueued = false;
+  private metadataConflictOverflowLogged = false;
 
   constructor(opts: TerminalSessionsCoordinatorOptions) {
     this.transport = opts.transport;
@@ -213,6 +408,7 @@ export class TerminalSessionsCoordinator {
     this.listeners.clear();
     this.sessions = [];
     this.pendingDeletions.clear();
+    this.metadataConflictKeys.clear();
   }
 
   private emit(next: TerminalSessionInfo[]): void {
@@ -231,6 +427,62 @@ export class TerminalSessionsCoordinator {
     this.sessions = next;
     this.emit(next);
     return true;
+  }
+
+  private reportEqualRevisionConflicts(current: TerminalSessionInfo | undefined, incoming: TerminalSessionInfo): void {
+    if (!current) return;
+    const currentCommand = normalizeForegroundCommand(current.foregroundCommand);
+    const incomingCommand = normalizeForegroundCommand(incoming.foregroundCommand);
+    const foregroundCommand = incomingCommand.revision > currentCommand.revision ? incomingCommand : currentCommand;
+    const currentContext = normalizeExecutionContext(current.executionContext);
+    const incomingContext = normalizeExecutionContext(incoming.executionContext);
+    const executionContext = incomingContext.revision > currentContext.revision ? incomingContext : currentContext;
+    const currentWork = projectWorkState(normalizeWorkState(current.workState), executionContext, foregroundCommand);
+    const candidateIncomingWork = normalizeWorkState(incoming.workState);
+    const incomingWork = workMatchesFences(candidateIncomingWork, executionContext, foregroundCommand)
+      ? candidateIncomingWork : currentWork;
+    const dimensions = [
+      ['foreground', currentCommand, incomingCommand],
+      ['output', normalizeOutputActivity(current.outputActivity), normalizeOutputActivity(incoming.outputActivity)],
+      ['context', currentContext, incomingContext],
+      ['work', currentWork, incomingWork],
+    ] as const;
+    for (const [kind, left, right] of dimensions) {
+      if (left.revision !== right.revision || JSON.stringify(left) === JSON.stringify(right)) continue;
+      const key = `${incoming.id}:${kind}:${left.revision}`;
+      if (this.metadataConflictKeys.has(key)) continue;
+      if (this.metadataConflictKeys.size >= 64) {
+        if (!this.metadataConflictOverflowLogged) {
+          this.metadataConflictOverflowLogged = true;
+          this.logger.warn('[TerminalSessionsCoordinator] metadata conflict reconciliation limit reached', {
+            code: 'terminal_metadata_conflict_limit_reached',
+          });
+        }
+        continue;
+      }
+      this.metadataConflictKeys.add(key);
+      this.logger.warn('[TerminalSessionsCoordinator] metadata revision conflict', {
+        code: 'terminal_metadata_equal_revision_conflict', kind,
+      });
+      this.scheduleMetadataReconcile();
+    }
+  }
+
+  private scheduleMetadataReconcile(): void {
+    if (this.metadataReconcileQueued || !this.transport.listSessions || this.disposed) return;
+    this.metadataReconcileQueued = true;
+    queueMicrotask(async () => {
+      try {
+        if (this.refreshInFlight) await this.refreshInFlight.promise.catch(() => undefined);
+        if (!this.disposed) await this.runRefresh(false);
+      } catch {
+        // The normal polling path may retry; conflicts never create a refresh loop.
+      } finally {
+        this.metadataReconcileQueued = false;
+        this.metadataConflictKeys.clear();
+        this.metadataConflictOverflowLogged = false;
+      }
+    });
   }
 
   private applyLocalSessions(next: TerminalSessionInfo[]): boolean {
@@ -299,6 +551,9 @@ export class TerminalSessionsCoordinator {
         ? normalized.filter((s) => !this.pendingDeletions.has(s.id))
         : normalized;
 
+      const currentByID = new Map(this.sessions.map(session => [session.id, session]));
+      for (const session of filtered) this.reportEqualRevisionConflicts(currentByID.get(session.id), session);
+
       this.setSessions(mergeCurrentSessionMetadata(this.sessions, filtered));
       this.lastAppliedRefreshSeq = seq;
       this.lastAppliedMutationRevision = mutationRevision;
@@ -326,6 +581,7 @@ export class TerminalSessionsCoordinator {
     if (this.disposed) return normalized;
 
     const existing = this.sessions.find((item) => item.id === id);
+    this.reportEqualRevisionConflicts(existing, normalized);
     const accepted = preferCurrentSessionMetadata(existing, normalized);
 
     const merged = normalizeSessions([...this.sessions, accepted]);
@@ -373,6 +629,8 @@ export class TerminalSessionsCoordinator {
       isActive?: boolean;
       foregroundCommand?: TerminalForegroundCommandInfo;
       outputActivity?: TerminalOutputActivityInfo;
+      executionContext?: TerminalExecutionContextInfo;
+      workState?: TerminalWorkStateInfo;
     }
   ): void {
     const id = String(sessionId ?? '').trim();
@@ -393,6 +651,10 @@ export class TerminalSessionsCoordinator {
       const incomingCommand = patch?.foregroundCommand
         ? validateForegroundCommandUpdate(patch.foregroundCommand)
         : null;
+      if (incomingCommand && incomingCommand.revision === currentCommand.revision
+        && JSON.stringify(incomingCommand) !== JSON.stringify(currentCommand)) {
+        this.reportEqualRevisionConflicts(s, { ...s, foregroundCommand: incomingCommand });
+      }
       const foregroundCommand = incomingCommand && incomingCommand.revision > currentCommand.revision
         ? incomingCommand
         : currentCommand;
@@ -400,9 +662,35 @@ export class TerminalSessionsCoordinator {
       const incomingOutput = patch?.outputActivity
         ? validateOutputActivityUpdate(patch.outputActivity)
         : null;
+      if (incomingOutput && incomingOutput.revision === currentOutput.revision
+        && JSON.stringify(incomingOutput) !== JSON.stringify(currentOutput)) {
+        this.reportEqualRevisionConflicts(s, { ...s, outputActivity: incomingOutput });
+      }
       const outputActivity = incomingOutput && incomingOutput.revision > currentOutput.revision
         ? incomingOutput
         : currentOutput;
+      const currentContext = normalizeExecutionContext(s.executionContext);
+      const incomingContext = patch?.executionContext ? validateExecutionContextUpdate(patch.executionContext) : null;
+      if (incomingContext && incomingContext.revision === currentContext.revision
+        && JSON.stringify(incomingContext) !== JSON.stringify(currentContext)) {
+        this.reportEqualRevisionConflicts(s, { ...s, executionContext: incomingContext });
+      }
+      const executionContext = incomingContext && incomingContext.revision > currentContext.revision
+        ? incomingContext : currentContext;
+      const currentWork = normalizeWorkState(s.workState);
+      const incomingWork = patch?.workState ? validateWorkStateUpdate(patch.workState) : null;
+      const currentWorkForFences = projectWorkState(currentWork, executionContext, foregroundCommand);
+      const incomingWorkMatches = incomingWork
+        ? workMatchesFences(incomingWork, executionContext, foregroundCommand) : false;
+      if (incomingWork && incomingWorkMatches && incomingWork.revision === currentWorkForFences.revision
+        && JSON.stringify(incomingWork) !== JSON.stringify(currentWorkForFences)) {
+        this.reportEqualRevisionConflicts(
+          { ...s, executionContext, foregroundCommand, workState: currentWorkForFences },
+          { ...s, executionContext, foregroundCommand, workState: incomingWork },
+        );
+      }
+      const workState = incomingWork && incomingWorkMatches && incomingWork.revision > currentWorkForFences.revision
+        ? incomingWork : currentWorkForFences;
 
       return {
         ...s,
@@ -412,6 +700,8 @@ export class TerminalSessionsCoordinator {
         isActive,
         foregroundCommand,
         outputActivity,
+        executionContext,
+        workState,
       };
     });
 

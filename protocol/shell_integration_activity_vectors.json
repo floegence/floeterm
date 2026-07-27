@@ -106,6 +106,19 @@
         "signal:command-finished",
         "signal:prompt-ready"
       ]
+    },
+    {
+      "name": "context and work markers are ordered metadata",
+      "chunks": [
+        "left\u001b]633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex\u0007",
+        "\u001b]633;P;FloetermWork=v1;frame_id=agent-1;phase=working\u001b\\right"
+      ],
+      "tokens": [
+        "display:left",
+        "signal:context",
+        "signal:work",
+        "display:right"
+      ]
     }
   ]
 }

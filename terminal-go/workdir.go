@@ -5,13 +5,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 const maxWorkdirPendingBytes = 4096
 
 type cwdSignal struct {
-	path   string
-	source string
+	path      string
+	source    string
+	authority string
+	remote    bool
 }
 
 // shouldCheckDirectoryChange determines whether output may contain an explicit
@@ -37,7 +41,7 @@ func (s *Session) checkWorkingDirectoryChange(chunk []byte) {
 		s.config.logger.Debug("Discarded malformed working directory sequence", "sessionID", s.ID, "source", source)
 	}
 	for _, signal := range signals {
-		s.applyWorkingDirectoryChange(signal.path)
+		s.applyWorkingDirectoryChange(normalizeExplicitWorkingDirectory(signal.path))
 	}
 }
 
@@ -144,30 +148,44 @@ func (s *Session) parseWorkingDirectory(output string) string {
 
 func parseWorkingDirectorySignalPayload(payload string) (cwdSignal, bool, bool) {
 	if strings.HasPrefix(payload, "633;P;Cwd=") {
-		path := normalizeExplicitWorkingDirectory(payload[len("633;P;Cwd="):])
+		path := normalizeExplicitWorkingDirectorySignal(payload[len("633;P;Cwd="):])
 		if path == "" {
 			return cwdSignal{source: "osc_633"}, true, true
 		}
 		return cwdSignal{path: path, source: "osc_633"}, false, true
 	}
 	if strings.HasPrefix(payload, "1337;CurrentDir=") {
-		path := normalizeExplicitWorkingDirectory(payload[len("1337;CurrentDir="):])
+		path := normalizeExplicitWorkingDirectorySignal(payload[len("1337;CurrentDir="):])
 		if path == "" {
 			return cwdSignal{source: "osc_1337"}, true, true
 		}
 		return cwdSignal{path: path, source: "osc_1337"}, false, true
 	}
 	if strings.HasPrefix(payload, "7;file://") {
-		path, ok := parseOSC7Payload(payload)
+		path, authority, remote, ok := parseOSC7PayloadDetails(payload)
 		if !ok {
 			return cwdSignal{source: "osc_7"}, true, true
 		}
-		return cwdSignal{path: path, source: "osc_7"}, false, true
+		return cwdSignal{path: path, authority: authority, remote: remote, source: "osc_7"}, false, true
 	}
 	return cwdSignal{}, false, false
 }
 
+func normalizeExplicitWorkingDirectorySignal(raw string) string {
+	if !utf8.ValidString(raw) || containsUnsafePresentationControl(raw) {
+		return ""
+	}
+	path := strings.TrimSpace(raw)
+	if path == "" || (!filepath.IsAbs(path) && !strings.HasPrefix(path, "~")) {
+		return ""
+	}
+	return path
+}
+
 func normalizeExplicitWorkingDirectory(raw string) string {
+	if !utf8.ValidString(raw) || containsUnsafePresentationControl(raw) {
+		return ""
+	}
 	path := strings.TrimSpace(raw)
 	if path == "" {
 		return ""
@@ -198,23 +216,33 @@ func expandHomeDirectory(path string) string {
 }
 
 func parseOSC7Payload(payload string) (string, bool) {
-	urlPart := payload[len("7;file://"):]
-	slashIndex := strings.Index(urlPart, "/")
-	if slashIndex == -1 {
-		return "", false
-	}
+	path, _, remote, ok := parseOSC7PayloadDetails(payload)
+	return path, ok && !remote
+}
 
-	path := urlPart[slashIndex:]
-	decodedPath, err := url.QueryUnescape(path)
-	if err == nil {
-		path = decodedPath
+func parseOSC7PayloadDetails(payload string) (path string, authority string, remote bool, ok bool) {
+	if !strings.HasPrefix(payload, "7;file://") {
+		return "", "", false, false
 	}
-
-	path = normalizeExplicitWorkingDirectory(path)
-	if path == "" {
-		return "", false
+	parsed, err := url.Parse(strings.TrimPrefix(payload, "7;"))
+	if err != nil || parsed.Scheme != "file" || parsed.User != nil || parsed.Port() != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+		return "", "", false, false
 	}
-	return path, true
+	authority, _, remote, valid := normalizeOSC7Authority(parsed.Host)
+	if !valid {
+		return "", "", false, false
+	}
+	decodedPath, err := url.PathUnescape(parsed.EscapedPath())
+	if err != nil {
+		return "", "", false, false
+	}
+	if remote {
+		path, ok = normalizeRemoteWorkingDirectory(decodedPath)
+		return path, authority, true, ok
+	}
+	path = normalizeExplicitWorkingDirectory(decodedPath)
+	return path, authority, false, path != ""
 }
 
 // parseOSC7Sequence parses standard OSC 7 sequences: ESC ] 7 ; file://host/path ST.
@@ -290,12 +318,28 @@ func (s *Session) applyWorkingDirectoryChange(currentDir string) {
 	}
 	s.currentWorkingDir = currentDir
 	s.WorkingDir = currentDir
+	contextChanged := false
+	previousContextRevision := s.executionContext.Revision
+	previousWorkRevision := s.workState.Revision
+	if s.executionContext.Location.Kind == TerminalLocationLocal {
+		location := s.executionContext.Location
+		location.WorkingDirectory = currentDir
+		location.Source = TerminalContextSourceShellIntegration
+		contextChanged = s.publishContextLocked(location, s.executionContext.Application, time.Now())
+	}
 	s.mu.Unlock()
 
 	s.config.logger.Info("Working directory changed", "sessionID", s.ID, "from", filepath.Base(oldDir), "to", filepath.Base(currentDir))
 
 	if shouldRename {
 		s.onSessionNameChange(newName, currentDir)
+	}
+	if contextChanged {
+		s.mu.RLock()
+		handler := s.eventHandler
+		info := s.toSessionInfoLocked()
+		s.mu.RUnlock()
+		notifyTerminalContextAndWork(handler, info.ID, info, previousContextRevision, previousWorkRevision)
 	}
 }
 

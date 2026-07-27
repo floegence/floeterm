@@ -55,6 +55,93 @@ type TerminalSessionInfo struct {
 	IsActive          bool
 	ForegroundCommand TerminalForegroundCommandInfo
 	OutputActivity    TerminalOutputActivityInfo
+	ExecutionContext  TerminalExecutionContextInfo
+	WorkState         TerminalWorkStateInfo
+}
+
+// TerminalLocationKind describes whether the presentation context is local or remote.
+// It is untrusted terminal metadata and must never be used as an authorization boundary.
+type TerminalLocationKind string
+
+const (
+	TerminalLocationUnknown TerminalLocationKind = "unknown"
+	TerminalLocationLocal   TerminalLocationKind = "local"
+	TerminalLocationRemote  TerminalLocationKind = "remote"
+)
+
+// TerminalLocationPhase distinguishes a remote connection candidate from a confirmed hint.
+type TerminalLocationPhase string
+
+const (
+	TerminalLocationPhaseUnknown TerminalLocationPhase = "unknown"
+	TerminalLocationPhaseOpening TerminalLocationPhase = "opening"
+	TerminalLocationPhaseReady   TerminalLocationPhase = "ready"
+)
+
+// TerminalContextSource identifies the untrusted presentation signal that produced a snapshot.
+type TerminalContextSource string
+
+const (
+	TerminalContextSourceUnknown             TerminalContextSource = "unknown"
+	TerminalContextSourceShellIntegration    TerminalContextSource = "shell_integration"
+	TerminalContextSourceOSC7                TerminalContextSource = "osc7"
+	TerminalContextSourceOSCTitle            TerminalContextSource = "osc_title"
+	TerminalContextSourceForegroundCandidate TerminalContextSource = "foreground_candidate"
+)
+
+// TerminalApplicationKind describes the long-lived application within a terminal location.
+type TerminalApplicationKind string
+
+const (
+	TerminalApplicationUnknown        TerminalApplicationKind = "unknown"
+	TerminalApplicationShell          TerminalApplicationKind = "shell"
+	TerminalApplicationAgentCLI       TerminalApplicationKind = "agent_cli"
+	TerminalApplicationInteractiveApp TerminalApplicationKind = "interactive_app"
+)
+
+// TerminalLocationInfo is display-only terminal location metadata.
+type TerminalLocationInfo struct {
+	Kind             TerminalLocationKind
+	Phase            TerminalLocationPhase
+	Label            string
+	Authority        string
+	WorkingDirectory string
+	Source           TerminalContextSource
+}
+
+// TerminalApplicationInfo is display-only terminal application metadata.
+type TerminalApplicationInfo struct {
+	Kind        TerminalApplicationKind
+	Identity    string
+	DisplayName string
+}
+
+// TerminalExecutionContextInfo atomically binds location and application presentation.
+type TerminalExecutionContextInfo struct {
+	Location    TerminalLocationInfo
+	Application TerminalApplicationInfo
+	Revision    uint64
+	UpdatedAt   int64
+}
+
+// TerminalWorkPhase is semantic state emitted by an eligible structured producer.
+type TerminalWorkPhase string
+
+const (
+	TerminalWorkUnknown     TerminalWorkPhase = "unknown"
+	TerminalWorkIdle        TerminalWorkPhase = "idle"
+	TerminalWorkWorking     TerminalWorkPhase = "working"
+	TerminalWorkWaitingUser TerminalWorkPhase = "waiting_user"
+)
+
+// TerminalWorkStateInfo is revision-fenced against context and foreground command epochs.
+type TerminalWorkStateInfo struct {
+	Phase                     TerminalWorkPhase
+	Source                    string
+	ContextRevision           uint64
+	ForegroundCommandRevision uint64
+	Revision                  uint64
+	UpdatedAt                 int64
 }
 
 // ForegroundCommandPhase describes the interactive shell's command lifecycle.
@@ -130,6 +217,16 @@ type TerminalSessionMetadataEventHandler interface {
 // TerminalOutputActivityEventHandler optionally receives output phase changes.
 type TerminalOutputActivityEventHandler interface {
 	OnTerminalOutputActivityChanged(sessionID string, info TerminalOutputActivityInfo)
+}
+
+// TerminalExecutionContextEventHandler optionally receives display-only context transitions.
+type TerminalExecutionContextEventHandler interface {
+	OnTerminalExecutionContextChanged(sessionID string, info TerminalExecutionContextInfo)
+}
+
+// TerminalSemanticWorkStateEventHandler optionally receives revision-fenced semantic work transitions.
+type TerminalSemanticWorkStateEventHandler interface {
+	OnTerminalSemanticWorkStateChanged(sessionID string, info TerminalWorkStateInfo)
 }
 
 // TerminalGeometry identifies one applied PTY grid size.
@@ -245,6 +342,11 @@ type Session struct {
 	outputActivityDeadline        time.Time
 	outputActivityGeneration      uint64
 	outputActivityCommandRevision uint64
+	executionContext              TerminalExecutionContextInfo
+	workState                     TerminalWorkStateInfo
+	contextFrames                 []terminalContextFrame
+	contextSeenFrameIDs           map[string]struct{}
+	contextForegroundRevision     uint64
 
 	lastAppliedCols    int
 	lastAppliedRows    int

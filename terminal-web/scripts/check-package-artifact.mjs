@@ -10,7 +10,7 @@ import ts from 'typescript';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const EXPECTED_PACKAGE_VERSION = '0.10.1';
+const EXPECTED_PACKAGE_VERSION = '0.11.0';
 const EXPECTED_GHOSTTY_WEB_VERSION = '0.4.0-next.14.g6a1a50d';
 const EXPECTED_TERMINAL_THEME_IDS = [
   'dark', 'light', 'solarizedDark', 'monokai', 'tokyoNight',
@@ -139,6 +139,10 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
     installedPackageRoot,
     'dist/sessions/TerminalAgentCliMetadata.js',
   );
+  const executionContextMetadataModule = path.join(
+    installedPackageRoot,
+    'dist/sessions/TerminalExecutionContextMetadata.js',
+  );
   const parserModule = path.join(installedPackageRoot, 'dist/shell/TerminalShellIntegrationParser.js');
   const loggerModule = path.join(installedPackageRoot, 'dist/utils/logger.js');
   const coordinatorModule = path.join(
@@ -152,6 +156,9 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
   if (!sessionsClosure.has(agentCliMetadataModule)) {
     throw new Error('sessions artifact does not include the lightweight agent CLI metadata module');
   }
+  if (!sessionsClosure.has(executionContextMetadataModule)) {
+    throw new Error('sessions artifact does not include execution context normalization');
+  }
   const metadataSource = await readFile(metadataModule, 'utf8');
   if (staticModuleSpecifiers(metadataModule, metadataSource).length > 0) {
     throw new Error('foreground command metadata artifact must not have static dependencies');
@@ -164,6 +171,10 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
   ) {
     throw new Error('agent CLI metadata artifact must only depend on foreground command metadata');
   }
+  const executionContextMetadataSource = await readFile(executionContextMetadataModule, 'utf8');
+  if (staticModuleSpecifiers(executionContextMetadataModule, executionContextMetadataSource).length > 0) {
+    throw new Error('execution context metadata artifact must not have static dependencies');
+  }
   if (sessionsClosure.has(parserModule)) {
     throw new Error('sessions artifact unexpectedly depends on the shell integration parser');
   }
@@ -172,6 +183,7 @@ async function assertLightweightForegroundCommandArtifact(installedPackageRoot) 
     coordinatorModule,
     metadataModule,
     agentCliMetadataModule,
+    executionContextMetadataModule,
     loggerModule,
   ]);
   const unexpectedSessionsModules = [...sessionsClosure].filter(modulePath => (

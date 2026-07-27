@@ -89,7 +89,12 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		outputActivity: TerminalOutputActivityInfo{
 			Phase: OutputActivityUnknown,
 		},
-		eventHandler: initialHandler,
+		executionContext: newLocalExecutionContext(workingDir),
+		workState: TerminalWorkStateInfo{
+			Phase: TerminalWorkUnknown,
+		},
+		contextSeenFrameIDs: make(map[string]struct{}),
+		eventHandler:        initialHandler,
 		onExit: func(sessionID string) {
 			<-createdDone
 			m.deleteSessionIfExists(sessionID)
@@ -338,7 +343,10 @@ func (m *Manager) SetEventHandler(handler TerminalEventHandler) {
 func (s *Session) ToSessionInfo() TerminalSessionInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.toSessionInfoLocked()
+}
 
+func (s *Session) toSessionInfoLocked() TerminalSessionInfo {
 	return TerminalSessionInfo{
 		ID:                s.ID,
 		Name:              s.Name,
@@ -348,5 +356,7 @@ func (s *Session) ToSessionInfo() TerminalSessionInfo {
 		IsActive:          s.isActive,
 		ForegroundCommand: normalizeForegroundCommandInfo(s.foregroundCommand),
 		OutputActivity:    normalizeOutputActivityInfo(s.outputActivity),
+		ExecutionContext:  normalizeExecutionContextInfo(s.executionContext),
+		WorkState:         normalizeWorkStateInfo(s.workState),
 	}
 }

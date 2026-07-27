@@ -76,6 +76,12 @@ func shellIntegrationSignalLabel(kind shellIntegrationSignalKind) string {
 		return "command-finished"
 	case shellIntegrationProgram:
 		return "program"
+	case shellIntegrationContext:
+		return "context"
+	case shellIntegrationWork:
+		return "work"
+	case shellIntegrationTitle:
+		return "title"
 	default:
 		return "unknown"
 	}
@@ -201,6 +207,34 @@ func TestShellIntegrationProgramMarkerIsBoundedAndSafe(t *testing.T) {
 			}
 			if !test.valid && got != "" {
 				t.Fatalf("invalid value = %q, want empty", got)
+			}
+		})
+	}
+}
+
+func TestOversizedKnownControlsKeepContentFreeDiagnosticSources(t *testing.T) {
+	tests := []struct {
+		prefix string
+		source string
+	}{
+		{prefix: "633;P;FloetermProgram=", source: "osc_633_program"},
+		{prefix: "633;P;FloetermContext=", source: "osc_633_context"},
+		{prefix: "633;P;FloetermWork=", source: "osc_633_work"},
+		{prefix: "633;P;Cwd=", source: "osc_633"},
+		{prefix: "1337;CurrentDir=", source: "osc_1337"},
+		{prefix: "7;file://", source: "osc_7"},
+		{prefix: "0;", source: "osc_title"},
+		{prefix: "2;", source: "osc_title"},
+	}
+	for _, test := range tests {
+		t.Run(test.source+"_"+test.prefix, func(t *testing.T) {
+			sequence := []byte("\x1b]" + test.prefix + strings.Repeat("x", maxShellIntegrationPayloadBytes) + "\a")
+			tokens, malformed, pending := parseShellIntegrationTokens(sequence)
+			if len(tokens) != 0 || len(pending) != 0 || len(malformed) != 1 || malformed[0] != test.source {
+				t.Fatalf("tokens=%+v malformed=%+v pending=%q", tokens, malformed, pending)
+			}
+			if strings.Contains(malformed[0], strings.Repeat("x", 8)) {
+				t.Fatalf("diagnostic source contained payload: %q", malformed[0])
 			}
 		})
 	}

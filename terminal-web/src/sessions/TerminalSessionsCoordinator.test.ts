@@ -3,7 +3,7 @@ import type { TerminalSessionInfo, TerminalTransport } from '../types';
 import { TerminalSessionsCoordinator } from './TerminalSessionsCoordinator';
 
 const flushPromises = async (): Promise<void> => {
-  await Promise.resolve();
+  for (let index = 0; index < 10; index += 1) await Promise.resolve();
 };
 
 const makeSession = (id: string, overrides: Partial<TerminalSessionInfo> = {}): TerminalSessionInfo => ({
@@ -36,6 +36,364 @@ const deferred = <T = void>() => {
 };
 
 describe('TerminalSessionsCoordinator', () => {
+  it('logs and performs one bounded reconcile for equal-revision conflicts', async () => {
+    const warn = vi.fn();
+    const authoritative = makeSession('conflict', {
+      outputActivity: { phase: 'streaming', revision: 2, updatedAtMs: 20 },
+    });
+    const listSessions = vi.fn().mockResolvedValue([authoritative]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }), pollMs: 0,
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+    coordinator.upsertSession(authoritative);
+    coordinator.updateSessionMeta('conflict', {
+      outputActivity: { phase: 'settled', revision: 2, updatedAtMs: 21 },
+    });
+    await flushPromises();
+    await flushPromises();
+    expect(warn).toHaveBeenCalledWith(
+      '[TerminalSessionsCoordinator] metadata revision conflict',
+      { code: 'terminal_metadata_equal_revision_conflict', kind: 'output' },
+    );
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    expect(coordinator.getSnapshot()[0]?.outputActivity?.phase).toBe('streaming');
+  });
+
+  it('ignores fence-stale work before equal-revision conflict handling', async () => {
+    const warn = vi.fn();
+    const listSessions = vi.fn().mockResolvedValue([]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }), pollMs: 0,
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+    coordinator.upsertSession(makeSession('stale-work-conflict', {
+      foregroundCommand: { phase: 'running', displayName: 'codex', revision: 2, updatedAtMs: 20 },
+      executionContext: {
+        location: { kind: 'local', phase: 'ready', label: '', authority: '', workingDirectory: '/repo', source: 'shell_integration' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+        revision: 4, updatedAtMs: 40,
+      },
+      workState: {
+        phase: 'working', source: 'semantic', contextRevision: 4, foregroundCommandRevision: 2,
+        revision: 5, updatedAtMs: 50,
+      },
+    }));
+
+    coordinator.updateSessionMeta('stale-work-conflict', {
+      workState: {
+        phase: 'waiting_user', source: 'semantic', contextRevision: 3, foregroundCommandRevision: 2,
+        revision: 5, updatedAtMs: 51,
+      },
+    });
+    await flushPromises();
+
+    expect(coordinator.getSnapshot()[0]?.workState?.phase).toBe('working');
+    expect(warn).not.toHaveBeenCalled();
+    expect(listSessions).not.toHaveBeenCalled();
+  });
+
+  it('ignores fence-stale work conflicts from upsert and refresh snapshots', async () => {
+    const warn = vi.fn();
+    const current = makeSession('snapshot-stale-work', {
+      foregroundCommand: { phase: 'running', displayName: 'codex', revision: 3, updatedAtMs: 30 },
+      executionContext: {
+        location: { kind: 'local', phase: 'ready', label: '', authority: '', workingDirectory: '/repo', source: 'shell_integration' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+        revision: 5, updatedAtMs: 50,
+      },
+      workState: {
+        phase: 'working', source: 'semantic', contextRevision: 5, foregroundCommandRevision: 3,
+        revision: 7, updatedAtMs: 70,
+      },
+    });
+    const stale = makeSession('snapshot-stale-work', {
+      foregroundCommand: current.foregroundCommand,
+      executionContext: {
+        location: { kind: 'local', phase: 'ready', label: '', authority: '', workingDirectory: '/old', source: 'shell_integration' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+        revision: 4, updatedAtMs: 40,
+      },
+      workState: {
+        phase: 'waiting_user', source: 'semantic', contextRevision: 4, foregroundCommandRevision: 3,
+        revision: 7, updatedAtMs: 71,
+      },
+    });
+    const listSessions = vi.fn().mockResolvedValue([stale]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }), pollMs: 0,
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+    coordinator.upsertSession(current);
+    coordinator.upsertSession(stale);
+    await coordinator.refresh();
+
+    expect(coordinator.getSnapshot()[0]?.workState?.phase).toBe('working');
+    expect(warn).not.toHaveBeenCalled();
+    expect(listSessions).toHaveBeenCalledOnce();
+  });
+
+  it('rejects contradictory high-revision presentation metadata without advancing fences', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('invalid-presentation', {
+      foregroundCommand: { phase: 'running', displayName: 'codex', revision: 2, updatedAtMs: 20 },
+      executionContext: {
+        location: { kind: 'remote', phase: 'ready', label: 'root@host.example', authority: 'host.example', workingDirectory: '/root', source: 'osc7' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+        revision: 4, updatedAtMs: 40,
+      },
+      workState: {
+        phase: 'working', source: 'semantic', contextRevision: 4, foregroundCommandRevision: 2,
+        revision: 3, updatedAtMs: 30,
+      },
+    }));
+    const badBase = {
+      location: { kind: 'remote' as const, phase: 'ready' as const, label: 'root@other.example', authority: 'host.example', workingDirectory: '/root', source: 'osc7' as const },
+      application: { kind: 'agent_cli' as const, identity: 'codex', displayName: 'Codex' },
+      revision: 99,
+      updatedAtMs: 99,
+    };
+    coordinator.updateSessionMeta('invalid-presentation', {
+      executionContext: badBase,
+      workState: {
+        phase: 'waiting_user', source: 'semantic', contextRevision: 99, foregroundCommandRevision: 2,
+        revision: 99, updatedAtMs: 99,
+      },
+    });
+    coordinator.updateSessionMeta('invalid-presentation', {
+      executionContext: {
+        ...badBase,
+        location: { ...badBase.location, label: 'root@host.example' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Claude Code' },
+        revision: 100,
+      },
+    });
+    const invalidLocationContexts = [
+      {
+        location: { kind: 'remote', phase: 'opening', label: 'SSH', authority: 'host.example', workingDirectory: '', source: 'foreground_candidate' },
+        revision: 101,
+      },
+      {
+        location: { kind: 'remote', phase: 'ready', label: 'host.example', authority: 'host.example', workingDirectory: '', source: 'foreground_candidate' },
+        revision: 102,
+      },
+      {
+        location: { kind: 'remote', phase: 'opening', label: 'SSH', authority: '', workingDirectory: '', source: 'osc7' },
+        revision: 103,
+      },
+      {
+        location: { kind: 'remote', phase: 'opening', label: 'not a host', authority: '', workingDirectory: '', source: 'osc_title' },
+        revision: 104,
+      },
+      {
+        location: { kind: 'local', phase: 'ready', label: '', authority: '', workingDirectory: '/repo', source: 'osc7' },
+        revision: 105,
+      },
+      {
+        location: { kind: 'unknown', phase: 'unknown', label: '', authority: '', workingDirectory: '', source: 'shell_integration' },
+        revision: 106,
+      },
+      {
+        location: { kind: 'remote', phase: 'opening', label: '', authority: '', workingDirectory: '', source: 'osc_title' },
+        revision: 107,
+      },
+      {
+        location: { kind: 'remote', phase: 'opening', label: 'SSH', authority: '', workingDirectory: '', source: 'shell_integration' },
+        revision: 108,
+      },
+    ] as const;
+    for (const invalid of invalidLocationContexts) {
+      coordinator.updateSessionMeta('invalid-presentation', {
+        executionContext: {
+          location: invalid.location,
+          application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+          revision: invalid.revision,
+          updatedAtMs: invalid.revision,
+        },
+        workState: {
+          phase: 'waiting_user', source: 'semantic', contextRevision: invalid.revision,
+          foregroundCommandRevision: 2, revision: invalid.revision, updatedAtMs: invalid.revision,
+        },
+      });
+    }
+    coordinator.updateSessionMeta('invalid-presentation', {
+      executionContext: {
+        location: { kind: 'remote', phase: 'ready', label: 'host.example', authority: 'host.example', workingDirectory: '', source: 'osc7' },
+        application: { kind: 'shell', identity: '', displayName: 'Codex' },
+        revision: 109,
+        updatedAtMs: 109,
+      },
+    });
+
+    expect(coordinator.getSnapshot()[0]).toMatchObject({
+      executionContext: { revision: 4, application: { identity: 'codex', displayName: 'Codex' } },
+      workState: { phase: 'working', revision: 3, contextRevision: 4 },
+    });
+  });
+
+  it('accepts the valid remote opening presentation matrix', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('ssh-candidate', {
+      executionContext: {
+        location: { kind: 'remote', phase: 'opening', label: 'SSH', authority: '', workingDirectory: '', source: 'foreground_candidate' },
+        application: { kind: 'shell', identity: '', displayName: '' },
+        revision: 2, updatedAtMs: 20,
+      },
+    }));
+    coordinator.upsertSession(makeSession('ssh-title', {
+      executionContext: {
+        location: { kind: 'remote', phase: 'opening', label: 'root@host.example', authority: '', workingDirectory: '', source: 'osc_title' },
+        application: { kind: 'shell', identity: '', displayName: '' },
+        revision: 2, updatedAtMs: 20,
+      },
+    }));
+
+    expect(coordinator.getSnapshot().map(session => session.executionContext?.location)).toEqual([
+      { kind: 'remote', phase: 'opening', label: 'SSH', authority: '', workingDirectory: '', source: 'foreground_candidate' },
+      { kind: 'remote', phase: 'opening', label: 'root@host.example', authority: '', workingDirectory: '', source: 'osc_title' },
+    ]);
+
+    const expectedLocations = [
+      { kind: 'remote', phase: 'opening', label: 'SSH', authority: '', workingDirectory: '/root', source: 'shell_integration' },
+      { kind: 'remote', phase: 'opening', label: 'root@host.example', authority: '', workingDirectory: '/root', source: 'osc_title' },
+      { kind: 'remote', phase: 'ready', label: 'root@host.example', authority: 'host.example', workingDirectory: '/root', source: 'osc7' },
+    ] as const;
+    expectedLocations.forEach((location, index) => {
+      coordinator.updateSessionMeta('ssh-candidate', {
+        executionContext: {
+          location,
+          application: { kind: 'shell', identity: '', displayName: '' },
+          revision: index + 3,
+          updatedAtMs: (index + 3) * 10,
+        },
+      });
+      expect(coordinator.getSnapshot().find(session => session.id === 'ssh-candidate')?.executionContext?.location)
+        .toEqual(location);
+    });
+  });
+
+  it('bounds conflict keys per reconcile window and resets after it settles', async () => {
+    const warn = vi.fn();
+    const firstRefresh = deferred<TerminalSessionInfo[]>();
+    const listSessions = vi.fn()
+      .mockImplementationOnce(() => firstRefresh.promise)
+      .mockResolvedValue([]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }), pollMs: 0,
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+    for (let index = 0; index < 65; index += 1) {
+      const id = `conflict-${index}`;
+      coordinator.upsertSession(makeSession(id, {
+        outputActivity: { phase: 'streaming', revision: 2, updatedAtMs: 20 },
+      }));
+      coordinator.updateSessionMeta(id, {
+        outputActivity: { phase: 'settled', revision: 2, updatedAtMs: 21 },
+      });
+    }
+    await flushPromises();
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.filter(call => call[1]?.code === 'terminal_metadata_equal_revision_conflict')).toHaveLength(64);
+    expect(warn.mock.calls.filter(call => call[1]?.code === 'terminal_metadata_conflict_limit_reached')).toHaveLength(1);
+
+    firstRefresh.resolve([]);
+    await flushPromises();
+    await flushPromises();
+    coordinator.upsertSession(makeSession('conflict-0', {
+      outputActivity: { phase: 'streaming', revision: 2, updatedAtMs: 20 },
+    }));
+    coordinator.updateSessionMeta('conflict-0', {
+      outputActivity: { phase: 'settled', revision: 2, updatedAtMs: 21 },
+    });
+    await flushPromises();
+    await flushPromises();
+
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls.filter(call => call[1]?.code === 'terminal_metadata_equal_revision_conflict')).toHaveLength(65);
+  });
+
+  it('revision-fences execution context and semantic work independently', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('context', {
+      foregroundCommand: { phase: 'running', displayName: 'ssh', revision: 2, updatedAtMs: 20 },
+      executionContext: {
+        location: { kind: 'remote', phase: 'ready', label: 'root@host', authority: 'host', workingDirectory: '/root', source: 'osc7' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+        revision: 4, updatedAtMs: 40,
+      },
+      workState: {
+        phase: 'working', source: 'semantic', contextRevision: 4, foregroundCommandRevision: 2,
+        revision: 3, updatedAtMs: 30,
+      },
+    }));
+    coordinator.updateSessionMeta('context', {
+      executionContext: {
+        location: { kind: 'local', phase: 'ready', label: '', authority: '', workingDirectory: '/old', source: 'shell_integration' },
+        application: { kind: 'shell', identity: '', displayName: '' },
+        revision: 3, updatedAtMs: 35,
+      },
+      workState: {
+        phase: 'waiting_user', source: 'semantic', contextRevision: 4, foregroundCommandRevision: 2,
+        revision: 4, updatedAtMs: 40,
+      },
+    });
+    const snapshot = coordinator.getSnapshot()[0]!;
+    expect(snapshot.executionContext?.location.label).toBe('root@host');
+    expect(snapshot.executionContext?.revision).toBe(4);
+    expect(snapshot.workState?.phase).toBe('waiting_user');
+    expect(snapshot.workState?.revision).toBe(4);
+  });
+
+  it('projects stale semantic work to unknown across context and foreground epochs', () => {
+    const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
+    coordinator.upsertSession(makeSession('fenced-work', {
+      foregroundCommand: { phase: 'running', displayName: 'codex', revision: 3, updatedAtMs: 30 },
+      executionContext: {
+        location: { kind: 'local', phase: 'ready', label: '', authority: '', workingDirectory: '/repo', source: 'shell_integration' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+        revision: 5, updatedAtMs: 50,
+      },
+      workState: {
+        phase: 'working', source: 'semantic', contextRevision: 4, foregroundCommandRevision: 3,
+        revision: 8, updatedAtMs: 80,
+      },
+    }));
+    expect(coordinator.getSnapshot()[0]?.workState).toMatchObject({
+      phase: 'unknown', source: '', contextRevision: 0, foregroundCommandRevision: 0, revision: 0,
+    });
+    coordinator.updateSessionMeta('fenced-work', {
+      workState: {
+        phase: 'waiting_user', source: 'semantic', contextRevision: 5, foregroundCommandRevision: 3,
+        revision: 9, updatedAtMs: 90,
+      },
+    });
+    expect(coordinator.getSnapshot()[0]?.workState?.phase).toBe('waiting_user');
+    coordinator.updateSessionMeta('fenced-work', {
+      executionContext: {
+        location: { kind: 'local', phase: 'ready', label: '', authority: '', workingDirectory: '/repo', source: 'shell_integration' },
+        application: { kind: 'agent_cli', identity: 'codex', displayName: 'Codex' },
+        revision: 6, updatedAtMs: 95,
+      },
+      workState: {
+        phase: 'working', source: 'semantic', contextRevision: 5, foregroundCommandRevision: 3,
+        revision: 99, updatedAtMs: 96,
+      },
+    });
+    expect(coordinator.getSnapshot()[0]?.workState?.revision).toBe(9);
+    coordinator.updateSessionMeta('fenced-work', {
+      workState: {
+        phase: 'working', source: 'semantic', contextRevision: 6, foregroundCommandRevision: 3,
+        revision: 10, updatedAtMs: 97,
+      },
+    });
+    expect(coordinator.getSnapshot()[0]?.workState?.phase).toBe('working');
+    expect(coordinator.getSnapshot()[0]?.workState?.revision).toBe(10);
+    coordinator.updateSessionMeta('fenced-work', {
+      foregroundCommand: { phase: 'idle', displayName: '', revision: 4, updatedAtMs: 100 },
+    });
+    expect(coordinator.getSnapshot()[0]?.workState?.phase).toBe('unknown');
+  });
+
   it('preserves newer output activity metadata when a stale session snapshot arrives', () => {
     const coordinator = new TerminalSessionsCoordinator({ transport: makeTransport(), pollMs: 0 });
     coordinator.upsertSession({

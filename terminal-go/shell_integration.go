@@ -23,12 +23,20 @@ const (
 	shellIntegrationCommandExecuted
 	shellIntegrationCommandFinished
 	shellIntegrationProgram
+	shellIntegrationContext
+	shellIntegrationWork
+	shellIntegrationTitle
 )
 
 type shellIntegrationSignal struct {
-	kind    shellIntegrationSignalKind
-	path    string
-	program string
+	kind      shellIntegrationSignalKind
+	path      string
+	program   string
+	authority string
+	remote    bool
+	context   terminalContextMarker
+	work      terminalWorkMarker
+	title     string
 }
 
 type shellIntegrationTokenKind uint8
@@ -140,10 +148,10 @@ func parseShellIntegrationTokens(buffer []byte) ([]shellIntegrationToken, []stri
 		var recognized bool
 		if len(payload) <= maxShellIntegrationPayloadBytes {
 			signal, source, invalid, recognized = parseShellIntegrationSignalPayload(string(payload))
-		} else if strings.HasPrefix(string(payload[:min(len(payload), len("633;P;FloetermProgram="))]), "633;P;FloetermProgram=") {
+		} else if oversizedSource, ok := knownOversizedControlSource(payload); ok {
 			recognized = true
 			invalid = true
-			source = "osc_633_program"
+			source = oversizedSource
 		}
 		if recognized {
 			tokens = appendShellIntegrationDisplay(tokens, buffer[segmentStart:start])
@@ -160,6 +168,28 @@ func parseShellIntegrationTokens(buffer []byte) ([]shellIntegrationToken, []stri
 	return tokens, malformed, nil
 }
 
+func knownOversizedControlSource(payload []byte) (string, bool) {
+	text := string(payload[:min(len(payload), 64)])
+	for _, candidate := range []struct {
+		prefix string
+		source string
+	}{
+		{prefix: "633;P;FloetermProgram=", source: "osc_633_program"},
+		{prefix: "633;P;FloetermContext=", source: "osc_633_context"},
+		{prefix: "633;P;FloetermWork=", source: "osc_633_work"},
+		{prefix: "633;P;Cwd=", source: "osc_633"},
+		{prefix: "1337;CurrentDir=", source: "osc_1337"},
+		{prefix: "7;file://", source: "osc_7"},
+		{prefix: "0;", source: "osc_title"},
+		{prefix: "2;", source: "osc_title"},
+	} {
+		if strings.HasPrefix(text, candidate.prefix) {
+			return candidate.source, true
+		}
+	}
+	return "", false
+}
+
 func appendShellIntegrationDisplay(tokens []shellIntegrationToken, data []byte) []shellIntegrationToken {
 	if len(data) == 0 {
 		return tokens
@@ -169,9 +199,19 @@ func appendShellIntegrationDisplay(tokens []shellIntegrationToken, data []byte) 
 
 func parseShellIntegrationSignalPayload(payload string) (shellIntegrationSignal, string, bool, bool) {
 	if cwd, invalid, ok := parseWorkingDirectorySignalPayload(payload); ok {
-		return shellIntegrationSignal{kind: shellIntegrationCwd, path: cwd.path}, cwd.source, invalid, true
+		return shellIntegrationSignal{kind: shellIntegrationCwd, path: cwd.path, authority: cwd.authority, remote: cwd.remote}, cwd.source, invalid, true
 	}
 	switch {
+	case strings.HasPrefix(payload, "633;P;FloetermContext="):
+		marker, ok := parseFloetermContextPayload(payload)
+		return shellIntegrationSignal{kind: shellIntegrationContext, context: marker}, "osc_633_context", !ok, true
+	case strings.HasPrefix(payload, "633;P;FloetermWork="):
+		marker, ok := parseFloetermWorkPayload(payload)
+		return shellIntegrationSignal{kind: shellIntegrationWork, work: marker}, "osc_633_work", !ok, true
+	case strings.HasPrefix(payload, "0;") || strings.HasPrefix(payload, "2;"):
+		title := strings.TrimPrefix(strings.TrimPrefix(payload, "0;"), "2;")
+		_, _, ok := parseTerminalTitleLabel(title)
+		return shellIntegrationSignal{kind: shellIntegrationTitle, title: title}, "osc_title", !ok, true
 	case payload == "633;A" || payload == "133;A":
 		return shellIntegrationSignal{kind: shellIntegrationPromptReady}, "", false, true
 	case payload == "633;B" || payload == "133;B":
@@ -226,7 +266,24 @@ func (s *Session) checkShellIntegrationChange(chunk []byte) {
 		signal := token.signal
 		switch signal.kind {
 		case shellIntegrationCwd:
-			s.applyWorkingDirectoryChange(signal.path)
+			if signal.remote {
+				s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyOSC7Locked(signal, now) })
+				continue
+			}
+			s.mu.RLock()
+			remote := s.executionContext.Location.Kind == TerminalLocationRemote
+			s.mu.RUnlock()
+			if remote {
+				s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyRemoteCwdLocked(signal.path, now) })
+			} else {
+				s.applyWorkingDirectoryChange(normalizeExplicitWorkingDirectory(signal.path))
+			}
+		case shellIntegrationContext:
+			s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyContextMarkerLocked(signal.context, now) })
+		case shellIntegrationWork:
+			s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyWorkMarkerLocked(signal.work, now) })
+		case shellIntegrationTitle:
+			s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyTitleLocked(signal.title, now) })
 		case shellIntegrationProgram:
 			s.mu.Lock()
 			if !s.closed && normalizeForegroundCommandInfo(s.foregroundCommand).Phase != ForegroundCommandRunning {
@@ -281,30 +338,62 @@ func (s *Session) updateForegroundCommand(phase ForegroundCommandPhase, displayN
 		return
 	}
 	now := time.Now()
+	previousContextRevision := s.executionContext.Revision
+	previousWorkRevision := s.workState.Revision
 	current.Phase = phase
 	current.DisplayName = displayName
 	current.Revision++
 	current.UpdatedAt = now.UnixMilli()
 	s.foregroundCommand = current
+	if phase == ForegroundCommandRunning {
+		s.startForegroundContextLocked(displayName, now)
+	} else {
+		s.resetContextEpochLocked(now)
+	}
 	outputChanged, outputInfo := s.resetOutputActivityLocked(now)
 	handler := s.eventHandler
-	info := TerminalSessionInfo{
-		ID:                s.ID,
-		Name:              s.Name,
-		WorkingDir:        s.WorkingDir,
-		CreatedAt:         s.CreatedAt.UnixMilli(),
-		LastActive:        s.LastActive.UnixMilli(),
-		IsActive:          s.isActive,
-		ForegroundCommand: current,
-		OutputActivity:    outputInfo,
-	}
+	info := s.toSessionInfoLocked()
 	s.mu.Unlock()
 
 	if metadataHandler, ok := handler.(TerminalSessionMetadataEventHandler); ok {
 		metadataHandler.OnTerminalSessionMetadataChanged(info.ID, info)
 	}
+	notifyTerminalContextAndWork(handler, info.ID, info, previousContextRevision, previousWorkRevision)
 	if outputChanged {
 		notifyTerminalOutputActivity(handler, info.ID, outputInfo)
+	}
+}
+
+func (s *Session) applyShellIntegrationMetadata(apply func(time.Time) bool) {
+	s.mu.Lock()
+	previousContextRevision := s.executionContext.Revision
+	previousWorkRevision := s.workState.Revision
+	if s.closed || !apply(time.Now()) {
+		s.mu.Unlock()
+		return
+	}
+	handler := s.eventHandler
+	info := s.toSessionInfoLocked()
+	s.mu.Unlock()
+	notifyTerminalContextAndWork(handler, info.ID, info, previousContextRevision, previousWorkRevision)
+}
+
+func notifyTerminalContextAndWork(
+	handler TerminalEventHandler,
+	sessionID string,
+	info TerminalSessionInfo,
+	previousContextRevision uint64,
+	previousWorkRevision uint64,
+) {
+	if info.ExecutionContext.Revision != previousContextRevision {
+		if contextHandler, ok := handler.(TerminalExecutionContextEventHandler); ok {
+			contextHandler.OnTerminalExecutionContextChanged(sessionID, info.ExecutionContext)
+		}
+	}
+	if info.WorkState.Revision != previousWorkRevision {
+		if workHandler, ok := handler.(TerminalSemanticWorkStateEventHandler); ok {
+			workHandler.OnTerminalSemanticWorkStateChanged(sessionID, info.WorkState)
+		}
 	}
 }
 
@@ -312,6 +401,7 @@ func (s *Session) clearForegroundCommandLocked() {
 	current := normalizeForegroundCommandInfo(s.foregroundCommand)
 	now := time.Now()
 	_, _ = s.resetOutputActivityLocked(now)
+	s.clearExecutionContextLocked(now)
 	if current.Phase == ForegroundCommandUnknown && current.DisplayName == "" {
 		return
 	}

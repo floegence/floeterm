@@ -32,6 +32,8 @@ type apiSessionInfo struct {
 	IsActive          bool                     `json:"isActive"`
 	ForegroundCommand apiForegroundCommandInfo `json:"foregroundCommand"`
 	OutputActivity    apiOutputActivityInfo    `json:"outputActivity"`
+	ExecutionContext  apiExecutionContextInfo  `json:"executionContext"`
+	WorkState         apiWorkStateInfo         `json:"workState"`
 }
 
 type apiForegroundCommandInfo struct {
@@ -45,6 +47,37 @@ type apiOutputActivityInfo struct {
 	Phase       string `json:"phase"`
 	Revision    uint64 `json:"revision"`
 	UpdatedAtMs int64  `json:"updatedAtMs"`
+}
+
+type apiExecutionContextInfo struct {
+	Location    apiTerminalLocationInfo    `json:"location"`
+	Application apiTerminalApplicationInfo `json:"application"`
+	Revision    uint64                     `json:"revision"`
+	UpdatedAtMs int64                      `json:"updatedAtMs"`
+}
+
+type apiTerminalLocationInfo struct {
+	Kind             string `json:"kind"`
+	Phase            string `json:"phase"`
+	Label            string `json:"label"`
+	Authority        string `json:"authority"`
+	WorkingDirectory string `json:"workingDirectory"`
+	Source           string `json:"source"`
+}
+
+type apiTerminalApplicationInfo struct {
+	Kind        string `json:"kind"`
+	Identity    string `json:"identity"`
+	DisplayName string `json:"displayName"`
+}
+
+type apiWorkStateInfo struct {
+	Phase                     string `json:"phase"`
+	Source                    string `json:"source"`
+	ContextRevision           uint64 `json:"contextRevision"`
+	ForegroundCommandRevision uint64 `json:"foregroundCommandRevision"`
+	Revision                  uint64 `json:"revision"`
+	UpdatedAtMs               int64  `json:"updatedAtMs"`
 }
 
 type createSessionRequest struct {
@@ -101,6 +134,31 @@ func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
 			Phase:       string(info.OutputActivity.Phase),
 			Revision:    info.OutputActivity.Revision,
 			UpdatedAtMs: info.OutputActivity.UpdatedAt,
+		},
+		ExecutionContext: apiExecutionContextInfo{
+			Location: apiTerminalLocationInfo{
+				Kind:             string(info.ExecutionContext.Location.Kind),
+				Phase:            string(info.ExecutionContext.Location.Phase),
+				Label:            info.ExecutionContext.Location.Label,
+				Authority:        info.ExecutionContext.Location.Authority,
+				WorkingDirectory: info.ExecutionContext.Location.WorkingDirectory,
+				Source:           string(info.ExecutionContext.Location.Source),
+			},
+			Application: apiTerminalApplicationInfo{
+				Kind:        string(info.ExecutionContext.Application.Kind),
+				Identity:    info.ExecutionContext.Application.Identity,
+				DisplayName: info.ExecutionContext.Application.DisplayName,
+			},
+			Revision:    info.ExecutionContext.Revision,
+			UpdatedAtMs: info.ExecutionContext.UpdatedAt,
+		},
+		WorkState: apiWorkStateInfo{
+			Phase:                     string(info.WorkState.Phase),
+			Source:                    info.WorkState.Source,
+			ContextRevision:           info.WorkState.ContextRevision,
+			ForegroundCommandRevision: info.WorkState.ForegroundCommandRevision,
+			Revision:                  info.WorkState.Revision,
+			UpdatedAtMs:               info.WorkState.UpdatedAt,
 		},
 	}
 }
