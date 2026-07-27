@@ -9,9 +9,13 @@ import (
 )
 
 const (
-	pathPrependEnvKey      = "FLOETERM_PATH_PREPEND"
-	originalZdotdirEnvKey  = "FLOETERM_ORIGINAL_ZDOTDIR"
-	defaultShellInitFolder = "shell-init"
+	pathPrependEnvKey         = "FLOETERM_PATH_PREPEND"
+	originalZdotdirEnvKey     = "FLOETERM_ORIGINAL_ZDOTDIR"
+	shellLifecycleNonceEnvKey = "FLOETERM_SHELL_LIFECYCLE_NONCE"
+	shellLifecycleNonceVarKey = "__floeterm_terminal_lifecycle_nonce"
+	shellLifecycleCaptureKey  = "__FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED"
+	shellLifecycleLoadedKey   = "__FLOETERM_COMMAND_LIFECYCLE_LOADED"
+	defaultShellInitFolder    = "shell-init"
 )
 
 type shellType string
@@ -34,6 +38,15 @@ func detectShellType(shellPath string) shellType {
 		return shellTypeFish
 	default:
 		return shellTypePosix
+	}
+}
+
+func supportsAuthenticatedShellLifecycle(shellPath string) bool {
+	switch detectShellType(shellPath) {
+	case shellTypeBash, shellTypeZsh, shellTypeFish:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -137,6 +150,11 @@ func bashInitScript(enableCommandLifecycle bool) string {
 	script := `#!/bin/bash
 # floeterm shell integration - auto-generated, do not edit.
 
+`
+	if enableCommandLifecycle {
+		script += bashLifecycleNonceCaptureScript()
+	}
+	script += `
 # Source user's original bash configuration.
 if [ -f "$HOME/.bashrc" ]; then
     source "$HOME/.bashrc"
@@ -162,9 +180,17 @@ func zshInitScript(enableCommandLifecycle bool) string {
 	if homeDir == "" {
 		homeDir = "$HOME"
 	}
+	return zshInitScriptForHome(enableCommandLifecycle, homeDir)
+}
 
-	script := fmt.Sprintf(`# floeterm shell integration - auto-generated, do not edit.
+func zshInitScriptForHome(enableCommandLifecycle bool, homeDir string) string {
+	script := `# floeterm shell integration - auto-generated, do not edit.
 
+`
+	if enableCommandLifecycle {
+		script += zshLifecycleNonceCaptureScript()
+	}
+	script += fmt.Sprintf(`
 # Restore original ZDOTDIR for nested shells.
 if [ -n "$%s" ]; then
     export ZDOTDIR="$%s"
@@ -203,9 +229,17 @@ func fishInitScript(enableCommandLifecycle bool) string {
 	if homeDir == "" {
 		homeDir = "$HOME"
 	}
+	return fishInitScriptForHome(enableCommandLifecycle, homeDir)
+}
 
-	script := fmt.Sprintf(`# floeterm shell integration - auto-generated, do not edit.
+func fishInitScriptForHome(enableCommandLifecycle bool, homeDir string) string {
+	script := `# floeterm shell integration - auto-generated, do not edit.
 
+`
+	if enableCommandLifecycle {
+		script += fishLifecycleNonceCaptureScript()
+	}
+	script += fmt.Sprintf(`
 # Source user's original fish configuration.
 if test -f "%s/.config/fish/config.fish"
     source "%s/.config/fish/config.fish"
@@ -243,11 +277,54 @@ fi
 `
 }
 
+func bashLifecycleNonceCaptureScript() string {
+	return `# Capture the private lifecycle nonce before any user configuration runs.
+if [ -z "${__FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED+x}" ]; then
+    unset __floeterm_terminal_lifecycle_nonce
+    __floeterm_terminal_lifecycle_nonce="${FLOETERM_SHELL_LIFECYCLE_NONCE:-}"
+    export -n __floeterm_terminal_lifecycle_nonce
+    readonly __floeterm_terminal_lifecycle_nonce
+    readonly __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED=1
+fi
+unset FLOETERM_SHELL_LIFECYCLE_NONCE
+`
+}
+
+func zshLifecycleNonceCaptureScript() string {
+	return `# Capture the private lifecycle nonce before any user configuration runs.
+if [[ -z "${__FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED+x}" ]]; then
+    unset __floeterm_terminal_lifecycle_nonce
+    typeset -g __floeterm_terminal_lifecycle_nonce="${FLOETERM_SHELL_LIFECYCLE_NONCE:-}"
+    typeset +x __floeterm_terminal_lifecycle_nonce
+    typeset -gr __floeterm_terminal_lifecycle_nonce
+    typeset -gr __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED=1
+fi
+unset FLOETERM_SHELL_LIFECYCLE_NONCE
+`
+}
+
+func fishLifecycleNonceCaptureScript() string {
+	return `# Capture the private lifecycle nonce before any user configuration runs.
+if not set -q __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED
+    set -e __floeterm_terminal_lifecycle_nonce
+    set -g __floeterm_terminal_lifecycle_nonce "$FLOETERM_SHELL_LIFECYCLE_NONCE"
+    set -g __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED 1
+end
+set -e FLOETERM_SHELL_LIFECYCLE_NONCE
+`
+}
+
 func bashCommandLifecycleScript() string {
-	return `
+	return bashLifecycleNonceCaptureScript() + `
 # Emit OSC 633 command lifecycle and working-directory markers.
 __floeterm_terminal_osc() {
     printf '\033]633;%s\a' "$1"
+}
+
+__floeterm_terminal_authenticated_lifecycle() {
+    if [ -n "$__floeterm_terminal_lifecycle_nonce" ]; then
+        __floeterm_terminal_osc "P;FloetermLifecycle=v1;nonce=$__floeterm_terminal_lifecycle_nonce;event=$1"
+    fi
 }
 
 __floeterm_terminal_emit_cwd() {
@@ -312,18 +389,20 @@ __floeterm_terminal_precmd() {
     local exit_code="${__floeterm_terminal_last_status:-0}"
     if [ "${__floeterm_terminal_prompt_seen:-0}" = "1" ] && [ "${__floeterm_terminal_command_running:-0}" = "1" ]; then
         __floeterm_terminal_osc "D;$exit_code"
+        __floeterm_terminal_authenticated_lifecycle command_finished
     fi
     __floeterm_terminal_prompt_seen=1
     __floeterm_terminal_command_running=0
     __floeterm_terminal_at_prompt=1
     __floeterm_terminal_emit_cwd
     __floeterm_terminal_osc "A"
+    __floeterm_terminal_authenticated_lifecycle prompt_ready
     __floeterm_terminal_in_prompt_command=0
     return "$exit_code"
 }
 
 if [ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]; then
-    export __FLOETERM_COMMAND_LIFECYCLE_LOADED=1
+    readonly __FLOETERM_COMMAND_LIFECYCLE_LOADED=1
     __floeterm_terminal_existing_debug_trap=""
     if __floeterm_terminal_trap_output=$(trap -p DEBUG 2>/dev/null); then
         __floeterm_terminal_existing_debug_trap=$(printf '%s\n' "$__floeterm_terminal_trap_output" | sed -E "s/^trap -- '(.*)' DEBUG$/\1/")
@@ -387,10 +466,16 @@ fi
 }
 
 func zshCommandLifecycleScript() string {
-	return `
+	return zshLifecycleNonceCaptureScript() + `
 # Emit OSC 633 command lifecycle and working-directory markers.
 __floeterm_terminal_osc() {
     printf '\033]633;%s\a' "$1"
+}
+
+__floeterm_terminal_authenticated_lifecycle() {
+    if [[ -n "$__floeterm_terminal_lifecycle_nonce" ]]; then
+        __floeterm_terminal_osc "P;FloetermLifecycle=v1;nonce=$__floeterm_terminal_lifecycle_nonce;event=$1"
+    fi
 }
 
 __floeterm_terminal_emit_cwd() {
@@ -437,15 +522,17 @@ __floeterm_terminal_precmd() {
     local exit_code=$?
     if [[ "${__floeterm_terminal_prompt_seen:-0}" = "1" && "${__floeterm_terminal_command_running:-0}" = "1" ]]; then
         __floeterm_terminal_osc "D;$exit_code"
+        __floeterm_terminal_authenticated_lifecycle command_finished
     fi
     __floeterm_terminal_prompt_seen=1
     __floeterm_terminal_command_running=0
     __floeterm_terminal_emit_cwd
     __floeterm_terminal_osc "A"
+    __floeterm_terminal_authenticated_lifecycle prompt_ready
 }
 
 if [[ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]]; then
-    export __FLOETERM_COMMAND_LIFECYCLE_LOADED=1
+    typeset -gr __FLOETERM_COMMAND_LIFECYCLE_LOADED=1
     autoload -Uz add-zsh-hook 2>/dev/null || true
     if typeset -f add-zsh-hook >/dev/null 2>&1; then
         add-zsh-hook preexec __floeterm_terminal_preexec
@@ -460,10 +547,16 @@ fi
 }
 
 func fishCommandLifecycleScript() string {
-	return `
+	return fishLifecycleNonceCaptureScript() + `
 # Emit OSC 633 command lifecycle and working-directory markers.
 function __floeterm_terminal_osc --argument payload
     printf '\e]633;%s\a' $payload
+end
+
+function __floeterm_terminal_authenticated_lifecycle --argument event
+    if test -n "$__floeterm_terminal_lifecycle_nonce"
+        __floeterm_terminal_osc "P;FloetermLifecycle=v1;nonce=$__floeterm_terminal_lifecycle_nonce;event=$event"
+    end
 end
 
 function __floeterm_terminal_emit_cwd
@@ -515,11 +608,13 @@ end
 function __floeterm_terminal_fish_postexec --on-event fish_postexec
     if test "$__floeterm_terminal_prompt_seen" = "1" -a "$__floeterm_terminal_command_running" = "1"
         __floeterm_terminal_osc "D;$status"
+        __floeterm_terminal_authenticated_lifecycle command_finished
     end
     set -g __floeterm_terminal_command_running 0
 end
 
 if not functions -q __floeterm_terminal_original_fish_prompt
+    set -g __FLOETERM_COMMAND_LIFECYCLE_LOADED 1
     if functions -q fish_prompt
         functions -c fish_prompt __floeterm_terminal_original_fish_prompt
     end
@@ -527,6 +622,7 @@ if not functions -q __floeterm_terminal_original_fish_prompt
         set -g __floeterm_terminal_prompt_seen 1
         __floeterm_terminal_emit_cwd
         __floeterm_terminal_osc A
+        __floeterm_terminal_authenticated_lifecycle prompt_ready
         if functions -q __floeterm_terminal_original_fish_prompt
             __floeterm_terminal_original_fish_prompt
         end

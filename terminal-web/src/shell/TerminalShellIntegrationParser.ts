@@ -173,6 +173,11 @@ function parseShellIntegrationPayload(payload: Uint8Array, localHostname: string
     const displayName = normalizeTerminalForegroundCommandDisplayName(body.slice('P;FloetermProgram='.length));
     return { recognized: true, event: displayName ? { kind: 'program', displayName } : null };
   }
+  if (protocol === '633' && body.startsWith('P;FloetermLifecycle=')) {
+    // Lifecycle authentication is owned by terminal-go. The browser strips the
+    // private marker but must never turn an unverified nonce into a state event.
+    return { recognized: true, event: null };
+  }
   if (protocol === '633' && body.startsWith('P;FloetermContext=')) {
     const marker = parseContextMarker(`633;${body}`, localHostname);
     return { recognized: true, event: marker ? { kind: 'context-marker', marker } : null };
@@ -255,7 +260,8 @@ function validFrameId(value: string | undefined): value is string {
 
 function isPrivateMetadataPayload(payload: Uint8Array): boolean {
   return [
-    '633;P;FloetermProgram=', '633;P;FloetermContext=', '633;P;FloetermWork=', '633;P;Cwd=',
+    '633;P;FloetermProgram=', '633;P;FloetermLifecycle=', '633;P;FloetermContext=',
+    '633;P;FloetermWork=', '633;P;Cwd=',
   ].some(prefix => hasAsciiPrefix(payload, prefix));
 }
 

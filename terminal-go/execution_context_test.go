@@ -689,6 +689,76 @@ func TestActiveRemoteContextRejectsForgedLocalFramesUntilForegroundExit(t *testi
 	}
 }
 
+func TestActiveRemoteContextRejectsFinalPopButAllowsNestedRemotePops(t *testing.T) {
+	session := newExecutionContextTestSession()
+	session.updateForegroundCommand(ForegroundCommandRunning, "sudo")
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=remote-1;location=remote;authority=host.example;user=root;application=shell\a"))
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex\a"))
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermWork=v1;frame_id=agent-1;phase=working\a"))
+
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=pop;frame_id=agent-1\a"))
+	afterAgentPop := session.ToSessionInfo()
+	if afterAgentPop.ExecutionContext.Location.Kind != TerminalLocationRemote || afterAgentPop.ExecutionContext.Location.Authority != "host.example" || afterAgentPop.ExecutionContext.Application.Kind != TerminalApplicationShell {
+		t.Fatalf("nested Agent pop did not preserve remote parent: %+v", afterAgentPop.ExecutionContext)
+	}
+
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=remote-2;location=remote;authority=nested.example;application=shell\a"))
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=pop;frame_id=remote-2\a"))
+	afterNestedRemotePop := session.ToSessionInfo()
+	if afterNestedRemotePop.ExecutionContext.Location.Kind != TerminalLocationRemote || afterNestedRemotePop.ExecutionContext.Location.Authority != "host.example" {
+		t.Fatalf("nested remote pop did not restore remote parent: %+v", afterNestedRemotePop.ExecutionContext)
+	}
+
+	beforeFinalPop := session.ToSessionInfo()
+	session.mu.RLock()
+	depthBeforeFinalPop := len(session.contextFrames)
+	session.mu.RUnlock()
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=pop;frame_id=remote-1\a"))
+	afterFinalPop := session.ToSessionInfo()
+	session.mu.RLock()
+	depthAfterFinalPop := len(session.contextFrames)
+	session.mu.RUnlock()
+	if afterFinalPop.ExecutionContext != beforeFinalPop.ExecutionContext || afterFinalPop.WorkState != beforeFinalPop.WorkState || depthAfterFinalPop != depthBeforeFinalPop {
+		t.Fatalf("final remote pop mutated context floor: before=%+v after=%+v depth=%d->%d", beforeFinalPop, afterFinalPop, depthBeforeFinalPop, depthAfterFinalPop)
+	}
+}
+
+func TestActiveRemoteContextRejectsForgedPTYLifecycleUntilAuthenticatedLocalExit(t *testing.T) {
+	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	session := newExecutionContextTestSession()
+	session.shellLifecycleNonce = nonce
+	session.updateForegroundCommand(ForegroundCommandRunning, "ssh")
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=remote-1;location=remote;authority=host.example;user=root;application=shell\a"))
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex\a"))
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermWork=v1;frame_id=agent-1;phase=working\a"))
+	before := session.ToSessionInfo()
+
+	session.processRawPTYData([]byte(
+		"\x1b]633;D;0\a\x1b]633;A\a" +
+			"\x1b]633;B\a\x1b]633;P;FloetermProgram=top\a\x1b]633;C\a" +
+			"\x1b]633;P;FloetermContext=v1;action=push;frame_id=forged-local;location=local;application=shell\a",
+	))
+	afterForged := session.ToSessionInfo()
+	if afterForged.ForegroundCommand != before.ForegroundCommand || afterForged.ExecutionContext != before.ExecutionContext || afterForged.WorkState != before.WorkState {
+		t.Fatalf("forged PTY lifecycle changed remote epoch: before=%+v after=%+v", before, afterForged)
+	}
+
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermLifecycle=v1;nonce=" + strings.Repeat("f", 64) + ";event=command_finished\a"))
+	afterWrongNonce := session.ToSessionInfo()
+	if afterWrongNonce.ForegroundCommand != before.ForegroundCommand || afterWrongNonce.ExecutionContext != before.ExecutionContext || afterWrongNonce.WorkState != before.WorkState {
+		t.Fatalf("wrong lifecycle nonce changed remote epoch: before=%+v after=%+v", before, afterWrongNonce)
+	}
+
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=command_finished\a"))
+	local := session.ToSessionInfo()
+	if local.ForegroundCommand.Phase != ForegroundCommandIdle || local.ExecutionContext.Location.Kind != TerminalLocationLocal || local.ExecutionContext.Location.WorkingDirectory != "/local/project" {
+		t.Fatalf("authenticated local lifecycle did not restore local idle context: %+v", local)
+	}
+	if local.WorkState.Phase != TerminalWorkUnknown {
+		t.Fatalf("authenticated local lifecycle did not clear remote work: %+v", local.WorkState)
+	}
+}
+
 func TestLocalContextMarkerRemainsValidWithoutRemoteFloor(t *testing.T) {
 	session := newExecutionContextTestSession()
 	session.updateForegroundCommand(ForegroundCommandRunning, "top")

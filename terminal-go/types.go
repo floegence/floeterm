@@ -335,6 +335,7 @@ type Session struct {
 	currentWorkingDir             string
 	workdirPending                []byte
 	shellIntegrationPending       []byte
+	shellLifecycleFilterPending   []byte
 	pendingForegroundProgram      string
 	foregroundCommand             TerminalForegroundCommandInfo
 	outputActivity                TerminalOutputActivityInfo
@@ -347,6 +348,7 @@ type Session struct {
 	contextFrames                 []terminalContextFrame
 	contextSeenFrameIDs           map[string]struct{}
 	contextForegroundRevision     uint64
+	shellLifecycleNonce           string
 
 	lastAppliedCols    int
 	lastAppliedRows    int

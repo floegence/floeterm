@@ -642,6 +642,18 @@ func (s *Session) applyContextMarkerLocked(marker terminalContextMarker, now tim
 		if len(s.contextFrames) <= 1 || top.id != marker.frameID || strings.HasPrefix(top.id, "@") {
 			return false
 		}
+		if s.hasActiveRemoteLocationLocked() {
+			remoteAfterPop := false
+			for _, frame := range s.contextFrames[:len(s.contextFrames)-1] {
+				if frame.location.Kind == TerminalLocationRemote {
+					remoteAfterPop = true
+					break
+				}
+			}
+			if !remoteAfterPop {
+				return false
+			}
+		}
 		s.contextFrames = s.contextFrames[:len(s.contextFrames)-1]
 		next := s.contextFrames[len(s.contextFrames)-1]
 		s.publishContextBoundaryLocked(next.location, next.app, now)

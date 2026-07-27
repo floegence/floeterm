@@ -93,7 +93,8 @@ describe('TerminalShellIntegrationParser', () => {
           tokens.push(`signal:${kind}${event.kind === 'program' ? `:${event.displayName}` : ''}`);
         }
       }
-      expect(tokens, vector.name).toEqual(vector.tokens);
+      const expectedTokens = 'terminalWebTokens' in vector ? vector.terminalWebTokens : vector.tokens;
+      expect(tokens, vector.name).toEqual(expectedTokens);
     }
   });
 

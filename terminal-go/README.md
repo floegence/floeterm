@@ -94,6 +94,18 @@ args := terminal.DefaultShellArgsProvider{
 
 Lifecycle mode works even when no PATH prepend is required. Bash, Zsh, and Fish receive native hooks; POSIX fallback shells retain their original profile behavior without unsafe command-hook emulation.
 
+Each enabled Bash, Zsh, or Fish session authenticates its local command-finished
+and prompt-ready markers with a private random nonce. The generated init captures
+the nonce into a non-exported shell variable and removes it from the environment
+before any global or user configuration runs. Repeated init loads preserve the
+private value without exporting it. POSIX and unknown fallback shells never
+receive the nonce and keep lifecycle state unknown.
+While an execution-context frame reports a remote location, unauthenticated
+prompt, command, and program markers from PTY output cannot end or replace the
+foreground epoch. This keeps a remote location monotonic until the local shell
+hook observes the real command exit; a remote program cannot restore local
+context by printing forged OSC 133/633 lifecycle text.
+
 Enabled shells also report a bounded foreground-command snapshot through
 `TerminalSessionInfo.ForegroundCommand`. The phase is `unknown`, `idle`, or
 `running`; a running snapshot may include a sanitized executable basename such
@@ -128,6 +140,10 @@ location and long-lived application. A foreground `ssh` basename creates a
 inside `ExecutionContext.Location.WorkingDirectory` and never overwrite the
 session's local `WorkingDir` or `Name`. Standard OSC 0/2/7 controls remain in the
 PTY stream for renderer compatibility and do not count as display output.
+Local context markers and a pop that would remove the final remote frame are
+also rejected while any active context frame owns a remote location. Nested
+pops that retain a remote parent remain valid. The remote floor is released
+only when the authenticated local shell lifecycle closes the foreground epoch.
 
 Structured producers may publish `FloetermWork=v1` for an active, topmost Agent
 context frame. Accepted work snapshots are stamped with the current context and

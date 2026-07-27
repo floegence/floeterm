@@ -108,6 +108,15 @@
       ]
     },
     {
+      "name": "authenticated local lifecycle has no display",
+      "chunks": ["\u001b]633;P;FloetermLifecycle=v1;nonce=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;event=command_finished\u0007\u001b]633;P;FloetermLifecycle=v1;nonce=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;event=prompt_ready\u0007"],
+      "tokens": [
+        "signal:command-finished",
+        "signal:prompt-ready"
+      ],
+      "terminalWebTokens": []
+    },
+    {
       "name": "context and work markers are ordered metadata",
       "chunks": [
         "left\u001b]633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex\u0007",

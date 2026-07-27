@@ -111,8 +111,8 @@ func TestDefaultShellInitWriterAndArgsProvider(t *testing.T) {
 
 	t.Setenv("ZDOTDIR", "/original/zsh")
 	args, env = provider.GetShellArgs("zsh", "/tmp/prepend")
-	if args == nil || len(args) != 0 {
-		t.Fatalf("expected non-nil empty args for zsh, got %v", args)
+	if len(args) != 1 || args[0] != "-d" {
+		t.Fatalf("expected zsh global startup files to be disabled, got %v", args)
 	}
 	if !contains(env, "ZDOTDIR="+paths.ZshDir()) {
 		t.Fatalf("expected ZDOTDIR in env, got %v", env)
@@ -122,10 +122,10 @@ func TestDefaultShellInitWriterAndArgsProvider(t *testing.T) {
 	}
 
 	args, env = provider.GetShellArgs("fish", "/tmp/prepend")
-	if len(args) != 2 || args[0] != "--init-command" {
+	if len(args) != 3 || args[0] != "--no-config" || args[1] != "--init-command" {
 		t.Fatalf("unexpected fish args: %v", args)
 	}
-	if !strings.Contains(args[1], paths.FishConfig()) {
+	if !strings.Contains(args[2], paths.FishConfig()) {
 		t.Fatalf("expected fish config to be sourced, got %v", args)
 	}
 	if !contains(env, pathPrependEnvKey+"=/tmp/prepend") {
@@ -170,6 +170,165 @@ func TestDefaultShellIntegrationCanEnableCommandLifecycleWithoutPathPrepend(t *t
 	if len(env) != 0 {
 		t.Fatalf("unexpected env without PATH prepend: %#v", env)
 	}
+	if !provider.CommandLifecycleEnabled() {
+		t.Fatal("command lifecycle provider did not advertise authentication support")
+	}
+	manager := NewManager(ManagerConfig{
+		Logger:            NopLogger{},
+		ShellArgsProvider: provider,
+		ShellInitWriter:   writer,
+	})
+	session, err := manager.CreateSession("authenticated", t.TempDir())
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	if !validShellLifecycleNonce(session.shellLifecycleNonce) {
+		t.Fatalf("enabled lifecycle session nonce is invalid: %q", session.shellLifecycleNonce)
+	}
+	if err := manager.DeleteSession(session.ID); err != nil {
+		t.Fatalf("DeleteSession failed: %v", err)
+	}
+}
+
+func TestCommandLifecycleNonceRemainsPrivateAcrossRepeatedLoads(t *testing.T) {
+	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	tests := []struct {
+		name       string
+		shell      string
+		fileName   string
+		userRC     string
+		buildInit  func(string) string
+		probe      string
+		argsPrefix []string
+	}{
+		{
+			name: "bash", shell: "/bin/bash", fileName: "lifecycle.bash", userRC: ".bashrc",
+			buildInit:  func(string) string { return bashInitScript(true) },
+			probe:      `. "$1"; . "$1"; env; __floeterm_terminal_authenticated_lifecycle prompt_ready`,
+			argsPrefix: []string{"--noprofile", "--norc", "-c"},
+		},
+		{
+			name: "zsh", shell: "/bin/zsh", fileName: "lifecycle.zsh", userRC: ".zshrc",
+			buildInit:  func(home string) string { return zshInitScriptForHome(true, home) },
+			probe:      `. "$1"; . "$1"; env; __floeterm_terminal_authenticated_lifecycle prompt_ready`,
+			argsPrefix: []string{"-f", "-c"},
+		},
+		{
+			name: "fish", shell: "fish", fileName: "lifecycle.fish", userRC: ".config/fish/config.fish",
+			buildInit:  func(home string) string { return fishInitScriptForHome(true, home) },
+			probe:      `source $argv[1]; source $argv[1]; env; __floeterm_terminal_authenticated_lifecycle prompt_ready`,
+			argsPrefix: []string{"-c"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			shellPath, err := exec.LookPath(test.shell)
+			if err != nil {
+				t.Skipf("%s unavailable: %v", test.name, err)
+			}
+			homeDir := t.TempDir()
+			userRCPath := filepath.Join(homeDir, test.userRC)
+			if err := os.MkdirAll(filepath.Dir(userRCPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(userRCPath, []byte("printf '__FLOETERM_USER_RC_ENV_PROBE__\\n'; env\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			scriptPath := filepath.Join(t.TempDir(), test.fileName)
+			if err := os.WriteFile(scriptPath, []byte(test.buildInit(homeDir)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := append(append([]string(nil), test.argsPrefix...), test.probe)
+			if test.name == "fish" {
+				args = append(args, scriptPath)
+			} else {
+				args = append(args, "probe", scriptPath)
+			}
+			cmd := exec.Command(shellPath, args...)
+			cmd.Env = replaceEnvironmentValues(os.Environ(), map[string]string{
+				"HOME":                    homeDir,
+				shellLifecycleNonceEnvKey: nonce,
+				shellLifecycleNonceVarKey: "attacker",
+			})
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("probe failed: %v\n%s", err, output)
+			}
+			text := string(output)
+			if strings.Count(text, "__FLOETERM_USER_RC_ENV_PROBE__") != 2 {
+				t.Fatalf("full init did not run the user configuration on both loads: %q", text)
+			}
+			for _, leaked := range []string{
+				shellLifecycleNonceEnvKey + "=", shellLifecycleNonceVarKey + "=",
+				shellLifecycleCaptureKey + "=", shellLifecycleLoadedKey + "=",
+			} {
+				if strings.Contains(text, leaked) {
+					t.Fatalf("private lifecycle nonce was exported as %q in %q", leaked, text)
+				}
+			}
+			marker := "\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=prompt_ready\a"
+			if strings.Count(text, marker) != 1 {
+				t.Fatalf("repeated load did not preserve exactly one authenticated marker: %q", text)
+			}
+		})
+	}
+}
+
+func TestShellLifecycleNonceIsInjectedOnlyForSupportedShells(t *testing.T) {
+	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	pollutedBase := []string{
+		"BASE=1",
+		shellLifecycleNonceEnvKey + "=parent",
+		shellLifecycleNonceVarKey + "=parent",
+		shellLifecycleCaptureKey + "=parent",
+		shellLifecycleLoadedKey + "=parent",
+	}
+	pollutedProvider := []string{
+		"PROVIDER=1",
+		shellLifecycleNonceEnvKey + "=provider",
+		shellLifecycleNonceVarKey + "=provider",
+		shellLifecycleCaptureKey + "=provider",
+		shellLifecycleLoadedKey + "=provider",
+	}
+	for _, test := range []struct {
+		shell     string
+		wantNonce bool
+	}{
+		{shell: "/bin/bash", wantNonce: true},
+		{shell: "/bin/zsh", wantNonce: true},
+		{shell: "/usr/bin/fish", wantNonce: true},
+		{shell: "/bin/sh", wantNonce: false},
+		{shell: "/opt/tools/custom-shell", wantNonce: false},
+	} {
+		t.Run(filepath.Base(test.shell), func(t *testing.T) {
+			env := mergeShellLifecycleEnvironment(pollutedBase, pollutedProvider, test.shell, nonce)
+			if !contains(env, "BASE=1") || !contains(env, "PROVIDER=1") {
+				t.Fatalf("ordinary environment entries were lost: %v", env)
+			}
+			for _, key := range []string{shellLifecycleNonceVarKey, shellLifecycleCaptureKey, shellLifecycleLoadedKey} {
+				if envValue(env, key) != "" {
+					t.Fatalf("private shell variable %s escaped sanitization: %v", key, env)
+				}
+			}
+			gotNonce := envValue(env, shellLifecycleNonceEnvKey)
+			if test.wantNonce && gotNonce != nonce {
+				t.Fatalf("supported shell nonce = %q, want authenticated session nonce", gotNonce)
+			}
+			if !test.wantNonce && gotNonce != "" {
+				t.Fatalf("unsupported shell received lifecycle nonce: %v", env)
+			}
+		})
+	}
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
 }
 
 func TestBashCommandLifecyclePublishesExecutedProgramAndFinalPromptState(t *testing.T) {
@@ -207,7 +366,9 @@ PROMPT_COMMAND='printf "__USER_PROMPT__\n"'
 			"\x1b]633;C\a",
 			"__USER_PROMPT__",
 			"\x1b]633;D;0\a",
+			"\x1b]633;P;FloetermLifecycle=v1;nonce=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;event=command_finished\a",
 			"\x1b]633;A\a",
+			"\x1b]633;P;FloetermLifecycle=v1;nonce=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;event=prompt_ready\a",
 		})
 
 		t.Run("failure status and existing DEBUG trap", func(t *testing.T) {
@@ -396,7 +557,7 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-	if err := os.WriteFile(filepath.Join(homeDir, ".zshrc"), []byte("PROMPT='__FLOETERM_ZSH_PROMPT__ '\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(homeDir, ".zshrc"), []byte("printf '__FLOETERM_ZSH_USER_ENV__\\n'; env\nPROMPT='__FLOETERM_ZSH_PROMPT__ '\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	baseDir := filepath.Join(t.TempDir(), "shell-init")
@@ -404,15 +565,18 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 	if err := writer.EnsureShellInitFiles(""); err != nil {
 		t.Fatal(err)
 	}
-	paths := newShellInitPaths(baseDir)
-
-	cmd := exec.Command(zshPath)
-	cmd.Env = replaceEnvironmentValues(os.Environ(), map[string]string{
+	provider := DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true}
+	args, shellEnv := provider.GetShellArgs(zshPath, "")
+	if len(args) != 1 || args[0] != "-d" {
+		t.Fatalf("zsh provider args = %v, want global config disabled", args)
+	}
+	cmd := exec.Command(zshPath, args...)
+	baseEnv := replaceEnvironmentValues(os.Environ(), map[string]string{
 		"HOME":                 homeDir,
 		"TERM":                 "xterm-256color",
-		"ZDOTDIR":              paths.ZshDir(),
 		"skip_global_compinit": "1",
 	})
+	cmd.Env = mergeShellLifecycleEnvironment(baseEnv, shellEnv, zshPath, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -428,11 +592,23 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 	capture := &synchronizedBuffer{}
 	go func() { _, _ = io.Copy(capture, ptmx) }()
 	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;A\a", "__FLOETERM_ZSH_PROMPT__")
+	startup := capture.String()
+	if !strings.Contains(startup, "__FLOETERM_ZSH_USER_ENV__") {
+		t.Fatalf("generated zsh init did not load user config: %q", startup)
+	}
+	for _, leaked := range []string{
+		shellLifecycleNonceEnvKey + "=", shellLifecycleNonceVarKey + "=",
+		shellLifecycleCaptureKey + "=", shellLifecycleLoadedKey + "=",
+	} {
+		if strings.Contains(startup, leaked) {
+			t.Fatalf("zsh user config inherited private lifecycle state %q: %q", leaked, startup)
+		}
+	}
 	before := len(capture.String())
 	if _, err := ptmx.Write([]byte("sleep 0.2\n")); err != nil {
 		t.Fatal(err)
 	}
-	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;P;FloetermProgram=sleep\a", "\x1b]633;C\a", "\x1b]633;D;0\a", "\x1b]633;A\a")
+	waitForCapturedOutputAfter(t, capture, before, 5*time.Second, "\x1b]633;P;FloetermProgram=sleep\a", "\x1b]633;C\a", "\x1b]633;D;0\a", "\x1b]633;A\a")
 	output := capture.String()
 	assertContainsInOrder(t, output[before:], []string{
 		"\x1b]633;B\a",
@@ -441,6 +617,57 @@ func TestRealZshCommandLifecycleReportsSilentCommand(t *testing.T) {
 		"\x1b]633;D;0\a",
 		"\x1b]633;A\a",
 	})
+}
+
+func TestRealFishProviderCapturesNonceBeforeUserConfig(t *testing.T) {
+	fishPath, err := exec.LookPath("fish")
+	if err != nil {
+		t.Skipf("fish unavailable: %v", err)
+	}
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	configPath := filepath.Join(homeDir, ".config", "fish", "config.fish")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("printf '__FLOETERM_FISH_USER_ENV__\\n'; env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseDir := filepath.Join(t.TempDir(), "shell-init")
+	writer := DefaultShellInitWriter{BaseDir: baseDir, EnableCommandLifecycle: true}
+	if err := writer.EnsureShellInitFiles(""); err != nil {
+		t.Fatal(err)
+	}
+	provider := DefaultShellArgsProvider{ShellInitBaseDir: baseDir, EnableCommandLifecycle: true}
+	args, shellEnv := provider.GetShellArgs(fishPath, "")
+	if len(args) != 3 || args[0] != "--no-config" || args[1] != "--init-command" {
+		t.Fatalf("fish provider args = %v, want automatic config disabled", args)
+	}
+	args = append(args, "-c", "__floeterm_terminal_authenticated_lifecycle prompt_ready")
+	cmd := exec.Command(fishPath, args...)
+	baseEnv := replaceEnvironmentValues(os.Environ(), map[string]string{"HOME": homeDir, "TERM": "xterm-256color"})
+	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cmd.Env = mergeShellLifecycleEnvironment(baseEnv, shellEnv, fishPath, nonce)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fish provider probe failed: %v\n%s", err, output)
+	}
+	text := string(output)
+	if !strings.Contains(text, "__FLOETERM_FISH_USER_ENV__") {
+		t.Fatalf("generated fish init did not load user config: %q", text)
+	}
+	for _, leaked := range []string{
+		shellLifecycleNonceEnvKey + "=", shellLifecycleNonceVarKey + "=",
+		shellLifecycleCaptureKey + "=", shellLifecycleLoadedKey + "=",
+	} {
+		if strings.Contains(text, leaked) {
+			t.Fatalf("fish user config inherited private lifecycle state %q: %q", leaked, text)
+		}
+	}
+	marker := "\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=prompt_ready\a"
+	if strings.Count(text, marker) != 1 {
+		t.Fatalf("fish provider did not preserve authenticated lifecycle marker: %q", text)
+	}
 }
 
 type synchronizedBuffer struct {
@@ -482,8 +709,9 @@ func runBashLifecycleCommand(t *testing.T, bashPath string, userRC string, comma
 	paths := newShellInitPaths(baseDir)
 	cmd := exec.Command(bashPath, "--noprofile", "--rcfile", paths.BashRC(), "-i")
 	cmd.Env = replaceEnvironmentValues(os.Environ(), map[string]string{
-		"HOME": homeDir,
-		"TERM": "xterm-256color",
+		"HOME":                    homeDir,
+		"TERM":                    "xterm-256color",
+		shellLifecycleNonceEnvKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	})
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -504,7 +732,11 @@ func runBashLifecycleCommand(t *testing.T, bashPath string, userRC string, comma
 	if _, err := ptmx.Write([]byte(command)); err != nil {
 		t.Fatal(err)
 	}
-	waitForCapturedOutput(t, capture, 5*time.Second, "\x1b]633;C\a", completionMarker)
+	waitForCapturedOutputAfter(t, capture, before, 5*time.Second,
+		"\x1b]633;C\a",
+		completionMarker,
+		"\x1b]633;P;FloetermLifecycle=v1;nonce=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;event=prompt_ready\a",
+	)
 	output := capture.String()
 	if before > len(output) {
 		before = 0
@@ -552,10 +784,18 @@ func replaceEnvironmentValues(env []string, replacements map[string]string) []st
 }
 
 func waitForCapturedOutput(t *testing.T, capture *synchronizedBuffer, timeout time.Duration, needles ...string) {
+	waitForCapturedOutputAfter(t, capture, 0, timeout, needles...)
+}
+
+func waitForCapturedOutputAfter(t *testing.T, capture *synchronizedBuffer, offset int, timeout time.Duration, needles ...string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		output := capture.String()
+		if offset > len(output) {
+			offset = len(output)
+		}
+		output = output[offset:]
 		matched := true
 		for _, needle := range needles {
 			if !strings.Contains(output, needle) {

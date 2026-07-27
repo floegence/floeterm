@@ -101,10 +101,14 @@ type sessionConfig struct {
 	historyBufferMaxBytes       int64
 	outputActivityQuietDuration time.Duration
 	terminalEnv                 TerminalEnv
+	shellLifecycleAuthEnabled   bool
 }
 
 func newSessionConfig(cfg ManagerConfig) sessionConfig {
 	cfg = cfg.applyDefaults()
+	lifecycleProvider, lifecycleAuthEnabled := cfg.ShellArgsProvider.(interface {
+		CommandLifecycleEnabled() bool
+	})
 	return sessionConfig{
 		logger:                      cfg.Logger,
 		envProvider:                 cfg.EnvProvider,
@@ -117,5 +121,6 @@ func newSessionConfig(cfg ManagerConfig) sessionConfig {
 		historyBufferMaxBytes:       cfg.HistoryBufferMaxBytes,
 		outputActivityQuietDuration: cfg.OutputActivityQuietDuration,
 		terminalEnv:                 cfg.TerminalEnv,
+		shellLifecycleAuthEnabled:   lifecycleAuthEnabled && lifecycleProvider.CommandLifecycleEnabled(),
 	}
 }

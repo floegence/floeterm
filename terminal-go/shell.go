@@ -136,6 +136,10 @@ type DefaultShellArgsProvider struct {
 	EnableCommandLifecycle bool
 }
 
+func (p DefaultShellArgsProvider) CommandLifecycleEnabled() bool {
+	return p.EnableCommandLifecycle
+}
+
 func (p DefaultShellArgsProvider) GetShellArgs(shellPath string, pathPrepend string) ([]string, []string) {
 	if strings.TrimSpace(pathPrepend) == "" && !p.EnableCommandLifecycle {
 		return nil, nil
@@ -163,15 +167,15 @@ func (p DefaultShellArgsProvider) GetShellArgs(shellPath string, pathPrepend str
 			env = append(env, originalZdotdirEnvKey+"="+orig)
 		}
 		env = append(env, "ZDOTDIR="+initPaths.ZshDir())
-		// Empty (non-nil) args means "do not fallback to -l".
-		return []string{}, env
+		// Floeterm loads global config itself after capturing the lifecycle nonce.
+		return []string{"-d"}, env
 
 	case shellTypeFish:
 		cfgFile := initPaths.FishConfig()
 		if _, err := os.Stat(cfgFile); err != nil {
 			return nil, nil
 		}
-		return []string{"--init-command", "source " + cfgFile}, env
+		return []string{"--no-config", "--init-command", "source " + cfgFile}, env
 
 	default:
 		rcFile := initPaths.PosixRC()

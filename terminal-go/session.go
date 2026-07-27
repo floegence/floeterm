@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -139,6 +140,29 @@ func ensureShellInitForActivation(ctx context.Context, writer ShellInitWriter, p
 	return writer.EnsureShellInitFiles(pathPrepend)
 }
 
+func removeEnvKey(env []string, key string) []string {
+	prefix := key + "="
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func mergeShellLifecycleEnvironment(env, shellEnv []string, shell, nonce string) []string {
+	for _, key := range []string{shellLifecycleNonceEnvKey, shellLifecycleNonceVarKey, shellLifecycleCaptureKey, shellLifecycleLoadedKey} {
+		env = removeEnvKey(env, key)
+		shellEnv = removeEnvKey(shellEnv, key)
+	}
+	env = append(env, shellEnv...)
+	if nonce != "" && supportsAuthenticatedShellLifecycle(shell) {
+		env = append(env, shellLifecycleNonceEnvKey+"="+nonce)
+	}
+	return env
+}
+
 func shellArgsForActivation(ctx context.Context, provider ShellArgsProvider, shell string, pathPrepend string) ([]string, []string, error) {
 	if contextual, ok := provider.(ContextShellArgsProvider); ok {
 		return contextual.GetShellArgsContext(ctx, shell, pathPrepend)
@@ -233,7 +257,7 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	}
 	s.mu.Unlock()
 
-	env = append(env, shellEnv...)
+	env = mergeShellLifecycleEnvironment(env, shellEnv, shell, s.shellLifecycleNonce)
 	env = append(env,
 		"TERM="+s.config.terminalEnv.Term,
 		"COLORTERM="+s.config.terminalEnv.ColorTerm,
@@ -785,34 +809,37 @@ func collectAvailablePTYBurst(
 }
 
 func (s *Session) processRawPTYData(data []byte) {
+	displayData := s.filterPrivateShellLifecycleMarkers(data)
 	timestamp := time.Now().UnixMilli()
 
-	s.mu.Lock()
-	s.sequenceNumber++
-	seqNum := s.sequenceNumber
-	s.LastActive = time.Now()
+	if len(displayData) > 0 {
+		s.mu.Lock()
+		s.sequenceNumber++
+		seqNum := s.sequenceNumber
+		s.LastActive = time.Now()
 
-	if s.ringBuffer != nil {
-		if err := s.ringBuffer.writeOwnedWithSequence(data, seqNum, timestamp, false); err != nil {
-			s.config.logger.Error("Failed to write to ring buffer", "sessionID", s.ID, "error", err)
-		} else {
-			s.committedSequence = seqNum
+		if s.ringBuffer != nil {
+			if err := s.ringBuffer.writeOwnedWithSequence(displayData, seqNum, timestamp, false); err != nil {
+				s.config.logger.Error("Failed to write to ring buffer", "sessionID", s.ID, "error", err)
+			} else {
+				s.committedSequence = seqNum
+			}
 		}
-	}
-	subscribers := make([]LiveSubscriber, 0, len(s.liveAttachments))
-	for _, attachment := range s.liveAttachments {
-		subscribers = append(subscribers, attachment.subscriber)
-	}
-	geometry := s.effectiveGeometryLocked()
+		subscribers := make([]LiveSubscriber, 0, len(s.liveAttachments))
+		for _, attachment := range s.liveAttachments {
+			subscribers = append(subscribers, attachment.subscriber)
+		}
+		geometry := s.effectiveGeometryLocked()
 
-	s.mu.Unlock()
+		s.mu.Unlock()
 
-	s.broadcastData(TerminalOutputEvent{
-		Data:        data,
-		Sequence:    seqNum,
-		TimestampMs: timestamp,
-		Geometry:    geometry,
-	}, subscribers)
+		s.broadcastData(TerminalOutputEvent{
+			Data:        displayData,
+			Sequence:    seqNum,
+			TimestampMs: timestamp,
+			Geometry:    geometry,
+		}, subscribers)
+	}
 
 	s.checkShellIntegrationChange(data)
 }

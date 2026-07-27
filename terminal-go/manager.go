@@ -43,6 +43,15 @@ func getDirectoryName(path string) string {
 // CreateSession creates a dormant logical terminal session.
 func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	sessionID := generateSessionID()
+	sessionCfg := newSessionConfig(m.config)
+	shellLifecycleNonce := ""
+	if sessionCfg.shellLifecycleAuthEnabled {
+		var err error
+		shellLifecycleNonce, err = generateShellLifecycleNonce()
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	if name == "" {
 		name = getDirectoryName(workingDir)
@@ -63,7 +72,6 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	m.mu.RUnlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sessionCfg := newSessionConfig(m.config)
 	createdDone := make(chan struct{})
 	// Ensure onExit never blocks forever even if CreateSession errors or panics.
 	defer close(createdDone)
@@ -94,6 +102,7 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 			Phase: TerminalWorkUnknown,
 		},
 		contextSeenFrameIDs: make(map[string]struct{}),
+		shellLifecycleNonce: shellLifecycleNonce,
 		eventHandler:        initialHandler,
 		onExit: func(sessionID string) {
 			<-createdDone

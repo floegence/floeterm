@@ -212,6 +212,67 @@ func TestShellIntegrationProgramMarkerIsBoundedAndSafe(t *testing.T) {
 	}
 }
 
+func TestShellIntegrationLifecycleMarkerRequiresStrictNonceAndEvent(t *testing.T) {
+	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, event := range []string{"command_finished", "prompt_ready"} {
+		signal, source, invalid, recognized := parseShellIntegrationSignalPayload(
+			"633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=" + event,
+		)
+		if !recognized || invalid || source != "osc_633_lifecycle" || signal.lifecycleNonce != nonce {
+			t.Fatalf("valid lifecycle marker event=%s signal=%+v source=%q invalid=%v recognized=%v", event, signal, source, invalid, recognized)
+		}
+	}
+	for _, payload := range []string{
+		"633;P;FloetermLifecycle=v1;nonce=short;event=command_finished",
+		"633;P;FloetermLifecycle=v1;nonce=" + strings.Repeat("A", 64) + ";event=command_finished",
+		"633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=command_started",
+		"633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=prompt_ready;extra=x",
+	} {
+		_, source, invalid, recognized := parseShellIntegrationSignalPayload(payload)
+		if !recognized || !invalid || source != "osc_633_lifecycle" {
+			t.Fatalf("invalid lifecycle marker accepted: payload=%q source=%q invalid=%v recognized=%v", payload, source, invalid, recognized)
+		}
+	}
+}
+
+func TestPrivateLifecycleMarkerIsStreamSafeAndNeverPublished(t *testing.T) {
+	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	marker := "\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=prompt_ready\a"
+	sequence := []byte("left" + marker + "right")
+	for split := range len(sequence) + 1 {
+		firstDisplay, pending := stripPrivateShellLifecycleMarkers(sequence[:split])
+		secondInput := append(append([]byte(nil), pending...), sequence[split:]...)
+		secondDisplay, finalPending := stripPrivateShellLifecycleMarkers(secondInput)
+		if got := string(append(firstDisplay, secondDisplay...)); got != "leftright" || len(finalPending) != 0 {
+			t.Fatalf("split=%d display=%q pending=%q", split, got, finalPending)
+		}
+	}
+
+	handler := &captureHandler{dataCh: make(chan []byte, 1)}
+	session := &Session{
+		ID: "session-private-lifecycle", WorkingDir: "/workspace", LastActive: time.Now(),
+		connections: make(map[string]*ConnectionInfo), liveAttachments: make(map[string]liveAttachment),
+		ringBuffer: NewTerminalRingBuffer(4), historyGeneration: 1, historyStartSequence: 1,
+		foregroundCommand: TerminalForegroundCommandInfo{Phase: ForegroundCommandIdle},
+		executionContext:  newLocalExecutionContext("/workspace"),
+		eventHandler:      handler,
+		config:            newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.processRawPTYData(sequence)
+	select {
+	case event := <-handler.dataCh:
+		if string(event) != "leftright" {
+			t.Fatalf("published private lifecycle marker: %q", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for filtered terminal output")
+	}
+	history, err := session.GetHistoryFromSequence(1)
+	if err != nil || len(history) != 1 || string(history[0].Data) != "leftright" {
+		t.Fatalf("history retained private lifecycle marker: history=%+v err=%v", history, err)
+	}
+}
+
 func TestOversizedKnownControlsKeepContentFreeDiagnosticSources(t *testing.T) {
 	tests := []struct {
 		prefix string

@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"strings"
 	"time"
 )
@@ -13,6 +14,7 @@ const (
 )
 
 var shellIntegrationOSCStart = []byte{0x1b, ']'}
+var shellLifecyclePrivatePrefix = []byte("\x1b]633;P;FloetermLifecycle=")
 
 type shellIntegrationSignalKind uint8
 
@@ -29,14 +31,15 @@ const (
 )
 
 type shellIntegrationSignal struct {
-	kind      shellIntegrationSignalKind
-	path      string
-	program   string
-	authority string
-	remote    bool
-	context   terminalContextMarker
-	work      terminalWorkMarker
-	title     string
+	kind           shellIntegrationSignalKind
+	path           string
+	program        string
+	authority      string
+	remote         bool
+	context        terminalContextMarker
+	work           terminalWorkMarker
+	title          string
+	lifecycleNonce string
 }
 
 type shellIntegrationTokenKind uint8
@@ -54,6 +57,57 @@ type shellIntegrationToken struct {
 
 func containsShellIntegrationOSCStart(chunk []byte) bool {
 	return bytes.Index(chunk, shellIntegrationOSCStart) >= 0
+}
+
+func stripPrivateShellLifecycleMarkers(buffer []byte) (display []byte, pending []byte) {
+	if len(buffer) == 0 {
+		return nil, nil
+	}
+	display = make([]byte, 0, len(buffer))
+	for cursor := 0; cursor < len(buffer); {
+		relativeStart := bytes.Index(buffer[cursor:], shellLifecyclePrivatePrefix)
+		if relativeStart < 0 {
+			remaining := buffer[cursor:]
+			partialLength := min(len(remaining), len(shellLifecyclePrivatePrefix)-1)
+			for partialLength > 0 && !bytes.Equal(
+				remaining[len(remaining)-partialLength:],
+				shellLifecyclePrivatePrefix[:partialLength],
+			) {
+				partialLength--
+			}
+			display = append(display, remaining[:len(remaining)-partialLength]...)
+			if partialLength > 0 {
+				pending = append(pending, remaining[len(remaining)-partialLength:]...)
+			}
+			return display, pending
+		}
+		start := cursor + relativeStart
+		display = append(display, buffer[cursor:start]...)
+		_, nextIndex, complete := findOSCTerminator(buffer, start+2)
+		if !complete {
+			fragment := buffer[start:]
+			if len(fragment) <= maxShellIntegrationPendingBytes {
+				return display, append(pending, fragment...)
+			}
+			display = append(display, fragment...)
+			return display, nil
+		}
+		cursor = nextIndex
+	}
+	return display, nil
+}
+
+func (s *Session) filterPrivateShellLifecycleMarkers(chunk []byte) []byte {
+	s.mu.Lock()
+	buffer := chunk
+	if len(s.shellLifecycleFilterPending) > 0 {
+		buffer = append(make([]byte, 0, len(s.shellLifecycleFilterPending)+len(chunk)), s.shellLifecycleFilterPending...)
+		buffer = append(buffer, chunk...)
+	}
+	display, pending := stripPrivateShellLifecycleMarkers(buffer)
+	s.shellLifecycleFilterPending = pending
+	s.mu.Unlock()
+	return display
 }
 
 func normalizeForegroundCommandDisplayName(raw string) (string, bool) {
@@ -175,6 +229,7 @@ func knownOversizedControlSource(payload []byte) (string, bool) {
 		source string
 	}{
 		{prefix: "633;P;FloetermProgram=", source: "osc_633_program"},
+		{prefix: "633;P;FloetermLifecycle=", source: "osc_633_lifecycle"},
 		{prefix: "633;P;FloetermContext=", source: "osc_633_context"},
 		{prefix: "633;P;FloetermWork=", source: "osc_633_work"},
 		{prefix: "633;P;Cwd=", source: "osc_633"},
@@ -208,6 +263,9 @@ func parseShellIntegrationSignalPayload(payload string) (shellIntegrationSignal,
 	case strings.HasPrefix(payload, "633;P;FloetermWork="):
 		marker, ok := parseFloetermWorkPayload(payload)
 		return shellIntegrationSignal{kind: shellIntegrationWork, work: marker}, "osc_633_work", !ok, true
+	case strings.HasPrefix(payload, "633;P;FloetermLifecycle="):
+		kind, nonce, ok := parseFloetermLifecyclePayload(payload)
+		return shellIntegrationSignal{kind: kind, lifecycleNonce: nonce}, "osc_633_lifecycle", !ok, true
 	case strings.HasPrefix(payload, "0;") || strings.HasPrefix(payload, "2;"):
 		title := strings.TrimPrefix(strings.TrimPrefix(payload, "0;"), "2;")
 		_, _, ok := parseTerminalTitleLabel(title)
@@ -227,6 +285,46 @@ func parseShellIntegrationSignalPayload(payload string) (shellIntegrationSignal,
 	default:
 		return shellIntegrationSignal{}, "", false, false
 	}
+}
+
+func parseFloetermLifecyclePayload(payload string) (shellIntegrationSignalKind, string, bool) {
+	fields, ok := parseStrictMarkerFields(payload, "633;P;FloetermLifecycle=v1", map[string]bool{
+		"nonce": true,
+		"event": true,
+	})
+	if !ok || len(fields) != 2 || !validShellLifecycleNonce(fields["nonce"]) {
+		return 0, "", false
+	}
+	switch fields["event"] {
+	case "command_finished":
+		return shellIntegrationCommandFinished, fields["nonce"], true
+	case "prompt_ready":
+		return shellIntegrationPromptReady, fields["nonce"], true
+	default:
+		return 0, "", false
+	}
+}
+
+func validShellLifecycleNonce(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for index := range value {
+		if (value[index] < '0' || value[index] > '9') && (value[index] < 'a' || value[index] > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Session) acceptsShellLifecycleSignalLocked(signal shellIntegrationSignal) bool {
+	if !s.hasActiveRemoteLocationLocked() {
+		return true
+	}
+	if s.shellLifecycleNonce == "" || len(signal.lifecycleNonce) != len(s.shellLifecycleNonce) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(signal.lifecycleNonce), []byte(s.shellLifecycleNonce)) == 1
 }
 
 func (s *Session) checkShellIntegrationChange(chunk []byte) {
@@ -286,36 +384,47 @@ func (s *Session) checkShellIntegrationChange(chunk []byte) {
 			s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyTitleLocked(signal.title, now) })
 		case shellIntegrationProgram:
 			s.mu.Lock()
-			if !s.closed && normalizeForegroundCommandInfo(s.foregroundCommand).Phase != ForegroundCommandRunning {
+			if !s.closed && s.acceptsShellLifecycleSignalLocked(signal) && normalizeForegroundCommandInfo(s.foregroundCommand).Phase != ForegroundCommandRunning {
 				s.pendingForegroundProgram = signal.program
 			}
 			s.mu.Unlock()
 		case shellIntegrationCommandStart:
 			s.mu.Lock()
-			if !s.closed {
+			if !s.closed && s.acceptsShellLifecycleSignalLocked(signal) {
 				s.pendingForegroundProgram = ""
 			}
 			s.mu.Unlock()
 		case shellIntegrationCommandExecuted:
 			s.mu.Lock()
 			closed := s.closed
-			alreadyRunning := closed || normalizeForegroundCommandInfo(s.foregroundCommand).Phase == ForegroundCommandRunning
+			accepted := !closed && s.acceptsShellLifecycleSignalLocked(signal)
+			alreadyRunning := !accepted || normalizeForegroundCommandInfo(s.foregroundCommand).Phase == ForegroundCommandRunning
 			program := s.pendingForegroundProgram
 			s.pendingForegroundProgram = ""
 			s.mu.Unlock()
 			if !alreadyRunning {
-				s.updateForegroundCommand(ForegroundCommandRunning, program)
+				s.updateForegroundCommandFromShell(signal, ForegroundCommandRunning, program)
 			}
 		case shellIntegrationCommandFinished, shellIntegrationPromptReady:
 			s.mu.Lock()
-			s.pendingForegroundProgram = ""
+			if !s.closed && s.acceptsShellLifecycleSignalLocked(signal) {
+				s.pendingForegroundProgram = ""
+			}
 			s.mu.Unlock()
-			s.updateForegroundCommand(ForegroundCommandIdle, "")
+			s.updateForegroundCommandFromShell(signal, ForegroundCommandIdle, "")
 		}
 	}
 }
 
 func (s *Session) updateForegroundCommand(phase ForegroundCommandPhase, displayName string) {
+	s.updateForegroundCommandInternal(nil, phase, displayName)
+}
+
+func (s *Session) updateForegroundCommandFromShell(signal shellIntegrationSignal, phase ForegroundCommandPhase, displayName string) {
+	s.updateForegroundCommandInternal(&signal, phase, displayName)
+}
+
+func (s *Session) updateForegroundCommandInternal(signal *shellIntegrationSignal, phase ForegroundCommandPhase, displayName string) {
 	if s == nil {
 		return
 	}
@@ -328,7 +437,7 @@ func (s *Session) updateForegroundCommand(phase ForegroundCommandPhase, displayN
 	}
 
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || (signal != nil && !s.acceptsShellLifecycleSignalLocked(*signal)) {
 		s.mu.Unlock()
 		return
 	}
