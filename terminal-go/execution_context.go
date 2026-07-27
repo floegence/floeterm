@@ -551,6 +551,15 @@ func (s *Session) propagateLocationLocked(ownerIndex int) {
 	}
 }
 
+func (s *Session) hasActiveRemoteLocationLocked() bool {
+	for index := len(s.contextFrames) - 1; index >= 0; index-- {
+		if s.contextFrames[index].location.Kind == TerminalLocationRemote {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Session) ensureContextBaseLocked() {
 	if len(s.contextFrames) != 0 {
 		return
@@ -641,6 +650,9 @@ func (s *Session) applyContextMarkerLocked(marker terminalContextMarker, now tim
 		if len(s.contextFrames) <= 1 || top.id != marker.frameID || strings.HasPrefix(top.id, "@") {
 			return false
 		}
+		if marker.location != nil && marker.location.Kind == TerminalLocationLocal && s.hasActiveRemoteLocationLocked() {
+			return false
+		}
 		oldCanonical := frameStateCanonical(top)
 		location, app := top.location, top.app
 		if marker.location != nil {
@@ -675,6 +687,9 @@ func (s *Session) applyContextMarkerLocked(marker terminalContextMarker, now tim
 		s.publishContextBoundaryLocked(location, app, now)
 		return true
 	case "push":
+		if marker.location != nil && marker.location.Kind == TerminalLocationLocal && s.hasActiveRemoteLocationLocked() {
+			return false
+		}
 		location, app := top.location, top.app
 		if marker.location != nil {
 			location = *marker.location

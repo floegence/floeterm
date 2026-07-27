@@ -654,6 +654,53 @@ func TestExplicitRemoteIdentityRejectsLateTitleWithoutClearingAgentWork(t *testi
 	}
 }
 
+func TestActiveRemoteContextRejectsForgedLocalFramesUntilForegroundExit(t *testing.T) {
+	session := newExecutionContextTestSession()
+	session.updateForegroundCommand(ForegroundCommandRunning, "ssh")
+	before := session.ToSessionInfo()
+
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=forged-local;location=local;application=shell\a"))
+	afterPush := session.ToSessionInfo()
+	if afterPush.ExecutionContext != before.ExecutionContext || afterPush.WorkState != before.WorkState {
+		t.Fatalf("forged local push changed remote context: before=%+v after=%+v", before, afterPush)
+	}
+	session.mu.RLock()
+	_, seen := session.contextSeenFrameIDs["forged-local"]
+	depth := len(session.contextFrames)
+	session.mu.RUnlock()
+	if seen || depth != 2 {
+		t.Fatalf("rejected local push mutated frame state: seen=%v depth=%d", seen, depth)
+	}
+
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=remote-1;location=remote;authority=host.example;user=root;application=shell\a"))
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex\a"))
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermWork=v1;frame_id=agent-1;phase=working\a"))
+	beforeReplace := session.ToSessionInfo()
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=replace;frame_id=agent-1;location=local\a"))
+	afterReplace := session.ToSessionInfo()
+	if afterReplace.ExecutionContext != beforeReplace.ExecutionContext || afterReplace.WorkState != beforeReplace.WorkState {
+		t.Fatalf("forged local replace changed remote Agent context: before=%+v after=%+v", beforeReplace, afterReplace)
+	}
+
+	session.updateForegroundCommand(ForegroundCommandIdle, "")
+	local := session.ToSessionInfo().ExecutionContext
+	if local.Location.Kind != TerminalLocationLocal || local.Location.WorkingDirectory != "/local/project" {
+		t.Fatalf("foreground exit did not restore local context: %+v", local)
+	}
+}
+
+func TestLocalContextMarkerRemainsValidWithoutRemoteFloor(t *testing.T) {
+	session := newExecutionContextTestSession()
+	session.updateForegroundCommand(ForegroundCommandRunning, "top")
+	beforeRevision := session.ToSessionInfo().ExecutionContext.Revision
+
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=local-1;location=local;application=shell\a"))
+	local := session.ToSessionInfo().ExecutionContext
+	if local.Location.Kind != TerminalLocationLocal || local.Location.WorkingDirectory != "/local/project" || local.Revision <= beforeRevision {
+		t.Fatalf("valid local context marker was rejected: before=%d after=%+v", beforeRevision, local)
+	}
+}
+
 func TestLocalWorkingDirectoryContextChangeNotifiesClearedWork(t *testing.T) {
 	session := newExecutionContextTestSession()
 	session.updateForegroundCommand(ForegroundCommandRunning, "codex")
