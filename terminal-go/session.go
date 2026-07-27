@@ -156,6 +156,11 @@ func mergeShellLifecycleEnvironment(env, shellEnv []string, shell, nonce string)
 		env = removeEnvKey(env, key)
 		shellEnv = removeEnvKey(shellEnv, key)
 	}
+	for _, entry := range shellEnv {
+		if key, _, ok := strings.Cut(entry, "="); ok && key != "" {
+			env = removeEnvKey(env, key)
+		}
+	}
 	env = append(env, shellEnv...)
 	if nonce != "" && supportsAuthenticatedShellLifecycle(shell) {
 		env = append(env, shellLifecycleNonceEnvKey+"="+nonce)
@@ -258,6 +263,9 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	s.mu.Unlock()
 
 	env = mergeShellLifecycleEnvironment(env, shellEnv, shell, s.shellLifecycleNonce)
+	s.mu.Lock()
+	s.shellLifecycleAuthActive = s.shellLifecycleNonce != "" && supportsAuthenticatedShellLifecycle(shell)
+	s.mu.Unlock()
 	env = append(env,
 		"TERM="+s.config.terminalEnv.Term,
 		"COLORTERM="+s.config.terminalEnv.ColorTerm,
@@ -671,6 +679,9 @@ func (s *Session) readPTYOutput(
 			s.processRawPTYData(raw)
 		}
 		if err != nil {
+			if tail := s.flushPrivateShellLifecycleFilter(); len(tail) > 0 {
+				s.publishPTYDisplayData(tail)
+			}
 			s.config.logger.Debug("PTY read finished", "sessionID", s.ID, "error", err)
 			return
 		}
@@ -810,6 +821,11 @@ func collectAvailablePTYBurst(
 
 func (s *Session) processRawPTYData(data []byte) {
 	displayData := s.filterPrivateShellLifecycleMarkers(data)
+	s.publishPTYDisplayData(displayData)
+	s.checkShellIntegrationChange(data)
+}
+
+func (s *Session) publishPTYDisplayData(displayData []byte) {
 	timestamp := time.Now().UnixMilli()
 
 	if len(displayData) > 0 {
@@ -841,7 +857,6 @@ func (s *Session) processRawPTYData(data []byte) {
 		}, subscribers)
 	}
 
-	s.checkShellIntegrationChange(data)
 }
 
 // WriteDataWithSource writes each accepted input exactly once to the PTY.

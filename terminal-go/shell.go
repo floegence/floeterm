@@ -167,15 +167,15 @@ func (p DefaultShellArgsProvider) GetShellArgs(shellPath string, pathPrepend str
 			env = append(env, originalZdotdirEnvKey+"="+orig)
 		}
 		env = append(env, "ZDOTDIR="+initPaths.ZshDir())
-		// Floeterm loads global config itself after capturing the lifecycle nonce.
-		return []string{"-d"}, env
+		// Empty (non-nil) args preserves native global startup files without falling back to -l.
+		return []string{}, env
 
 	case shellTypeFish:
 		cfgFile := initPaths.FishConfig()
 		if _, err := os.Stat(cfgFile); err != nil {
 			return nil, nil
 		}
-		return []string{"--no-config", "--init-command", "source " + cfgFile}, env
+		return []string{"--init-command", "source " + cfgFile}, env
 
 	default:
 		rcFile := initPaths.PosixRC()

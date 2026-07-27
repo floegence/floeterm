@@ -43,7 +43,7 @@ func detectShellType(shellPath string) shellType {
 
 func supportsAuthenticatedShellLifecycle(shellPath string) bool {
 	switch detectShellType(shellPath) {
-	case shellTypeBash, shellTypeZsh, shellTypeFish:
+	case shellTypeBash, shellTypeZsh:
 		return true
 	default:
 		return false
@@ -115,7 +115,6 @@ func (w DefaultShellInitWriter) EnsureShellInitFilesContext(ctx context.Context,
 	if err := os.MkdirAll(paths.ZshDir(), 0o755); err != nil {
 		return fmt.Errorf("failed to create zsh init directory: %w", err)
 	}
-
 	if err := writeFileContext(ctx, paths.BashRC(), bashInitScript(w.EnableCommandLifecycle)); err != nil {
 		return err
 	}
@@ -153,6 +152,8 @@ func bashInitScript(enableCommandLifecycle bool) string {
 `
 	if enableCommandLifecycle {
 		script += bashLifecycleNonceCaptureScript()
+		script += `if [ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]; then
+`
 	}
 	script += `
 # Source user's original bash configuration.
@@ -172,7 +173,7 @@ fi
 	if !enableCommandLifecycle {
 		return script
 	}
-	return script + bashCommandLifecycleScript()
+	return script + "fi\n" + bashCommandLifecycleScript()
 }
 
 func zshInitScript(enableCommandLifecycle bool) string {
@@ -189,6 +190,8 @@ func zshInitScriptForHome(enableCommandLifecycle bool, homeDir string) string {
 `
 	if enableCommandLifecycle {
 		script += zshLifecycleNonceCaptureScript()
+		script += `if [[ -z "${__FLOETERM_COMMAND_LIFECYCLE_LOADED:-}" ]]; then
+`
 	}
 	script += fmt.Sprintf(`
 # Restore original ZDOTDIR for nested shells.
@@ -196,14 +199,6 @@ if [ -n "$%s" ]; then
     export ZDOTDIR="$%s"
 else
     unset ZDOTDIR
-fi
-
-# Source global zsh configs first (system-wide).
-if [ -f /etc/zsh/zshenv ]; then
-    source /etc/zsh/zshenv
-fi
-if [ -f /etc/zsh/zshrc ]; then
-    source /etc/zsh/zshrc
 fi
 
 # Source user's original zsh configuration.
@@ -221,44 +216,32 @@ fi
 	if !enableCommandLifecycle {
 		return script
 	}
-	return script + zshCommandLifecycleScript()
+	return script + "fi\n" + zshCommandLifecycleScript()
 }
 
 func fishInitScript(enableCommandLifecycle bool) string {
-	homeDir, _ := os.UserHomeDir()
-	if homeDir == "" {
-		homeDir = "$HOME"
-	}
-	return fishInitScriptForHome(enableCommandLifecycle, homeDir)
-}
-
-func fishInitScriptForHome(enableCommandLifecycle bool, homeDir string) string {
 	script := `# floeterm shell integration - auto-generated, do not edit.
 
 `
 	if enableCommandLifecycle {
-		script += fishLifecycleNonceCaptureScript()
+		script += `if not set -q __FLOETERM_COMMAND_LIFECYCLE_LOADED
+`
 	}
-	script += fmt.Sprintf(`
-# Source user's original fish configuration.
-if test -f "%s/.config/fish/config.fish"
-    source "%s/.config/fish/config.fish"
-end
-
+	script += `
 # Inject floeterm paths (after user's config to take priority).
-if set -q %s
-    set -l prepend_paths (string split ':' $%s)
+if set -q ` + pathPrependEnvKey + `
+    set -l prepend_paths (string split ':' $` + pathPrependEnvKey + `)
     for p in $prepend_paths
         if not contains $p $PATH
             set -gx PATH $p $PATH
         end
     end
 end
-`, homeDir, homeDir, pathPrependEnvKey, pathPrependEnvKey)
+`
 	if !enableCommandLifecycle {
 		return script
 	}
-	return script + fishCommandLifecycleScript()
+	return script + "end\n" + fishCommandLifecycleScript()
 }
 
 func posixInitScript() string {
@@ -279,6 +262,10 @@ fi
 
 func bashLifecycleNonceCaptureScript() string {
 	return `# Capture the private lifecycle nonce before any user configuration runs.
+__floeterm_terminal_restore_xtrace=0
+case "$-" in
+    *x*) __floeterm_terminal_restore_xtrace=1; set +x ;;
+esac
 if [ -z "${__FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED+x}" ]; then
     unset __floeterm_terminal_lifecycle_nonce
     __floeterm_terminal_lifecycle_nonce="${FLOETERM_SHELL_LIFECYCLE_NONCE:-}"
@@ -287,11 +274,20 @@ if [ -z "${__FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED+x}" ]; then
     readonly __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED=1
 fi
 unset FLOETERM_SHELL_LIFECYCLE_NONCE
+if [ "$__floeterm_terminal_restore_xtrace" = "1" ]; then
+    set -x
+fi
+unset __floeterm_terminal_restore_xtrace
 `
 }
 
 func zshLifecycleNonceCaptureScript() string {
 	return `# Capture the private lifecycle nonce before any user configuration runs.
+typeset -g __floeterm_terminal_restore_xtrace=0
+if [[ -o xtrace ]]; then
+    unsetopt xtrace
+    typeset -g __floeterm_terminal_restore_xtrace=1
+fi
 if [[ -z "${__FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED+x}" ]]; then
     unset __floeterm_terminal_lifecycle_nonce
     typeset -g __floeterm_terminal_lifecycle_nonce="${FLOETERM_SHELL_LIFECYCLE_NONCE:-}"
@@ -300,17 +296,10 @@ if [[ -z "${__FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED+x}" ]]; then
     typeset -gr __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED=1
 fi
 unset FLOETERM_SHELL_LIFECYCLE_NONCE
-`
-}
-
-func fishLifecycleNonceCaptureScript() string {
-	return `# Capture the private lifecycle nonce before any user configuration runs.
-if not set -q __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED
-    set -e __floeterm_terminal_lifecycle_nonce
-    set -g __floeterm_terminal_lifecycle_nonce "$FLOETERM_SHELL_LIFECYCLE_NONCE"
-    set -g __FLOETERM_SHELL_LIFECYCLE_NONCE_CAPTURED 1
-end
-set -e FLOETERM_SHELL_LIFECYCLE_NONCE
+if [[ "$__floeterm_terminal_restore_xtrace" = "1" ]]; then
+    setopt xtrace
+fi
+unset __floeterm_terminal_restore_xtrace
 `
 }
 
@@ -322,8 +311,15 @@ __floeterm_terminal_osc() {
 }
 
 __floeterm_terminal_authenticated_lifecycle() {
+    local restore_xtrace=0
+    case "$-" in
+        *x*) restore_xtrace=1; set +x ;;
+    esac
     if [ -n "$__floeterm_terminal_lifecycle_nonce" ]; then
         __floeterm_terminal_osc "P;FloetermLifecycle=v1;nonce=$__floeterm_terminal_lifecycle_nonce;event=$1"
+    fi
+    if [ "$restore_xtrace" = "1" ]; then
+        set -x
     fi
 }
 
@@ -473,8 +469,16 @@ __floeterm_terminal_osc() {
 }
 
 __floeterm_terminal_authenticated_lifecycle() {
+    local restore_xtrace=0
+    if [[ -o xtrace ]]; then
+        unsetopt xtrace
+        restore_xtrace=1
+    fi
     if [[ -n "$__floeterm_terminal_lifecycle_nonce" ]]; then
         __floeterm_terminal_osc "P;FloetermLifecycle=v1;nonce=$__floeterm_terminal_lifecycle_nonce;event=$1"
+    fi
+    if [[ "$restore_xtrace" = "1" ]]; then
+        setopt xtrace
     fi
 }
 
@@ -547,16 +551,9 @@ fi
 }
 
 func fishCommandLifecycleScript() string {
-	return fishLifecycleNonceCaptureScript() + `
-# Emit OSC 633 command lifecycle and working-directory markers.
+	return `# Emit OSC 633 command lifecycle and working-directory markers.
 function __floeterm_terminal_osc --argument payload
     printf '\e]633;%s\a' $payload
-end
-
-function __floeterm_terminal_authenticated_lifecycle --argument event
-    if test -n "$__floeterm_terminal_lifecycle_nonce"
-        __floeterm_terminal_osc "P;FloetermLifecycle=v1;nonce=$__floeterm_terminal_lifecycle_nonce;event=$event"
-    end
 end
 
 function __floeterm_terminal_emit_cwd
@@ -608,12 +605,11 @@ end
 function __floeterm_terminal_fish_postexec --on-event fish_postexec
     if test "$__floeterm_terminal_prompt_seen" = "1" -a "$__floeterm_terminal_command_running" = "1"
         __floeterm_terminal_osc "D;$status"
-        __floeterm_terminal_authenticated_lifecycle command_finished
     end
     set -g __floeterm_terminal_command_running 0
 end
 
-if not functions -q __floeterm_terminal_original_fish_prompt
+if not set -q __FLOETERM_COMMAND_LIFECYCLE_LOADED
     set -g __FLOETERM_COMMAND_LIFECYCLE_LOADED 1
     if functions -q fish_prompt
         functions -c fish_prompt __floeterm_terminal_original_fish_prompt
@@ -622,7 +618,6 @@ if not functions -q __floeterm_terminal_original_fish_prompt
         set -g __floeterm_terminal_prompt_seen 1
         __floeterm_terminal_emit_cwd
         __floeterm_terminal_osc A
-        __floeterm_terminal_authenticated_lifecycle prompt_ready
         if functions -q __floeterm_terminal_original_fish_prompt
             __floeterm_terminal_original_fish_prompt
         end

@@ -110,6 +110,17 @@ func (s *Session) filterPrivateShellLifecycleMarkers(chunk []byte) []byte {
 	return display
 }
 
+func (s *Session) flushPrivateShellLifecycleFilter() []byte {
+	s.mu.Lock()
+	pending := s.shellLifecycleFilterPending
+	s.shellLifecycleFilterPending = nil
+	s.mu.Unlock()
+	if bytes.HasPrefix(pending, shellLifecyclePrivatePrefix) {
+		return nil
+	}
+	return pending
+}
+
 func normalizeForegroundCommandDisplayName(raw string) (string, bool) {
 	if raw == "" || len(raw) > maxForegroundCommandNameBytes {
 		return "", false
@@ -318,10 +329,10 @@ func validShellLifecycleNonce(value string) bool {
 }
 
 func (s *Session) acceptsShellLifecycleSignalLocked(signal shellIntegrationSignal) bool {
-	if !s.hasActiveRemoteLocationLocked() {
+	if !s.shellLifecycleAuthActive || !s.hasActiveRemoteLocationLocked() {
 		return true
 	}
-	if s.shellLifecycleNonce == "" || len(signal.lifecycleNonce) != len(s.shellLifecycleNonce) {
+	if len(signal.lifecycleNonce) != len(s.shellLifecycleNonce) {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(signal.lifecycleNonce), []byte(s.shellLifecycleNonce)) == 1

@@ -94,17 +94,21 @@ args := terminal.DefaultShellArgsProvider{
 
 Lifecycle mode works even when no PATH prepend is required. Bash, Zsh, and Fish receive native hooks; POSIX fallback shells retain their original profile behavior without unsafe command-hook emulation.
 
-Each enabled Bash, Zsh, or Fish session authenticates its local command-finished
+Each enabled Bash or Zsh session authenticates its local command-finished
 and prompt-ready markers with a private random nonce. The generated init captures
 the nonce into a non-exported shell variable and removes it from the environment
-before any global or user configuration runs. Repeated init loads preserve the
-private value without exporting it. POSIX and unknown fallback shells never
-receive the nonce and keep lifecycle state unknown.
-While an execution-context frame reports a remote location, unauthenticated
-prompt, command, and program markers from PTY output cannot end or replace the
-foreground epoch. This keeps a remote location monotonic until the local shell
-hook observes the real command exit; a remote program cannot restore local
-context by printing forged OSC 133/633 lifecycle text.
+before user configuration runs. Native system startup files still run in their
+platform-defined order and remain part of the trusted local-shell boundary.
+Repeated init loads do not re-run user configuration or duplicate hooks. Fish,
+POSIX, and unknown fallback shells never receive the nonce and retain the legacy,
+unauthenticated lifecycle behavior instead of enforcing a remote floor they
+cannot authenticate.
+For those authenticated sessions, while an execution-context frame reports a
+remote location, unauthenticated prompt, command, and program markers from PTY
+output cannot end or replace the foreground epoch. This keeps a remote location
+monotonic until the local shell hook observes the real command exit; a remote
+program cannot restore local context by printing forged OSC 133/633 lifecycle
+text.
 
 Enabled shells also report a bounded foreground-command snapshot through
 `TerminalSessionInfo.ForegroundCommand`. The phase is `unknown`, `idle`, or
@@ -144,6 +148,8 @@ Local context markers and a pop that would remove the final remote frame are
 also rejected while any active context frame owns a remote location. Nested
 pops that retain a remote parent remain valid. The remote floor is released
 only when the authenticated local shell lifecycle closes the foreground epoch.
+Legacy Fish, POSIX, and unknown-shell sessions continue to accept their normal
+local completion markers so a remote candidate cannot become permanently pinned.
 
 Structured producers may publish `FloetermWork=v1` for an active, topmost Agent
 context frame. Accepted work snapshots are stamped with the current context and

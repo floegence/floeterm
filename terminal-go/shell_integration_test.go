@@ -273,6 +273,27 @@ func TestPrivateLifecycleMarkerIsStreamSafeAndNeverPublished(t *testing.T) {
 	}
 }
 
+func TestPrivateLifecycleFilterFlushesOnlyOrdinaryPartialPrefixes(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		pending string
+		want    string
+	}{
+		{name: "ordinary partial prefix", pending: "tail\x1b]633;P;FloetermLife", want: "tail\x1b]633;P;FloetermLife"},
+		{name: "private marker fragment", pending: "\x1b]633;P;FloetermLifecycle=v1;nonce=secret", want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session := &Session{shellLifecycleFilterPending: []byte(test.pending)}
+			if got := string(session.flushPrivateShellLifecycleFilter()); got != test.want {
+				t.Fatalf("flush = %q, want %q", got, test.want)
+			}
+			if len(session.shellLifecycleFilterPending) != 0 {
+				t.Fatalf("flush retained pending bytes: %q", session.shellLifecycleFilterPending)
+			}
+		})
+	}
+}
+
 func TestOversizedKnownControlsKeepContentFreeDiagnosticSources(t *testing.T) {
 	tests := []struct {
 		prefix string

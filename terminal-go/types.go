@@ -349,6 +349,7 @@ type Session struct {
 	contextSeenFrameIDs           map[string]struct{}
 	contextForegroundRevision     uint64
 	shellLifecycleNonce           string
+	shellLifecycleAuthActive      bool
 
 	lastAppliedCols    int
 	lastAppliedRows    int

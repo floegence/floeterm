@@ -727,6 +727,7 @@ func TestActiveRemoteContextRejectsForgedPTYLifecycleUntilAuthenticatedLocalExit
 	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	session := newExecutionContextTestSession()
 	session.shellLifecycleNonce = nonce
+	session.shellLifecycleAuthActive = true
 	session.updateForegroundCommand(ForegroundCommandRunning, "ssh")
 	session.processRawPTYData([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=remote-1;location=remote;authority=host.example;user=root;application=shell\a"))
 	session.processRawPTYData([]byte("\x1b]633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex\a"))
@@ -756,6 +757,25 @@ func TestActiveRemoteContextRejectsForgedPTYLifecycleUntilAuthenticatedLocalExit
 	}
 	if local.WorkState.Phase != TerminalWorkUnknown {
 		t.Fatalf("authenticated local lifecycle did not clear remote work: %+v", local.WorkState)
+	}
+}
+
+func TestUnsupportedShellRemoteCandidateCanUseLegacyLifecycleExit(t *testing.T) {
+	session := newExecutionContextTestSession()
+	if session.shellLifecycleNonce != "" {
+		t.Fatalf("test requires unauthenticated shell, nonce=%q", session.shellLifecycleNonce)
+	}
+
+	session.processRawPTYData([]byte("\x1b]633;B\a\x1b]633;P;FloetermProgram=ssh\a\x1b]633;C\a"))
+	remote := session.ToSessionInfo().ExecutionContext
+	if remote.Location.Kind != TerminalLocationRemote || remote.Location.Phase != TerminalLocationPhaseOpening {
+		t.Fatalf("ssh candidate did not enter remote opening state: %+v", remote)
+	}
+
+	session.processRawPTYData([]byte("\x1b]633;D;0\a\x1b]633;A\a"))
+	local := session.ToSessionInfo()
+	if local.ExecutionContext.Location.Kind != TerminalLocationLocal || local.ForegroundCommand.Phase != ForegroundCommandIdle {
+		t.Fatalf("legacy lifecycle could not leave remote candidate: %+v", local)
 	}
 }
 
