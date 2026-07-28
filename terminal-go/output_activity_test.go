@@ -385,6 +385,9 @@ func TestRealShellOutputActivityMatrix(t *testing.T) {
 
 			homeDir := t.TempDir()
 			t.Setenv("HOME", homeDir)
+			if shellName == "fish" {
+				t.Setenv("fish_features", "no-query-term")
+			}
 			binDir := t.TempDir()
 			agentPath := filepath.Join(binDir, "codex")
 			if err := os.WriteFile(agentPath, []byte("#!/bin/sh\nprintf '__FLOETERM_FIRST__'\nsleep 0.3\nprintf '__FLOETERM_SECOND__'\nsleep 0.3\n"), 0o755); err != nil {
