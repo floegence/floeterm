@@ -693,7 +693,9 @@ try {
   );
 
   await page.evaluate(() => {
-    window.__floetermMirrorHarness.getViews().forEach(view => view.resetStreamDiagnostics());
+    const views = window.__floetermMirrorHarness.getViews();
+    const commonWatermark = Math.max(...views.map(view => view.getStreamDiagnostics().lastSequence));
+    views.forEach(view => view.resetStreamDiagnostics(commonWatermark));
   });
   const consistencyMarkers = [
     'FLOETERM_MIRROR_CONSISTENCY_A',

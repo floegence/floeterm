@@ -34,6 +34,12 @@ const openMirror = async page => {
   });
 };
 
+const resetMirrorStreamDiagnostics = page => page.evaluate(() => {
+  const views = window.__floetermMirrorHarness.getViews();
+  const commonWatermark = Math.max(...views.map(view => view.getStreamDiagnostics().lastSequence));
+  views.forEach(view => view.resetStreamDiagnostics(commonWatermark));
+});
+
 const expectMirrorGeometryConverged = async page => {
   await expect.poll(async () => {
     const state = await readMirror(page);
@@ -119,9 +125,7 @@ test('keeps independent viewport sizes on one shared terminal grid and screen st
   expect(initialRuntime.connection_count).toBe(2);
   expect(initialRuntime.live_attachment_count).toBe(2);
 
-  await page.evaluate(() => {
-    window.__floetermMirrorHarness.getViews().forEach(view => view.resetStreamDiagnostics());
-  });
+  await resetMirrorStreamDiagnostics(page);
   const consistencyMarkers = [
     'FLOETERM_CONSISTENCY_A',
     'FLOETERM_CONSISTENCY_B 中文 😀',
@@ -266,9 +270,7 @@ test('keeps long wrapped output and terminal state identical across different vi
   const initial = await readMirror(page);
   expect(initial.views[0].viewport.cols).not.toBe(initial.views[1].viewport.cols);
   expect(initial.views[0].info).toEqual(initial.views[1].info);
-  await page.evaluate(() => {
-    window.__floetermMirrorHarness.getViews().forEach(view => view.resetStreamDiagnostics());
-  });
+  await resetMirrorStreamDiagnostics(page);
   const wrapTarget = `FLOETERM_WRAP_${'X'.repeat(180)}_END`;
   await page.evaluate(() => {
     window.__floetermMirrorHarness.getViews()[0].sendInput(

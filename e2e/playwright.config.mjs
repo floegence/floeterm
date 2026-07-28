@@ -1,7 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
 const port = 8282;
-const chromiumArgs = process.env.CI
+const headed = Boolean(process.env.CI) || process.env.FLOETERM_E2E_HEADED === '1';
+const chromiumArgs = process.env.CI || !headed
   ? ['--enable-unsafe-swiftshader', '--use-angle=swiftshader']
   : [];
 
@@ -14,7 +15,7 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     browserName: 'chromium',
-    headless: false,
+    headless: !headed,
     viewport: { width: 1440, height: 900 },
     deviceScaleFactor: 1,
     screenshot: 'off',

@@ -53,7 +53,7 @@ type FloetermPerfHarness = {
     hash: number;
     tail: string;
   };
-  resetStreamDiagnostics(): void;
+  resetStreamDiagnostics(afterSequence?: number): void;
 };
 
 type FloetermMirrorViewHarness = FloetermPerfHarness & {
@@ -69,7 +69,7 @@ type FloetermMirrorViewHarness = FloetermPerfHarness & {
   };
   getRenderDiagnostics(): { count: number; lastRenderAtMs: number };
   resetRenderDiagnostics(): void;
-  resetStreamDiagnostics(): void;
+  resetStreamDiagnostics(afterSequence?: number): void;
   reconnect(): void;
 };
 
@@ -302,6 +302,7 @@ const SingleTerminalPane = (props: {
   });
   let streamDiagnostics = initialStreamDiagnostics();
   let streamDecoder = new TextDecoder();
+  let streamDiagnosticsAfterSequence = 0;
   let geometryDiagnostics = { generation: 0, cols: 0, rows: 0 };
   const isMobile = createMediaQuery('(max-width: 640px), (pointer: coarse)');
   const fontSize = createMemo(() => (isMobile() ? 14 : 12));
@@ -345,9 +346,10 @@ const SingleTerminalPane = (props: {
       forceResize: () => terminal.actions().forceResize(),
       getGeometryDiagnostics: () => ({ ...geometryDiagnostics }),
       getStreamDiagnostics: () => ({ ...streamDiagnostics }),
-      resetStreamDiagnostics: () => {
+      resetStreamDiagnostics: (afterSequence = 0) => {
         streamDiagnostics = initialStreamDiagnostics();
         streamDecoder = new TextDecoder();
+        streamDiagnosticsAfterSequence = Math.max(0, Number(afterSequence) || 0);
       },
     }
     : null;
@@ -362,6 +364,7 @@ const SingleTerminalPane = (props: {
     const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
       if (event.type !== 'data') return;
       const sequence = Number(event.sequence ?? 0);
+      if (sequence > 0 && sequence <= streamDiagnosticsAfterSequence) return;
       streamDiagnostics.dataEvents += 1;
       streamDiagnostics.totalBytes += event.data.byteLength;
       if (streamDiagnostics.firstSequence === 0) {
@@ -554,6 +557,7 @@ const MirrorTerminalConnection = (props: {
   });
   let streamDiagnostics = initialStreamDiagnostics();
   let streamDecoder = new TextDecoder();
+  let streamDiagnosticsAfterSequence = 0;
   let geometryDiagnostics = { generation: 0, cols: 0, rows: 0 };
   let renderDiagnostics = { count: 0, lastRenderAtMs: 0 };
   const terminal = createSolidTerminal(() => ({
@@ -614,9 +618,10 @@ const MirrorTerminalConnection = (props: {
     getRenderDiagnostics: () => ({ ...renderDiagnostics }),
     resetRenderDiagnostics: () => { renderDiagnostics = { count: 0, lastRenderAtMs: 0 }; },
     getStreamDiagnostics: () => ({ ...streamDiagnostics }),
-    resetStreamDiagnostics: () => {
+    resetStreamDiagnostics: (afterSequence = 0) => {
       streamDiagnostics = initialStreamDiagnostics();
       streamDecoder = new TextDecoder();
+      streamDiagnosticsAfterSequence = Math.max(0, Number(afterSequence) || 0);
     },
     reconnect: props.onReconnect,
   };
@@ -626,6 +631,7 @@ const MirrorTerminalConnection = (props: {
     const unsubscribe = props.runtime.eventSource.onTerminalData(props.sessionId, event => {
       if (event.type !== 'data') return;
       const sequence = Number(event.sequence ?? 0);
+      if (sequence > 0 && sequence <= streamDiagnosticsAfterSequence) return;
       streamDiagnostics.dataEvents += 1;
       streamDiagnostics.totalBytes += event.data.byteLength;
       if (streamDiagnostics.firstSequence === 0) {

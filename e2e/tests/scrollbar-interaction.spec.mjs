@@ -25,7 +25,10 @@ const openTerminalWithHistory = async page => {
   };
 };
 
-test('uses real mouse, wheel, keyboard, focus, selection, and media preferences', async ({ page }) => {
+test('uses real mouse, wheel, keyboard, focus, selection, and media preferences', async ({ context, page }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+    origin: 'http://127.0.0.1:8282',
+  });
   const failures = captureBrowserFailures(page);
   const { scrollbar, surface, terminal } = await openTerminalWithHistory(page);
   const surfaceBox = await surface.boundingBox();
