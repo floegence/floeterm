@@ -82,6 +82,16 @@ const unknownExecutionContext = (): TerminalExecutionContextInfo => ({
   updatedAtMs: 0,
 });
 
+// An equal revision with different context payloads is not a safe local-path authority.
+// Keep the revision fence while the authoritative list refresh resolves the contradiction.
+const conflictedExecutionContext = (
+  context: TerminalExecutionContextInfo,
+): TerminalExecutionContextInfo => ({
+  ...unknownExecutionContext(),
+  revision: context.revision,
+  updatedAtMs: context.updatedAtMs,
+});
+
 const validRemoteLocationLabel = (label: string, authority: string): boolean => {
   if (!label || label === authority) return true;
   if (!authority || !label.endsWith(`@${authority}`)) return false;
@@ -272,6 +282,7 @@ const normalizeSessions = (list: TerminalSessionInfo[]): TerminalSessionInfo[] =
 const preferCurrentSessionMetadata = (
   current: TerminalSessionInfo | undefined,
   incoming: TerminalSessionInfo,
+  authoritative = false,
 ): TerminalSessionInfo => {
   if (!current) return incoming;
   const currentCommand = normalizeForegroundCommand(current.foregroundCommand);
@@ -283,7 +294,14 @@ const preferCurrentSessionMetadata = (
   const currentWork = normalizeWorkState(current.workState);
   const incomingWork = normalizeWorkState(incoming.workState);
   const foregroundCommand = incomingCommand.revision <= currentCommand.revision ? currentCommand : incomingCommand;
-  const executionContext = incomingContext.revision <= currentContext.revision ? currentContext : incomingContext;
+  const conflictingContext = incomingContext.revision === currentContext.revision
+    && JSON.stringify(incomingContext) !== JSON.stringify(currentContext);
+  const executionContext = conflictingContext && !authoritative
+    ? conflictedExecutionContext(currentContext)
+    : incomingContext.revision > currentContext.revision
+      || (authoritative && incomingContext.revision === currentContext.revision)
+      ? incomingContext
+      : currentContext;
   const currentWorkForFences = projectWorkState(currentWork, executionContext, foregroundCommand);
   const incomingWorkMatches = workMatchesFences(incomingWork, executionContext, foregroundCommand);
   const selectedWork = incomingWorkMatches && incomingWork.revision > currentWorkForFences.revision
@@ -304,7 +322,7 @@ const mergeCurrentSessionMetadata = (
   incoming: TerminalSessionInfo[],
 ): TerminalSessionInfo[] => {
   const currentById = new Map(current.map(session => [session.id, session]));
-  return incoming.map(session => preferCurrentSessionMetadata(currentById.get(session.id), session));
+  return incoming.map(session => preferCurrentSessionMetadata(currentById.get(session.id), session, true));
 };
 
 const sessionsEqual = (a: TerminalSessionInfo[], b: TerminalSessionInfo[]): boolean => {
@@ -671,12 +689,17 @@ export class TerminalSessionsCoordinator {
         : currentOutput;
       const currentContext = normalizeExecutionContext(s.executionContext);
       const incomingContext = patch?.executionContext ? validateExecutionContextUpdate(patch.executionContext) : null;
-      if (incomingContext && incomingContext.revision === currentContext.revision
-        && JSON.stringify(incomingContext) !== JSON.stringify(currentContext)) {
+      const conflictingContext = Boolean(incomingContext
+        && incomingContext.revision === currentContext.revision
+        && JSON.stringify(incomingContext) !== JSON.stringify(currentContext));
+      if (conflictingContext && incomingContext) {
         this.reportEqualRevisionConflicts(s, { ...s, executionContext: incomingContext });
       }
-      const executionContext = incomingContext && incomingContext.revision > currentContext.revision
-        ? incomingContext : currentContext;
+      const executionContext = conflictingContext
+        ? conflictedExecutionContext(currentContext)
+        : incomingContext && incomingContext.revision > currentContext.revision
+          ? incomingContext
+          : currentContext;
       const currentWork = normalizeWorkState(s.workState);
       const incomingWork = patch?.workState ? validateWorkStateUpdate(patch.workState) : null;
       const currentWorkForFences = projectWorkState(currentWork, executionContext, foregroundCommand);

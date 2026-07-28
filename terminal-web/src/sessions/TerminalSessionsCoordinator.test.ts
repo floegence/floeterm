@@ -60,6 +60,39 @@ describe('TerminalSessionsCoordinator', () => {
     expect(coordinator.getSnapshot()[0]?.outputActivity?.phase).toBe('streaming');
   });
 
+  it('fails closed for an equal-revision context conflict until the authoritative refresh resolves it', async () => {
+    const localContext = {
+      location: { kind: 'local' as const, phase: 'ready' as const, label: '', authority: '', workingDirectory: '/repo', source: 'shell_integration' as const },
+      application: { kind: 'shell' as const, identity: '', displayName: '' },
+      revision: 3,
+      updatedAtMs: 30,
+    };
+    const remoteContext = {
+      location: { kind: 'remote' as const, phase: 'ready' as const, label: 'root@host', authority: 'host', workingDirectory: '/root', source: 'osc7' as const },
+      application: { kind: 'shell' as const, identity: '', displayName: '' },
+      revision: 3,
+      updatedAtMs: 31,
+    };
+    const authoritative = makeSession('context-conflict', { executionContext: remoteContext });
+    const listSessions = vi.fn().mockResolvedValue([authoritative]);
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport({ listSessions }), pollMs: 0,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    coordinator.upsertSession(makeSession('context-conflict', { executionContext: localContext }));
+
+    coordinator.updateSessionMeta('context-conflict', { executionContext: remoteContext });
+    expect(coordinator.getSnapshot()[0]?.executionContext).toMatchObject({
+      location: { kind: 'unknown', phase: 'unknown' },
+      revision: 3,
+    });
+
+    await flushPromises();
+    await flushPromises();
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    expect(coordinator.getSnapshot()[0]?.executionContext).toEqual(remoteContext);
+  });
+
   it('ignores fence-stale work before equal-revision conflict handling', async () => {
     const warn = vi.fn();
     const listSessions = vi.fn().mockResolvedValue([]);
