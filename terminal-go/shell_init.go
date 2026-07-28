@@ -929,6 +929,7 @@ function __floeterm_terminal_extract_ssh_target
         set target "$login_user@$target"
     end
     set -g __floeterm_terminal_ssh_target $target
+    return 0
 end
 
 set -g __floeterm_terminal_prompt_seen 0
