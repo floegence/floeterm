@@ -607,6 +607,70 @@ func TestBashCommandLifecyclePublishesExecutedProgramAndFinalPromptState(t *test
 	}
 }
 
+func TestRealShellLifecyclePublishesOnlyBoundedSSHTargets(t *testing.T) {
+	tests := []struct {
+		name       string
+		command    string
+		wantTarget string
+	}{
+		{name: "hostname", command: "ssh root@Host.Example.", wantTarget: "root@Host.Example."},
+		{name: "common options", command: "ssh -p 2222 -i ~/.ssh/id -o StrictHostKeyChecking=no root@host.example", wantTarget: "root@host.example"},
+		{name: "login and separator", command: "ssh -l root -- prod_alias", wantTarget: "root@prod_alias"},
+		{name: "IPv4", command: "ssh 192.0.2.10", wantTarget: "192.0.2.10"},
+		{name: "IPv6", command: "ssh user@[2001:db8::1]", wantTarget: "user@[2001:db8::1]"},
+		{name: "quoted target is rejected", command: `ssh "host.example"`},
+		{name: "expansion is rejected", command: `ssh $HOST`},
+		{name: "unknown option is rejected", command: "ssh --future-option host.example"},
+	}
+
+	shells := []struct {
+		name   string
+		path   string
+		script func() string
+		invoke string
+	}{
+		{name: "bash", path: "/bin/bash", script: bashCommandLifecycleScript, invoke: "trap - DEBUG\n__floeterm_terminal_at_prompt=1\n__floeterm_terminal_command_start \"$1\"\n"},
+		{name: "zsh", path: "/bin/zsh", script: zshCommandLifecycleScript, invoke: "__floeterm_terminal_preexec \"$1\"\n"},
+		{name: "fish", path: "/usr/bin/fish", script: fishCommandLifecycleScript, invoke: "__floeterm_terminal_fish_preexec \"$argv[1]\"\n"},
+	}
+
+	for _, shell := range shells {
+		shell := shell
+		if _, err := os.Stat(shell.path); err != nil {
+			if resolved, lookupErr := exec.LookPath(shell.name); lookupErr == nil {
+				shell.path = resolved
+			} else {
+				t.Logf("%s unavailable: %v", shell.name, err)
+				continue
+			}
+		}
+		for _, test := range tests {
+			t.Run(shell.name+"/"+test.name, func(t *testing.T) {
+				probe := shell.script() + "\n" + shell.invoke
+				args := []string{"-c", probe, "probe", test.command}
+				if shell.name == "fish" {
+					args = []string{"-c", probe, test.command}
+				}
+				output, err := exec.Command(shell.path, args...).CombinedOutput()
+				if err != nil {
+					t.Fatalf("%s probe failed: %v\n%s", shell.name, err, output)
+				}
+				markerPrefix := "\x1b]633;P;FloetermSshTarget=v1;target="
+				if test.wantTarget == "" {
+					if bytes.Contains(output, []byte(markerPrefix)) {
+						t.Fatalf("rejected command published SSH target: %q", output)
+					}
+					return
+				}
+				marker := markerPrefix + test.wantTarget + "\a"
+				if !bytes.Contains(output, []byte(marker)) {
+					t.Fatalf("missing marker %q in %q", marker, output)
+				}
+			})
+		}
+	}
+}
+
 func TestRealBashCommandLifecyclePreservesPromptCommandAndReportsSilentCommand(t *testing.T) {
 	bashPath := "/bin/bash"
 	if _, err := os.Stat(bashPath); err != nil {

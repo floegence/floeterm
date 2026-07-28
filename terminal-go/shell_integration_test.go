@@ -48,6 +48,9 @@ func TestShellIntegrationActivityVectorsPreserveTokenOrder(t *testing.T) {
 						if token.signal.program != "" {
 							label += ":" + token.signal.program
 						}
+						if token.signal.sshTarget != "" {
+							label += ":" + token.signal.sshTarget
+						}
 						got = append(got, label)
 					}
 				}
@@ -76,6 +79,8 @@ func shellIntegrationSignalLabel(kind shellIntegrationSignalKind) string {
 		return "command-finished"
 	case shellIntegrationProgram:
 		return "program"
+	case shellIntegrationSSHTarget:
+		return "ssh-target"
 	case shellIntegrationContext:
 		return "context"
 	case shellIntegrationWork:
@@ -86,6 +91,47 @@ func shellIntegrationSignalLabel(kind shellIntegrationSignalKind) string {
 		return "integration-ready"
 	default:
 		return "unknown"
+	}
+}
+
+func TestSSHTargetMarkerIsBoundToPendingSSHCommand(t *testing.T) {
+	session := &Session{
+		ID: "ssh-target", connections: make(map[string]*ConnectionInfo), liveAttachments: make(map[string]liveAttachment),
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.checkShellIntegrationChange([]byte(
+		"\x1b]633;B\a" +
+			"\x1b]633;P;FloetermProgram=ssh\a" +
+			"\x1b]633;P;FloetermSshTarget=v1;target=root@Host.Example.\a" +
+			"\x1b]633;C\a",
+	))
+	location := session.ToSessionInfo().ExecutionContext.Location
+	if location.Kind != TerminalLocationRemote || location.Phase != TerminalLocationPhaseOpening ||
+		location.Label != "root@host.example" || location.Authority != "" || location.Source != TerminalContextSourceForegroundCandidate {
+		t.Fatalf("SSH target location = %+v", location)
+	}
+
+	session.checkShellIntegrationChange([]byte("\x1b]633;P;FloetermSshTarget=v1;target=late.example\a"))
+	if after := session.ToSessionInfo().ExecutionContext.Location; after != location {
+		t.Fatalf("late SSH target changed running context: before=%+v after=%+v", location, after)
+	}
+}
+
+func TestSSHTargetMarkerRejectsWrongOrderProgramAndMalformedTargets(t *testing.T) {
+	for _, sequence := range []string{
+		"\x1b]633;B\a\x1b]633;P;FloetermSshTarget=v1;target=host.example\a\x1b]633;P;FloetermProgram=ssh\a\x1b]633;C\a",
+		"\x1b]633;B\a\x1b]633;P;FloetermProgram=top\a\x1b]633;P;FloetermSshTarget=v1;target=host.example\a\x1b]633;C\a",
+		"\x1b]633;B\a\x1b]633;P;FloetermProgram=ssh\a\x1b]633;P;FloetermSshTarget=v1;target=bad%3Bhost\a\x1b]633;C\a",
+	} {
+		session := &Session{
+			ID: "ssh-target-reject", connections: make(map[string]*ConnectionInfo), liveAttachments: make(map[string]liveAttachment),
+			config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		}
+		session.checkShellIntegrationChange([]byte(sequence))
+		location := session.ToSessionInfo().ExecutionContext.Location
+		if location.Label != "SSH" && location.Kind == TerminalLocationRemote {
+			t.Fatalf("rejected sequence produced label %q", location.Label)
+		}
 	}
 }
 
@@ -302,6 +348,7 @@ func TestOversizedKnownControlsKeepContentFreeDiagnosticSources(t *testing.T) {
 		source string
 	}{
 		{prefix: "633;P;FloetermProgram=", source: "osc_633_program"},
+		{prefix: "633;P;FloetermSshTarget=", source: "osc_633_ssh_target"},
 		{prefix: "633;P;FloetermContext=", source: "osc_633_context"},
 		{prefix: "633;P;FloetermWork=", source: "osc_633_work"},
 		{prefix: "633;P;Cwd=", source: "osc_633"},

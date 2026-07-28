@@ -102,6 +102,33 @@ func TestTerminalContextV1SharedVectors(t *testing.T) {
 	}
 }
 
+func TestNormalizeSSHTargetLabel(t *testing.T) {
+	for _, test := range []struct {
+		raw  string
+		want string
+	}{
+		{raw: "Host.Example.", want: "host.example"},
+		{raw: "root@Host.Example", want: "root@host.example"},
+		{raw: "prod_alias", want: "prod_alias"},
+		{raw: "192.0.2.10", want: "192.0.2.10"},
+		{raw: "2001:db8::1", want: "[2001:db8::1]"},
+		{raw: "root@[2001:0db8::1]", want: "root@[2001:db8::1]"},
+		{raw: "localhost", want: "localhost"},
+	} {
+		t.Run(test.raw, func(t *testing.T) {
+			got, ok := normalizeSSHTargetLabel(test.raw)
+			if !ok || got != test.want {
+				t.Fatalf("normalizeSSHTargetLabel(%q) = %q, %v; want %q", test.raw, got, ok, test.want)
+			}
+		})
+	}
+	for _, raw := range []string{"", "bad;host", "root@@host", "host:22", "[::ffff:192.0.2.1]", "-host", strings.Repeat("h", 129)} {
+		if got, ok := normalizeSSHTargetLabel(raw); ok {
+			t.Fatalf("normalizeSSHTargetLabel(%q) = %q, want rejection", raw, got)
+		}
+	}
+}
+
 func TestTerminalContextV1SharedStateVectors(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "protocol", "terminal_context_v1_vectors.json"))
 	if err != nil {

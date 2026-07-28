@@ -441,6 +441,57 @@ func parseTerminalTitleLabel(raw string) (user, authority string, ok bool) {
 	return userPart, authority, true
 }
 
+func normalizeSSHTargetLabel(raw string) (string, bool) {
+	if raw == "" || len(raw) > maxContextLabelBytes || !utf8.ValidString(raw) || containsUnsafePresentationControl(raw) {
+		return "", false
+	}
+	user, host, hasUser := strings.Cut(raw, "@")
+	if !hasUser {
+		host = user
+		user = ""
+	} else if strings.Contains(host, "@") || !validPresentationAtom(user, 64, "._-") {
+		return "", false
+	}
+	if strings.ContainsAny(host, "/?#") {
+		return "", false
+	}
+	normalizedHost := ""
+	if strings.HasPrefix(host, "[") || strings.HasSuffix(host, "]") {
+		if !strings.HasPrefix(host, "[") || !strings.HasSuffix(host, "]") || strings.Count(host, "[") != 1 || strings.Count(host, "]") != 1 {
+			return "", false
+		}
+		addr, err := netip.ParseAddr(host[1 : len(host)-1])
+		if err != nil || !addr.Is6() || addr.Is4In6() || addr.Zone() != "" {
+			return "", false
+		}
+		normalizedHost = "[" + addr.String() + "]"
+	} else if strings.Contains(host, ":") {
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !addr.Is6() || addr.Is4In6() || addr.Zone() != "" {
+			return "", false
+		}
+		normalizedHost = "[" + addr.String() + "]"
+	} else {
+		normalizedHost = strings.ToLower(strings.TrimSuffix(host, "."))
+		if normalizedHost == "" || len(normalizedHost) > 128 {
+			return "", false
+		}
+		if addr, err := netip.ParseAddr(normalizedHost); err == nil {
+			if !addr.Is4() || addr.String() != normalizedHost {
+				return "", false
+			}
+		} else {
+			for _, label := range strings.Split(normalizedHost, ".") {
+				if len(label) < 1 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' ||
+					!validPresentationAtom(label, 63, "-_") {
+					return "", false
+				}
+			}
+		}
+	}
+	return remoteLabel(user, normalizedHost), true
+}
+
 func (s *Session) applyOSC7Locked(signal shellIntegrationSignal, now time.Time) bool {
 	if !signal.remote {
 		return false
@@ -606,17 +657,21 @@ func (s *Session) resetContextEpochLocked(now time.Time) bool {
 	return s.publishContextLocked(local.Location, local.Application, now)
 }
 
-func (s *Session) startForegroundContextLocked(displayName string, now time.Time) bool {
+func (s *Session) startForegroundContextLocked(displayName string, sshTarget string, now time.Time) bool {
 	s.contextFrames = nil
 	s.contextSeenFrameIDs = make(map[string]struct{})
 	s.contextForegroundRevision = s.foregroundCommand.Revision
 	s.ensureContextBaseLocked()
 	base := s.contextFrames[0]
 	if isSSHCommand(displayName) {
+		label := "SSH"
+		if normalized, ok := normalizeSSHTargetLabel(sshTarget); ok {
+			label = normalized
+		}
 		frame := terminalContextFrame{
 			id: "@ssh-candidate",
 			location: TerminalLocationInfo{Kind: TerminalLocationRemote, Phase: TerminalLocationPhaseOpening,
-				Label: "SSH", Source: TerminalContextSourceForegroundCandidate},
+				Label: label, Source: TerminalContextSourceForegroundCandidate},
 			app: base.app, ownsLocation: true,
 		}
 		s.contextFrames = append(s.contextFrames, frame)

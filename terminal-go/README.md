@@ -126,6 +126,16 @@ as `top`. It never contains arguments, environment values, a PID, or the raw
 command line. The monotonic command revision lets hosts reject stale metadata
 notifications while keeping name and working-directory updates independent.
 
+For a statically parseable `ssh` invocation, Bash, Zsh, and Fish additionally
+emit only the normalized destination as private command-start metadata. The
+destination may seed a display-only `remote/opening` label such as
+`root@host.example`; its authority remains empty and it cannot establish
+readiness or authorize remote resources. Quoting, expansion, control syntax,
+unknown options, and malformed targets fall back to the generic `SSH` label.
+The raw command line and arguments are never emitted, logged, or retained as
+session metadata. OSC 7 or an explicit context marker remains authoritative for
+the confirmed remote location.
+
 The same session snapshot includes independent `OutputActivity` metadata with
 `unknown`, `streaming`, and `settled` phases. `settled` means the same foreground
 command is still running but visible PTY output has been quiet for the configured

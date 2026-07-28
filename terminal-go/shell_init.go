@@ -479,6 +479,8 @@ __floeterm_terminal_extract_program() {
     local command_text="$1"
     local word=""
     __floeterm_terminal_program=""
+    __floeterm_terminal_command_text="$command_text"
+    __floeterm_terminal_command_rest=""
     while :; do
         command_text="${command_text#"${command_text%%[![:space:]]*}"}"
         [ -n "$command_text" ] || return 1
@@ -508,6 +510,71 @@ __floeterm_terminal_extract_program() {
     esac
     [ "${#word}" -le 64 ] || return 1
     __floeterm_terminal_program="$word"
+    __floeterm_terminal_command_rest="$command_text"
+}
+
+__floeterm_terminal_extract_ssh_target() {
+    local command_text="$__floeterm_terminal_command_rest"
+    local word=""
+    local login_user=""
+    local target=""
+    __floeterm_terminal_ssh_target=""
+    case "$__floeterm_terminal_program" in
+        ssh|SSH|ssh.exe|SSH.EXE) ;;
+        *) return 1 ;;
+    esac
+    case "$__floeterm_terminal_command_text" in
+        *[!A-Za-z0-9._+@:/\[\]=,%~\ -]*) return 1 ;;
+    esac
+    while :; do
+        command_text="${command_text#"${command_text%%[![:space:]]*}"}"
+        [ -n "$command_text" ] || return 1
+        word="${command_text%%[[:space:]]*}"
+        command_text="${command_text#"$word"}"
+        case "$word" in
+            --)
+                command_text="${command_text#"${command_text%%[![:space:]]*}"}"
+                [ -n "$command_text" ] || return 1
+                target="${command_text%%[[:space:]]*}"
+                break
+                ;;
+            -4|-6|-A|-a|-C|-f|-G|-g|-K|-k|-M|-N|-n|-q|-s|-T|-t|-tt|-ttt|-V|-v|-vv|-vvv|-X|-x|-Y|-y)
+                ;;
+            -l)
+                command_text="${command_text#"${command_text%%[![:space:]]*}"}"
+                [ -n "$command_text" ] || return 1
+                login_user="${command_text%%[[:space:]]*}"
+                command_text="${command_text#"$login_user"}"
+                ;;
+            -l?*)
+                login_user="${word#-l}"
+                ;;
+            -B|-b|-c|-D|-E|-e|-F|-I|-i|-J|-L|-m|-O|-o|-P|-p|-Q|-R|-S|-W|-w)
+                command_text="${command_text#"${command_text%%[![:space:]]*}"}"
+                [ -n "$command_text" ] || return 1
+                word="${command_text%%[[:space:]]*}"
+                command_text="${command_text#"$word"}"
+                ;;
+            -B?*|-b?*|-c?*|-D?*|-E?*|-e?*|-F?*|-I?*|-i?*|-J?*|-L?*|-m?*|-O?*|-o?*|-P?*|-p?*|-Q?*|-R?*|-S?*|-W?*|-w?*)
+                ;;
+            -*) return 1 ;;
+            *)
+                target="$word"
+                break
+                ;;
+        esac
+    done
+    case "$target" in
+        ''|*[!A-Za-z0-9._@:\[\]-]*) return 1 ;;
+    esac
+    [ "${#target}" -le 128 ] || return 1
+    if [ -n "$login_user" ]; then
+        case "$login_user" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+        [ "${#login_user}" -le 64 ] || return 1
+        case "$target" in *@*) return 1 ;; esac
+        target="$login_user@$target"
+    fi
+    __floeterm_terminal_ssh_target="$target"
 }
 
 __floeterm_terminal_command_start() {
@@ -518,6 +585,9 @@ __floeterm_terminal_command_start() {
         __floeterm_terminal_osc "B"
         if __floeterm_terminal_extract_program "$command_text"; then
             __floeterm_terminal_osc "P;FloetermProgram=$__floeterm_terminal_program"
+            if __floeterm_terminal_extract_ssh_target; then
+                __floeterm_terminal_osc "P;FloetermSshTarget=v1;target=$__floeterm_terminal_ssh_target"
+            fi
         fi
         __floeterm_terminal_osc "C"
     fi
@@ -638,6 +708,9 @@ __floeterm_terminal_emit_cwd() {
 __floeterm_terminal_extract_program() {
     local -a words
     local word
+    __floeterm_terminal_command_text="$1"
+    typeset -ga __floeterm_terminal_command_words
+    __floeterm_terminal_command_words=()
     words=(${(z)1})
     while (( ${#words[@]} > 0 )); do
         word="$words[1]"
@@ -658,6 +731,52 @@ __floeterm_terminal_extract_program() {
     word="${word:t}"
     [[ -n "$word" && ${#word} -le 64 && "$word" != *[^A-Za-z0-9._+@-]* ]] || return 1
     __floeterm_terminal_program="$word"
+    __floeterm_terminal_command_words=("${words[@]}")
+}
+
+__floeterm_terminal_extract_ssh_target() {
+    local -a words
+    local word login_user target
+    __floeterm_terminal_ssh_target=""
+    case "$__floeterm_terminal_program" in
+        ssh|SSH|ssh.exe|SSH.EXE) ;;
+        *) return 1 ;;
+    esac
+    [[ "$__floeterm_terminal_command_text" != *[^A-Za-z0-9._+@:/\[\]=,%~\ -]* ]] || return 1
+    words=("${__floeterm_terminal_command_words[@]}")
+    while (( ${#words[@]} > 0 )); do
+        word="$words[1]"
+        words=("${words[@]:1}")
+        case "$word" in
+            --)
+                (( ${#words[@]} > 0 )) || return 1
+                target="$words[1]"
+                break
+                ;;
+            -4|-6|-A|-a|-C|-f|-G|-g|-K|-k|-M|-N|-n|-q|-s|-T|-t|-tt|-ttt|-V|-v|-vv|-vvv|-X|-x|-Y|-y)
+                ;;
+            -l)
+                (( ${#words[@]} > 0 )) || return 1
+                login_user="$words[1]"
+                words=("${words[@]:1}")
+                ;;
+            -l?*) login_user="${word#-l}" ;;
+            -B|-b|-c|-D|-E|-e|-F|-I|-i|-J|-L|-m|-O|-o|-P|-p|-Q|-R|-S|-W|-w)
+                (( ${#words[@]} > 0 )) || return 1
+                words=("${words[@]:1}")
+                ;;
+            -B?*|-b?*|-c?*|-D?*|-E?*|-e?*|-F?*|-I?*|-i?*|-J?*|-L?*|-m?*|-O?*|-o?*|-P?*|-p?*|-Q?*|-R?*|-S?*|-W?*|-w?*)
+                ;;
+            -*) return 1 ;;
+            *) target="$word"; break ;;
+        esac
+    done
+    [[ -n "$target" && ${#target} -le 128 && "$target" != *[^A-Za-z0-9._@:\[\]-]* ]] || return 1
+    if [[ -n "$login_user" ]]; then
+        [[ ${#login_user} -le 64 && "$login_user" != *[^A-Za-z0-9._-]* && "$target" != *@* ]] || return 1
+        target="$login_user@$target"
+    fi
+    __floeterm_terminal_ssh_target="$target"
 }
 
 __floeterm_terminal_preexec() {
@@ -665,6 +784,9 @@ __floeterm_terminal_preexec() {
     __floeterm_terminal_osc "B"
     if __floeterm_terminal_extract_program "$1"; then
         __floeterm_terminal_osc "P;FloetermProgram=$__floeterm_terminal_program"
+        if __floeterm_terminal_extract_ssh_target; then
+            __floeterm_terminal_osc "P;FloetermSshTarget=v1;target=$__floeterm_terminal_ssh_target"
+        fi
     fi
     __floeterm_terminal_osc "C"
 }
@@ -732,6 +854,8 @@ end
 
 function __floeterm_terminal_extract_program --argument command_text
     set -g __floeterm_terminal_program ""
+    set -g __floeterm_terminal_command_text $command_text
+    set -g __floeterm_terminal_command_words
     set -l words (string split -n ' ' -- $command_text)
     while test (count $words) -gt 0
         set -l word $words[1]
@@ -750,12 +874,61 @@ function __floeterm_terminal_extract_program --argument command_text
                 set word (string split -r -m 1 '/' -- $word)[-1]
                 if string match -rq '^[A-Za-z0-9._+@-]{1,64}$' -- $word
                     set -g __floeterm_terminal_program $word
+                    set -g __floeterm_terminal_command_words $words
                     return 0
                 end
                 return 1
         end
     end
     return 1
+end
+
+function __floeterm_terminal_extract_ssh_target
+    set -g __floeterm_terminal_ssh_target ""
+    switch $__floeterm_terminal_program
+        case ssh SSH ssh.exe SSH.EXE
+        case '*'
+            return 1
+    end
+    if string match -rq '[^A-Za-z0-9._+@:/\[\]=,%~ -]' -- $__floeterm_terminal_command_text
+        return 1
+    end
+    set -l words $__floeterm_terminal_command_words
+    set -l login_user ""
+    set -l target ""
+    while test (count $words) -gt 0
+        set -l word $words[1]
+        set -e words[1]
+        switch $word
+            case --
+                test (count $words) -gt 0; or return 1
+                set target $words[1]
+                break
+            case -4 -6 -A -a -C -f -G -g -K -k -M -N -n -q -s -T -t -tt -ttt -V -v -vv -vvv -X -x -Y -y
+            case -l
+                test (count $words) -gt 0; or return 1
+                set login_user $words[1]
+                set -e words[1]
+            case '-l?*'
+                set login_user (string sub -s 3 -- $word)
+            case -B -b -c -D -E -e -F -I -i -J -L -m -O -o -P -p -Q -R -S -W -w
+                test (count $words) -gt 0; or return 1
+                set -e words[1]
+            case '-B?*' '-b?*' '-c?*' '-D?*' '-E?*' '-e?*' '-F?*' '-I?*' '-i?*' '-J?*' '-L?*' '-m?*' '-O?*' '-o?*' '-P?*' '-p?*' '-Q?*' '-R?*' '-S?*' '-W?*' '-w?*'
+            case '-*'
+                return 1
+            case '*'
+                set target $word
+                break
+        end
+    end
+    string match -rq '^[A-Za-z0-9._@:\[\]-]{1,128}$' -- $target; or return 1
+    if test -n "$login_user"
+        string match -rq '^[A-Za-z0-9._-]{1,64}$' -- $login_user; or return 1
+        string match -q '*@*' -- $target; and return 1
+        set target "$login_user@$target"
+    end
+    set -g __floeterm_terminal_ssh_target $target
 end
 
 set -g __floeterm_terminal_prompt_seen 0
@@ -766,6 +939,9 @@ function __floeterm_terminal_fish_preexec --on-event fish_preexec
     __floeterm_terminal_osc B
     if __floeterm_terminal_extract_program "$argv"
         __floeterm_terminal_osc "P;FloetermProgram=$__floeterm_terminal_program"
+        if __floeterm_terminal_extract_ssh_target
+            __floeterm_terminal_osc "P;FloetermSshTarget=v1;target=$__floeterm_terminal_ssh_target"
+        end
     end
     __floeterm_terminal_osc C
 end

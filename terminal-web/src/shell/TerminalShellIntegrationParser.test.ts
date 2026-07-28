@@ -145,6 +145,16 @@ describe('TerminalShellIntegrationParser', () => {
     expect(result.events).toEqual([]);
   });
 
+  it('strips SSH target metadata without exposing a browser event', () => {
+    const parser = new TerminalShellIntegrationParser();
+    const result = parser.parse(encoder.encode(
+      'a\x1b]633;P;FloetermSshTarget=v1;target=root@host.example\u0007b',
+    ));
+
+    expect(decoder.decode(result.displayData)).toBe('ab');
+    expect(result.events).toEqual([]);
+  });
+
   it('bounds unterminated OSC retention by flushing oversized fragments', () => {
     const parser = new TerminalShellIntegrationParser();
     const oversized = `\x1b]633;P;FloetermProgram=${'a'.repeat(5000)}`;
@@ -155,6 +165,16 @@ describe('TerminalShellIntegrationParser', () => {
     expect(decoder.decode(second.displayData)).toBe('\u0007tail');
     expect(first.events).toEqual([]);
     expect(second.events).toEqual([]);
+  });
+
+  it('drops oversized private SSH target metadata without retaining its contents', () => {
+    const parser = new TerminalShellIntegrationParser();
+    const result = parser.parse(encoder.encode(
+      `left\x1b]633;P;FloetermSshTarget=${'private-target'.repeat(500)}\u0007right`,
+    ));
+
+    expect(decoder.decode(result.displayData)).toBe('leftright');
+    expect(result.events).toEqual([]);
   });
 
   it('returns ordinary output by identity on the no-OSC fast path', () => {

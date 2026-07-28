@@ -337,6 +337,7 @@ type Session struct {
 	shellIntegrationPending       []byte
 	shellLifecycleFilterPending   []byte
 	pendingForegroundProgram      string
+	pendingForegroundSSHTarget    string
 	foregroundCommand             TerminalForegroundCommandInfo
 	outputActivity                TerminalOutputActivityInfo
 	outputActivityTimer           *time.Timer

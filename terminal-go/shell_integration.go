@@ -25,6 +25,7 @@ const (
 	shellIntegrationCommandExecuted
 	shellIntegrationCommandFinished
 	shellIntegrationProgram
+	shellIntegrationSSHTarget
 	shellIntegrationContext
 	shellIntegrationWork
 	shellIntegrationTitle
@@ -43,6 +44,7 @@ type shellIntegrationSignal struct {
 	kind           shellIntegrationSignalKind
 	path           string
 	program        string
+	sshTarget      string
 	authority      string
 	remote         bool
 	context        terminalContextMarker
@@ -249,6 +251,7 @@ func knownOversizedControlSource(payload []byte) (string, bool) {
 		source string
 	}{
 		{prefix: "633;P;FloetermProgram=", source: "osc_633_program"},
+		{prefix: "633;P;FloetermSshTarget=", source: "osc_633_ssh_target"},
 		{prefix: "633;P;FloetermLifecycle=", source: "osc_633_lifecycle"},
 		{prefix: "633;P;FloetermContext=", source: "osc_633_context"},
 		{prefix: "633;P;FloetermWork=", source: "osc_633_work"},
@@ -302,6 +305,13 @@ func parseShellIntegrationSignalPayload(payload string) (shellIntegrationSignal,
 		raw := strings.TrimPrefix(payload, "633;P;FloetermProgram=")
 		program, ok := normalizeForegroundCommandDisplayName(raw)
 		return shellIntegrationSignal{kind: shellIntegrationProgram, program: program}, "osc_633_program", !ok, true
+	case strings.HasPrefix(payload, "633;P;FloetermSshTarget="):
+		fields, ok := parseStrictMarkerFields(payload, "633;P;FloetermSshTarget=v1", map[string]bool{"target": true})
+		if !ok || len(fields) != 1 {
+			return shellIntegrationSignal{}, "osc_633_ssh_target", true, true
+		}
+		target, ok := normalizeSSHTargetLabel(fields["target"])
+		return shellIntegrationSignal{kind: shellIntegrationSSHTarget, sshTarget: target}, "osc_633_ssh_target", !ok, true
 	default:
 		return shellIntegrationSignal{}, "", false, false
 	}
@@ -433,10 +443,19 @@ func (s *Session) checkShellIntegrationChange(chunk []byte) {
 				s.pendingForegroundProgram = signal.program
 			}
 			s.mu.Unlock()
+		case shellIntegrationSSHTarget:
+			s.mu.Lock()
+			if !s.closed && s.acceptsShellLifecycleSignalLocked(signal) &&
+				normalizeForegroundCommandInfo(s.foregroundCommand).Phase != ForegroundCommandRunning &&
+				isSSHCommand(s.pendingForegroundProgram) {
+				s.pendingForegroundSSHTarget = signal.sshTarget
+			}
+			s.mu.Unlock()
 		case shellIntegrationCommandStart:
 			s.mu.Lock()
 			if !s.closed && s.acceptsShellLifecycleSignalLocked(signal) {
 				s.pendingForegroundProgram = ""
+				s.pendingForegroundSSHTarget = ""
 			}
 			s.mu.Unlock()
 		case shellIntegrationCommandExecuted:
@@ -445,32 +464,35 @@ func (s *Session) checkShellIntegrationChange(chunk []byte) {
 			accepted := !closed && s.acceptsShellLifecycleSignalLocked(signal)
 			alreadyRunning := !accepted || normalizeForegroundCommandInfo(s.foregroundCommand).Phase == ForegroundCommandRunning
 			program := s.pendingForegroundProgram
+			sshTarget := s.pendingForegroundSSHTarget
 			s.pendingForegroundProgram = ""
+			s.pendingForegroundSSHTarget = ""
 			s.mu.Unlock()
 			if !alreadyRunning {
-				s.updateForegroundCommandFromShell(signal, ForegroundCommandRunning, program)
+				s.updateForegroundCommandFromShell(signal, ForegroundCommandRunning, program, sshTarget)
 			}
 		case shellIntegrationCommandFinished, shellIntegrationPromptReady:
 			s.mu.Lock()
 			if !s.closed && s.acceptsShellLifecycleSignalLocked(signal) {
 				s.pendingForegroundProgram = ""
+				s.pendingForegroundSSHTarget = ""
 			}
 			s.mu.Unlock()
-			s.updateForegroundCommandFromShell(signal, ForegroundCommandIdle, "")
+			s.updateForegroundCommandFromShell(signal, ForegroundCommandIdle, "", "")
 		}
 		s.cleanupStaleShellLifecycleBootstrap()
 	}
 }
 
 func (s *Session) updateForegroundCommand(phase ForegroundCommandPhase, displayName string) {
-	s.updateForegroundCommandInternal(nil, phase, displayName)
+	s.updateForegroundCommandInternal(nil, phase, displayName, "")
 }
 
-func (s *Session) updateForegroundCommandFromShell(signal shellIntegrationSignal, phase ForegroundCommandPhase, displayName string) {
-	s.updateForegroundCommandInternal(&signal, phase, displayName)
+func (s *Session) updateForegroundCommandFromShell(signal shellIntegrationSignal, phase ForegroundCommandPhase, displayName string, sshTarget string) {
+	s.updateForegroundCommandInternal(&signal, phase, displayName, sshTarget)
 }
 
-func (s *Session) updateForegroundCommandInternal(signal *shellIntegrationSignal, phase ForegroundCommandPhase, displayName string) {
+func (s *Session) updateForegroundCommandInternal(signal *shellIntegrationSignal, phase ForegroundCommandPhase, displayName string, sshTarget string) {
 	if s == nil {
 		return
 	}
@@ -501,7 +523,7 @@ func (s *Session) updateForegroundCommandInternal(signal *shellIntegrationSignal
 	current.UpdatedAt = now.UnixMilli()
 	s.foregroundCommand = current
 	if phase == ForegroundCommandRunning {
-		s.startForegroundContextLocked(displayName, now)
+		s.startForegroundContextLocked(displayName, sshTarget, now)
 	} else {
 		s.resetContextEpochLocked(now)
 	}
@@ -566,6 +588,7 @@ func (s *Session) clearForegroundCommandLocked() {
 	current.UpdatedAt = now.UnixMilli()
 	s.foregroundCommand = current
 	s.pendingForegroundProgram = ""
+	s.pendingForegroundSSHTarget = ""
 }
 
 func (s *Session) observeOutputActivity() {

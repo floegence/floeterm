@@ -280,9 +280,17 @@ describe('TerminalSessionsCoordinator', () => {
         revision: 2, updatedAtMs: 20,
       },
     }));
+    coordinator.upsertSession(makeSession('ssh-target', {
+      executionContext: {
+        location: { kind: 'remote', phase: 'opening', label: 'root@prod_alias', authority: '', workingDirectory: '', source: 'foreground_candidate' },
+        application: { kind: 'shell', identity: '', displayName: '' },
+        revision: 2, updatedAtMs: 20,
+      },
+    }));
 
     expect(coordinator.getSnapshot().map(session => session.executionContext?.location)).toEqual([
       { kind: 'remote', phase: 'opening', label: 'SSH', authority: '', workingDirectory: '', source: 'foreground_candidate' },
+      { kind: 'remote', phase: 'opening', label: 'root@prod_alias', authority: '', workingDirectory: '', source: 'foreground_candidate' },
       { kind: 'remote', phase: 'opening', label: 'root@host.example', authority: '', workingDirectory: '', source: 'osc_title' },
     ]);
 

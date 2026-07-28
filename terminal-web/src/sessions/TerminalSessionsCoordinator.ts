@@ -108,6 +108,29 @@ const validRemoteOpeningTitle = (label: string): boolean => {
   return normalizeTerminalRemoteAuthority(authority) === authority;
 };
 
+const validSSHOpeningCandidateLabel = (label: string): boolean => {
+  if (!label || new TextEncoder().encode(label).byteLength > 128) return false;
+  const separator = label.indexOf('@');
+  const user = separator >= 0 ? label.slice(0, separator) : '';
+  const host = separator >= 0 ? label.slice(separator + 1) : label;
+  if (separator >= 0 && (!/^[A-Za-z0-9._-]{1,64}$/.test(user) || host.includes('@'))) return false;
+  if (/^\[[0-9a-f:]+\]$/.test(host)) {
+    try {
+      const parsed = new URL(`http://${host}/`);
+      return !parsed.port && parsed.hostname === host && !/^\[::ffff:[0-9a-f]{1,4}:[0-9a-f]{1,4}\]$/.test(host);
+    } catch {
+      return false;
+    }
+  }
+  if (host.includes(':') || host !== host.toLowerCase() || host.endsWith('.') || host.length > 128) return false;
+  if (/^[0-9.]+$/.test(host) && host.includes('.')) {
+    const parts = host.split('.');
+    return parts.length === 4 && parts.every(part => /^\d+$/.test(part)
+      && String(Number(part)) === part && Number(part) >= 0 && Number(part) <= 255);
+  }
+  return host.split('.').every(part => /^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$/.test(part));
+};
+
 export const normalizeTerminalExecutionContextInfo = (
   value: TerminalSessionInfo['executionContext'],
 ): TerminalExecutionContextInfo => validateExecutionContextUpdate(value) ?? unknownExecutionContext();
@@ -153,7 +176,7 @@ const validateExecutionContextUpdate = (value: unknown): TerminalExecutionContex
     if (locationPhase === 'opening') {
       if (authority) return null;
       if (locationSource === 'foreground_candidate') {
-        if (label !== 'SSH' || workingDirectory) return null;
+        if ((label !== 'SSH' && !validSSHOpeningCandidateLabel(label)) || workingDirectory) return null;
       } else if (locationSource === 'shell_integration') {
         if ((!workingDirectory || normalizeTerminalRemotePath(workingDirectory) !== workingDirectory)
           || (label !== 'SSH' && !validRemoteOpeningTitle(label))) return null;

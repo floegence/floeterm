@@ -2,6 +2,21 @@
   "version": 1,
   "cases": [
     {
+      "name": "ssh target is ordered private metadata",
+      "chunks": ["\u001b]633;B\u0007\u001b]633;P;FloetermProgram=ssh\u0007\u001b]633;P;FloetermSshTarget=v1;target=root@host.example\u0007\u001b]633;C\u0007"],
+      "tokens": [
+        "signal:command-start",
+        "signal:program:ssh",
+        "signal:ssh-target:root@host.example",
+        "signal:command-executed"
+      ],
+      "terminalWebTokens": [
+        "signal:command-start",
+        "signal:program:ssh",
+        "signal:command-executed"
+      ]
+    },
+    {
       "name": "marker only command start",
       "chunks": ["\u001b]633;B\u0007\u001b]633;P;FloetermProgram=codex\u0007\u001b]633;C\u0007"],
       "tokens": [
