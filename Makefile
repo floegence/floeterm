@@ -5,7 +5,11 @@ SHELL := /bin/bash
 GO_MODULES := terminal-go app/backend
 
 .PHONY: check
-check: go-test-race go-vuln renderer-check web-check e2e-check
+check: release-workflow-check go-test-race go-vuln renderer-check web-check e2e-check
+
+.PHONY: release-workflow-check
+release-workflow-check:
+	@node --test .github/workflows/release.test.mjs
 
 .PHONY: go-test-race
 go-test-race:

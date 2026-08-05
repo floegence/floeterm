@@ -5,6 +5,15 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      target:
+        description: Packages to publish
+        required: true
+        type: choice
+        options:
+          - all
+          - renderer
+        default: all
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
@@ -63,6 +72,7 @@ jobs:
 
   npm-publish-terminal-web:
     needs: npm-publish-beamterm-renderer
+    if: github.event_name != 'workflow_dispatch' || inputs.target == 'all'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
