@@ -2,6 +2,11 @@
   "name": "@floegence/beamterm-renderer",
   "version": "1.0.2",
   "description": "FloeTerm-maintained WebGL2 terminal renderer fork",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/floegence/floeterm.git",
+    "directory": "beamterm-renderer"
+  },
   "type": "module",
   "main": "./dist/beamterm_renderer.js",
   "types": "./dist/beamterm_renderer.d.ts",
