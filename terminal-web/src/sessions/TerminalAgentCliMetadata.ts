@@ -9,6 +9,7 @@ export type TerminalAgentCliIdentity =
   | 'qwen'
   | 'copilot'
   | 'cline'
+  | 'pi'
   | 'roo'
   | 'vibe'
   | 'cursor'
@@ -28,6 +29,7 @@ const AGENT_CLI_BY_COMMAND = new Map<string, TerminalAgentCliIdentity>([
   ['qwen', 'qwen'],
   ['copilot', 'copilot'],
   ['cline', 'cline'],
+  ['pi', 'pi'],
   ['roo', 'roo'],
   ['vibe', 'vibe'],
   ['cursor-agent', 'cursor'],

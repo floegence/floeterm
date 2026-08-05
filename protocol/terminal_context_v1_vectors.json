@@ -6,6 +6,7 @@
     { "name": "non-mapped ffff ipv6", "kind": "context", "valid": true, "canonicalAuthority": "[::ffff:0:c000:201]", "payload": "633;P;FloetermContext=v1;action=push;frame_id=remote-ffff;location=remote;authority=%5B%3A%3Affff%3A0%3A192.0.2.1%5D;application=shell" },
     { "name": "ipv4 remote shell", "kind": "context", "valid": true, "canonicalAuthority": "192.0.2.1", "payload": "633;P;FloetermContext=v1;action=push;frame_id=remote-3;location=remote;authority=192.0.2.1;application=shell" },
     { "name": "agent application", "kind": "context", "valid": true, "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-1;application=agent_cli;identity=codex" },
+    { "name": "pi agent application", "kind": "context", "valid": true, "payload": "633;P;FloetermContext=v1;action=push;frame_id=agent-pi;application=agent_cli;identity=pi" },
     { "name": "reordered context fields", "kind": "context", "valid": true, "canonicalAuthority": "host.example", "payload": "633;P;FloetermContext=v1;application=shell;authority=HOST.EXAMPLE;frame_id=reordered;action=push;location=remote" },
     { "name": "strict pop", "kind": "context", "valid": true, "payload": "633;P;FloetermContext=v1;action=pop;frame_id=agent-1" },
     { "name": "semantic waiting", "kind": "work", "valid": true, "payload": "633;P;FloetermWork=v1;frame_id=agent-1;phase=waiting_user" },

@@ -385,6 +385,23 @@ func newExecutionContextTestSession() *Session {
 	}
 }
 
+func TestPiAgentForegroundClassification(t *testing.T) {
+	identity, ok := classifyTerminalAgentCLI("PI.EXE")
+	if !ok || identity != "pi" {
+		t.Fatalf("classifyTerminalAgentCLI(PI.EXE) = %q, %v", identity, ok)
+	}
+	if identity, ok := classifyTerminalAgentCLI("pi-agent"); ok {
+		t.Fatalf("classifyTerminalAgentCLI(pi-agent) = %q, want rejection", identity)
+	}
+
+	session := newExecutionContextTestSession()
+	session.updateForegroundCommand(ForegroundCommandRunning, "pi")
+	application := session.ToSessionInfo().ExecutionContext.Application
+	if application.Kind != TerminalApplicationAgentCLI || application.Identity != "pi" || application.DisplayName != "Pi" {
+		t.Fatalf("Pi foreground application = %+v", application)
+	}
+}
+
 func TestContextMarkerStrictParsing(t *testing.T) {
 	marker, ok := parseFloetermContextPayload("633;P;FloetermContext=v1;action=push;frame_id=remote-1;location=remote;authority=host.example;user=root;cwd=%2Froot;application=shell")
 	if !ok || marker.frameID != "remote-1" || marker.location == nil || marker.location.Label != "root@host.example" || marker.location.WorkingDirectory != "/root" {

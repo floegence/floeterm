@@ -58,7 +58,7 @@ const MAX_METADATA_PAYLOAD_BYTES = 4092;
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
 const AGENT_IDENTITIES = new Set([
   'codex', 'claude', 'opencode', 'kimi', 'gemini', 'qwen', 'copilot', 'cline',
-  'roo', 'vibe', 'cursor', 'junie', 'kiro', 'openhands', 'trae', 'kilo',
+  'pi', 'roo', 'vibe', 'cursor', 'junie', 'kiro', 'openhands', 'trae', 'kilo',
 ]);
 
 type OscTerminator = { payloadEnd: number; nextIndex: number };

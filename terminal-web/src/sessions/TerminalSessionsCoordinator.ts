@@ -218,7 +218,7 @@ const validateExecutionContextUpdate = (value: unknown): TerminalExecutionContex
 const AGENT_CONTEXT_DISPLAY_NAMES = new Map<string, string>([
   ['codex', 'Codex'], ['claude', 'Claude Code'], ['opencode', 'OpenCode'], ['kimi', 'Kimi'],
   ['gemini', 'Gemini'], ['qwen', 'Qwen'], ['copilot', 'Copilot'], ['cline', 'Cline'],
-  ['roo', 'Roo'], ['vibe', 'Vibe'], ['cursor', 'Cursor'], ['junie', 'Junie'],
+  ['pi', 'Pi'], ['roo', 'Roo'], ['vibe', 'Vibe'], ['cursor', 'Cursor'], ['junie', 'Junie'],
   ['kiro', 'Kiro'], ['openhands', 'OpenHands'], ['trae', 'Trae'], ['kilo', 'Kilo Code'],
 ]);
 

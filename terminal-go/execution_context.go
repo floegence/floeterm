@@ -47,14 +47,14 @@ type terminalWorkMarker struct {
 var terminalAgentDisplayNames = map[string]string{
 	"codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "kimi": "Kimi",
 	"gemini": "Gemini", "qwen": "Qwen", "copilot": "Copilot", "cline": "Cline",
-	"roo": "Roo", "vibe": "Vibe", "cursor": "Cursor", "junie": "Junie", "kiro": "Kiro",
+	"pi": "Pi", "roo": "Roo", "vibe": "Vibe", "cursor": "Cursor", "junie": "Junie", "kiro": "Kiro",
 	"openhands": "OpenHands", "trae": "Trae", "kilo": "Kilo Code",
 }
 
 var terminalAgentCommands = map[string]string{
 	"codex": "codex", "claude": "claude", "opencode": "opencode", "kimi": "kimi",
 	"kimi-cli": "kimi", "gemini": "gemini", "qwen": "qwen", "copilot": "copilot",
-	"cline": "cline", "roo": "roo", "vibe": "vibe", "cursor-agent": "cursor",
+	"cline": "cline", "pi": "pi", "roo": "roo", "vibe": "vibe", "cursor-agent": "cursor",
 	"junie": "junie", "kiro-cli": "kiro", "openhands": "openhands", "trae-cli": "trae",
 	"kilocode": "kilo",
 }

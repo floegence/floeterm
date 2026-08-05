@@ -36,6 +36,24 @@ const deferred = <T = void>() => {
 };
 
 describe('TerminalSessionsCoordinator', () => {
+  it('accepts the canonical Pi Agent CLI execution context', () => {
+    const coordinator = new TerminalSessionsCoordinator({
+      transport: makeTransport(), pollMs: 0,
+    });
+    coordinator.upsertSession(makeSession('pi-agent', {
+      foregroundCommand: { phase: 'running', displayName: 'pi', revision: 2, updatedAtMs: 20 },
+      executionContext: {
+        location: { kind: 'local', phase: 'ready', label: '', authority: '', workingDirectory: '/repo', source: 'shell_integration' },
+        application: { kind: 'agent_cli', identity: 'pi', displayName: 'Pi' },
+        revision: 3, updatedAtMs: 30,
+      },
+    }));
+
+    expect(coordinator.getSnapshot()[0]?.executionContext?.application).toEqual({
+      kind: 'agent_cli', identity: 'pi', displayName: 'Pi',
+    });
+  });
+
   it('logs and performs one bounded reconcile for equal-revision conflicts', async () => {
     const warn = vi.fn();
     const authoritative = makeSession('conflict', {

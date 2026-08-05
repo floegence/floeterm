@@ -643,9 +643,11 @@ try {
       "if (typeof api.TerminalCore.prototype.setScrollbarOptions !== 'function') throw new Error('TerminalCore scrollbar setter is unavailable')",
       "if (api.normalizeTerminalForegroundCommandDisplayName('top') !== 'top') throw new Error('foreground command sanitizer export is unavailable')",
       "if (api.classifyTerminalAgentCli('CODEX.exe') !== 'codex') throw new Error('agent CLI classifier export is unavailable')",
+      "if (api.classifyTerminalAgentCli('PI.exe') !== 'pi') throw new Error('Pi Agent CLI classifier export is unavailable')",
       "if (typeof sessions.TerminalSessionsCoordinator !== 'function') throw new Error('sessions export is unavailable')",
       "if (sessions.normalizeTerminalForegroundCommandDisplayName('top') !== 'top') throw new Error('sessions foreground command sanitizer export is unavailable')",
       "if (sessions.classifyTerminalAgentCli('claude') !== 'claude') throw new Error('sessions agent CLI classifier export is unavailable')",
+      "if (sessions.classifyTerminalAgentCli('pi') !== 'pi') throw new Error('sessions Pi Agent CLI classifier export is unavailable')",
       "if (typeof history.preparePagedTerminalHistory !== 'function') throw new Error('history export is unavailable')",
       "if (typeof preload.preloadTerminalResources !== 'function') throw new Error('preload export is unavailable')",
       "if (typeof live.createTerminalLiveTransport !== 'function') throw new Error('live transport export is unavailable')",
@@ -719,6 +721,7 @@ import {
 const priority: TerminalInitializationPriority = 'interactive';
 const agentCli: TerminalAgentCliIdentity | null = classifyTerminalAgentCli('opencode');
 const sessionAgentCli: TerminalAgentCliIdentity | null = classifySessionAgentCli('kimi');
+const piAgentCli: TerminalAgentCliIdentity | null = classifyTerminalAgentCli('pi');
 const prepared: PreparedPagedTerminalHistory | undefined = undefined;
 const outcome: PagedTerminalPreparedHistoryOutcome | undefined = undefined;
 const transport = undefined as unknown as TerminalTransport;
@@ -755,7 +758,7 @@ const incompleteResourceEstimate: TerminalResourceEstimate = {
   estimatedBytes: 0,
   rendererType: 'canvas',
 };
-void [TerminalCore, classifyTerminalAgentCli, normalizeTerminalForegroundCommandDisplayName, classifySessionAgentCli, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, agentCli, sessionAgentCli, prepared, outcome, session, coordinator, themeName, appearance, colors, definition, resourceEstimate, incompleteResourceEstimate, scrollbarOptions, terminalConfig];
+void [TerminalCore, classifyTerminalAgentCli, normalizeTerminalForegroundCommandDisplayName, classifySessionAgentCli, normalizeSessionForegroundCommandDisplayName, preparePagedTerminalHistory, preloadTerminalResources, priority, agentCli, sessionAgentCli, piAgentCli, prepared, outcome, session, coordinator, themeName, appearance, colors, definition, resourceEstimate, incompleteResourceEstimate, scrollbarOptions, terminalConfig];
 if (TERMINAL_THEME_NAMES.length !== 20) throw new Error('terminal theme type export is unavailable');
 if (TERMINAL_THEME_DEFINITIONS.length !== 20) throw new Error('terminal theme definitions type export is unavailable');
 if (!isTerminalThemeName('polarVeil')) throw new Error('terminal theme type validator is unavailable');
