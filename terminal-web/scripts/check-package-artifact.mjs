@@ -455,7 +455,7 @@ async function assertGhosttyScrollbackCompatibilityArtifact(installedPackageRoot
   if (installedGhosttyManifest.version !== EXPECTED_GHOSTTY_WEB_VERSION) {
     throw new Error(
       `installed ghostty-web version must be exactly ${EXPECTED_GHOSTTY_WEB_VERSION}; `
-      + 'consumer overrides are unsupported while the version-bound scrollback adapter is active',
+      + 'consumer overrides are unsupported while version-bound compatibility adapters are active',
     );
   }
 
@@ -464,7 +464,7 @@ async function assertGhosttyScrollbackCompatibilityArtifact(installedPackageRoot
     'dist/internal/GhosttyScrollbackCompat.js',
   )).href);
   if (
-    compatibilityModule.EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION
+    compatibilityModule.EXPECTED_GHOSTTY_WEB_COMPAT_VERSION
       !== EXPECTED_GHOSTTY_WEB_VERSION
     || compatibilityModule.GHOSTTY_SCROLLBACK_BYTES_PER_ROW !== 8_192
     || compatibilityModule.MAX_GHOSTTY_SCROLLBACK_BYTES !== 81_920_000

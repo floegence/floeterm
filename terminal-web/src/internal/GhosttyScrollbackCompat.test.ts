@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION,
+  EXPECTED_GHOSTTY_WEB_COMPAT_VERSION,
   GHOSTTY_SCROLLBACK_BYTES_PER_ROW,
   MAX_GHOSTTY_SCROLLBACK_BYTES,
   MAX_SUPPORTED_TERMINAL_COLUMNS,
@@ -13,7 +13,7 @@ import {
 
 describe('GhosttyScrollbackCompat', () => {
   it('binds the byte conversion to the exact affected ghostty-web version', () => {
-    expect(EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION).toBe('0.4.0-next.14.g6a1a50d');
+    expect(EXPECTED_GHOSTTY_WEB_COMPAT_VERSION).toBe('0.4.0-next.14.g6a1a50d');
     expect(GHOSTTY_SCROLLBACK_BYTES_PER_ROW).toBe(8_192);
     expect(MAX_GHOSTTY_SCROLLBACK_BYTES).toBe(81_920_000);
   });

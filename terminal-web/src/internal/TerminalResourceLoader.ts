@@ -1,7 +1,7 @@
 import type { Logger, TerminalResourcePreloadOptions } from '../types.js';
 import { noopLogger } from '../utils/logger.js';
 import { loadBeamtermModule } from './BeamtermResourceLoader.js';
-import { EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION } from './GhosttyScrollbackCompat.js';
+import { EXPECTED_GHOSTTY_WEB_COMPAT_VERSION } from './GhosttyCompatibilityVersion.js';
 import {
   terminalInitializationScheduler,
   type TerminalInitializationScheduler,
@@ -65,9 +65,9 @@ export const waitWithAbort = <T>(promise: Promise<T>, signal?: AbortSignal): Pro
 };
 
 const runtimeMemoryCompatibilityError = (): Error => new Error(
-  `ghostty-web@${EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION} compatibility check failed: `
+  `ghostty-web@${EXPECTED_GHOSTTY_WEB_COMPAT_VERSION} compatibility check failed: `
   + 'the owned Ghostty runtime does not expose a WebAssembly.Memory at "memory"; '
-  + 'review or remove the version-bound scrollback adapter before changing ghostty-web',
+  + 'review or remove the version-bound compatibility adapters before changing ghostty-web',
 );
 
 export const inspectGhosttyRuntimeMemory = (runtime: GhosttyRuntimeInstance): WebAssembly.Memory => {

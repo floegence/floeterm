@@ -58,6 +58,8 @@ import {
 } from '../internal/GhosttyScrollbackCompat.js';
 import {
   installPinnedGhosttyAlternateScreenProjection,
+  installPinnedGhosttyOutputViewportPolicy,
+  isPinnedGhosttyOutputWriteActive,
   suppressPinnedGhosttyScrollbarBeforeOpen,
   suppressPinnedGhosttyScrollbarRenderer,
 } from '../internal/GhosttyScrollbarCompat.js';
@@ -975,6 +977,7 @@ export class TerminalCore {
     suppressPinnedGhosttyScrollbarBeforeOpen(this.terminal as unknown as Record<string, unknown>);
     this.terminal.open(renderHost);
     installPinnedGhosttyAlternateScreenProjection(this.terminal as unknown as Record<string, unknown>);
+    installPinnedGhosttyOutputViewportPolicy(this.terminal as unknown as Record<string, unknown>);
     const renderer = (this.terminal as unknown as { renderer?: ghostty_renderer_with_row_cache }).renderer;
     suppressPinnedGhosttyScrollbarRenderer(renderer ?? {});
     this.installLinkDetector();
@@ -1942,6 +1945,7 @@ export class TerminalCore {
       inputHost,
       inputElement: input,
       onData: (data: string) => {
+        this.restoreTerminalViewportForUserInput();
         getPerfProbe()?.onTerminalInput?.(data.length);
         this.eventHandlers.onData?.(data);
       },
@@ -2104,6 +2108,20 @@ export class TerminalCore {
 
     this.disposeTerminalEventListeners();
 
+    let pendingTerminalKeyInput = false;
+    let pendingTerminalKeyInputEpoch = 0;
+    if (this.eventHandlers.onData && typeof this.terminal.onKey === 'function') {
+      const disposable = this.terminal.onKey(() => {
+        pendingTerminalKeyInput = true;
+        const epoch = ++pendingTerminalKeyInputEpoch;
+        queueMicrotask(() => {
+          if (pendingTerminalKeyInputEpoch !== epoch) return;
+          pendingTerminalKeyInput = false;
+        });
+      });
+      this.trackTerminalEventDisposable(disposable);
+    }
+
     if (this.eventHandlers.onData) {
       const disposable = this.terminal.onData((data: string) => {
         let filtered = data;
@@ -2112,6 +2130,14 @@ export class TerminalCore {
           if (filtered.length === 0) {
             return;
           }
+        }
+        if (
+          pendingTerminalKeyInput
+          && !isPinnedGhosttyOutputWriteActive(this.terminal as unknown as Record<string, unknown>)
+        ) {
+          pendingTerminalKeyInput = false;
+          pendingTerminalKeyInputEpoch += 1;
+          this.restoreTerminalViewportForUserInput();
         }
         getPerfProbe()?.onTerminalInput?.(filtered.length);
         this.eventHandlers.onData?.(filtered);
@@ -2157,6 +2183,13 @@ export class TerminalCore {
       });
       this.trackTerminalEventDisposable(disposable);
     }
+  }
+
+  private restoreTerminalViewportForUserInput(): void {
+    const terminal = this.terminal;
+    if (!terminal) return;
+    if (isPinnedGhosttyOutputWriteActive(terminal as unknown as Record<string, unknown>)) return;
+    terminal.scrollToBottom?.();
   }
 
   private setupResponsiveListeners(): void {

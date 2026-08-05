@@ -15,7 +15,7 @@ function assertExact(actual, expected, location) {
   if (actual !== expected) {
     throw new Error(
       `${location} must be exactly ${expected}; received ${String(actual)}. `
-      + 'Review and remove or update the version-bound Ghostty scrollback compatibility adapter before changing ghostty-web.',
+      + 'Review and remove or update the version-bound Ghostty compatibility adapters before changing ghostty-web.',
     );
   }
 }

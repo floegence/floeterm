@@ -14,7 +14,11 @@ vi.mock('ghostty-web', () => {
     canvas: HTMLCanvasElement | null = null;
     textarea: HTMLTextAreaElement | null = null;
     dataHandler: ((data: string) => void) | null = null;
+    keyHandler: ((event: { key: string; domEvent: KeyboardEvent }) => void) | null = null;
     cursor = { x: 0, y: 0, visible: true };
+    viewportY = 0;
+    scrollbackLength = 100;
+    scrollToBottomCalls = 0;
     scrollHandler: (() => void) | null = null;
     renderer: any;
     wasmTerm: any;
@@ -31,12 +35,15 @@ vi.mock('ghostty-web', () => {
     fadeOutScrollbar() {}
     animateScroll() {}
     targetViewportY = 0;
-    getViewportY() { return 0; }
-    getScrollbackLength() { return 0; }
+    getViewportY() { return this.viewportY; }
+    getScrollbackLength() { return this.scrollbackLength; }
     isAlternateScreen() { return false; }
-    scrollToLine(_line: number) {}
+    scrollToLine(line: number) { this.viewportY = Math.max(0, Math.min(this.scrollbackLength, line)); }
     scrollToTop() {}
-    scrollToBottom() {}
+    scrollToBottom() {
+      this.scrollToBottomCalls += 1;
+      this.viewportY = 0;
+    }
     scrollLines(_amount: number) {}
     scrollPages(_amount: number) {}
 
@@ -80,6 +87,7 @@ vi.mock('ghostty-web', () => {
       container.appendChild(textarea);
       this.textarea = textarea;
       container.addEventListener('keydown', (event) => {
+        this.keyHandler?.({ key: event.key, domEvent: event });
         let data = '';
         if (event.key === 'Enter') data = '\r';
         if (event.key === 'Backspace') data = '\x7f';
@@ -98,6 +106,13 @@ vi.mock('ghostty-web', () => {
       } };
     }
 
+    onKey(handler: (event: { key: string; domEvent: KeyboardEvent }) => void) {
+      this.keyHandler = handler;
+      return { dispose: () => {
+        if (this.keyHandler === handler) this.keyHandler = null;
+      } };
+    }
+
     onResize(_handler: (size: { cols: number; rows: number }) => void) {
       return { dispose: () => {} };
     }
@@ -109,7 +124,9 @@ vi.mock('ghostty-web', () => {
       } };
     }
 
-    write(_data: string | Uint8Array, cb?: () => void) {
+    write(data: string | Uint8Array, cb?: () => void) {
+      if (data === 'auto-response') this.dataHandler?.('\x1b[1;1R');
+      this.scrollToBottom();
       cb?.();
     }
 
@@ -269,6 +286,40 @@ describe('TerminalCore mobile input integration', () => {
 
     expect(handlers.onData).toHaveBeenCalledTimes(1);
     expect(handlers.onData).toHaveBeenLastCalledWith('x');
+
+    core.dispose();
+  });
+
+  it('restores latest output for user input without treating output responses as user intent', async () => {
+    const handlers: TerminalEventHandlers = { onData: vi.fn() };
+    const { core, terminal, textarea } = await initializeCore({}, handlers);
+
+    terminal.viewportY = 12;
+    textarea.dispatchEvent(createInputEvent('beforeinput', {
+      data: 'x',
+      inputType: 'insertText',
+    }));
+    expect(terminal.viewportY).toBe(0);
+
+    terminal.viewportY = 9;
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(terminal.viewportY).toBe(0);
+
+    terminal.viewportY = 7;
+    core.write('auto-response');
+    expect(terminal.viewportY).toBe(7);
+    expect(handlers.onData).toHaveBeenLastCalledWith('\x1b[1;1R');
+
+    terminal.viewportY = 5;
+    terminal.dataHandler?.('\x1b[<64;1;1M');
+    expect(terminal.viewportY).toBe(5);
+    terminal.dataHandler?.('\x1b[A');
+    expect(terminal.viewportY).toBe(5);
 
     core.dispose();
   });

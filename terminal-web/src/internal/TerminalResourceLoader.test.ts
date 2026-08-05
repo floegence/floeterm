@@ -206,6 +206,6 @@ describe('inspectGhosttyRuntimeMemory', () => {
     });
 
     expect(() => inspectGhosttyRuntimeMemory(runtime as never))
-      .toThrow(/review or remove the version-bound scrollback adapter/);
+      .toThrow(/review or remove the version-bound compatibility adapters/);
   });
 });

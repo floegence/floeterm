@@ -43,6 +43,13 @@ const pointerEvent = (
   clientY: values.clientY,
 });
 
+const textInputEvent = (data: string): InputEvent => new InputEvent('beforeinput', {
+  bubbles: true,
+  cancelable: true,
+  data,
+  inputType: 'insertText',
+});
+
 afterEach(() => {
   for (const core of cores.splice(0)) core.dispose();
   document.body.replaceChildren();
@@ -94,6 +101,26 @@ describe('TerminalCore real scrollbar projection', () => {
       await settleFrames();
       expect(terminal.getViewportY()).toBeGreaterThan(0);
       expect(scrollEvents).toBeGreaterThan(0);
+
+      const anchoredBufferRow = terminal.getScrollbackLength() - terminal.getViewportY();
+      for (let batch = 0; batch < 3; batch += 1) {
+        await new Promise<void>(resolve => core.writeFrame(historyFixture(5), resolve));
+        await settleFrames();
+        expect(terminal.getViewportY()).toBeGreaterThan(0);
+        expect(terminal.getScrollbackLength() - terminal.getViewportY()).toBe(anchoredBufferRow);
+        expect(scrollbar?.getAttribute('aria-valuenow')).not.toBe(scrollbar?.getAttribute('aria-valuemax'));
+      }
+
+      const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Terminal input"]');
+      expect(input).not.toBeNull();
+      input!.dispatchEvent(textInputEvent('x'));
+      await settleFrames();
+      expect(terminal.getViewportY()).toBe(0);
+      expect(scrollbar?.getAttribute('aria-valuenow')).toBe(scrollbar?.getAttribute('aria-valuemax'));
+
+      await page.elementLocator(terminal.element).wheel({ direction: 'up', times: 2 });
+      await settleFrames();
+      expect(terminal.getViewportY()).toBeGreaterThan(0);
 
       scrollbar!.focus();
       const beforeHomeEvents = scrollEvents;

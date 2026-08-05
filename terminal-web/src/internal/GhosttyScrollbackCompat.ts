@@ -1,4 +1,6 @@
-export const EXPECTED_GHOSTTY_WEB_SCROLLBACK_BUG_VERSION = '0.4.0-next.14.g6a1a50d';
+import { EXPECTED_GHOSTTY_WEB_COMPAT_VERSION } from './GhosttyCompatibilityVersion.js';
+
+export { EXPECTED_GHOSTTY_WEB_COMPAT_VERSION } from './GhosttyCompatibilityVersion.js';
 
 export const MIN_TERMINAL_SCROLLBACK_ROWS = 1;
 export const MAX_TERMINAL_SCROLLBACK_ROWS = 10_000;
