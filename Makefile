@@ -28,6 +28,8 @@ terminal-web-prepare: renderer-check
 	@set -euo pipefail; \
 	echo "==> terminal-web npm ci"; \
 	(cd terminal-web && npm ci); \
+	echo "==> terminal-web install local renderer under test"; \
+	(cd terminal-web && npm install --no-save --package-lock=false ../beamterm-renderer); \
 	echo "==> terminal-web Chromium runtime"; \
 	(cd terminal-web && npm exec playwright install chromium); \
 	echo "==> terminal-web lint/test/browser/build/package artifact"; \

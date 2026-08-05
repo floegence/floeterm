@@ -52,7 +52,11 @@ pub(super) struct CellMetrics {
     padded_width: u32,
     padded_height: u32,
     /// Alphabetic baseline offset from the top of the unpadded typographic line box.
-    baseline: f64,
+    pub(super) baseline: f64,
+    /// Font descent below the alphabetic baseline in physical pixels.
+    pub(super) descent: f64,
+    /// Rounded unpadded line-box height in physical pixels.
+    pub(super) height: u32,
 }
 
 /// Re-export core's RasterizedGlyph for use within the renderer.
@@ -238,6 +242,10 @@ impl CanvasRasterizer {
         &self.font_family
     }
 
+    pub(super) fn cell_metrics(&self) -> CellMetrics {
+        self.cell_metrics
+    }
+
     /// Measures the monospace advance and font line box used for terminal layout.
     ///
     /// Visible glyph bounds are deliberately not used here. Ink bounds describe
@@ -283,6 +291,8 @@ fn resolve_typographic_cell_metrics(
         padded_width: width + 2 * PADDING,
         padded_height: height + 2 * PADDING,
         baseline: font_ascent,
+        descent: font_descent,
+        height,
     })
 }
 
@@ -319,6 +329,8 @@ mod tests {
         assert_eq!(metrics.padded_width, 6 + 2 * PADDING);
         assert_eq!(metrics.padded_height, 15 + 2 * PADDING);
         assert_eq!(metrics.baseline, 11.0);
+        assert_eq!(metrics.descent, 4.0);
+        assert_eq!(metrics.height, 15);
     }
 
     #[test]
@@ -329,6 +341,8 @@ mod tests {
         assert_eq!(metrics.padded_width, 14 + 2 * PADDING);
         assert_eq!(metrics.padded_height, 28 + 2 * PADDING);
         assert_eq!(metrics.baseline, 21.4);
+        assert_eq!(metrics.descent, 6.6);
+        assert_eq!(metrics.height, 28);
     }
 
     #[test]

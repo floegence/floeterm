@@ -20,6 +20,7 @@ const rendererState = vi.hoisted(() => ({
   terminalSizeFree: vi.fn(),
   replaceWithDynamicAtlas: vi.fn(),
   setCanvasPaddingColor: vi.fn(),
+  underline: vi.fn(),
   terminalCols: 80,
   terminalRows: 20,
 }));
@@ -30,7 +31,10 @@ vi.mock('@floegence/beamterm-renderer', () => {
     bg() { return this; }
     bold() { return this; }
     italic() { return this; }
-    underline() { return this; }
+    underline() {
+      rendererState.underline();
+      return this;
+    }
     strikethrough() { return this; }
   }
 
@@ -133,6 +137,7 @@ describe('BeamtermFabricRenderer', () => {
     rendererState.terminalSizeFree.mockClear();
     rendererState.replaceWithDynamicAtlas.mockClear();
     rendererState.setCanvasPaddingColor.mockClear();
+    rendererState.underline.mockClear();
     rendererState.terminalCols = 80;
     rendererState.terminalRows = 20;
     finishSubmittedGpuWork.mockClear();
@@ -463,6 +468,49 @@ describe('BeamtermFabricRenderer', () => {
     expect(rendererState.render).toHaveBeenCalledTimes(1);
     expect(rendererState.batchFree).toHaveBeenCalledTimes(1);
 
+    renderer.dispose();
+  });
+
+  it('underlines only cells inside the hovered custom-link range', async () => {
+    const host = document.createElement('div');
+    Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(host, 'clientHeight', { value: 400, configurable: true });
+    document.body.appendChild(host);
+    const renderer = new BeamtermFabricRenderer();
+    await renderer.initialize({
+      container: host,
+      logger,
+      fontFamily: 'monospace',
+      fontSize: 12,
+      theme: { background: '#000000', foreground: '#ffffff' },
+      getGhosttyCanvas: () => null,
+      focusInputSurface: vi.fn(),
+      forwardWheel: vi.fn(),
+      onRendererError: vi.fn(),
+    });
+
+    renderer.startFrame({ id: 1, forceAll: true, reason: 'hover', startedAtMs: 0 }, {
+      cols: 4,
+      rows: 1,
+      theme: { background: 0x000000, foreground: 0xffffff },
+    });
+    renderer.writeRow({}, 0, [
+      { codepoint: 65, width: 1, fg_r: 255, fg_g: 255, fg_b: 255, bg_r: 0, bg_g: 0, bg_b: 0 },
+      { codepoint: 66, width: 1, fg_r: 255, fg_g: 255, fg_b: 255, bg_r: 0, bg_g: 0, bg_b: 0 },
+      { codepoint: 67, width: 1, fg_r: 255, fg_g: 255, fg_b: 255, bg_r: 0, bg_g: 0, bg_b: 0 },
+      { codepoint: 68, width: 1, fg_r: 255, fg_g: 255, fg_b: 255, bg_r: 0, bg_g: 0, bg_b: 0 },
+    ], 4, {
+      hover: {
+        hyperlinkId: 0,
+        range: { startX: 1, startY: 0, endX: 2, endY: 0 },
+      },
+    });
+    renderer.finishFrame(null);
+
+    expect(rendererState.underline).toHaveBeenCalledTimes(1);
+    expect(rendererState.batchText).toHaveBeenNthCalledWith(1, 0, 0, 'A', expect.anything());
+    expect(rendererState.batchText).toHaveBeenNthCalledWith(2, 1, 0, 'BC', expect.anything());
+    expect(rendererState.batchText).toHaveBeenNthCalledWith(3, 3, 0, 'D', expect.anything());
     renderer.dispose();
   });
 

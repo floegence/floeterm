@@ -288,8 +288,7 @@ impl Terminal {
             .iter()
             .map(|&s| format_compact!("'{s}'"))
             .join_compact(", ");
-        let effective_font_size = font_size * pixel_ratio;
-        let rasterizer = CanvasGlyphRasterizer::new(&font_family_css, effective_font_size)
+        let rasterizer = CanvasGlyphRasterizer::new(&font_family_css, font_size, pixel_ratio)
             .map_err(|e| Error::Rasterization(e.to_string()))?;
         let atlas = DynamicFontAtlas::new(gl, rasterizer, font_size, pixel_ratio)?;
         self.grid
@@ -1041,6 +1040,5 @@ fn create_canvas_rasterizer(
         .iter()
         .map(|s| format_compact!("'{s}'"))
         .join_compact(", ");
-    let effective_font_size = font_size * pixel_ratio;
-    CanvasGlyphRasterizer::new(&font_family_css, effective_font_size)
+    CanvasGlyphRasterizer::new(&font_family_css, font_size, pixel_ratio)
 }
