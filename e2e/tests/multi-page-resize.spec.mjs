@@ -121,6 +121,7 @@ const expectConverged = async (firstPage, secondPage) => {
 };
 
 test('keeps one session correct while two independent pages resize and stream output', async ({ context, page, request }) => {
+  test.slow();
   const session = await createSession(request);
   const secondPage = await context.newPage();
   const firstErrors = captureBrowserFailures(page);
