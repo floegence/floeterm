@@ -489,7 +489,7 @@ describe('BeamtermFabricRenderer', () => {
       onRendererError: vi.fn(),
     });
 
-    renderer.startFrame({ id: 1, forceAll: true, reason: 'hover', startedAtMs: 0 }, {
+    renderer.startFrame({ id: 1, forceAll: true, reason: 'interaction', startedAtMs: 0 }, {
       cols: 4,
       rows: 1,
       theme: { background: 0x000000, foreground: 0xffffff },

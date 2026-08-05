@@ -118,7 +118,7 @@ describe('TerminalCore WebGL line decorations', () => {
         ) / denseUnderlineRows.reduce((sum, row) => sum + row.count, 0);
         expect((underlineCenter - plainInkBottom) / dpr).toBeGreaterThanOrEqual(0);
         expect((underlineCenter - plainInkBottom) / dpr).toBeLessThanOrEqual(2);
-        expect(denseUnderlineRows.at(-1)!.y).toBeLessThan(cellHeight - dpr);
+        expect(denseUnderlineRows[denseUnderlineRows.length - 1].y).toBeLessThan(cellHeight - dpr);
 
         const nextRowInk = Array.from(
           { length: cellHeight },
