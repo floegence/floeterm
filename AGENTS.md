@@ -19,7 +19,8 @@ Goals:
 - If local `main` is pushed, push the full current local `main` tip together with all of its latest commits.
 - Do not partial-push `main`, and do not update `origin/main` through another branch while newer local `main` commits remain unpublished.
 - One feature equals one dedicated worktree plus one local private branch.
-- Keep feature branches private until they are merged into `main`.
+- Keep feature branches local and private until they are merged into `main`.
+- Do not push a feature branch or create a pull request unless the user explicitly requests that collaboration path. Do not create a pull request merely to trigger CI.
 - Default sync strategy for a feature branch: `git rebase origin/main`.
 - Do not merge `origin/main` into a feature branch in the normal flow.
 - Preserve intentional commit history when integrating:
@@ -49,10 +50,12 @@ git status
 # The worktree must be clean before rebasing.
 
 git fetch origin
-STAMP=$(date +%Y%m%d-%H%M%S)
-git branch "backup/$BR-$STAMP"
 git rebase origin/main
 ```
+
+Routine `backup/*` branches are forbidden. A stash is allowed only as a short-
+term safety rope before rebasing or switching context; apply it and continue,
+or drop it once confirmed obsolete. Never leave a stale stash behind.
 
 If conflicts happen:
 
@@ -67,30 +70,44 @@ If you are unsure about the resolution:
 git rebase --abort
 ```
 
-After every rebase:
+If you are unsure about a conflict resolution, abort the rebase and reassess;
+do not create a backup branch. During implementation and after intermediate
+rebases that will be followed by more edits, run only focused checks for the
+affected behavior. If a check fails, rerun the smallest corresponding test
+first, then expand to the affected package or subsystem.
+
+Once implementation is frozen:
 
 ```bash
-git range-diff "backup/$BR-$STAMP"...HEAD
+git fetch origin
+git rebase origin/main
 git diff origin/main...HEAD
+# Run focused checks for the affected behavior, then run the complete gate once.
 make check
 ```
 
 ## Integration Back To Main
 
-Once the feature branch is ready and the checks are green:
+Once the feature branch is ready and the final checks are green:
 
 ```bash
 git switch main
 git fetch origin
 git pull --ff-only
 
-# If local main is already ahead of origin/main, publish the full local main tip first.
-# Do not keep older local main commits unpublished while only pushing the new feature result.
-# git push origin main
-
+# Fetch/pull again immediately before integration and publication. If origin/main advanced,
+# return to the feature worktree, rebase, inspect the diff, and rerun the
+# necessary focused checks before retrying integration.
+git fetch origin
+git pull --ff-only
 git merge --ff-only "$BR"
 git push origin main
 ```
+
+There is no exact-main pre-push hook in this repository. The complete `make
+check` gate belongs to the final, frozen feature tip before fast-forwarding it
+into `main`; main publication must push the full current local tip and then
+verify the resulting main Actions run.
 
 Cleanup:
 
@@ -113,7 +130,7 @@ Additional rules:
 - Before resolving merge or rebase conflicts, review the substantive commits on each side for new features, bug fixes, behavior changes, tests, and user-facing workflows.
 - Do not drop, overwrite, or silently weaken current or historical functionality unless the user explicitly approves that product decision.
 - If two branches introduce incompatible behavior, surface the product or architecture tradeoff instead of choosing one side silently.
-- After resolving conflicts, run focused checks for the affected behavior in addition to the repository quality gate.
+- After resolving conflicts, run focused checks for the affected behavior; the complete repository gate remains reserved for the final frozen tip.
 - If a feature branch has already been pushed and someone depends on it, stop treating it as a freely rewritable private branch and coordinate a conservative follow-up flow.
 
 Recommended Git configuration:
@@ -151,7 +168,9 @@ git config --global merge.conflictstyle zdiff3
 ## Local Quality Gate
 
 - CI is the source of truth.
-- Before integration, at minimum run:
+- The complete gate is a final integration check, not an intermediate rebase
+  check. After the final rebase and focused validation, run it once before the
+  fast-forward merge:
 
 ```bash
 make check
@@ -159,9 +178,27 @@ make check
 
 - `make check` is expected to cover the core Go and web checks for this repository.
 
+## Commit Messages
+
+Use Conventional Commit messages for every commit:
+
+```text
+<type>(<scope>): <summary>
+```
+
+Use English, a lowercase type, an explicit scope naming the affected area, an
+imperative lowercase summary, and no trailing period. Prefer `feat`, `fix`,
+`docs`, `test`, `refactor`, `chore`, `build`, or `ci`.
+
 ## Release / Tag Rules
 
-- Floeterm releases use tags in the form `v<version>` such as `v0.4.1`.
+- Top-level repository and npm releases use tags in the form `vX.Y.Z`, such as
+  `v0.4.1`.
+- The `terminal-go` Go module uses tags in the form `terminal-go/vX.Y.Z`, such
+  as `terminal-go/v0.8.3`.
+- Create release tags only on a main commit that has been pushed and whose
+  required checks have completed. After pushing a tag, verify the release
+  workflow and the resulting npm registry or Go proxy artifacts are available.
 
 ## Repository Rule File
 
