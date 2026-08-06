@@ -402,6 +402,40 @@ func TestPiAgentForegroundClassification(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedLocalLifecycleKeepsPiForegroundAcrossNestedSemanticZones(t *testing.T) {
+	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	session := newExecutionContextTestSession()
+	session.shellLifecycleNonce = nonce
+	session.shellLifecycleAuthState = shellLifecycleAuthAuthenticated
+
+	session.processRawPTYData([]byte("\x1b]133;B\a\x1b]633;P;FloetermProgram=pi\a\x1b]133;C\a"))
+	running := session.ToSessionInfo()
+	if running.ForegroundCommand.Phase != ForegroundCommandRunning || running.ForegroundCommand.DisplayName != "pi" {
+		t.Fatalf("Pi foreground command = %+v, want running pi", running.ForegroundCommand)
+	}
+	if application := running.ExecutionContext.Application; application.Kind != TerminalApplicationAgentCLI || application.Identity != "pi" || application.DisplayName != "Pi" {
+		t.Fatalf("Pi foreground application = %+v", application)
+	}
+
+	session.processRawPTYData([]byte("\x1b]133;A\a\x1b]133;B\a\x1b]133;C\a\x1b]133;D;0\a"))
+	afterNestedZones := session.ToSessionInfo()
+	if afterNestedZones.ForegroundCommand != running.ForegroundCommand || afterNestedZones.ExecutionContext != running.ExecutionContext {
+		t.Fatalf("nested semantic zones changed Pi epoch: before=%+v after=%+v", running, afterNestedZones)
+	}
+
+	session.processRawPTYData([]byte("\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=command_finished\a"))
+	idle := session.ToSessionInfo()
+	if idle.ForegroundCommand.Phase != ForegroundCommandIdle || idle.ExecutionContext.Application.Kind != TerminalApplicationShell {
+		t.Fatalf("authenticated completion did not restore shell: %+v", idle)
+	}
+
+	session.processRawPTYData([]byte("\x1b]133;B\a\x1b]633;P;FloetermProgram=top\a\x1b]133;C\a"))
+	next := session.ToSessionInfo()
+	if next.ForegroundCommand.Phase != ForegroundCommandRunning || next.ForegroundCommand.DisplayName != "top" {
+		t.Fatalf("next foreground command = %+v, want running top", next.ForegroundCommand)
+	}
+}
+
 func TestContextMarkerStrictParsing(t *testing.T) {
 	marker, ok := parseFloetermContextPayload("633;P;FloetermContext=v1;action=push;frame_id=remote-1;location=remote;authority=host.example;user=root;cwd=%2Froot;application=shell")
 	if !ok || marker.frameID != "remote-1" || marker.location == nil || marker.location.Label != "root@host.example" || marker.location.WorkingDirectory != "/root" {

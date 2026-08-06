@@ -365,7 +365,16 @@ func (s *Session) acceptsShellLifecycleSignalLocked(signal shellIntegrationSigna
 		}
 		return true
 	}
-	return s.shellLifecycleAuthState != shellLifecycleAuthAuthenticated || !s.hasActiveRemoteLocationLocked()
+	if s.shellLifecycleAuthState != shellLifecycleAuthAuthenticated {
+		return true
+	}
+	if s.hasActiveRemoteLocationLocked() {
+		return false
+	}
+	if normalizeForegroundCommandInfo(s.foregroundCommand).Phase != ForegroundCommandRunning {
+		return true
+	}
+	return signal.kind != shellIntegrationCommandFinished && signal.kind != shellIntegrationPromptReady
 }
 
 func (s *Session) cleanupStaleShellLifecycleBootstrap() {

@@ -112,12 +112,16 @@ pending, ordinary lifecycle markers retain legacy behavior so an SSH candidate
 cannot become permanently pinned. An authenticated session never silently
 downgrades. Fish, POSIX, custom providers, and unknown fallback shells never
 receive a nonce and always retain legacy lifecycle behavior.
-For those authenticated sessions, while an execution-context frame reports a
-remote location, unauthenticated prompt, command, and program markers from PTY
-output cannot end or replace the foreground epoch. This keeps a remote location
-monotonic until the local shell hook observes the real command exit; a remote
-program cannot restore local context by printing forged OSC 133/633 lifecycle
-text.
+For those authenticated sessions, nonce-less prompt-ready and command-finished
+markers from PTY output cannot end a running foreground epoch, including in a
+local location. Full-screen programs and Agent CLIs may emit nested OSC 133/633
+semantic zones for their own rendered messages; those zones do not replace the
+local shell's authoritative lifecycle. While an execution-context frame reports
+a remote location, all nonce-less prompt, command, and program markers are
+rejected. These rules keep local Agent identity and remote location monotonic
+until the authenticated local shell hook observes the real command exit. Fish,
+POSIX, custom providers, and unknown fallback shells retain legacy lifecycle
+behavior.
 
 Enabled shells also report a bounded foreground-command snapshot through
 `TerminalSessionInfo.ForegroundCommand`. The phase is `unknown`, `idle`, or
