@@ -23,6 +23,27 @@ func TestDefaultHistoryFilter_RemovesOSCAndCSI(t *testing.T) {
 	}
 }
 
+func TestDefaultHistoryFilter_PreservesOutputGeometry(t *testing.T) {
+	filter := DefaultHistoryFilter{}
+	input := []TerminalDataChunk{{
+		Sequence:           7,
+		Timestamp:          42,
+		Data:               []byte("before\x1b[cafter"),
+		GeometryGeneration: 9,
+		Cols:               131,
+		Rows:               58,
+	}}
+
+	output := filter.Filter(input)
+	if len(output) != 1 {
+		t.Fatalf("expected one chunk after filtering, got %d", len(output))
+	}
+	got := output[0]
+	if got.GeometryGeneration != 9 || got.Cols != 131 || got.Rows != 58 {
+		t.Fatalf("filtered geometry = %+v", got)
+	}
+}
+
 func TestDefaultHistoryFilter_DropsEmptyChunks(t *testing.T) {
 	filter := DefaultHistoryFilter{}
 

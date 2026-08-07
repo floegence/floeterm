@@ -903,9 +903,18 @@ func (s *Session) publishPTYDisplayData(displayData []byte) {
 		s.sequenceNumber++
 		seqNum := s.sequenceNumber
 		s.LastActive = time.Now()
+		geometry := s.effectiveGeometryLocked()
 
 		if s.ringBuffer != nil {
-			if err := s.ringBuffer.writeOwnedWithSequence(displayData, seqNum, timestamp, false); err != nil {
+			if err := s.ringBuffer.writeOwnedWithSequenceAndGeometry(
+				displayData,
+				seqNum,
+				timestamp,
+				false,
+				geometry.Generation,
+				geometry.Cols,
+				geometry.Rows,
+			); err != nil {
 				s.config.logger.Error("Failed to write to ring buffer", "sessionID", s.ID, "error", err)
 			} else {
 				s.committedSequence = seqNum
@@ -915,8 +924,6 @@ func (s *Session) publishPTYDisplayData(displayData []byte) {
 		for _, attachment := range s.liveAttachments {
 			subscribers = append(subscribers, attachment.subscriber)
 		}
-		geometry := s.effectiveGeometryLocked()
-
 		s.mu.Unlock()
 
 		s.broadcastData(TerminalOutputEvent{

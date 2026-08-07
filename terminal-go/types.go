@@ -12,10 +12,13 @@ import (
 
 // TerminalDataChunk represents a chunk of PTY output stored for history replay.
 type TerminalDataChunk struct {
-	Sequence  int64
-	Data      []byte
-	Timestamp int64
-	Size      int
+	Sequence           int64
+	Data               []byte
+	Timestamp          int64
+	Size               int
+	GeometryGeneration uint64
+	Cols               int
+	Rows               int
 }
 
 // HistoryPageOptions configures a bounded chronological terminal history read.

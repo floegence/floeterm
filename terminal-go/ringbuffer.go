@@ -90,6 +90,18 @@ func (rb *TerminalRingBuffer) writeOwned(data []byte) error {
 }
 
 func (rb *TerminalRingBuffer) writeOwnedWithSequence(data []byte, sequence int64, timestamp int64, advanceSequence bool) error {
+	return rb.writeOwnedWithSequenceAndGeometry(data, sequence, timestamp, advanceSequence, 0, 0, 0)
+}
+
+func (rb *TerminalRingBuffer) writeOwnedWithSequenceAndGeometry(
+	data []byte,
+	sequence int64,
+	timestamp int64,
+	advanceSequence bool,
+	geometryGeneration uint64,
+	cols int,
+	rows int,
+) error {
 	if len(data) == 0 {
 		return nil
 	}
@@ -117,10 +129,13 @@ func (rb *TerminalRingBuffer) writeOwnedWithSequence(data []byte, sequence int64
 	}
 
 	chunk := TerminalDataChunk{
-		Sequence:  sequence,
-		Data:      data,
-		Timestamp: timestamp,
-		Size:      len(data),
+		Sequence:           sequence,
+		Data:               data,
+		Timestamp:          timestamp,
+		Size:               len(data),
+		GeometryGeneration: geometryGeneration,
+		Cols:               cols,
+		Rows:               rows,
 	}
 
 	rb.chunks[rb.head] = chunk
@@ -214,10 +229,13 @@ func (rb *TerminalRingBuffer) ReadAllChunks() []TerminalDataChunk {
 		chunk := rb.chunks[index]
 		if chunk.Data != nil {
 			copyChunk := TerminalDataChunk{
-				Sequence:  chunk.Sequence,
-				Data:      make([]byte, len(chunk.Data)),
-				Timestamp: chunk.Timestamp,
-				Size:      chunk.Size,
+				Sequence:           chunk.Sequence,
+				Data:               make([]byte, len(chunk.Data)),
+				Timestamp:          chunk.Timestamp,
+				Size:               chunk.Size,
+				GeometryGeneration: chunk.GeometryGeneration,
+				Cols:               chunk.Cols,
+				Rows:               chunk.Rows,
 			}
 			copy(copyChunk.Data, chunk.Data)
 			result = append(result, copyChunk)
@@ -292,10 +310,13 @@ func (rb *TerminalRingBuffer) ReadChunkPage(options HistoryPageOptions) HistoryP
 		}
 
 		copyChunk := TerminalDataChunk{
-			Sequence:  chunk.Sequence,
-			Data:      make([]byte, chunkBytes),
-			Timestamp: chunk.Timestamp,
-			Size:      chunk.Size,
+			Sequence:           chunk.Sequence,
+			Data:               make([]byte, chunkBytes),
+			Timestamp:          chunk.Timestamp,
+			Size:               chunk.Size,
+			GeometryGeneration: chunk.GeometryGeneration,
+			Cols:               chunk.Cols,
+			Rows:               chunk.Rows,
 		}
 		copy(copyChunk.Data, chunk.Data)
 		page.Chunks = append(page.Chunks, copyChunk)
@@ -341,10 +362,13 @@ func (rb *TerminalRingBuffer) ReadChunksFrom(timestamp int64) []TerminalDataChun
 		chunk := rb.chunks[index]
 		if chunk.Timestamp >= timestamp && chunk.Data != nil {
 			copyChunk := TerminalDataChunk{
-				Sequence:  chunk.Sequence,
-				Data:      make([]byte, len(chunk.Data)),
-				Timestamp: chunk.Timestamp,
-				Size:      chunk.Size,
+				Sequence:           chunk.Sequence,
+				Data:               make([]byte, len(chunk.Data)),
+				Timestamp:          chunk.Timestamp,
+				Size:               chunk.Size,
+				GeometryGeneration: chunk.GeometryGeneration,
+				Cols:               chunk.Cols,
+				Rows:               chunk.Rows,
 			}
 			copy(copyChunk.Data, chunk.Data)
 			result = append(result, copyChunk)

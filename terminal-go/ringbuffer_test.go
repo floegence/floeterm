@@ -32,6 +32,32 @@ func TestRingBufferWriteRead(t *testing.T) {
 	}
 }
 
+func TestRingBufferHistoryPreservesOutputGeometryAcrossReads(t *testing.T) {
+	buffer := NewTerminalRingBuffer(2)
+	if err := buffer.writeOwnedWithSequenceAndGeometry([]byte("old"), 1, 10, false, 7, 120, 55); err != nil {
+		t.Fatal(err)
+	}
+	if err := buffer.writeOwnedWithSequenceAndGeometry([]byte("new"), 2, 20, false, 8, 131, 58); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, chunks := range map[string][]TerminalDataChunk{
+		"all":       buffer.ReadAllChunks(),
+		"timestamp": buffer.ReadChunksFrom(10),
+		"page":      buffer.ReadChunkPage(HistoryPageOptions{StartSeq: 1}).Chunks,
+	} {
+		if len(chunks) != 2 {
+			t.Fatalf("%s len=%d, want 2", name, len(chunks))
+		}
+		if chunks[0].GeometryGeneration != 7 || chunks[0].Cols != 120 || chunks[0].Rows != 55 {
+			t.Fatalf("%s old geometry=%+v", name, chunks[0])
+		}
+		if chunks[1].GeometryGeneration != 8 || chunks[1].Cols != 131 || chunks[1].Rows != 58 {
+			t.Fatalf("%s new geometry=%+v", name, chunks[1])
+		}
+	}
+}
+
 func TestRingBufferOverflow(t *testing.T) {
 	buffer := NewTerminalRingBuffer(3)
 

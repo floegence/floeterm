@@ -198,6 +198,25 @@ func TestSessionOutputCarriesTheAppliedTerminalGeometry(t *testing.T) {
 	if received.Geometry.Generation != 4 || received.Geometry.Cols != 100 || received.Geometry.Rows != 30 {
 		t.Fatalf("output geometry = %+v", received.Geometry)
 	}
+
+	session.lastAppliedCols = 120
+	session.lastAppliedRows = 40
+	session.geometryGeneration = 5
+	session.processRawPTYData([]byte("after-resize"))
+
+	history, err := session.GetHistoryFromSequence(1)
+	if err != nil {
+		t.Fatalf("failed to read history: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history len=%d, want 2", len(history))
+	}
+	if history[0].GeometryGeneration != 4 || history[0].Cols != 100 || history[0].Rows != 30 {
+		t.Fatalf("first history geometry = %+v", history[0])
+	}
+	if history[1].GeometryGeneration != 5 || history[1].Cols != 120 || history[1].Rows != 40 {
+		t.Fatalf("second history geometry = %+v", history[1])
+	}
 }
 
 func TestLiveAttachmentsReceiveEveryEffectiveGeometryChange(t *testing.T) {
