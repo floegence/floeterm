@@ -551,7 +551,7 @@ export interface TerminalManagerActions {
   copySelection: (source?: TerminalCopySelectionSource) => Promise<TerminalCopySelectionResult>;
   setConnected: (connected: boolean) => void;
   forceResize: () => void;
-  measureHostDimensions: () => { cols: number; rows: number } | undefined;
+  measureHostDimensions?: () => { cols: number; rows: number } | undefined;
   setSearchResultsCallback: (callback: ((results: { resultIndex: number; resultCount: number; matchPositions?: number[] }) => void) | null) => void;
   focus: (options?: TerminalFocusOptions) => void;
   getTerminalInfo: () => { rows: number; cols: number; bufferLength: number } | null;
