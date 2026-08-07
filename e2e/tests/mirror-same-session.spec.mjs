@@ -263,6 +263,62 @@ test('repaints the complete shared screen after one view is hidden, restored, an
   expect(consoleErrors).toEqual([]);
 });
 
+test('replays relative-screen history at each recorded geometry after reconnect', async ({ page }) => {
+  const consoleErrors = captureBrowserFailures(page);
+  await openMirror(page);
+
+  await page.evaluate(() => {
+    window.__floetermMirrorHarness.getViews()[0].sendInput(
+      "printf '\\033[2J\\033[HGEOMETRY_HISTORY_BASE\\033[2B\\033[8CBASE_DELTA\\n'\r",
+    );
+  });
+  await page.waitForFunction(() => (
+    window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes('BASE_DELTA'))
+  ));
+
+  const beforeResize = await readMirror(page);
+  const previousGeneration = beforeResize.views[0].geometry.generation;
+  await page.setViewportSize({ width: 760, height: 640 });
+  await page.evaluate(() => window.__floetermMirrorHarness.getViews().forEach(view => view.forceResize()));
+  await expect.poll(async () => {
+    const state = await readMirror(page);
+    return state.views.every(view => view.geometry.generation > previousGeneration);
+  }).toBe(true);
+
+  await page.evaluate(() => {
+    window.__floetermMirrorHarness.getViews()[1].sendInput(
+      "printf '\\033[3A\\033[12CGEOMETRY_HISTORY_RESIZED\\n'\r",
+    );
+  });
+  await page.waitForFunction(() => (
+    window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes('GEOMETRY_HISTORY_RESIZED'))
+  ));
+  const beforeReconnect = await readMirror(page);
+
+  await page.evaluate(() => window.__floetermMirrorHarness.getViews()[0].reconnect());
+  await page.waitForFunction(() => (
+    window.__floetermMirrorHarness.getViews().length === 2
+      && window.__floetermMirrorHarness.getViews().every(view => view.getSnapshot().connection.isConnected)
+  ));
+  await page.waitForFunction(() => (
+    window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes('GEOMETRY_HISTORY_RESIZED'))
+  ));
+  const afterReconnect = await readMirror(page);
+  expect(afterReconnect.views.map(view => view.serialized)).toEqual(
+    beforeReconnect.views.map(view => view.serialized),
+  );
+
+  await page.locator('[data-mirror-view] [aria-label="Terminal input"]').first().focus();
+  await page.waitForFunction(() => (
+    window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes('GEOMETRY_HISTORY_RESIZED'))
+  ));
+  const afterFocus = await readMirror(page);
+  expect(afterFocus.views.map(view => view.serialized)).toEqual(
+    beforeReconnect.views.map(view => view.serialized),
+  );
+  expect(consoleErrors).toEqual([]);
+});
+
 test('keeps long wrapped output and terminal state identical across different viewport widths', async ({ page }) => {
   const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);

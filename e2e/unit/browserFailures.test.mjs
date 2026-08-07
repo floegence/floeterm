@@ -17,13 +17,17 @@ const createPage = () => {
   };
 };
 
-test('ignores only Chromium readback driver diagnostics', () => {
+test('ignores only recognized Chromium driver diagnostics', () => {
   const fixture = createPage();
   const failures = captureBrowserFailures(fixture.page);
 
   fixture.emitConsole(
     'warning',
     '[.WebGL-0x1234]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels',
+  );
+  fixture.emitConsole(
+    'warning',
+    '[.WebGL-0x5678]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): Running out of reserved outsideRenderPass queueSerial. ending renderPass now.',
   );
   fixture.emitConsole('warning', 'application warning');
   fixture.emitConsole('error', 'application error');
