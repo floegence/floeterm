@@ -23,6 +23,9 @@ type ApiHistoryChunk = {
   sequence: number;
   data: string;
   timestampMs: number;
+  geometryGeneration?: number;
+  cols?: number;
+  rows?: number;
 };
 
 type ApiHistoryPage = Omit<TerminalHistoryPage, 'chunks'> & {
@@ -110,6 +113,9 @@ export const createTerminalRuntime = (connId: string) => {
         sequence: chunk.sequence,
         timestampMs: chunk.timestampMs,
         data: decodeBase64(chunk.data),
+        geometryGeneration: chunk.geometryGeneration,
+        cols: chunk.cols,
+        rows: chunk.rows,
       })),
     };
   };

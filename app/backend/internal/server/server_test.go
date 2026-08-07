@@ -471,6 +471,9 @@ func TestServerHistoryRemainsControlPlaneAfterLiveDisconnect(t *testing.T) {
 				t.Fatal(err)
 			}
 			if bytes.Contains(data, []byte("history-line")) {
+				if chunk.GeometryGeneration == 0 || chunk.Cols <= 0 || chunk.Rows <= 0 {
+					t.Fatalf("history geometry was not serialized: %+v", chunk)
+				}
 				return
 			}
 		}

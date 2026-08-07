@@ -90,9 +90,12 @@ type renameSessionRequest struct {
 }
 
 type historyChunk struct {
-	Sequence    int64  `json:"sequence"`
-	DataBase64  string `json:"data"`
-	TimestampMs int64  `json:"timestampMs"`
+	Sequence           int64  `json:"sequence"`
+	DataBase64         string `json:"data"`
+	TimestampMs        int64  `json:"timestampMs"`
+	GeometryGeneration uint64 `json:"geometryGeneration"`
+	Cols               int    `json:"cols"`
+	Rows               int    `json:"rows"`
 }
 
 type historyPageResponse struct {
@@ -343,9 +346,12 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		out := make([]historyChunk, 0, len(page.Chunks))
 		for _, chunk := range page.Chunks {
 			out = append(out, historyChunk{
-				Sequence:    chunk.Sequence,
-				DataBase64:  base64.StdEncoding.EncodeToString(chunk.Data),
-				TimestampMs: chunk.Timestamp,
+				Sequence:           chunk.Sequence,
+				DataBase64:         base64.StdEncoding.EncodeToString(chunk.Data),
+				TimestampMs:        chunk.Timestamp,
+				GeometryGeneration: chunk.GeometryGeneration,
+				Cols:               chunk.Cols,
+				Rows:               chunk.Rows,
 			})
 		}
 
