@@ -132,6 +132,11 @@ export interface PagedTerminalOutputCoordinatorOptions {
   fetchPage(request: PagedTerminalHistoryRequest): Promise<PagedTerminalHistoryPage>;
   write: PagedTerminalOutputWriter;
   writeHistory?: PagedTerminalOutputWriter;
+  applyHistoryGeometry?: (geometry: Readonly<{
+    generation: number;
+    cols: number;
+    rows: number;
+  }>) => unknown | Promise<unknown>;
   clear?: () => void;
   transformChunk?: (chunk: TerminalOutputPipelineChunk) => Uint8Array | null;
   isInteractive?: () => boolean;
@@ -280,8 +285,48 @@ const clonePreparedChunk = (
     },
     ...(chunk.sequence !== undefined ? { sequence: chunk.sequence } : {}),
     ...(chunk.timestampMs !== undefined ? { timestampMs: chunk.timestampMs } : {}),
+    ...(chunk.geometryGeneration !== undefined ? { geometryGeneration: chunk.geometryGeneration } : {}),
+    ...(chunk.cols !== undefined ? { cols: chunk.cols } : {}),
+    ...(chunk.rows !== undefined ? { rows: chunk.rows } : {}),
   });
 };
+
+type HistoryGeometry = Readonly<{ generation: number; cols: number; rows: number }>;
+
+const historyGeometryForChunk = (chunk: TerminalOutputPipelineChunk): HistoryGeometry => {
+  if (chunk.geometryGeneration === undefined || chunk.cols === undefined || chunk.rows === undefined) {
+    throw new HistoryContractError('history_contract_missing', 'history chunk geometry is required');
+  }
+  if (
+    !Number.isSafeInteger(chunk.geometryGeneration) || chunk.geometryGeneration <= 0
+    || !Number.isSafeInteger(chunk.cols) || chunk.cols <= 0
+    || !Number.isSafeInteger(chunk.rows) || chunk.rows <= 0
+  ) {
+    throw new HistoryContractError('history_contract_invalid', 'history chunk geometry is invalid');
+  }
+  return { generation: chunk.geometryGeneration, cols: chunk.cols, rows: chunk.rows };
+};
+
+const validateHistoryGeometryOrder = (
+  previous: HistoryGeometry | undefined,
+  current: HistoryGeometry,
+): HistoryGeometry => {
+  if (previous && current.generation < previous.generation) {
+    throw new HistoryContractError('history_contract_invalid', 'history geometry generation regressed');
+  }
+  if (previous && current.generation === previous.generation
+    && (current.cols !== previous.cols || current.rows !== previous.rows)) {
+    throw new HistoryContractError(
+      'history_contract_invalid',
+      'history geometry dimensions conflict within a generation',
+    );
+  }
+  return current;
+};
+
+const sameHistoryGeometry = (left: HistoryGeometry, right: HistoryGeometry): boolean => (
+  left.generation === right.generation && left.cols === right.cols && left.rows === right.rows
+);
 
 export const preparePagedTerminalHistory = async (
   options: PreparePagedTerminalHistoryOptions,
@@ -304,6 +349,7 @@ export const preparePagedTerminalHistory = async (
   let pageCount = 0;
   let chunks: Readonly<TerminalOutputPipelineChunk>[] = [];
   let rebaseAttempts = 0;
+  let previousHistoryGeometry: HistoryGeometry | undefined;
   const requestSignal = options.signal ?? new AbortController().signal;
 
   while (true) {
@@ -366,6 +412,7 @@ export const preparePagedTerminalHistory = async (
       coveredThroughSequence = startSequence - 1;
       byteLength = 0;
       chunks = [];
+      previousHistoryGeometry = undefined;
       await yieldHistoryPreparation(options.signal, options.yieldControl);
       continue;
     }
@@ -389,6 +436,10 @@ export const preparePagedTerminalHistory = async (
         );
       }
       previousChunkSequence = sequence!;
+      previousHistoryGeometry = validateHistoryGeometryOrder(
+        previousHistoryGeometry,
+        historyGeometryForChunk(chunk),
+      );
     }
     if (
       pageCoverage > Math.max(0, pageFirstRetained - 1)
@@ -764,12 +815,18 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       if (snapshotEnd > this.recoveryEndSequence || coveredThrough > this.recoveryEndSequence) return null;
       if (!Array.isArray(preparedHistory.chunks)) return null;
       let previousChunkSequence = Math.max(0, firstRetained - 1);
+      let previousGeometry: HistoryGeometry | undefined;
       let preparedBytes = 0;
       for (const chunk of preparedHistory.chunks) {
         if (!(chunk.data instanceof Uint8Array)) return null;
         const sequence = normalizeSequence(chunk.sequence, 'preparedHistory.chunk.sequence')!;
         if (sequence <= previousChunkSequence || sequence > coveredThrough) return null;
         previousChunkSequence = sequence;
+        try {
+          previousGeometry = validateHistoryGeometryOrder(previousGeometry, historyGeometryForChunk(chunk));
+        } catch {
+          return null;
+        }
         preparedBytes += chunk.data.byteLength;
       }
       if (preparedBytes !== preparedHistory.byteLength) return null;
@@ -1093,14 +1150,18 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
     let batch: TaggedChunk[] = [];
     let batchBytes = 0;
     let batchSource: 'history' | 'live' | undefined;
+    let batchGeometry: HistoryGeometry | undefined;
+    let previousHistoryGeometry: HistoryGeometry | undefined;
 
     const flush = async () => {
       if (batch.length === 0 || !this.isCurrent(generation) || !canStartBatch()) return;
       const current = batch;
       const source = batchSource;
+      const geometry = batchGeometry;
       batch = [];
       batchBytes = 0;
       batchSource = undefined;
+      batchGeometry = undefined;
 
       const accepted: TaggedChunk[] = [];
       const data: Uint8Array[] = [];
@@ -1112,17 +1173,30 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       }
       if (accepted.length === 0 || !this.isCurrent(generation)) return;
       const writer = source === 'history' ? (this.options.writeHistory ?? this.options.write) : this.options.write;
+      if (source === 'history') {
+        if (!geometry) {
+          throw new HistoryContractError('history_contract_missing', 'history batch geometry is required');
+        }
+        await this.options.applyHistoryGeometry?.(geometry);
+      }
       await this.invokeWriter(writer, concatData(data), accepted, generation);
     };
 
     for (const item of chunks) {
       const source = item.source ?? 'live';
+      let itemGeometry: HistoryGeometry | undefined;
+      if (source === 'history') {
+        itemGeometry = historyGeometryForChunk(item);
+        previousHistoryGeometry = validateHistoryGeometryOrder(previousHistoryGeometry, itemGeometry);
+      }
       if (batch.length > 0 && (
         source !== batchSource || batchBytes + item.data.byteLength > this.policy.maxWriteBatchBytes
+        || (source === 'history' && batchGeometry && itemGeometry && !sameHistoryGeometry(batchGeometry, itemGeometry))
       )) {
         await flush();
       }
       batchSource = source;
+      if (source === 'history') batchGeometry = itemGeometry;
       batch.push(item);
       batchBytes += item.data.byteLength;
     }

@@ -526,6 +526,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     try {
       let batchLength = 0;
       let batchBytes = 0;
+      let batchGeometry: { generation: number; cols: number; rows: number } | undefined;
       const geometryBoundary = this.pendingGeometryEvents[0]?.outputSequenceBoundary;
       for (const chunk of this.dataQueue) {
         if (batchLength >= MAX_WRITE_BATCH_CHUNKS) {
@@ -537,6 +538,40 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
           && chunk.sequence > geometryBoundary
         ) {
           break;
+        }
+        const hasGeometry = chunk.geometryGeneration !== undefined
+          || chunk.cols !== undefined
+          || chunk.rows !== undefined;
+        if (batchLength > 0 && hasGeometry !== (batchGeometry !== undefined)) {
+          break;
+        }
+        if (hasGeometry) {
+          if (
+            chunk.geometryGeneration === undefined
+            || chunk.cols === undefined
+            || chunk.rows === undefined
+            || !Number.isSafeInteger(chunk.geometryGeneration)
+            || chunk.geometryGeneration <= 0
+            || !Number.isSafeInteger(chunk.cols)
+            || chunk.cols <= 0
+            || !Number.isSafeInteger(chunk.rows)
+            || chunk.rows <= 0
+          ) {
+            throw new Error('terminal history chunk geometry is invalid');
+          }
+          const geometry = {
+            generation: chunk.geometryGeneration,
+            cols: chunk.cols,
+            rows: chunk.rows,
+          };
+          if (batchGeometry && (
+            batchGeometry.generation !== geometry.generation
+            || batchGeometry.cols !== geometry.cols
+            || batchGeometry.rows !== geometry.rows
+          )) {
+            break;
+          }
+          batchGeometry = geometry;
         }
         if (batchLength > 0 && batchBytes + chunk.data.byteLength > MAX_WRITE_BATCH_BYTES) {
           break;
@@ -553,6 +588,9 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
         return;
       }
       const payload = batch.length === 1 ? batch[0]!.data : concatChunks(batch.map(chunk => chunk.data));
+      if (batchGeometry) {
+        this.terminalCore.setFixedDimensions({ cols: batchGeometry.cols, rows: batchGeometry.rows });
+      }
       this.terminalCore.writeFrame(payload);
       for (const chunk of batch) {
         if (this.queueGeneration !== generation) {

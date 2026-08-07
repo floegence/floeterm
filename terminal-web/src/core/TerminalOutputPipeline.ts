@@ -8,6 +8,9 @@ export interface TerminalOutputPipelineChunk {
   data: Uint8Array;
   sequence?: number;
   timestampMs?: number;
+  geometryGeneration?: number;
+  cols?: number;
+  rows?: number;
 }
 
 export interface TerminalOutputPipelinePolicy {

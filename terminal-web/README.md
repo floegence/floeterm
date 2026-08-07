@@ -204,6 +204,14 @@ events.onData(sessionId, chunk => output.pushLive(chunk));
 
 History pages must explicitly include `coveredThroughSequence`, including the valid empty-history value `0`. A missing or malformed value produces a structured contract failure instead of guessing from the last returned chunk. The first page may also provide `snapshotEndSequence`, `firstRetainedSequence`, and `historyGeneration`; pass the snapshot end and generation through each later request.
 
+History chunks must also carry the PTY geometry that produced their bytes:
+`geometryGeneration`, `cols`, and `rows`. The coordinator validates that tuple,
+keeps generations monotonic, splits writes at geometry changes, and invokes
+`applyHistoryGeometry` immediately before each history batch. Hosts that replay
+history into a fixed-grid renderer must use that hook to set the recorded
+dimensions; omitting or conflicting geometry fails the replay contract rather
+than silently interpreting historical cursor movement at the current grid.
+
 If a page reports `historyReset` or changes `historyGeneration` while catch-up is running, the coordinator atomically clears the obsolete baseline, preserves retained live output, and restarts from the new generation. Hosts must not merge pages from different generations or reinterpret the expected coverage reset as a malformed regression.
 
 `baselineReady` becomes true only after the complete fixed history snapshot has been source-sequence merged with retained live output and the final history writer completion has fired. After that fence, catch-up retries preserve baseline readiness and do not need to block input. Structured failures distinguish initial replay from background catch-up and expose stable codes without requiring error-string parsing.

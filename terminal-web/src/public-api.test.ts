@@ -60,6 +60,9 @@ describe('public framework-neutral API', () => {
       sequence: 1,
       data: new Uint8Array([65]),
       timestampMs: 1,
+      geometryGeneration: 1,
+      cols: 80,
+      rows: 24,
     };
     const event: TerminalDataEvent = {
       sessionId: 's1',
@@ -96,7 +99,13 @@ describe('public framework-neutral API', () => {
     const appearance: TerminalAppearance = { fontSize: 13, presentationScale: 1 };
     const responsive: TerminalResponsiveConfig = { fitOnFocus: true, notifyResizeOnlyWhenFocused: true };
     const line: TerminalRuntimeLineSnapshot = { row: 0, text: 'demo' };
-    const pipelineChunk: TerminalOutputPipelineChunk = { sequence: 1, data: chunk.data };
+    const pipelineChunk: TerminalOutputPipelineChunk = {
+      sequence: 1,
+      data: chunk.data,
+      geometryGeneration: 1,
+      cols: 80,
+      rows: 24,
+    };
     const pipeline: TerminalOutputPipelineHandle = createTerminalOutputPipeline({
       write: () => {},
     });

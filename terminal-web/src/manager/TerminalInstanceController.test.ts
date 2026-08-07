@@ -374,9 +374,9 @@ describe('TerminalInstanceController', () => {
     events.emit({ sessionId: 's1', type: 'data', sequence: 4, timestampMs: 4, data: new TextEncoder().encode('4') });
     history.resolve({
       chunks: [
-        { sequence: 1, timestampMs: 1, data: new TextEncoder().encode('1') },
-        { sequence: 2, timestampMs: 2, data: new TextEncoder().encode('2') },
-        { sequence: 3, timestampMs: 3, data: new TextEncoder().encode('3') },
+        { sequence: 1, timestampMs: 1, data: new TextEncoder().encode('1'), geometryGeneration: 7, cols: 120, rows: 55 },
+        { sequence: 2, timestampMs: 2, data: new TextEncoder().encode('2'), geometryGeneration: 7, cols: 120, rows: 55 },
+        { sequence: 3, timestampMs: 3, data: new TextEncoder().encode('3'), geometryGeneration: 8, cols: 131, rows: 58 },
       ],
       firstRetainedSequence: 1,
       nextStartSequence: 0,
@@ -392,7 +392,11 @@ describe('TerminalInstanceController', () => {
     await vi.runAllTimersAsync();
 
     const core = coreInstances[0]!;
-    expect(core.writes.map(item => new TextDecoder().decode(item as Uint8Array))).toEqual(['1234']);
+    expect(core.writes.map(item => new TextDecoder().decode(item as Uint8Array))).toEqual(['12', '3', '4']);
+    expect(core.fixedDimensionCalls).toEqual([
+      { cols: 120, rows: 55 },
+      { cols: 131, rows: 58 },
+    ]);
     expect(core.historyReplayEnded).toBe(1);
     expect(controller.getSnapshot().connection.state).toBe('connected');
     expect(controller.getSnapshot().loadingState).toBe('ready');

@@ -372,6 +372,10 @@ export interface TerminalDataChunk {
   sequence: number;
   data: Uint8Array;
   timestampMs: number;
+  /** Geometry used by the PTY when this history chunk was produced. */
+  geometryGeneration?: number;
+  cols?: number;
+  rows?: number;
 }
 
 export interface TerminalDataEvent {

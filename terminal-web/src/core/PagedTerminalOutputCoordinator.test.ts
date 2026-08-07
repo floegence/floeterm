@@ -10,6 +10,9 @@ const decoder = new TextDecoder();
 const chunk = (sequence: number, data = String(sequence)) => ({
   sequence,
   data: encoder.encode(data),
+  geometryGeneration: 1,
+  cols: 80,
+  rows: 24,
 });
 const page = (overrides: Partial<PagedTerminalHistoryPage> = {}): PagedTerminalHistoryPage => ({
   chunks: [],
@@ -23,6 +26,65 @@ afterEach(() => {
 });
 
 describe('PagedTerminalOutputCoordinator', () => {
+  it('applies recorded history geometry before each geometry-specific write batch', async () => {
+    const writes: string[] = [];
+    const geometry: string[] = [];
+    const fetchPage = vi.fn().mockResolvedValue(page({
+      chunks: [
+        { ...chunk(1, 'old-screen'), geometryGeneration: 7, cols: 120, rows: 55 },
+        { ...chunk(2, 'new-screen'), geometryGeneration: 8, cols: 131, rows: 58 },
+      ],
+      coveredThroughSequence: 2,
+      snapshotEndSequence: 2,
+      firstRetainedSequence: 1,
+      historyGeneration: 1,
+    }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+      applyHistoryGeometry: value => geometry.push(`${value.generation}:${value.cols}x${value.rows}`),
+    });
+
+    await coordinator.attach(1, 2);
+
+    expect(geometry).toEqual(['7:120x55', '8:131x58']);
+    expect(writes).toEqual(['old-screen', 'new-screen']);
+    coordinator.dispose();
+  });
+
+  it.each([
+    ['missing geometry', { sequence: 1, data: encoder.encode('missing') }],
+    ['invalid geometry', { ...chunk(1, 'invalid'), geometryGeneration: 0, cols: 80, rows: 24 }],
+    ['conflicting dimensions', {
+      ...chunk(1, 'first'),
+      geometryGeneration: 2,
+      cols: 80,
+      rows: 24,
+    }],
+  ])('fails closed for %s in history', async (_label, invalidChunk) => {
+    const chunks = _label === 'conflicting dimensions'
+      ? [invalidChunk, { ...chunk(2, 'second'), geometryGeneration: 2, cols: 100, rows: 30 }]
+      : [invalidChunk];
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({
+        chunks,
+        coveredThroughSequence: chunks.length,
+        snapshotEndSequence: chunks.length,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+      }),
+      write: () => undefined,
+    });
+
+    await coordinator.attach(1, chunks.length);
+
+    expect(coordinator.getSnapshot().failure?.code).toBe(
+      _label === 'missing geometry' ? 'history_contract_missing' : 'history_contract_invalid',
+    );
+    coordinator.dispose();
+  });
+
   it('prepares an immutable paged snapshot and yields between pages', async () => {
     const source = chunk(1, 'one');
     const yieldControl = vi.fn().mockResolvedValue(undefined);
