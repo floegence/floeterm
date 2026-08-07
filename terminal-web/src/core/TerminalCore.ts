@@ -3498,6 +3498,17 @@ export class TerminalCore {
     this.requestDemandRender(true);
   }
 
+  /**
+   * Measures the host capacity without changing the currently rendered PTY grid.
+   * This is used by active shared-geometry views before an explicit transport resize.
+   */
+  measureHostDimensions(): TerminalDimensions | undefined {
+    if (!this.isReady() || !this.terminal) {
+      return undefined;
+    }
+    return this.proposeFitDimensions();
+  }
+
   async forceResizeAndWaitForPresentation(): Promise<void> {
     while (true) {
       const fontMetricSeq = await this.waitForStableFontMetrics();

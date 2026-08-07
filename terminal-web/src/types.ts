@@ -265,6 +265,7 @@ export interface TerminalCoreLike {
   copySelection(source?: TerminalCopySelectionSource): Promise<TerminalCopySelectionResult>;
   getState(): TerminalState;
   getDimensions(): { cols: number; rows: number };
+  measureHostDimensions?(): { cols: number; rows: number } | undefined;
   getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null;
   findNext(term: string, options?: SearchOptions): boolean;
   findPrevious(term: string, options?: SearchOptions): boolean;
@@ -550,6 +551,7 @@ export interface TerminalManagerActions {
   copySelection: (source?: TerminalCopySelectionSource) => Promise<TerminalCopySelectionResult>;
   setConnected: (connected: boolean) => void;
   forceResize: () => void;
+  measureHostDimensions: () => { cols: number; rows: number } | undefined;
   setSearchResultsCallback: (callback: ((results: { resultIndex: number; resultCount: number; matchPositions?: number[] }) => void) | null) => void;
   focus: (options?: TerminalFocusOptions) => void;
   getTerminalInfo: () => { rows: number; cols: number; bufferLength: number } | null;

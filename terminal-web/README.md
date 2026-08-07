@@ -278,6 +278,19 @@ const core = new TerminalCore(container, {
 });
 ```
 
+For an active fixed-grid view that is becoming interactive after history recovery,
+measure host capacity without changing the shared PTY grid, then submit that
+capacity through the host transport:
+
+```ts
+await core.forceResizeAndWaitForPresentation();
+const hostDimensions = core.measureHostDimensions();
+```
+
+`measureHostDimensions()` is read-only. It returns `undefined` while the host or
+renderer has no usable dimensions and never bypasses focus-gated resize policy;
+the host remains responsible for deciding whether to request a shared PTY resize.
+
 When a host can capture an atomic attach boundary, call `beginAttach(startSequence)` before subscribing and starting the server attach, then pass its generation token together with the returned server boundary to `completeAttach(attachGeneration, snapshotEndSequence)`. Live output arriving during the attach round trip remains retained, while a stale attach acknowledgement cannot complete a newer generation. The convenience `attach(startSequence, snapshotEndSequence)` performs both steps when no such window exists. Route only sequences after the boundary to `pushLive`: initial history is fixed at the boundary, while catch-up history is bounded before the first retained live sequence. If defensive overlap still reaches the coordinator, the raw live copy wins over history for the same sequence so terminal query/response behavior is not replaced by replay semantics.
 
 Passive mirrors of a remote PTY can render with the session owner's current dimensions:

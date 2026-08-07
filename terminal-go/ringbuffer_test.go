@@ -375,6 +375,35 @@ func TestRingBufferReadChunkPageAfterOverflow(t *testing.T) {
 	}
 }
 
+func TestRingBufferReadChunkPageAfterOverflowPreservesGeometry(t *testing.T) {
+	buffer := NewTerminalRingBufferWithLimits(2, 4, 6)
+	for sequence, value := range []string{"old-a", "old-b", "new-a", "new-b", "new-c"} {
+		generation := uint64(7)
+		cols, rows := 120, 55
+		if sequence >= 2 {
+			generation = 8
+			cols, rows = 131, 58
+		}
+		if err := buffer.writeOwnedWithSequenceAndGeometry(
+			[]byte(value), int64(sequence+1), int64(sequence+1), false, generation, cols, rows,
+		); err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+	}
+
+	page := buffer.ReadChunkPage(HistoryPageOptions{StartSeq: 1, LimitChunks: 4})
+	if len(page.Chunks) != 1 || page.Chunks[0].Sequence != 5 {
+		t.Fatalf("unexpected retained page after geometry overflow: %+v", page)
+	}
+	chunk := page.Chunks[0]
+	if chunk.GeometryGeneration != 8 || chunk.Cols != 131 || chunk.Rows != 58 {
+		t.Fatalf("retained geometry=%+v, want generation 8 at 131x58", chunk)
+	}
+	if page.FirstRetainedSequence != 5 || !page.HistoryTruncated {
+		t.Fatalf("unexpected truncation metadata: %+v", page)
+	}
+}
+
 func TestRingBufferReadChunkPageEmptyBuffer(t *testing.T) {
 	buffer := NewTerminalRingBuffer(3)
 

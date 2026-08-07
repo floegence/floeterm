@@ -289,4 +289,31 @@ describe('TerminalCore geometry stability', () => {
 
     core.dispose();
   });
+
+  it('measures host capacity without changing a fixed shared grid', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const core = new TerminalCore(container, {
+      fixedDimensions: { cols: 80, rows: 24 },
+      fit: { scrollbarReservePx: 0 },
+      responsive: { reportHostDimensionsWithFixedGrid: true },
+    });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    await vi.runAllTimersAsync();
+
+    expect(core.measureHostDimensions()).toEqual({ cols: 100, rows: 25 });
+    expect(core.getDimensions()).toEqual({ cols: 80, rows: 24 });
+
+    Object.defineProperty(container, 'clientWidth', { value: 640, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 320, configurable: true });
+    expect(core.measureHostDimensions()).toEqual({ cols: 80, rows: 20 });
+    expect(core.getDimensions()).toEqual({ cols: 80, rows: 24 });
+
+    core.dispose();
+  });
 });
