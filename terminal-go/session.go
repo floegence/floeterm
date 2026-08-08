@@ -165,6 +165,43 @@ func mergeShellLifecycleEnvironment(env, shellEnv []string) []string {
 	return env
 }
 
+func applyTerminalEnvironment(env []string, terminalEnv TerminalEnv, cols, rows int) []string {
+	ownedKeys := []string{
+		"TERM",
+		"COLORTERM",
+		"NO_COLOR",
+		"LANG",
+		"LC_ALL",
+		"TERM_PROGRAM",
+		"TERM_PROGRAM_VERSION",
+		"COLUMNS",
+		"LINES",
+		"PROMPT_EOL_MARK",
+		"TERMINFO",
+		"TERM_FEATURES",
+	}
+	for _, key := range ownedKeys {
+		env = removeEnvKey(env, key)
+	}
+	env = append(env,
+		"TERM="+terminalEnv.Term,
+		"COLORTERM="+terminalEnv.ColorTerm,
+		"LANG="+terminalEnv.Lang,
+		"LC_ALL="+terminalEnv.LcAll,
+		"TERM_PROGRAM="+terminalEnv.TermProgram,
+		"TERM_PROGRAM_VERSION="+terminalEnv.TermProgramVersion,
+		"COLUMNS="+fmt.Sprintf("%d", cols),
+		"LINES="+fmt.Sprintf("%d", rows),
+		"PROMPT_EOL_MARK=",
+		"TERMINFO="+terminalEnv.Terminfo,
+		"TERM_FEATURES="+terminalEnv.TermFeatures,
+	)
+	if terminalEnv.DisableColor {
+		env = append(env, "NO_COLOR=1")
+	}
+	return env
+}
+
 type authenticatedShellArgsProvider interface {
 	prepareAuthenticatedShellArgsContext(context.Context, string, string, bool) ([]string, []string, *shellLifecycleBootstrap, string, error)
 }
@@ -307,19 +344,7 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	s.shellLifecycleNonce = ""
 	s.shellLifecycleAuthState = shellLifecycleAuthLegacy
 	s.mu.Unlock()
-	env = append(env,
-		"TERM="+s.config.terminalEnv.Term,
-		"COLORTERM="+s.config.terminalEnv.ColorTerm,
-		"LANG="+s.config.terminalEnv.Lang,
-		"LC_ALL="+s.config.terminalEnv.LcAll,
-		"TERM_PROGRAM="+s.config.terminalEnv.TermProgram,
-		"TERM_PROGRAM_VERSION="+s.config.terminalEnv.TermProgramVersion,
-		"COLUMNS="+fmt.Sprintf("%d", cols),
-		"LINES="+fmt.Sprintf("%d", rows),
-		"PROMPT_EOL_MARK=",
-		"TERMINFO="+s.config.terminalEnv.Terminfo,
-		"TERM_FEATURES="+s.config.terminalEnv.TermFeatures,
-	)
+	env = applyTerminalEnvironment(env, s.config.terminalEnv, cols, rows)
 	cmd.Env = env
 
 	winsize := buildWinSize(cols, rows)

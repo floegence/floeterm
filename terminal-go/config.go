@@ -26,8 +26,11 @@ type ManagerConfig struct {
 
 // TerminalEnv defines environment variables applied to every PTY session.
 type TerminalEnv struct {
-	Term               string
-	ColorTerm          string
+	Term      string
+	ColorTerm string
+	// DisableColor explicitly requests NO_COLOR for applications running in the PTY.
+	// Host process presentation settings are otherwise isolated from terminal sessions.
+	DisableColor       bool
 	Lang               string
 	LcAll              string
 	TermProgram        string
