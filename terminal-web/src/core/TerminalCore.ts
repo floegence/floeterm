@@ -100,15 +100,18 @@ type terminal_selection_manager = {
   getSelectionCoords?: () => unknown;
 };
 
-type terminal_presentation_waiter = {
+type terminal_presentation_request = {
+  promise: Promise<void>;
   resolve: () => void;
   reject: (error: Error) => void;
+  frameHandle: number | null;
 };
 
-type terminal_presentation_request = {
-  committedWaiters: terminal_presentation_waiter[];
-  presentationWaiters: terminal_presentation_waiter[];
+type terminal_committed_frame_request = {
+  baselineGeneration: number;
   frameHandle: number | null;
+  resolve: () => void;
+  reject: (error: Error) => void;
 };
 
 type floeterm_perf_probe = {
@@ -618,12 +621,14 @@ export class TerminalCore {
     reject: (error: Error) => void;
   }> = [];
   private committedFabricFrameGeneration = 0;
+  private submittedFabricFrameGeneration = 0;
   private lastCommittedFabricFrame: {
     generation: number;
     result: TerminalFabricFrameRenderResult;
   } | null = null;
   private pendingPresentationRequest: terminal_presentation_request | null = null;
   private readonly presentationRequests = new Set<terminal_presentation_request>();
+  private readonly committedFrameRequests = new Set<terminal_committed_frame_request>();
   private cancelFabricAttachSchedule: ScheduledTurnCancel | null = null;
   private cancelInputRefocusSchedule: ScheduledTurnCancel | null = null;
   private inputElement: HTMLTextAreaElement | null = null;
@@ -3517,7 +3522,7 @@ export class TerminalCore {
   async forceResizeAndWaitForPresentation(): Promise<void> {
     while (true) {
       const fontMetricSeq = await this.waitForStableFontMetrics();
-      await this.requestForcedFrameBoundary('presentation');
+      await this.requestPresentationFrame();
       await this.waitForStableFontMetrics();
       if (fontMetricSeq === this.fontMetricSeq) {
         return;
@@ -3531,56 +3536,83 @@ export class TerminalCore {
    * following browser paint frame.
    */
   async forceResizeAndWaitForCommittedFrame(): Promise<void> {
-    await this.requestForcedFrameBoundary('committed');
+    if (this.isDisposed) {
+      throw new Error('Cannot present a disposed TerminalCore');
+    }
+    if (!this.terminal || !this.isReady()) {
+      throw new Error('Cannot present a TerminalCore before initialization completes');
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const request: terminal_committed_frame_request = {
+        baselineGeneration: this.committedFabricFrameGeneration,
+        frameHandle: null,
+        resolve: () => {
+          this.committedFrameRequests.delete(request);
+          resolve();
+        },
+        reject: error => {
+          this.committedFrameRequests.delete(request);
+          reject(error);
+        },
+      };
+      this.committedFrameRequests.add(request);
+      const start = () => {
+        if (this.isDisposed) {
+          this.rejectCommittedFrameRequest(request, new Error('TerminalCore was disposed before the committed frame completed'));
+          return;
+        }
+        if (this.config.rendererType === 'webgl' && !this.isFabricRendererActive()) {
+          void this.waitForFabricRendererAttach().then(() => {
+            if (this.isDisposed) {
+              this.rejectCommittedFrameRequest(request, new Error('TerminalCore was disposed before the committed frame completed'));
+            } else {
+              this.forceResize();
+              this.scheduleCommittedFrameCheck(request);
+            }
+          }).catch(error => this.rejectCommittedFrameRequest(request, error instanceof Error ? error : new Error(String(error))));
+          return;
+        }
+        this.forceResize();
+        this.scheduleCommittedFrameCheck(request);
+      };
+      start();
+    });
   }
 
-  private requestForcedFrameBoundary(
-    boundary: 'committed' | 'presentation',
-  ): Promise<void> {
+  private requestPresentationFrame(): Promise<void> {
     if (this.isDisposed) {
       return Promise.reject(new Error('Cannot present a disposed TerminalCore'));
     }
     if (!this.terminal || !this.isReady()) {
       return Promise.reject(new Error('Cannot present a TerminalCore before initialization completes'));
     }
-    return (async () => {
-      const request = this.pendingPresentationRequest ?? {
-        committedWaiters: [],
-        presentationWaiters: [],
-        frameHandle: null,
-      };
-      if (!this.pendingPresentationRequest) {
-        this.pendingPresentationRequest = request;
-        this.presentationRequests.add(request);
-      }
-      const promise = new Promise<void>((resolve, reject) => {
-        const waiter = { resolve, reject };
-        if (boundary === 'committed') request.committedWaiters.push(waiter);
-        else request.presentationWaiters.push(waiter);
+    if (this.config.rendererType === 'webgl' && !this.isFabricRendererActive()) {
+      return this.waitForFabricRendererAttach().then(() => {
+        if (this.isDisposed) throw new Error('TerminalCore was disposed before presentation started');
+        this.forceResize();
+        return this.createPresentationRequest();
       });
-      if (this.config.rendererType === 'webgl' && !this.isFabricRendererActive()) {
-        try {
-          await this.waitForFabricRendererAttach();
-        } catch (error) {
-          if (this.presentationRequests.has(request)) {
-            this.rejectPresentationRequest(
-              request,
-              error instanceof Error ? error : new Error(String(error)),
-            );
-          }
-          return promise;
-        }
-        if (this.isDisposed) return promise;
-        // Fabric attach performs its own full render. Reuse it when it satisfied
-        // this request; otherwise schedule the requested boundary now.
-        if (this.pendingPresentationRequest === request) {
-          this.forceResize();
-        }
-        return promise;
-      }
+    }
+    return this.createPresentationRequest();
+  }
+
+  private createPresentationRequest(): Promise<void> {
+    if (this.pendingPresentationRequest) {
       this.forceResize();
-      return promise;
-    })();
+      return this.pendingPresentationRequest.promise;
+    }
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    const request = { promise, resolve, reject, frameHandle: null };
+    this.pendingPresentationRequest = request;
+    this.presentationRequests.add(request);
+    this.forceResize();
+    return promise;
   }
 
   setFixedDimensions(
@@ -4167,16 +4199,6 @@ export class TerminalCore {
             || expectedRows <= 0
             || committed.result.renderedRows !== expectedRows
           ) {
-            if (
-              presentationRequest.committedWaiters.length > 0
-              && presentationRequest.presentationWaiters.length === 0
-            ) {
-              // A Fabric attach can invoke its first full render before the
-              // submitted frame is observable. Keep a committed-only request
-              // pending so attach completion can schedule a retry.
-              this.forceResize();
-              return;
-            }
             this.rejectPresentationRequest(presentationRequest, new Error(
               'The forced Beamterm frame was incomplete '
                 + `(expected_rows=${expectedRows} rendered_rows=${committed?.result.renderedRows ?? 0})`,
@@ -4188,18 +4210,14 @@ export class TerminalCore {
             throw new Error('The Beamterm renderer detached before its frame completed');
           }
           fabricRenderer.finishSubmittedFrame();
-        }
-        for (const waiter of presentationRequest.committedWaiters.splice(0)) {
-          waiter.resolve();
+          this.submittedFabricFrameGeneration = committed.generation;
         }
         this.pendingPresentationRequest = null;
         presentationRequest.frameHandle = requestAnimationFrame(() => {
           if (!this.presentationRequests.has(presentationRequest)) return;
           if (!this.presentationRequests.delete(presentationRequest)) return;
           presentationRequest.frameHandle = null;
-          for (const waiter of presentationRequest.presentationWaiters.splice(0)) {
-            waiter.resolve();
-          }
+          presentationRequest.resolve();
         });
       }
     } catch (error) {
@@ -4222,17 +4240,60 @@ export class TerminalCore {
       cancelAnimationFrame(request.frameHandle);
       request.frameHandle = null;
     }
-    for (const waiter of request.committedWaiters.splice(0)) {
-      waiter.reject(error);
+    request.reject(error);
+  }
+
+  private scheduleCommittedFrameCheck(request: terminal_committed_frame_request): void {
+    if (!this.committedFrameRequests.has(request) || request.frameHandle !== null) return;
+    queueMicrotask(() => {
+      if (!this.committedFrameRequests.has(request) || request.frameHandle !== null) return;
+      request.frameHandle = requestAnimationFrame(() => {
+        request.frameHandle = null;
+        this.checkCommittedFrameRequest(request);
+      });
+    });
+  }
+
+  private checkCommittedFrameRequest(request: terminal_committed_frame_request): void {
+    if (!this.committedFrameRequests.has(request)) return;
+    if (this.isDisposed) {
+      this.rejectCommittedFrameRequest(request, new Error('TerminalCore was disposed before the committed frame completed'));
+      return;
     }
-    for (const waiter of request.presentationWaiters.splice(0)) {
-      waiter.reject(error);
+    if (this.config.rendererType !== 'webgl') {
+      request.resolve();
+      return;
     }
+    if (this.committedFabricFrameGeneration > request.baselineGeneration) {
+      try {
+        if (this.submittedFabricFrameGeneration < this.committedFabricFrameGeneration) {
+          this.fabricView?.renderer.finishSubmittedFrame();
+          this.submittedFabricFrameGeneration = this.committedFabricFrameGeneration;
+        }
+        request.resolve();
+      } catch (error) {
+        this.rejectCommittedFrameRequest(request, error instanceof Error ? error : new Error(String(error)));
+      }
+      return;
+    }
+    this.scheduleCommittedFrameCheck(request);
+  }
+
+  private rejectCommittedFrameRequest(request: terminal_committed_frame_request, error: Error): void {
+    if (!this.committedFrameRequests.delete(request)) return;
+    if (request.frameHandle !== null) {
+      cancelAnimationFrame(request.frameHandle);
+      request.frameHandle = null;
+    }
+    request.reject(error);
   }
 
   private rejectAllPresentationRequests(error: Error): void {
     for (const request of [...this.presentationRequests]) {
       this.rejectPresentationRequest(request, error);
+    }
+    for (const request of [...this.committedFrameRequests]) {
+      this.rejectCommittedFrameRequest(request, error);
     }
   }
 }
