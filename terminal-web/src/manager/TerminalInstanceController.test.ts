@@ -300,7 +300,8 @@ describe('TerminalInstanceController', () => {
     await flushPromises();
 
     expect(coreInstances[0]!.writes.map(item => new TextDecoder().decode(item as Uint8Array))).toEqual(['x']);
-    expect(coreInstances[0]!.fixedDimensionCalls.at(-1)).toEqual({ cols: 90, rows: 25 });
+    const fixedDimensionCalls = coreInstances[0]!.fixedDimensionCalls;
+    expect(fixedDimensionCalls[fixedDimensionCalls.length - 1]).toEqual({ cols: 90, rows: 25 });
     expect(cancelFrame).toHaveBeenCalledTimes(1);
 
     controller.dispose();
