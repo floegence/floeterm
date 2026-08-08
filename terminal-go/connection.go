@@ -295,7 +295,10 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 			s.geometryGeneration = 1
 		}
 	}
-	if changed || force {
+	// TIOCSWINSZ already notifies the foreground process group when the grid
+	// changes. A separate signal is only needed to request a fresh frame after
+	// a forced same-size attach whose retained history was truncated.
+	if !changed && force {
 		requestRedraw := s.requestPTYRedraw
 		if requestRedraw == nil && s.setPTYSize == nil {
 			requestRedraw = requestPTYForegroundRedraw

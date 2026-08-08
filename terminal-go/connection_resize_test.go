@@ -318,8 +318,8 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 	if resizeCalls != 1 {
 		t.Fatalf("changed geometry resize calls = %d", resizeCalls)
 	}
-	if redrawCalls != 1 {
-		t.Fatalf("changed geometry redraw calls = %d, want 1", redrawCalls)
+	if redrawCalls != 0 {
+		t.Fatalf("changed geometry redraw calls = %d, want 0", redrawCalls)
 	}
 
 	geometry, err = session.ApplyConnectionSize("wide", 160, 40)
@@ -332,8 +332,8 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 	if resizeCalls != 2 {
 		t.Fatalf("explicit unchanged resize was not reapplied: calls=%d", resizeCalls)
 	}
-	if redrawCalls != 2 {
-		t.Fatalf("explicit unchanged resize did not request a foreground redraw: calls=%d", redrawCalls)
+	if redrawCalls != 1 {
+		t.Fatalf("explicit unchanged resize did not request a foreground redraw: calls=%d, want 1", redrawCalls)
 	}
 }
 
