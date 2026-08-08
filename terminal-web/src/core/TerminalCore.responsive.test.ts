@@ -264,6 +264,42 @@ describe('TerminalCore responsive resize notifications', () => {
     core.dispose();
   });
 
+  it('does not consume host resize notifications while applying a transient fixed grid', async () => {
+    const parent = document.createElement('div');
+    const container = document.createElement('div');
+    parent.appendChild(container);
+    document.body.appendChild(parent);
+
+    Object.defineProperty(parent, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(parent, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const onResize = vi.fn();
+    const core = new TerminalCore(container, {
+      fixedDimensions: { cols: 80, rows: 24 },
+      fit: { scrollbarReservePx: 0 },
+      responsive: { reportHostDimensionsWithFixedGrid: true },
+    }, { onResize });
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    await vi.runAllTimersAsync();
+    onResize.mockClear();
+
+    Object.defineProperty(parent, 'clientWidth', { value: 640, configurable: true });
+    Object.defineProperty(container, 'clientWidth', { value: 640, configurable: true });
+    core.setFixedDimensions({ cols: 70, rows: 18 }, { notifyResize: false });
+    await vi.runAllTimersAsync();
+
+    expect(onResize).not.toHaveBeenCalled();
+
+    resizeObservers[0]?.trigger(parent);
+    await vi.runAllTimersAsync();
+    expect(onResize).toHaveBeenCalledWith({ cols: 80, rows: 25 });
+    core.dispose();
+  });
+
   it('fits to the mounted component before initialization resolves', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);

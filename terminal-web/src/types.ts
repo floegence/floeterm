@@ -42,6 +42,11 @@ export type TerminalDimensions = {
   rows: number;
 };
 
+export type TerminalFixedDimensionsOptions = Readonly<{
+  /** Avoid treating parser replay geometry as a host resize notification. */
+  notifyResize?: boolean;
+}>;
+
 export interface TerminalFocusOptions {
   /**
    * Programmatic terminal focus should not move the host page or an embedded
@@ -274,7 +279,7 @@ export interface TerminalCoreLike {
   focus(options?: TerminalFocusOptions): void;
   setConnected(isConnected: boolean): void;
   forceResize(): void;
-  setFixedDimensions(dimensions: TerminalDimensions | null): void;
+  setFixedDimensions(dimensions: TerminalDimensions | null, options?: TerminalFixedDimensionsOptions): void;
   setAppearance?(appearance: TerminalAppearance): void;
   setScrollbarOptions?(options: Partial<TerminalScrollbarOptions>): void;
   setTheme(theme: Record<string, unknown>): void;

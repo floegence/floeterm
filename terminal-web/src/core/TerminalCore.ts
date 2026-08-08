@@ -18,6 +18,7 @@ import {
   type TerminalCopySelectionResult,
   type TerminalCopySelectionSource,
   type TerminalDimensions,
+  type TerminalFixedDimensionsOptions,
   type TerminalEventHandlers,
   type TerminalFitConfig,
   type TerminalFocusOptions,
@@ -3548,7 +3549,10 @@ export class TerminalCore {
     return promise;
   }
 
-  setFixedDimensions(dimensions: TerminalDimensions | null): void {
+  setFixedDimensions(
+    dimensions: TerminalDimensions | null,
+    options?: TerminalFixedDimensionsOptions,
+  ): void {
     const next = normalizeTerminalDimensions(dimensions);
     if (sameTerminalDimensions(this.fixedDimensions, next) || (!this.fixedDimensions && !next)) {
       return;
@@ -3561,7 +3565,15 @@ export class TerminalCore {
       return;
     }
 
-    this.forceResize();
+    const previousSuppression = this.suppressResizeNotifications;
+    if (options?.notifyResize === false) {
+      this.suppressResizeNotifications = true;
+    }
+    try {
+      this.forceResize();
+    } finally {
+      this.suppressResizeNotifications = previousSuppression;
+    }
   }
 
   setAppearance(appearance: TerminalAppearance): void {

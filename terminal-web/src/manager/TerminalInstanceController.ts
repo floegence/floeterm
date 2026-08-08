@@ -590,7 +590,10 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       }
       const payload = batch.length === 1 ? batch[0]!.data : concatChunks(batch.map(chunk => chunk.data));
       if (batchGeometry) {
-        this.terminalCore.setFixedDimensions({ cols: batchGeometry.cols, rows: batchGeometry.rows });
+        this.terminalCore.setFixedDimensions(
+          { cols: batchGeometry.cols, rows: batchGeometry.rows },
+          { notifyResize: false },
+        );
       }
       this.terminalCore.writeFrame(payload);
       for (const chunk of batch) {
