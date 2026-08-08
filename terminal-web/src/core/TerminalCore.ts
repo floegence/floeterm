@@ -100,10 +100,14 @@ type terminal_selection_manager = {
   getSelectionCoords?: () => unknown;
 };
 
-type terminal_presentation_request = {
-  promise: Promise<void>;
+type terminal_presentation_waiter = {
   resolve: () => void;
   reject: (error: Error) => void;
+};
+
+type terminal_presentation_request = {
+  committedWaiters: terminal_presentation_waiter[];
+  presentationWaiters: terminal_presentation_waiter[];
   frameHandle: number | null;
 };
 
@@ -3513,7 +3517,7 @@ export class TerminalCore {
   async forceResizeAndWaitForPresentation(): Promise<void> {
     while (true) {
       const fontMetricSeq = await this.waitForStableFontMetrics();
-      await this.forceResizeAndWaitForCommittedFrame();
+      await this.requestForcedFrameBoundary('presentation');
       await this.waitForStableFontMetrics();
       if (fontMetricSeq === this.fontMetricSeq) {
         return;
@@ -3521,32 +3525,62 @@ export class TerminalCore {
     }
   }
 
-  private async forceResizeAndWaitForCommittedFrame(): Promise<void> {
+  /**
+   * Forces a resize and waits until the terminal renderer has committed a full frame.
+   * Unlike {@link forceResizeAndWaitForPresentation}, this does not wait for the
+   * following browser paint frame.
+   */
+  async forceResizeAndWaitForCommittedFrame(): Promise<void> {
+    await this.requestForcedFrameBoundary('committed');
+  }
+
+  private requestForcedFrameBoundary(
+    boundary: 'committed' | 'presentation',
+  ): Promise<void> {
     if (this.isDisposed) {
-      throw new Error('Cannot present a disposed TerminalCore');
+      return Promise.reject(new Error('Cannot present a disposed TerminalCore'));
     }
     if (!this.terminal || !this.isReady()) {
-      throw new Error('Cannot present a TerminalCore before initialization completes');
+      return Promise.reject(new Error('Cannot present a TerminalCore before initialization completes'));
     }
-    if (this.config.rendererType === 'webgl' && !this.isFabricRendererActive()) {
-      await this.waitForFabricRendererAttach();
-      if (this.isDisposed) throw new Error('TerminalCore was disposed before presentation started');
-    }
-    if (this.pendingPresentationRequest) {
+    return (async () => {
+      const request = this.pendingPresentationRequest ?? {
+        committedWaiters: [],
+        presentationWaiters: [],
+        frameHandle: null,
+      };
+      if (!this.pendingPresentationRequest) {
+        this.pendingPresentationRequest = request;
+        this.presentationRequests.add(request);
+      }
+      const promise = new Promise<void>((resolve, reject) => {
+        const waiter = { resolve, reject };
+        if (boundary === 'committed') request.committedWaiters.push(waiter);
+        else request.presentationWaiters.push(waiter);
+      });
+      if (this.config.rendererType === 'webgl' && !this.isFabricRendererActive()) {
+        try {
+          await this.waitForFabricRendererAttach();
+        } catch (error) {
+          if (this.presentationRequests.has(request)) {
+            this.rejectPresentationRequest(
+              request,
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          }
+          return promise;
+        }
+        if (this.isDisposed) return promise;
+        // Fabric attach performs its own full render. Reuse it when it satisfied
+        // this request; otherwise schedule the requested boundary now.
+        if (this.pendingPresentationRequest === request) {
+          this.forceResize();
+        }
+        return promise;
+      }
       this.forceResize();
-      return this.pendingPresentationRequest.promise;
-    }
-
-    let resolve!: () => void;
-    let reject!: (error: Error) => void;
-    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-      resolve = resolvePromise;
-      reject = rejectPromise;
-    });
-    this.pendingPresentationRequest = { promise, resolve, reject, frameHandle: null };
-    this.presentationRequests.add(this.pendingPresentationRequest);
-    this.forceResize();
-    return promise;
+      return promise;
+    })();
   }
 
   setFixedDimensions(
@@ -4133,6 +4167,16 @@ export class TerminalCore {
             || expectedRows <= 0
             || committed.result.renderedRows !== expectedRows
           ) {
+            if (
+              presentationRequest.committedWaiters.length > 0
+              && presentationRequest.presentationWaiters.length === 0
+            ) {
+              // A Fabric attach can invoke its first full render before the
+              // submitted frame is observable. Keep a committed-only request
+              // pending so attach completion can schedule a retry.
+              this.forceResize();
+              return;
+            }
             this.rejectPresentationRequest(presentationRequest, new Error(
               'The forced Beamterm frame was incomplete '
                 + `(expected_rows=${expectedRows} rendered_rows=${committed?.result.renderedRows ?? 0})`,
@@ -4145,12 +4189,17 @@ export class TerminalCore {
           }
           fabricRenderer.finishSubmittedFrame();
         }
+        for (const waiter of presentationRequest.committedWaiters.splice(0)) {
+          waiter.resolve();
+        }
         this.pendingPresentationRequest = null;
         presentationRequest.frameHandle = requestAnimationFrame(() => {
           if (!this.presentationRequests.has(presentationRequest)) return;
           if (!this.presentationRequests.delete(presentationRequest)) return;
           presentationRequest.frameHandle = null;
-          presentationRequest.resolve();
+          for (const waiter of presentationRequest.presentationWaiters.splice(0)) {
+            waiter.resolve();
+          }
         });
       }
     } catch (error) {
@@ -4173,7 +4222,12 @@ export class TerminalCore {
       cancelAnimationFrame(request.frameHandle);
       request.frameHandle = null;
     }
-    request.reject(error);
+    for (const waiter of request.committedWaiters.splice(0)) {
+      waiter.reject(error);
+    }
+    for (const waiter of request.presentationWaiters.splice(0)) {
+      waiter.reject(error);
+    }
   }
 
   private rejectAllPresentationRequests(error: Error): void {

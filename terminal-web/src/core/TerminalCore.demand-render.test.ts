@@ -534,6 +534,34 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('resolves a requested committed frame before the following browser paint frame', async () => {
+    const core = await createWebGLCore();
+    mockFabric.startFrame.mockClear();
+    mockFabric.writeRow.mockClear();
+    mockFabric.finishFrame.mockClear();
+    mockFabric.finishSubmittedFrame.mockClear();
+    let committed = false;
+
+    const commit = core.forceResizeAndWaitForCommittedFrame().then(() => {
+      committed = true;
+    });
+
+    expect(committed).toBe(false);
+    await vi.runOnlyPendingTimersAsync();
+    await commit;
+    expect(mockFabric.startFrame).toHaveBeenCalledWith(
+      expect.objectContaining({ forceAll: true }),
+      expect.objectContaining({ rows: 2 }),
+    );
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(2);
+    expect(mockFabric.finishFrame).toHaveBeenCalledTimes(1);
+    expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
+    expect(committed).toBe(true);
+
+    await vi.runOnlyPendingTimersAsync();
+    core.dispose();
+  });
+
   it('waits for the latest terminal font metrics before starting presentation', async () => {
     let resolveInitialFont!: () => void;
     let resolveLatestFont!: () => void;
