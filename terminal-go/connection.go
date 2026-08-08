@@ -287,21 +287,23 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 	if err := setSize(s.PTY, buildWinSize(cols, rows)); err != nil {
 		return fmt.Errorf("failed to resize PTY: %w", err)
 	}
-	if !changed && force {
-		requestRedraw := s.requestPTYRedraw
-		if requestRedraw == nil {
-			requestRedraw = requestPTYForegroundRedraw
-		}
-		if err := requestRedraw(s.PTY); err != nil {
-			s.config.logger.Warn("Failed to request PTY foreground redraw", "sessionID", s.ID, "reason", reason, "error", err)
-		}
-	}
 	if changed {
 		s.lastAppliedCols = cols
 		s.lastAppliedRows = rows
 		s.geometryGeneration++
 		if s.geometryGeneration == 0 {
 			s.geometryGeneration = 1
+		}
+	}
+	if changed || force {
+		requestRedraw := s.requestPTYRedraw
+		if requestRedraw == nil && s.setPTYSize == nil {
+			requestRedraw = requestPTYForegroundRedraw
+		}
+		if requestRedraw != nil {
+			if err := requestRedraw(s.PTY); err != nil {
+				s.config.logger.Warn("Failed to request PTY foreground redraw", "sessionID", s.ID, "reason", reason, "error", err)
+			}
 		}
 	}
 	s.config.logger.Debug("PTY resized", "sessionID", s.ID, "cols", cols, "rows", rows, "reason", reason)

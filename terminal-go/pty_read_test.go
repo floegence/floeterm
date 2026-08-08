@@ -53,7 +53,7 @@ func TestCollectAvailablePTYBurstDrainsOnlyBufferedReads(t *testing.T) {
 	first := <-reads
 	buffer := make([]byte, 32*1024)
 
-	n, pending, err := collectAvailablePTYBurst(first, reads, buffer)
+	n, pending, _, err := collectAvailablePTYBurst(first, reads, buffer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestCollectAvailablePTYBurstDrainsOnlyBufferedReads(t *testing.T) {
 	}
 
 	empty := make(chan ptyReadResult, 1)
-	n, pending, err = collectAvailablePTYBurst(
+	n, pending, _, err = collectAvailablePTYBurst(
 		ptyReadResult{data: bytes.Repeat([]byte("x"), 1024)},
 		empty,
 		buffer,
@@ -80,13 +80,51 @@ func TestCollectAvailablePTYBurstDrainsOnlyBufferedReads(t *testing.T) {
 	}
 }
 
+func TestCollectAvailablePTYBurstStopsAtGeometryBoundary(t *testing.T) {
+	oldGeometry := TerminalGeometry{Generation: 4, Cols: 195, Rows: 60}
+	newGeometry := TerminalGeometry{Generation: 5, Cols: 105, Rows: 60}
+	reads := make(chan ptyReadResult, 1)
+	reads <- ptyReadResult{data: []byte("new-grid"), geometry: newGeometry}
+	buffer := make([]byte, 32*1024)
+
+	n, pending, geometry, err := collectAvailablePTYBurst(
+		ptyReadResult{data: []byte("old-grid"), geometry: oldGeometry},
+		reads,
+		buffer,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(buffer[:n]) != "old-grid" {
+		t.Fatalf("first burst=%q, want old-grid", buffer[:n])
+	}
+	if geometry != oldGeometry {
+		t.Fatalf("first geometry=%+v, want %+v", geometry, oldGeometry)
+	}
+	if pending == nil || string(pending.data) != "new-grid" || pending.geometry != newGeometry {
+		t.Fatalf("pending=%+v, want new-grid at %+v", pending, newGeometry)
+	}
+
+	n, pending, geometry, err = collectAvailablePTYBurst(*pending, reads, buffer)
+	if err != nil || pending != nil || string(buffer[:n]) != "new-grid" || geometry != newGeometry {
+		t.Fatalf(
+			"second burst=%q pending=%v geometry=%+v error=%v, want new-grid/nil/%+v/nil",
+			buffer[:n],
+			pending,
+			geometry,
+			err,
+			newGeometry,
+		)
+	}
+}
+
 func TestCollectAvailablePTYBurstCarriesOverflowAndTerminalError(t *testing.T) {
 	wantErr := io.EOF
 	reads := make(chan ptyReadResult, 1)
 	reads <- ptyReadResult{data: bytes.Repeat([]byte("b"), 20*1024), err: wantErr}
 	buffer := make([]byte, 32*1024)
 
-	n, pending, err := collectAvailablePTYBurst(
+	n, pending, _, err := collectAvailablePTYBurst(
 		ptyReadResult{data: bytes.Repeat([]byte("a"), 20*1024)},
 		reads,
 		buffer,
@@ -101,7 +139,7 @@ func TestCollectAvailablePTYBurstCarriesOverflowAndTerminalError(t *testing.T) {
 		t.Fatalf("pending=%+v, want 8 KiB with EOF", pending)
 	}
 
-	n, pending, err = collectAvailablePTYBurst(*pending, reads, buffer)
+	n, pending, _, err = collectAvailablePTYBurst(*pending, reads, buffer)
 	if n != 8*1024 || pending != nil || !errors.Is(err, wantErr) {
 		t.Fatalf("second burst bytes=%d pending=%v error=%v, want 8192/nil/EOF", n, pending, err)
 	}

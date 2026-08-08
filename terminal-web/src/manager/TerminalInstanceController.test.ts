@@ -293,10 +293,14 @@ describe('TerminalInstanceController', () => {
       sequence: 1,
       data: new TextEncoder().encode('x'),
       liveBatchSize: 1,
+      geometryGeneration: 3,
+      cols: 90,
+      rows: 25,
     });
     await flushPromises();
 
     expect(coreInstances[0]!.writes.map(item => new TextDecoder().decode(item as Uint8Array))).toEqual(['x']);
+    expect(coreInstances[0]!.fixedDimensionCalls.at(-1)).toEqual({ cols: 90, rows: 25 });
     expect(cancelFrame).toHaveBeenCalledTimes(1);
 
     controller.dispose();

@@ -53,6 +53,26 @@ describe('PagedTerminalOutputCoordinator', () => {
     coordinator.dispose();
   });
 
+  it('splits live output at recorded geometry boundaries', async () => {
+    const writes: string[] = [];
+    const batches: string[] = [];
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({ coveredThroughSequence: 0 }),
+      write: (data, chunks) => {
+        writes.push(decoder.decode(data));
+        batches.push(`${chunks[0]?.geometryGeneration}:${chunks[0]?.cols}x${chunks[0]?.rows}`);
+      },
+    });
+
+    await coordinator.attach(0);
+    coordinator.pushLive({ ...chunk(1, 'old'), geometryGeneration: 7, cols: 120, rows: 55 });
+    coordinator.pushLive({ ...chunk(2, 'new'), geometryGeneration: 8, cols: 131, rows: 58 });
+    await vi.waitFor(() => expect(writes).toEqual(['old', 'new']));
+
+    expect(batches).toEqual(['7:120x55', '8:131x58']);
+    coordinator.dispose();
+  });
+
   it.each([
     ['missing geometry', { sequence: 1, data: encoder.encode('missing') }],
     ['invalid geometry', { ...chunk(1, 'invalid'), geometryGeneration: 0, cols: 80, rows: 24 }],

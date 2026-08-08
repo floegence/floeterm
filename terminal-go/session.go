@@ -726,7 +726,13 @@ func (s *Session) readPTYOutput(
 	defer monitor.Close()
 
 	reads := make(chan ptyReadResult, 32)
-	go readPTYPacketsWithPending(ptyFile, reads, monitor.PendingBytes, processDone)
+	go readPTYPacketsWithPendingGeometry(
+		ptyFile,
+		reads,
+		monitor.PendingBytes,
+		processDone,
+		s.captureTerminalGeometry,
+	)
 	buffer := make([]byte, 32*1024)
 	var pending *ptyReadResult
 	for {
@@ -742,11 +748,11 @@ func (s *Session) readPTYOutput(
 			}
 		}
 
-		n, nextPending, err := collectAvailablePTYBurst(first, reads, buffer)
+		n, nextPending, geometry, err := collectAvailablePTYBurst(first, reads, buffer)
 		pending = nextPending
 		if n > 0 {
 			raw := append([]byte(nil), buffer[:n]...)
-			s.processRawPTYData(raw)
+			s.processRawPTYDataAtGeometry(raw, geometry)
 		}
 		if err != nil {
 			if tail := s.flushPrivateShellLifecycleFilter(); len(tail) > 0 {
@@ -759,8 +765,9 @@ func (s *Session) readPTYOutput(
 }
 
 type ptyReadResult struct {
-	data []byte
-	err  error
+	data     []byte
+	err      error
+	geometry TerminalGeometry
 }
 
 func readPTYPackets(reader io.Reader, reads chan<- ptyReadResult) {
@@ -773,6 +780,16 @@ func readPTYPacketsWithPending(
 	pendingBytes func() (int, error),
 	processDone <-chan struct{},
 ) {
+	readPTYPacketsWithPendingGeometry(reader, reads, pendingBytes, processDone, nil)
+}
+
+func readPTYPacketsWithPendingGeometry(
+	reader io.Reader,
+	reads chan<- ptyReadResult,
+	pendingBytes func() (int, error),
+	processDone <-chan struct{},
+	captureGeometry func() TerminalGeometry,
+) {
 	defer close(reads)
 	buffer := make([]byte, 32*1024)
 	coalesce := false
@@ -781,7 +798,7 @@ func readPTYPacketsWithPending(
 		total := n
 		morePending := false
 		if total > 0 && err == nil {
-			if coalesce {
+			if coalesce && captureGeometry == nil {
 				for total < len(buffer) {
 					available, availableErr := currentPendingBytes(pendingBytes, processDone)
 					if availableErr != nil {
@@ -814,9 +831,14 @@ func readPTYPacketsWithPending(
 			}
 		}
 		if total > 0 {
+			var geometry TerminalGeometry
+			if captureGeometry != nil {
+				geometry = captureGeometry()
+			}
 			reads <- ptyReadResult{
-				data: append([]byte(nil), buffer[:total]...),
-				err:  err,
+				data:     append([]byte(nil), buffer[:total]...),
+				err:      err,
+				geometry: geometry,
 			}
 		} else if err != nil {
 			reads <- ptyReadResult{err: err}
@@ -858,44 +880,62 @@ func collectAvailablePTYBurst(
 	first ptyReadResult,
 	reads <-chan ptyReadResult,
 	buffer []byte,
-) (int, *ptyReadResult, error) {
+) (int, *ptyReadResult, TerminalGeometry, error) {
 	total := 0
 	current := first
+	geometry := first.geometry
 	for {
+		if current.geometry != geometry {
+			return total, &current, geometry, nil
+		}
 		if len(current.data) > 0 {
 			n := copy(buffer[total:], current.data)
 			total += n
 			if n < len(current.data) {
 				current.data = current.data[n:]
-				return total, &current, nil
+				return total, &current, geometry, nil
 			}
 		}
 		if current.err != nil {
-			return total, nil, current.err
+			return total, nil, geometry, current.err
 		}
 		if total == len(buffer) {
-			return total, nil, nil
+			return total, nil, geometry, nil
 		}
 
 		select {
 		case next, ok := <-reads:
 			if !ok {
-				return total, nil, io.EOF
+				return total, nil, geometry, io.EOF
 			}
 			current = next
 		default:
-			return total, nil, nil
+			return total, nil, geometry, nil
 		}
 	}
 }
 
+func (s *Session) captureTerminalGeometry() TerminalGeometry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.effectiveGeometryLocked()
+}
+
 func (s *Session) processRawPTYData(data []byte) {
+	s.processRawPTYDataAtGeometry(data, s.captureTerminalGeometry())
+}
+
+func (s *Session) processRawPTYDataAtGeometry(data []byte, geometry TerminalGeometry) {
 	displayData := s.filterPrivateShellLifecycleMarkers(data)
-	s.publishPTYDisplayData(displayData)
+	s.publishPTYDisplayDataAtGeometry(displayData, geometry)
 	s.checkShellIntegrationChange(data)
 }
 
 func (s *Session) publishPTYDisplayData(displayData []byte) {
+	s.publishPTYDisplayDataAtGeometry(displayData, s.captureTerminalGeometry())
+}
+
+func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry TerminalGeometry) {
 	timestamp := time.Now().UnixMilli()
 
 	if len(displayData) > 0 {
@@ -903,7 +943,9 @@ func (s *Session) publishPTYDisplayData(displayData []byte) {
 		s.sequenceNumber++
 		seqNum := s.sequenceNumber
 		s.LastActive = time.Now()
-		geometry := s.effectiveGeometryLocked()
+		if geometry.Generation == 0 || geometry.Cols <= 0 || geometry.Rows <= 0 {
+			geometry = s.effectiveGeometryLocked()
+		}
 
 		if s.ringBuffer != nil {
 			if err := s.ringBuffer.writeOwnedWithSequenceAndGeometry(

@@ -301,6 +301,46 @@ func TestSessionOutputCarriesTheAppliedTerminalGeometry(t *testing.T) {
 	}
 }
 
+func TestSessionQueuedOutputRetainsTheGeometryCapturedAtPTYRead(t *testing.T) {
+	oldGeometry := TerminalGeometry{Generation: 4, Cols: 195, Rows: 60}
+	var received TerminalOutputEvent
+	session := &Session{
+		ID:                   "queued-geometry-output",
+		connections:          make(map[string]*ConnectionInfo),
+		liveAttachments:      make(map[string]liveAttachment),
+		ringBuffer:           NewTerminalRingBuffer(8),
+		historyGeneration:    1,
+		historyStartSequence: 1,
+		lastAppliedCols:      105,
+		lastAppliedRows:      60,
+		geometryGeneration:   5,
+		config:               newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.liveAttachments["view"] = liveAttachment{
+		generation: 1,
+		subscriber: LiveSubscriber{OnOutput: func(event TerminalOutputEvent) bool {
+			received = event
+			return true
+		}},
+	}
+
+	session.processRawPTYDataAtGeometry([]byte("old-grid-delta"), oldGeometry)
+	if received.Geometry != oldGeometry {
+		t.Fatalf("live geometry=%+v, want captured %+v", received.Geometry, oldGeometry)
+	}
+	history, err := session.GetHistoryFromSequence(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("history len=%d, want 1", len(history))
+	}
+	if history[0].GeometryGeneration != oldGeometry.Generation ||
+		history[0].Cols != oldGeometry.Cols || history[0].Rows != oldGeometry.Rows {
+		t.Fatalf("history geometry=%+v, want captured %+v", history[0], oldGeometry)
+	}
+}
+
 func TestLiveAttachmentsReceiveEveryEffectiveGeometryChange(t *testing.T) {
 	firstGeometry := make(chan TerminalGeometry, 2)
 	secondGeometry := make(chan TerminalGeometry, 1)

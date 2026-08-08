@@ -1188,15 +1188,22 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       if (source === 'history') {
         itemGeometry = historyGeometryForChunk(item);
         previousHistoryGeometry = validateHistoryGeometryOrder(previousHistoryGeometry, itemGeometry);
+      } else if (item.geometryGeneration !== undefined
+        && item.cols !== undefined
+        && item.rows !== undefined) {
+        // Live batches carry the PTY geometry that produced their bytes. Keep
+        // geometry transitions as writer boundaries so relative cursor output
+        // is never concatenated across grids.
+        itemGeometry = historyGeometryForChunk(item);
       }
       if (batch.length > 0 && (
         source !== batchSource || batchBytes + item.data.byteLength > this.policy.maxWriteBatchBytes
-        || (source === 'history' && batchGeometry && itemGeometry && !sameHistoryGeometry(batchGeometry, itemGeometry))
+        || (batchGeometry && itemGeometry && !sameHistoryGeometry(batchGeometry, itemGeometry))
       )) {
         await flush();
       }
       batchSource = source;
-      if (source === 'history') batchGeometry = itemGeometry;
+      batchGeometry = itemGeometry;
       batch.push(item);
       batchBytes += item.data.byteLength;
     }

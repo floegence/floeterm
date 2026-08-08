@@ -91,7 +91,7 @@ export type TerminalLiveConnection = Readonly<{
 export type ConnectTerminalLiveOptions = Readonly<{
   openStream: (kind: typeof StreamKind, options?: Readonly<{ signal?: AbortSignal }>) => Promise<TerminalByteStream>;
   attach: TerminalLiveAttachRequest;
-  onOutputBatch: (records: readonly OutputRecord[]) => void;
+  onOutputBatch: (records: readonly OutputRecord[], geometry: TerminalLiveGeometry) => void;
   onGeometry?: (geometry: TerminalLiveGeometry) => void;
   onClosed?: (reason: TerminalLiveCloseReason) => void;
   onError?: (error: Error) => void;
@@ -148,7 +148,7 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     private readonly stream: TerminalByteStream,
     private readonly reader: FrameReader,
     attached: Attached,
-    private readonly onOutputBatch: (records: readonly OutputRecord[]) => void,
+    private readonly onOutputBatch: (records: readonly OutputRecord[], geometry: TerminalLiveGeometry) => void,
     private readonly onGeometry: ((geometry: TerminalLiveGeometry) => void) | undefined,
     private readonly onClosed: ((reason: TerminalLiveCloseReason) => void) | undefined,
     private readonly onError: ((error: Error) => void) | undefined,
@@ -262,13 +262,14 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
               }
               this.nextOutputSequence += 1n;
             }
-            this.applyGeometry({
+            const batchGeometry = {
               generation: toSafeNumber(batch.geometryGeneration, 'geometryGeneration'),
               outputSequenceBoundary: toSafeNumber(records[0]!.sequence - 1n, 'outputSequenceBoundary'),
               cols: batch.cols,
               rows: batch.rows,
-            });
-            this.onOutputBatch(records);
+            };
+            this.applyGeometry(batchGeometry);
+            this.onOutputBatch(records, batchGeometry);
             if (records.length > 0) this.lastOutputSequence = records[records.length - 1]!.sequence;
             this.flushPendingGeometries();
             break;

@@ -386,6 +386,10 @@ export interface TerminalDataEvent {
   sequence?: number;
   timestampMs?: number;
   liveBatchSize?: number;
+  /** Geometry used by the PTY when this live output batch was produced. */
+  geometryGeneration?: number;
+  cols?: number;
+  rows?: number;
   error?: string;
 }
 

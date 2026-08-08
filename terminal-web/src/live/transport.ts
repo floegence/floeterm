@@ -166,7 +166,7 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
         cols,
         rows,
       },
-      onOutputBatch: records => {
+      onOutputBatch: (records, geometry) => {
         if (!isCurrentGeneration(sessionId, generation)) return;
         for (const record of records) {
           const sequence = Number(record.sequence);
@@ -184,6 +184,9 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
             sequence,
             timestampMs,
             liveBatchSize: records.length,
+            geometryGeneration: geometry.generation,
+            cols: geometry.cols,
+            rows: geometry.rows,
           });
         }
       },

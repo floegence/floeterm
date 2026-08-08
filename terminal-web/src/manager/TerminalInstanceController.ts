@@ -951,7 +951,10 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
         const chunk: TerminalDataChunk = {
           data: payload.data,
           sequence: payload.sequence ?? 0,
-          timestampMs: payload.timestampMs ?? Date.now()
+          timestampMs: payload.timestampMs ?? Date.now(),
+          ...(payload.geometryGeneration !== undefined ? { geometryGeneration: payload.geometryGeneration } : {}),
+          ...(payload.cols !== undefined ? { cols: payload.cols } : {}),
+          ...(payload.rows !== undefined ? { rows: payload.rows } : {})
         };
         this.addChunkToQueue(chunk, payload.liveBatchSize === 1);
       } catch (value) {

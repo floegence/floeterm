@@ -323,6 +323,9 @@ describe('terminal live transport', () => {
         sequence: 5,
         timestampMs: 10,
         liveBatchSize: 2,
+        geometryGeneration: 2,
+        cols: 100,
+        rows: 30,
       },
       {
         sessionId: 'session',
@@ -331,6 +334,9 @@ describe('terminal live transport', () => {
         sequence: 6,
         timestampMs: 11,
         liveBatchSize: 2,
+        geometryGeneration: 2,
+        cols: 100,
+        rows: 30,
       },
     ]);
     expect(geometries).toEqual([
