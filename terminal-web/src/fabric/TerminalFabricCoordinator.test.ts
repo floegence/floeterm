@@ -24,6 +24,7 @@ describe('TerminalFabricCoordinator', () => {
       offscreenViewCount: 0,
       frameCount: 1,
       renderedFrameCount: 1,
+      dirtyFrameCount: 1,
       lastFrameDurationMs: 4.5,
       lastFrameRenderedRows: 8,
       lastFrameDirtyCells: 320,
@@ -60,6 +61,7 @@ describe('TerminalFabricCoordinator', () => {
       visibleViewCount: 1,
       frameCount: 0,
       renderedFrameCount: 0,
+      dirtyFrameCount: 0,
       lastFrameRenderedRows: 0,
       lastFrameDirtyCells: 0,
     });

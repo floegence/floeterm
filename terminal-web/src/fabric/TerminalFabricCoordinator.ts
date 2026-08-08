@@ -15,6 +15,7 @@ const createEmptyStats = (): TerminalFabricStats => ({
   offscreenViewCount: 0,
   frameCount: 0,
   renderedFrameCount: 0,
+  dirtyFrameCount: 0,
   lastFrameDurationMs: 0,
   lastFrameRenderedRows: 0,
   lastFrameDirtyCells: 0,
@@ -53,6 +54,9 @@ export class TerminalFabricCoordinator {
 
   completeFrame(frame: TerminalFabricFrame, renderedRows: number, dirtyCells: number, now = performance.now()): void {
     this.stats.renderedFrameCount += 1;
+    if (dirtyCells > 0) {
+      this.stats.dirtyFrameCount += 1;
+    }
     this.stats.lastFrameDurationMs = Math.max(0, now - frame.startedAtMs);
     this.stats.lastFrameRenderedRows = Math.max(0, renderedRows);
     this.stats.lastFrameDirtyCells = Math.max(0, dirtyCells);

@@ -122,6 +122,7 @@ export type TerminalFabricStats = {
   offscreenViewCount: number;
   frameCount: number;
   renderedFrameCount: number;
+  dirtyFrameCount: number;
   lastFrameDurationMs: number;
   lastFrameRenderedRows: number;
   lastFrameDirtyCells: number;

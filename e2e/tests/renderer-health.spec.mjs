@@ -18,9 +18,9 @@ test('renders dynamic-atlas glyphs through the owned WebGL2 backend without warn
     window.__floetermPerfHarness.sendInput(`printf '\\033[3J\\033[2J\\033[H%s\\n' '${value}'\r`);
   }, marker);
   await page.waitForFunction(value => window.__floetermPerfHarness.serialize().includes(value), marker);
-  await page.waitForFunction(previousFrameCount => (
-    window.__floetermPerfHarness.getFabricDiagnostics().renderedFrameCount > previousFrameCount
-  ), before.renderedFrameCount);
+  await page.waitForFunction(previousDirtyFrameCount => (
+    window.__floetermPerfHarness.getFabricDiagnostics().dirtyFrameCount > previousDirtyFrameCount
+  ), before.dirtyFrameCount);
   const after = await page.evaluate(() => window.__floetermPerfHarness.getFabricDiagnostics());
 
   expect(after).toMatchObject({
@@ -31,7 +31,7 @@ test('renders dynamic-atlas glyphs through the owned WebGL2 backend without warn
     lastError: '',
   });
   expect(after.renderedFrameCount).toBeGreaterThan(before.renderedFrameCount);
-  expect(after.lastFrameDirtyCells).toBeGreaterThan(0);
+  expect(after.dirtyFrameCount).toBeGreaterThan(before.dirtyFrameCount);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(failures).toEqual([]);
 });
