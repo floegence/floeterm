@@ -172,6 +172,88 @@ func TestSessionLiveAttachmentReturnsBoundaryAndReceivesOnlyLaterOutput(t *testi
 	}
 }
 
+func TestSessionSameSizeAttachRequestsFreshFrameAfterHistoryEviction(t *testing.T) {
+	redrawCalls := 0
+	session := &Session{
+		ID:                   "session-truncated-full-screen-redraw",
+		PTY:                  &os.File{},
+		isActive:             true,
+		connections:          make(map[string]*ConnectionInfo),
+		liveAttachments:      make(map[string]liveAttachment),
+		ringBuffer:           NewTerminalRingBuffer(3),
+		historyGeneration:    1,
+		historyStartSequence: 1,
+		lastAppliedCols:      120,
+		lastAppliedRows:      40,
+		geometryGeneration:   7,
+		setPTYSize:           func(*os.File, *pty.Winsize) error { return nil },
+		requestPTYRedraw:     func(*os.File) error { redrawCalls++; return nil },
+		config:               newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		currentWorkingDir:    "/",
+	}
+
+	for _, output := range [][]byte{
+		[]byte("\x1b[?1049h\x1b[2J\x1b[Htop initial full frame"),
+		[]byte("\x1b[Htop delta one"),
+		[]byte("\x1b[2;1Htop delta two"),
+		[]byte("\x1b[3;1Htop delta three"),
+		[]byte("\x1b[4;1Htop delta four"),
+	} {
+		session.processRawPTYData(output)
+	}
+
+	events := make(chan TerminalOutputEvent, 1)
+	attachment, err := session.AttachLiveConnection("client", 1, 120, 40, LiveSubscriber{
+		OnOutput: func(event TerminalOutputEvent) bool {
+			events <- event
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attachment.Detach()
+	if attachment.HistoryBoundarySequence != 5 {
+		t.Fatalf("history boundary=%d, want 5", attachment.HistoryBoundarySequence)
+	}
+
+	page, err := session.GetHistoryPage(HistoryPageOptions{
+		StartSeq: 1,
+		EndSeq:   attachment.HistoryBoundarySequence,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.HistoryTruncated || page.FirstRetainedSequence != 3 {
+		t.Fatalf("expected evicted full-screen bootstrap, got %+v", page)
+	}
+	if len(page.Chunks) != 3 || page.Chunks[0].Sequence != 3 {
+		t.Fatalf("unexpected retained history: %+v", page.Chunks)
+	}
+
+	geometry, err := session.ApplyConnectionSize("client", 120, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redrawCalls != 1 {
+		t.Fatalf("same-size attach redraw calls=%d, want 1", redrawCalls)
+	}
+	if geometry.Generation != 7 || geometry.OutputSequenceBoundary != attachment.HistoryBoundarySequence {
+		t.Fatalf("same-size geometry=%+v, attachment=%+v", geometry, attachment)
+	}
+
+	freshFrame := []byte("\x1b[?1049h\x1b[2J\x1b[Htop fresh full frame")
+	session.processRawPTYData(freshFrame)
+	select {
+	case event := <-events:
+		if event.Sequence != attachment.HistoryBoundarySequence+1 || !bytes.Equal(event.Data, freshFrame) {
+			t.Fatalf("post-boundary redraw event=%+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live subscriber did not receive the post-boundary full redraw")
+	}
+}
+
 func TestSessionOutputCarriesTheAppliedTerminalGeometry(t *testing.T) {
 	var received TerminalOutputEvent
 	session := &Session{

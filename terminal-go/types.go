@@ -363,6 +363,7 @@ type Session struct {
 	startPTYProcess    func(*exec.Cmd, *pty.Winsize) (*os.File, error)
 	waitProcess        func(*exec.Cmd) error
 	setPTYSize         func(*os.File, *pty.Winsize) error
+	requestPTYRedraw   func(*os.File) error
 	resizeQueued       bool
 	resizeRunning      bool
 	resizeReason       string

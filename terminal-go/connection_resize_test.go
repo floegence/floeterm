@@ -285,6 +285,7 @@ func TestApplyConnectionSizeReturnsOnlyAfterThePTYResizeCompletes(t *testing.T) 
 
 func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testing.T) {
 	resizeCalls := 0
+	redrawCalls := 0
 	session := &Session{
 		ID:       "geometry-generation",
 		PTY:      &os.File{},
@@ -300,6 +301,10 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 			resizeCalls++
 			return nil
 		},
+		requestPTYRedraw: func(_ *os.File) error {
+			redrawCalls++
+			return nil
+		},
 		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
 	}
 
@@ -313,6 +318,9 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 	if resizeCalls != 1 {
 		t.Fatalf("changed geometry resize calls = %d", resizeCalls)
 	}
+	if redrawCalls != 0 {
+		t.Fatalf("changed geometry redraw calls = %d", redrawCalls)
+	}
 
 	geometry, err = session.ApplyConnectionSize("wide", 160, 40)
 	if err != nil {
@@ -323,5 +331,31 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 	}
 	if resizeCalls != 2 {
 		t.Fatalf("explicit unchanged resize was not reapplied: calls=%d", resizeCalls)
+	}
+	if redrawCalls != 1 {
+		t.Fatalf("explicit unchanged resize did not request a foreground redraw: calls=%d", redrawCalls)
+	}
+}
+
+func TestForcedSameSizeResizeContinuesWhenForegroundRedrawIsUnavailable(t *testing.T) {
+	session := &Session{
+		ID:                 "redraw-unavailable",
+		PTY:                &os.File{},
+		isActive:           true,
+		connections:        map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 120, Rows: 40}},
+		lastAppliedCols:    120,
+		lastAppliedRows:    40,
+		geometryGeneration: 9,
+		setPTYSize:         func(*os.File, *pty.Winsize) error { return nil },
+		requestPTYRedraw:   func(*os.File) error { return errors.New("no foreground process group") },
+		config:             newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	geometry, err := session.ApplyConnectionSize("view", 120, 40)
+	if err != nil {
+		t.Fatalf("same-size resize failed because redraw signal was unavailable: %v", err)
+	}
+	if geometry.Generation != 9 || geometry.Cols != 120 || geometry.Rows != 40 {
+		t.Fatalf("geometry changed after best-effort redraw failure: %+v", geometry)
 	}
 }
