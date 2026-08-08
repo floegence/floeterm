@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TerminalCore } from './TerminalCore';
+import { getTerminalRenderSchedulerStats } from './TerminalRenderScheduler';
 
 type MockDisposable = { dispose: () => void };
 
@@ -534,6 +535,38 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('preserves a requested presentation when a live frame preempts its scheduled full render', async () => {
+    const core = await createWebGLCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+    mockFabric.finishSubmittedFrame.mockClear();
+    let presented = false;
+
+    const presentation = core.forceResizeAndWaitForPresentation().then(() => {
+      presented = true;
+    });
+    for (let attempt = 0; attempt < 10 && getTerminalRenderSchedulerStats().pending === 0; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(getTerminalRenderSchedulerStats().pending).toBe(1);
+    core.writeFrame('live');
+
+    expect(terminal.renderSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      true,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(presented).toBe(false);
+    await vi.runOnlyPendingTimersAsync();
+    await presentation;
+    expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
+    expect(presented).toBe(true);
+
+    core.dispose();
+  });
+
   it('resolves a requested committed frame before the following browser paint frame', async () => {
     const core = await createWebGLCore();
     mockFabric.startFrame.mockClear();
@@ -559,6 +592,34 @@ describe('TerminalCore demand rendering', () => {
     expect(committed).toBe(true);
 
     await vi.runOnlyPendingTimersAsync();
+    core.dispose();
+  });
+
+  it('preserves a requested committed frame when a live frame preempts its scheduled full render', async () => {
+    const core = await createWebGLCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+    mockFabric.finishSubmittedFrame.mockClear();
+    let committed = false;
+
+    const commit = core.forceResizeAndWaitForCommittedFrame().then(() => {
+      committed = true;
+    });
+    core.writeFrame('live');
+
+    expect(terminal.renderSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      true,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(committed).toBe(false);
+    await vi.runOnlyPendingTimersAsync();
+    await commit;
+    expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
+    expect(committed).toBe(true);
+
     core.dispose();
   });
 

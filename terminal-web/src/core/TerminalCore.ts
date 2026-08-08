@@ -2516,8 +2516,9 @@ export class TerminalCore {
           this.needsFullRenderOnNextWrite = false;
         }
         if (renderInCurrentFrame) {
+          const forceCurrentFrame = shouldForceAfterWrite || this.demandRenderForceAll;
           this.cancelDemandRender();
-          this.renderDemandFrame(shouldForceAfterWrite);
+          this.renderDemandFrame(forceCurrentFrame);
         } else {
           this.requestDemandRender(shouldForceAfterWrite);
         }
