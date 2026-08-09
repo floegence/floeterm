@@ -39,6 +39,7 @@ terminal-web-prepare: renderer-check
 	echo "==> terminal-web lint/test/browser/build/package artifact"; \
 	(cd terminal-web && npm run lint && npm test && npm run test:browser && npm run build && npm run check:package-artifact); \
 	echo "==> terminal-web npm audit"; \
+	(cd terminal-web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low) || \
 	(cd terminal-web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low)
 
 .PHONY: renderer-check
@@ -55,6 +56,7 @@ app-web-prepare: terminal-web-prepare
 	echo "==> app/web lint/build/test"; \
 	(cd app/web && npm run lint && npm run build && npm test); \
 	echo "==> app/web npm audit"; \
+	(cd app/web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low) || \
 	(cd app/web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low)
 
 .PHONY: web-check
@@ -74,6 +76,7 @@ e2e-check: app-web-prepare
 		(cd e2e && npm test); \
 	fi; \
 	echo "==> e2e npm audit"; \
+	(cd e2e && npm audit --registry=https://registry.npmjs.org/ --audit-level=low) || \
 	(cd e2e && npm audit --registry=https://registry.npmjs.org/ --audit-level=low)
 
 .PHONY: app-web-build
