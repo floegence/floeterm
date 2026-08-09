@@ -4172,6 +4172,7 @@ export class TerminalCore {
         terminalAny,
         terminalAny.scrollbarOpacity
       );
+      this.settleCommittedFrameRequests();
       const cursor = terminalAny.wasmTerm.getCursor?.();
       if (cursor && typeof cursor.y === 'number' && cursor.y !== terminalAny.lastCursorY) {
         terminalAny.lastCursorY = cursor.y;
@@ -4262,22 +4263,40 @@ export class TerminalCore {
       return;
     }
     if (this.config.rendererType !== 'webgl') {
-      request.resolve();
+      this.resolveCommittedFrameRequest(request);
       return;
     }
     if (this.committedFabricFrameGeneration > request.baselineGeneration) {
-      try {
-        if (this.submittedFabricFrameGeneration < this.committedFabricFrameGeneration) {
-          this.fabricView?.renderer.finishSubmittedFrame();
-          this.submittedFabricFrameGeneration = this.committedFabricFrameGeneration;
-        }
-        request.resolve();
-      } catch (error) {
-        this.rejectCommittedFrameRequest(request, error instanceof Error ? error : new Error(String(error)));
-      }
+      this.settleCommittedFrameRequests();
       return;
     }
     this.scheduleCommittedFrameCheck(request);
+  }
+
+  private settleCommittedFrameRequests(): void {
+    const ready = [...this.committedFrameRequests].filter(
+      request => this.committedFabricFrameGeneration > request.baselineGeneration,
+    );
+    if (ready.length === 0) return;
+    try {
+      if (this.submittedFabricFrameGeneration < this.committedFabricFrameGeneration) {
+        this.fabricView?.renderer.finishSubmittedFrame();
+        this.submittedFabricFrameGeneration = this.committedFabricFrameGeneration;
+      }
+      for (const request of ready) this.resolveCommittedFrameRequest(request);
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      for (const request of ready) this.rejectCommittedFrameRequest(request, failure);
+    }
+  }
+
+  private resolveCommittedFrameRequest(request: terminal_committed_frame_request): void {
+    if (!this.committedFrameRequests.has(request)) return;
+    if (request.frameHandle !== null) {
+      cancelAnimationFrame(request.frameHandle);
+      request.frameHandle = null;
+    }
+    request.resolve();
   }
 
   private rejectCommittedFrameRequest(request: terminal_committed_frame_request, error: Error): void {

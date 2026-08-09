@@ -40,6 +40,10 @@ const resetMirrorStreamDiagnostics = page => page.evaluate(() => {
   views.forEach(view => view.resetStreamDiagnostics(commonWatermark));
 });
 
+const resetMirrorRenderDiagnostics = page => page.evaluate(() => {
+  window.__floetermMirrorHarness.getViews().forEach(view => view.resetRenderDiagnostics());
+});
+
 const expectMirrorGeometryConverged = async page => {
   await expect.poll(async () => {
     const state = await readMirror(page);
@@ -57,7 +61,9 @@ const expectMirrorGeometryConverged = async page => {
 };
 
 const captureMirrorPixels = async (page, mirrorState) => {
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect.poll(() => page.evaluate(() => (
+    window.__floetermMirrorHarness.getViews().every(view => view.getRenderDiagnostics().count > 0)
+  ))).toBe(true);
   return Promise.all(mirrorState.views.map(async view => {
     const canvas = page.locator(`[data-mirror-view="${view.label}"] .floeterm-beamterm-canvas`);
     await expect(canvas).toBeVisible();
@@ -126,6 +132,7 @@ test('keeps independent viewport sizes on one shared terminal grid and screen st
   expect(initialRuntime.live_attachment_count).toBe(2);
 
   await resetMirrorStreamDiagnostics(page);
+  await resetMirrorRenderDiagnostics(page);
   const consistencyMarkers = [
     'FLOETERM_CONSISTENCY_A',
     'FLOETERM_CONSISTENCY_B 中文 😀',

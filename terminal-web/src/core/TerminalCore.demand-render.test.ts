@@ -623,6 +623,26 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('settles a committed frame request from the preempting full frame without another animation frame', async () => {
+    const core = await createWebGLCore();
+    mockFabric.finishSubmittedFrame.mockClear();
+    let committed = false;
+
+    const commit = core.forceResizeAndWaitForCommittedFrame().then(() => {
+      committed = true;
+    });
+    core.writeFrame('baseline');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(committed).toBe(true);
+    expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    await commit;
+
+    core.dispose();
+  });
+
   it('waits for the latest terminal font metrics before starting presentation', async () => {
     let resolveInitialFont!: () => void;
     let resolveLatestFont!: () => void;
