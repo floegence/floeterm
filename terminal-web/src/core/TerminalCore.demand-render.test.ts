@@ -595,6 +595,27 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('commits an attached renderer frame without waiting for the shared animation-frame queue', async () => {
+    const core = await createWebGLCore();
+    mockFabric.startFrame.mockClear();
+    mockFabric.writeRow.mockClear();
+    mockFabric.finishFrame.mockClear();
+    mockFabric.finishSubmittedFrame.mockClear();
+
+    const commit = core.forceResizeAndWaitForCommittedFrame();
+
+    expect(mockFabric.startFrame).toHaveBeenCalledWith(
+      expect.objectContaining({ forceAll: true }),
+      expect.objectContaining({ rows: 2 }),
+    );
+    expect(mockFabric.writeRow).toHaveBeenCalledTimes(2);
+    expect(mockFabric.finishFrame).toHaveBeenCalledTimes(1);
+    expect(mockFabric.finishSubmittedFrame).toHaveBeenCalledTimes(1);
+    await commit;
+
+    core.dispose();
+  });
+
   it('preserves a requested committed frame when a live frame preempts its scheduled full render', async () => {
     const core = await createWebGLCore();
     const terminal = mockState.lastTerminal;

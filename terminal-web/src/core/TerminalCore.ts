@@ -3568,17 +3568,36 @@ export class TerminalCore {
             if (this.isDisposed) {
               this.rejectCommittedFrameRequest(request, new Error('TerminalCore was disposed before the committed frame completed'));
             } else {
-              this.forceResize();
+              this.forceCommittedFrame(request);
               this.scheduleCommittedFrameCheck(request);
             }
           }).catch(error => this.rejectCommittedFrameRequest(request, error instanceof Error ? error : new Error(String(error))));
           return;
         }
-        this.forceResize();
+        this.forceCommittedFrame(request);
         this.scheduleCommittedFrameCheck(request);
       };
       start();
     });
+  }
+
+  private forceCommittedFrame(request: terminal_committed_frame_request): void {
+    this.forceResize();
+    if (
+      !this.committedFrameRequests.has(request)
+      || this.config.rendererType !== 'webgl'
+      || !this.isFabricRendererActive()
+      || this.isVisualRenderSuspended()
+    ) {
+      return;
+    }
+
+    // A committed-frame fence is an explicit interactive presentation request.
+    // Render it in this task so shared background RAF work cannot add a frame of
+    // queueing latency; the full frame subsumes this core's pending demand render.
+    terminalRenderScheduler.cancel(this.renderTask);
+    this.demandRenderForceAll = false;
+    this.renderDemandFrame(true);
   }
 
   private requestPresentationFrame(): Promise<void> {
