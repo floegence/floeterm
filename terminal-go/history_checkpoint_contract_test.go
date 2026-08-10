@@ -1,3 +1,5 @@
+//go:build checkpoint_contract
+
 package terminal
 
 import (

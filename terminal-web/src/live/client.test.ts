@@ -5,6 +5,7 @@ import {
   MAX_INPUT_BYTES,
   TerminalLiveDecoder,
   TerminalLiveFrameType,
+  decodeResize,
   decodeInput,
   encodeAttached,
   encodeInput,
@@ -69,8 +70,11 @@ const encodeServerError = (code: number, message: string): Uint8Array => {
 
 const connect = async (
   stream: FakeStream,
-  onOutputBatch: (records: ReadonlyArray<Readonly<{ sequence: bigint; data: Uint8Array }>>) => void = () => undefined,
-  onGeometry: (geometry: Readonly<{ generation: number; cols: number; rows: number }>) => void = () => undefined,
+  onOutputBatch: (
+    records: ReadonlyArray<Readonly<{ sequence: bigint; data: Uint8Array }>>,
+    geometry: Readonly<{ generation: number; outputSequenceBoundary: number; cols: number; rows: number }>,
+  ) => void = () => undefined,
+  onGeometry: (geometry: Readonly<{ generation: number; outputSequenceBoundary: number; cols: number; rows: number }>) => void = () => undefined,
 ) => {
   const promise = connectTerminalLive({
     openStream: async () => stream,
@@ -342,6 +346,64 @@ describe('terminal live client', () => {
     ] }));
     await resizing;
     expect(order).toEqual(['output:5', 'geometry:2:100x30']);
+  });
+
+  it('keeps the latest pending resize at the boundary and ignores a stale acknowledgement', async () => {
+    const stream = new FakeStream();
+    const geometryEvents: Array<{ generation: number; outputSequenceBoundary: number; cols: number; rows: number }> = [];
+    const outputs: Array<{ sequence: number; generation: number; cols: number; rows: number }> = [];
+    const connection = await connect(stream, (records, geometry) => {
+      for (const record of records) {
+        outputs.push({
+          sequence: Number(record.sequence),
+          generation: geometry.generation,
+          cols: geometry.cols,
+          rows: geometry.rows,
+        });
+      }
+    }, geometry => geometryEvents.push(geometry));
+    geometryEvents.length = 0;
+
+    const first = connection.resizeWithEffectiveGeometry(100, 30);
+    const latest = connection.resizeWithEffectiveGeometry(140, 52);
+    await waitUntil(() => stream.writes.length === 3);
+    expect(decodeResize(new TerminalLiveDecoder().push(stream.writes[1]!)[0]!)).toEqual({ sequence: 1n, cols: 100, rows: 30 });
+    expect(decodeResize(new TerminalLiveDecoder().push(stream.writes[2]!)[0]!)).toEqual({ sequence: 2n, cols: 140, rows: 52 });
+
+    let firstSettled = false;
+    let latestSettled = false;
+    void first.then(() => { firstSettled = true; });
+    void latest.then(() => { latestSettled = true; });
+    stream.push(encodeResizeApplied({ sequence: 2n, geometryGeneration: 3n, outputSequenceBoundary: 5n, cols: 140, rows: 52 }));
+    stream.push(encodeResizeApplied({ sequence: 1n, geometryGeneration: 2n, outputSequenceBoundary: 6n, cols: 100, rows: 30 }));
+    await Promise.resolve();
+    expect(firstSettled).toBe(false);
+    expect(latestSettled).toBe(false);
+
+    stream.push(encodeOutputBatch({ geometryGeneration: 1n, cols: 80, rows: 24, records: [
+      { sequence: 5n, timestampMs: 10n, data: new TextEncoder().encode('old-grid') },
+    ] }));
+    await waitUntil(() => latestSettled);
+    expect(outputs).toEqual([{ sequence: 5, generation: 1, cols: 80, rows: 24 }]);
+    expect(geometryEvents).toEqual([{ generation: 3, outputSequenceBoundary: 5, cols: 140, rows: 52 }]);
+
+    stream.push(encodeOutputBatch({ geometryGeneration: 3n, cols: 140, rows: 52, records: [
+      { sequence: 6n, timestampMs: 11n, data: new TextEncoder().encode('new-grid') },
+    ] }));
+    await waitUntil(() => firstSettled);
+    expect(outputs).toEqual([
+      { sequence: 5, generation: 1, cols: 80, rows: 24 },
+      { sequence: 6, generation: 3, cols: 140, rows: 52 },
+    ]);
+    expect(geometryEvents).toEqual([{ generation: 3, outputSequenceBoundary: 5, cols: 140, rows: 52 }]);
+    await expect(latest).resolves.toMatchObject({
+      requested: { cols: 140, rows: 52 },
+      effective: { generation: 3, outputSequenceBoundary: 5, cols: 140, rows: 52 },
+    });
+    await expect(first).resolves.toMatchObject({
+      requested: { cols: 100, rows: 30 },
+      effective: { generation: 2, outputSequenceBoundary: 6, cols: 100, rows: 30 },
+    });
   });
 
   it('rejects input above the explicit queue limit', async () => {

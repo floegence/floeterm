@@ -681,7 +681,7 @@ describe('TerminalInstanceController', () => {
     class OrderedCore extends MockCore {
       override writeFrame(data: string | Uint8Array, callback?: () => void): void {
         const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
-        operations.push(`write:${text}`);
+        operations.push(`write:${text}@${this.dimensions.cols}x${this.dimensions.rows}`);
         super.writeFrame(data, callback);
       }
 
@@ -711,7 +711,7 @@ describe('TerminalInstanceController', () => {
     expect(operations).toEqual([]);
     frames.shift()!(performance.now());
     await flushPromises();
-    expect(operations).toEqual(['write:12', 'geometry:90x28']);
+    expect(operations).toEqual(['write:12@100x30', 'geometry:90x28']);
 
     controller.dispose();
   });
@@ -722,7 +722,7 @@ describe('TerminalInstanceController', () => {
     class OrderedCore extends MockCore {
       override writeFrame(data: string | Uint8Array, callback?: () => void): void {
         const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
-        operations.push(`write:${text}`);
+        operations.push(`write:${text}@${this.dimensions.cols}x${this.dimensions.rows}`);
         super.writeFrame(data, callback);
       }
 
@@ -745,17 +745,26 @@ describe('TerminalInstanceController', () => {
       },
     });
 
-    events.emit({ sessionId: 's1', type: 'data', sequence: 1, data: new TextEncoder().encode('old') });
+    events.emit({
+      sessionId: 's1', type: 'data', sequence: 1, data: new TextEncoder().encode('old'),
+      geometryGeneration: 1, cols: 80, rows: 24,
+    });
     events.emitGeometry({ sessionId: 's1', generation: 2, outputSequenceBoundary: 1, cols: 90, rows: 28 });
-    events.emit({ sessionId: 's1', type: 'data', sequence: 2, data: new TextEncoder().encode('new') });
+    events.emit({
+      sessionId: 's1', type: 'data', sequence: 2, data: new TextEncoder().encode('new'),
+      geometryGeneration: 2, cols: 90, rows: 28,
+    });
 
     frames.shift()!(performance.now());
     await flushPromises();
-    expect(operations).toEqual(['write:old', 'geometry:90x28']);
+    expect(operations).toEqual(['geometry:80x24', 'write:old@80x24', 'geometry:90x28']);
     expect(frames).toHaveLength(1);
     frames.shift()!(performance.now());
     await flushPromises();
-    expect(operations).toEqual(['write:old', 'geometry:90x28', 'write:new']);
+    expect(operations).toEqual([
+      'geometry:80x24', 'write:old@80x24', 'geometry:90x28',
+      'geometry:90x28', 'write:new@90x28',
+    ]);
 
     controller.dispose();
   });

@@ -246,7 +246,9 @@ afterEach(() => {
 });
 
 describe('TerminalCore long-running top-like rendering', () => {
-  it('keeps live-only demand rendering equivalent through 50,000 deterministic updates', async () => {
+  it('keeps live-only demand rendering equivalent through 50,000 updates (same-Ghostty projection oracle)', async () => {
+    // The reference terminal intentionally uses the same pinned Ghostty parser.
+    // This proves projection/dirty cleanup/canvas parity, not independent VT semantics.
     const cols = 100;
     const rows = 30;
     const core = await createCore(cols, rows);
@@ -302,7 +304,7 @@ describe('TerminalCore long-running top-like rendering', () => {
     reference.free();
   });
 
-  it('keeps geometry boundaries ordered while the top-like stream continues', async () => {
+  it('keeps TerminalCore geometry projection ordered (transport boundary is covered in live contracts)', async () => {
     const geometries = [
       { cols: 100, rows: 30 },
       { cols: 140, rows: 52 },
