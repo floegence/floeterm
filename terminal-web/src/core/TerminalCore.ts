@@ -2213,6 +2213,13 @@ export class TerminalCore {
       this.scheduleFocusResize();
     };
 
+    const onDocumentFocusIn = () => {
+      this.hasFocus = this.isContainerFocused();
+      if (this.hasFocus) {
+        this.scheduleFocusResize();
+      }
+    };
+
     const onFocusOut = () => {
       // focusout fires even when moving focus within the subtree; re-check on next frame.
       requestAnimationFrame(() => {
@@ -2232,6 +2239,8 @@ export class TerminalCore {
     this.container.addEventListener('focusin', onFocusIn);
     this.container.addEventListener('focusout', onFocusOut);
     this.container.addEventListener('pointerdown', onPointerDown);
+    this.container.ownerDocument.addEventListener('focusin', onDocumentFocusIn);
+    this.container.ownerDocument.addEventListener('focusout', onFocusOut);
 
     this.hasFocus = this.isContainerFocused();
 
@@ -2239,6 +2248,8 @@ export class TerminalCore {
       this.container.removeEventListener('focusin', onFocusIn);
       this.container.removeEventListener('focusout', onFocusOut);
       this.container.removeEventListener('pointerdown', onPointerDown);
+      this.container.ownerDocument.removeEventListener('focusin', onDocumentFocusIn);
+      this.container.ownerDocument.removeEventListener('focusout', onFocusOut);
     };
   }
 
@@ -2448,7 +2459,7 @@ export class TerminalCore {
     if (!el) {
       return false;
     }
-    return this.container.contains(el);
+    return this.container.contains(el) || this.inputBridge?.containsTarget(el) === true;
   }
 
   private setState(newState: TerminalState): void {

@@ -218,6 +218,63 @@ describe('TerminalCore responsive resize notifications', () => {
     core.dispose();
   });
 
+  it('treats the portaled terminal input as focused for observed resize notifications', async () => {
+    const parent = document.createElement('div');
+    const container = document.createElement('div');
+    parent.appendChild(container);
+    document.body.appendChild(parent);
+
+    Object.defineProperty(parent, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(parent, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+
+    const onResize = vi.fn();
+    const core = new TerminalCore(container, {
+      responsive: {
+        notifyResizeOnlyWhenFocused: true,
+        reportHostDimensionsWithFixedGrid: true,
+      },
+    }, { onResize });
+
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    await vi.runAllTimersAsync();
+
+    const input = document.body.querySelector<HTMLTextAreaElement>('textarea[aria-label="Terminal input"]');
+    expect(input).not.toBeNull();
+    expect(container.contains(input)).toBe(false);
+    const inputBridge = (core as unknown as {
+      inputBridge: { containsTarget(target: Node): boolean };
+    }).inputBridge;
+    expect(inputBridge.containsTarget(input!)).toBe(true);
+
+    input!.focus();
+    expect(document.activeElement).toBe(input);
+    onResize.mockClear();
+
+    Object.defineProperty(parent, 'clientWidth', { value: 960, configurable: true });
+    Object.defineProperty(container, 'clientWidth', { value: 960, configurable: true });
+    resizeObservers[0]?.trigger(parent);
+    await vi.runAllTimersAsync();
+
+    expect(onResize).toHaveBeenCalledWith({ cols: 120, rows: 25 });
+
+    const otherTerminalInput = document.createElement('textarea');
+    document.body.appendChild(otherTerminalInput);
+    otherTerminalInput.focus();
+    onResize.mockClear();
+
+    Object.defineProperty(parent, 'clientWidth', { value: 1_040, configurable: true });
+    Object.defineProperty(container, 'clientWidth', { value: 1_040, configurable: true });
+    resizeObservers[0]?.trigger(parent);
+    await vi.runAllTimersAsync();
+
+    expect(onResize).not.toHaveBeenCalled();
+    core.dispose();
+  });
+
   it('fits promptly when the component or its parent width changes', async () => {
     const parent = document.createElement('div');
     const container = document.createElement('div');
