@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = path.resolve(packageRoot, '..');
-const expectedPackageVersion = '0.14.0';
+const expectedPackageVersion = '0.14.1';
 const expectedGhosttyVersion = '0.5.0-rc.0';
 const ghosttyPackageName = '@floegence/ghostty-web';
 
