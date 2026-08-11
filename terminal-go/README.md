@@ -65,9 +65,12 @@ Retained history can be bounded by both chunk count and bytes without limiting t
 
 ```go
 manager := terminal.NewManager(terminal.ManagerConfig{
-    HistoryBufferSize:     2048,
-    HistoryBufferMaxChunks: 8192,
-    HistoryBufferMaxBytes: 8 * 1024 * 1024,
+    HistoryBufferSize:            2048,
+    HistoryBufferMaxChunks:       8192,
+    HistoryBufferMaxBytes:        8 * 1024 * 1024,
+    HistorySpoolRoot:             stateDir,
+    HistorySpoolSegmentMaxBytes:  4 * 1024 * 1024,
+    HistorySpoolMaxBytes:         256 * 1024 * 1024,
 })
 
 diagnostics := manager.GetDiagnostics()
@@ -76,6 +79,8 @@ _ = diagnostics.HistoryBytes
 ```
 
 `HistoryBufferSize` is the initial allocation. `HistoryBufferMaxChunks` may be larger to let the buffer grow on demand without charging dormant or small-history sessions for the maximum slot array. It defaults to `HistoryBufferSize`, preserving fixed-capacity behavior. `HistoryBufferMaxBytes` set to zero preserves chunk-only retention. A single oversized chunk is retained whole rather than slicing an ANSI or OSC sequence. Diagnostics are observational and never reject session creation.
+
+Set `HistorySpoolRoot` when hot-history eviction must remain recoverable without an active browser. The session-owned spool validates contiguous sequence and geometry metadata, checksums every raw record, and fails history reads closed after a write or quota error. Raw segments remain authoritative until `CommitSessionHistoryCheckpoint` atomically publishes a checkpoint that was captured and self-restored by the pinned Ghostty engine. Pages that begin before that checkpoint contain `Checkpoint`, set `DeltaStartSequence` to `CoveredThroughSequence + 1`, and return only the contiguous delta. Do not submit text snapshots or unchecked parser state as a checkpoint.
 
 ## Command lifecycle shell integration
 

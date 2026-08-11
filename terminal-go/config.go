@@ -16,6 +16,9 @@ type ManagerConfig struct {
 	HistoryBufferSize           int
 	HistoryBufferMaxChunks      int
 	HistoryBufferMaxBytes       int64
+	HistorySpoolRoot            string
+	HistorySpoolSegmentMaxBytes int64
+	HistorySpoolMaxBytes        int64
 	OutputActivityQuietDuration time.Duration
 	// Deprecated: terminal output is no longer dropped during initial resize.
 	InitialResizeSuppressDuration time.Duration
@@ -105,6 +108,9 @@ type sessionConfig struct {
 	historyBufferSize           int
 	historyBufferMaxChunks      int
 	historyBufferMaxBytes       int64
+	historySpoolRoot            string
+	historySpoolSegmentMaxBytes int64
+	historySpoolMaxBytes        int64
 	outputActivityQuietDuration time.Duration
 	terminalEnv                 TerminalEnv
 	shellLifecycleAuthEnabled   bool
@@ -133,6 +139,9 @@ func newSessionConfig(cfg ManagerConfig) sessionConfig {
 		historyBufferSize:           cfg.HistoryBufferSize,
 		historyBufferMaxChunks:      cfg.HistoryBufferMaxChunks,
 		historyBufferMaxBytes:       cfg.HistoryBufferMaxBytes,
+		historySpoolRoot:            cfg.HistorySpoolRoot,
+		historySpoolSegmentMaxBytes: cfg.HistorySpoolSegmentMaxBytes,
+		historySpoolMaxBytes:        cfg.HistorySpoolMaxBytes,
 		outputActivityQuietDuration: cfg.OutputActivityQuietDuration,
 		terminalEnv:                 cfg.TerminalEnv,
 		shellLifecycleAuthEnabled:   lifecycleAuthEnabled,

@@ -531,10 +531,12 @@ func (s *Session) cleanup() {
 	s.activation = nil
 	ptyFile := s.PTY
 	cmd := s.Cmd
+	historySpool := s.historySpool
 	waitDone := s.procWaitDone
 	bootstraps := s.takeShellLifecycleBootstrapsLocked()
 	s.PTY = nil
 	s.Cmd = nil
+	s.historySpool = nil
 	s.isActive = false
 	s.clearForegroundCommandLocked()
 
@@ -553,6 +555,11 @@ func (s *Session) cleanup() {
 	}
 	if ptyFile != nil {
 		_ = ptyFile.Close()
+	}
+	if historySpool != nil {
+		if err := historySpool.Close(); err != nil {
+			s.config.logger.Warn("Failed to close terminal history spool", "sessionID", s.ID, "error", err)
+		}
 	}
 	if cmd != nil && cmd.Process != nil {
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -615,6 +622,9 @@ func (s *Session) GetHistoryPage(options HistoryPageOptions) (HistoryPage, error
 	if ringBuffer == nil {
 		return HistoryPage{}, fmt.Errorf("ring buffer not initialized")
 	}
+	if s.historySpoolErr != nil {
+		return HistoryPage{}, fmt.Errorf("terminal history durability failed: %w", s.historySpoolErr)
+	}
 
 	if s.historyGeneration <= 0 {
 		s.historyGeneration = 1
@@ -650,12 +660,83 @@ func (s *Session) GetHistoryPage(options HistoryPageOptions) (HistoryPage, error
 		effectiveStart = 1
 	}
 	if effectiveStart <= snapshotEnd && page.FirstRetainedSequence > effectiveStart {
-		page.HistoryTruncated = true
+		if s.historySpool == nil {
+			page.HistoryTruncated = true
+		} else {
+			durablePage, err := s.readDurableHistoryPageLocked(options, effectiveStart, snapshotEnd)
+			if err != nil {
+				return HistoryPage{}, err
+			}
+			page = durablePage
+		}
 	}
 	if len(page.Chunks) > 0 && s.config.historyFilter != nil {
 		page.Chunks = s.config.historyFilter.Filter(page.Chunks)
 	}
 
+	return page, nil
+}
+
+func (s *Session) readDurableHistoryPageLocked(options HistoryPageOptions, startSequence, snapshotEnd int64) (HistoryPage, error) {
+	if s.historySpool == nil {
+		return HistoryPage{}, fmt.Errorf("terminal history spool is not initialized")
+	}
+	checkpoint, err := s.historySpool.Checkpoint()
+	if err != nil {
+		return HistoryPage{}, fmt.Errorf("read terminal history checkpoint: %w", err)
+	}
+	deltaStart := startSequence
+	historyTruncated := false
+	if checkpoint != nil && startSequence <= checkpoint.CoveredThroughSequence {
+		deltaStart = checkpoint.CoveredThroughSequence + 1
+		historyTruncated = true
+	}
+	chunks := []TerminalDataChunk{}
+	if deltaStart <= snapshotEnd {
+		chunks, err = s.historySpool.ReadChunks(deltaStart, snapshotEnd)
+		if err != nil {
+			return HistoryPage{}, fmt.Errorf("read terminal history spool: %w", err)
+		}
+	}
+	snapshot := s.historySpool.Snapshot()
+	firstRetained := snapshot.FirstSequence
+	if firstRetained == 0 {
+		firstRetained = deltaStart
+	}
+	page := HistoryPage{
+		Chunks:                 make([]TerminalDataChunk, 0, len(chunks)),
+		Checkpoint:             checkpoint,
+		DeltaStartSequence:     deltaStart,
+		FirstRetainedSequence:  firstRetained,
+		SnapshotEndSequence:    snapshotEnd,
+		HistoryGeneration:      s.historyGeneration,
+		HistoryTruncated:       historyTruncated,
+		TotalBytes:             snapshot.RawBytes,
+		UsedChunks:             len(chunks),
+		CoveredThroughSequence: snapshotEnd,
+	}
+	for _, chunk := range chunks {
+		if options.LimitChunks > 0 && len(page.Chunks) >= options.LimitChunks {
+			page.HasMore = true
+			page.NextStartSeq = chunk.Sequence
+			break
+		}
+		chunkBytes := len(chunk.Data)
+		if options.MaxBytes > 0 && len(page.Chunks) > 0 && page.CoveredBytes+int64(chunkBytes) > int64(options.MaxBytes) {
+			page.HasMore = true
+			page.NextStartSeq = chunk.Sequence
+			break
+		}
+		page.Chunks = append(page.Chunks, chunk)
+		page.CoveredBytes += int64(chunkBytes)
+		if page.FirstSequence == 0 {
+			page.FirstSequence = chunk.Sequence
+		}
+		page.LastSequence = chunk.Sequence
+	}
+	if page.HasMore {
+		page.CoveredThroughSequence = page.NextStartSeq - 1
+	}
 	return page, nil
 }
 
@@ -666,6 +747,26 @@ func (s *Session) GetHistoryFromSequence(fromSeq int64) ([]TerminalDataChunk, er
 		return nil, err
 	}
 	return page.Chunks, nil
+}
+
+// CommitHistoryCheckpoint publishes a checkpoint only after the durable spool
+// validates its sequence, geometry, digest, and blob checksum.
+func (s *Session) CommitHistoryCheckpoint(checkpoint TerminalHistoryCheckpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.historySpoolErr != nil {
+		return fmt.Errorf("terminal history durability failed: %w", s.historySpoolErr)
+	}
+	if s.historySpool == nil {
+		return fmt.Errorf("terminal history spool is not configured")
+	}
+	if checkpoint.CoveredThroughSequence > s.committedSequence {
+		return fmt.Errorf("terminal history checkpoint exceeds committed output")
+	}
+	if err := s.historySpool.CommitCheckpoint(checkpoint); err != nil {
+		return fmt.Errorf("commit terminal history checkpoint: %w", err)
+	}
+	return nil
 }
 
 // GetHistoryStats returns a lightweight snapshot of the history buffer without copying stored data.
@@ -688,6 +789,13 @@ func (s *Session) ClearHistory() error {
 
 	if s.ringBuffer != nil {
 		s.ringBuffer.Clear()
+	}
+	if s.historySpool != nil {
+		if err := s.historySpool.Reset(s.committedSequence); err != nil {
+			s.historySpoolErr = err
+			return fmt.Errorf("clear terminal history spool: %w", err)
+		}
+		s.historySpoolErr = nil
 	}
 	s.historyGeneration++
 	if s.historyGeneration <= 0 {
@@ -972,6 +1080,25 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 			geometry = s.effectiveGeometryLocked()
 		}
 
+		chunk := TerminalDataChunk{
+			Sequence:           seqNum,
+			Data:               displayData,
+			Timestamp:          timestamp,
+			Size:               len(displayData),
+			GeometryGeneration: geometry.Generation,
+			Cols:               geometry.Cols,
+			Rows:               geometry.Rows,
+		}
+		durableCommitted := false
+		if s.historySpool != nil && s.historySpoolErr == nil {
+			if err := s.historySpool.Append(chunk); err != nil {
+				s.historySpoolErr = err
+				s.config.logger.Error("Failed to append terminal history spool", "sessionID", s.ID, "error", err)
+			} else {
+				durableCommitted = true
+			}
+		}
+		ringCommitted := false
 		if s.ringBuffer != nil {
 			if err := s.ringBuffer.writeOwnedWithSequenceAndGeometry(
 				displayData,
@@ -984,8 +1111,11 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 			); err != nil {
 				s.config.logger.Error("Failed to write to ring buffer", "sessionID", s.ID, "error", err)
 			} else {
-				s.committedSequence = seqNum
+				ringCommitted = true
 			}
+		}
+		if durableCommitted || ringCommitted {
+			s.committedSequence = seqNum
 		}
 		subscribers := make([]LiveSubscriber, 0, len(s.liveAttachments))
 		for _, attachment := range s.liveAttachments {

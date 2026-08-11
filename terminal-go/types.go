@@ -33,6 +33,8 @@ type HistoryPageOptions struct {
 // HistoryPage is a bounded terminal history snapshot plus replay cursor metadata.
 type HistoryPage struct {
 	Chunks                 []TerminalDataChunk
+	Checkpoint             *TerminalHistoryCheckpoint
+	DeltaStartSequence     int64
 	FirstSequence          int64
 	LastSequence           int64
 	FirstRetainedSequence  int64
@@ -282,6 +284,7 @@ type TerminalSession interface {
 	WriteDataWithSource(data []byte, sourceConnID string) error
 	ResizePTY(cols, rows int) error
 	GetHistoryPage(options HistoryPageOptions) (HistoryPage, error)
+	CommitHistoryCheckpoint(checkpoint TerminalHistoryCheckpoint) error
 	GetHistoryFromSequence(fromSeq int64) ([]TerminalDataChunk, error)
 	ClearHistory() error
 	Close() error
@@ -294,6 +297,7 @@ type TerminalManager interface {
 	ListSessions() []*Session
 	DeleteSession(sessionID string) error
 	ClearSessionHistory(sessionID string) error
+	CommitSessionHistoryCheckpoint(sessionID string, checkpoint TerminalHistoryCheckpoint) error
 	RenameSession(sessionID, newName string) error
 	ActivateSession(sessionID string, cols, rows int) error
 	SetEventHandler(handler TerminalEventHandler)
@@ -328,6 +332,8 @@ type Session struct {
 
 	connections     map[string]*ConnectionInfo
 	ringBuffer      *TerminalRingBuffer
+	historySpool    *TerminalHistorySpool
+	historySpoolErr error
 	liveAttachments map[string]liveAttachment
 
 	sequenceNumber       int64
