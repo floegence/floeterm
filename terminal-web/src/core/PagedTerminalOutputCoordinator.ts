@@ -1018,10 +1018,28 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           && pageGeneration !== undefined
           && pageGeneration !== historyGeneration;
         const effectivePageStart = Math.max(1, startSequence);
+        const emptyPreparedHistoryEstablishedFirstSequence = preparedHistory !== null
+          && preparedHistory.complete
+          && preparedHistory.chunks.length === 0
+          && preparedHistory.byteLength === 0
+          && preparedHistory.requestedStartSequence === 1
+          && preparedHistory.firstRetainedSequence === 0
+          && preparedHistory.coveredThroughSequence === 0
+          && preparedHistory.snapshotEndSequence === 0
+          && firstRetained === 1
+          && effectivePageStart === 1
+          && pageGeneration === preparedHistory.historyGeneration
+          && !pageCheckpoint
+          && !page.historyReset
+          && !page.historyTruncated;
         const retentionAdvanced = firstRetained !== undefined
           && (
             firstRetained > effectivePageStart
-            || (preparedHistory !== null && firstRetained > preparedHistory.firstRetainedSequence)
+            || (
+              preparedHistory !== null
+              && firstRetained > preparedHistory.firstRetainedSequence
+              && !emptyPreparedHistoryEstablishedFirstSequence
+            )
           );
         const generationNeedsRebase = !restoredCheckpointThisPage && (page.historyReset || generationChanged);
         const retentionNeedsRebase = !restoredCheckpointThisPage && (page.historyTruncated || retentionAdvanced);

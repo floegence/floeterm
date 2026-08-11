@@ -352,6 +352,97 @@ describe('PagedTerminalOutputCoordinator', () => {
     coordinator.dispose();
   });
 
+  it('accepts the first retained sequence after an empty prepared history seed', async () => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        coveredThroughSequence: 0,
+        snapshotEndSequence: 0,
+        firstRetainedSequence: 0,
+        historyGeneration: 1,
+      }),
+    });
+    expect(prepared).toMatchObject({
+      requestedStartSequence: 1,
+      firstRetainedSequence: 0,
+      coveredThroughSequence: 0,
+      snapshotEndSequence: 0,
+      historyGeneration: 1,
+      complete: true,
+    });
+
+    const writes: string[] = [];
+    const fetchPage = vi.fn().mockResolvedValue(page({
+      chunks: [chunk(1, 'one'), chunk(2, 'two')],
+      coveredThroughSequence: 2,
+      snapshotEndSequence: 2,
+      firstRetainedSequence: 1,
+      historyGeneration: 1,
+      historyTruncated: false,
+    }));
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage,
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+    });
+
+    await coordinator.attach(0, 2, { preparedHistory: prepared });
+
+    expect(fetchPage).toHaveBeenCalledWith(expect.objectContaining({
+      startSequence: 1,
+      endSequence: 2,
+      historyGeneration: 1,
+    }));
+    expect(coordinator.getSnapshot()).toMatchObject({
+      state: 'live',
+      baselineReady: true,
+      coveredThroughSequence: 2,
+      failure: null,
+      preparedHistoryOutcome: { status: 'accepted', rebased: false },
+    });
+    expect(writes.join('')).toBe('onetwo');
+    coordinator.dispose();
+  });
+
+  it.each([
+    ['history truncation', { historyTruncated: true }],
+    ['history reset', { historyReset: true }],
+    ['history generation change', { historyGeneration: 2 }],
+  ])('does not treat an empty prepared history seed as safe during %s', async (_label, overrides) => {
+    const prepared = await preparePagedTerminalHistory({
+      fetchPage: async () => page({
+        coveredThroughSequence: 0,
+        snapshotEndSequence: 0,
+        firstRetainedSequence: 0,
+        historyGeneration: 1,
+      }),
+    });
+    const writes: string[] = [];
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({
+        chunks: [chunk(1, 'one')],
+        coveredThroughSequence: 1,
+        snapshotEndSequence: 1,
+        firstRetainedSequence: 1,
+        historyGeneration: 1,
+        historyTruncated: false,
+        ...overrides,
+      }),
+      write: data => writes.push(decoder.decode(data)),
+      writeHistory: data => writes.push(decoder.decode(data)),
+    });
+
+    await coordinator.attach(0, 1, { preparedHistory: prepared });
+
+    expect(writes).toEqual([]);
+    expect(coordinator.getSnapshot()).toMatchObject({
+      state: 'failed',
+      baselineReady: false,
+      coveredThroughSequence: 0,
+      failure: { code: 'history_checkpoint_missing', retryable: false },
+    });
+    coordinator.dispose();
+  });
+
   it('validates an exact-boundary seed without replaying its final chunk twice', async () => {
     const prepared = await preparePagedTerminalHistory({
       fetchPage: async () => page({
