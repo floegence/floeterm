@@ -137,6 +137,17 @@ describe('TerminalCore history writes', () => {
   });
 
   it('restores an authoritative checkpoint through the published wasm terminal and fences presentation', async () => {
+    const expectedDigest = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
+    vi.stubGlobal('crypto', {
+      subtle: {
+        digest: vi.fn(async (_algorithm: string, data: BufferSource) => {
+          if (!ArrayBuffer.isView(data)) {
+            throw new TypeError('checkpoint digest input must preserve its typed-array view');
+          }
+          return Uint8Array.from(expectedDigest.match(/../g)!.map(value => Number.parseInt(value, 16))).buffer;
+        }),
+      },
+    });
     const container = document.createElement('div');
     document.body.appendChild(container);
     Object.defineProperty(container, 'clientWidth', { value: 800 });
@@ -154,7 +165,7 @@ describe('TerminalCore history writes', () => {
       parserEpoch: 11,
       cols: 80,
       rows: 24,
-      checksumSha256: '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+      checksumSha256: expectedDigest,
       stateDigestSha256: 'a'.repeat(64),
       bytes,
     };

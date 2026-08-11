@@ -189,7 +189,7 @@ const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
   if (typeof crypto === 'undefined' || !crypto.subtle) {
     throw new Error('Web Crypto SHA-256 is unavailable for checkpoint validation');
   }
-  const digest = await crypto.subtle.digest('SHA-256', bytes.slice().buffer);
+  const digest = await crypto.subtle.digest('SHA-256', bytes.slice());
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 };
 
