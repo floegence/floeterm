@@ -99,16 +99,44 @@ type historyChunk struct {
 }
 
 type historyPageResponse struct {
-	Chunks                 []historyChunk `json:"chunks"`
-	FirstRetainedSequence  int64          `json:"firstRetainedSequence"`
-	NextStartSequence      int64          `json:"nextStartSequence"`
-	HasMore                bool           `json:"hasMore"`
-	CoveredThroughSequence int64          `json:"coveredThroughSequence"`
-	SnapshotEndSequence    int64          `json:"snapshotEndSequence"`
-	HistoryGeneration      int64          `json:"historyGeneration"`
-	HistoryReset           bool           `json:"historyReset"`
-	HistoryTruncated       bool           `json:"historyTruncated"`
-	TotalBytes             int64          `json:"totalBytes"`
+	Chunks                 []historyChunk             `json:"chunks"`
+	Checkpoint             *historyCheckpointResponse `json:"checkpoint,omitempty"`
+	DeltaStartSequence     int64                      `json:"deltaStartSequence"`
+	FirstRetainedSequence  int64                      `json:"firstRetainedSequence"`
+	NextStartSequence      int64                      `json:"nextStartSequence"`
+	HasMore                bool                       `json:"hasMore"`
+	CoveredThroughSequence int64                      `json:"coveredThroughSequence"`
+	SnapshotEndSequence    int64                      `json:"snapshotEndSequence"`
+	HistoryGeneration      int64                      `json:"historyGeneration"`
+	HistoryReset           bool                       `json:"historyReset"`
+	HistoryTruncated       bool                       `json:"historyTruncated"`
+	TotalBytes             int64                      `json:"totalBytes"`
+}
+
+type historyCheckpointResponse struct {
+	FormatVersion          uint32 `json:"formatVersion"`
+	EngineID               string `json:"engineId"`
+	CoveredThroughSequence int64  `json:"coveredThroughSequence"`
+	GeometryGeneration     uint64 `json:"geometryGeneration"`
+	ParserEpoch            uint64 `json:"parserEpoch"`
+	Cols                   int    `json:"cols"`
+	Rows                   int    `json:"rows"`
+	ChecksumSHA256         string `json:"checksumSha256"`
+	StateDigestSHA256      string `json:"stateDigestSha256"`
+	BytesBase64            string `json:"bytes"`
+}
+
+type historyCheckpointRequest struct {
+	FormatVersion          uint32 `json:"formatVersion"`
+	EngineID               string `json:"engineId"`
+	CoveredThroughSequence int64  `json:"coveredThroughSequence"`
+	GeometryGeneration     uint64 `json:"geometryGeneration"`
+	ParserEpoch            uint64 `json:"parserEpoch"`
+	Cols                   int    `json:"cols"`
+	Rows                   int    `json:"rows"`
+	ChecksumSHA256         string `json:"checksumSha256"`
+	StateDigestSHA256      string `json:"stateDigestSha256"`
+	BytesBase64            string `json:"bytes"`
 }
 
 type sessionStatsResponse struct {
@@ -355,8 +383,26 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
+		var checkpoint *historyCheckpointResponse
+		if page.Checkpoint != nil {
+			checkpoint = &historyCheckpointResponse{
+				FormatVersion:          page.Checkpoint.FormatVersion,
+				EngineID:               page.Checkpoint.EngineID,
+				CoveredThroughSequence: page.Checkpoint.CoveredThroughSequence,
+				GeometryGeneration:     page.Checkpoint.GeometryGeneration,
+				ParserEpoch:            page.Checkpoint.ParserEpoch,
+				Cols:                   page.Checkpoint.Cols,
+				Rows:                   page.Checkpoint.Rows,
+				ChecksumSHA256:         page.Checkpoint.ChecksumSHA256,
+				StateDigestSHA256:      page.Checkpoint.StateDigestSHA256,
+				BytesBase64:            base64.StdEncoding.EncodeToString(page.Checkpoint.Bytes),
+			}
+		}
+
 		writeJSON(w, http.StatusOK, historyPageResponse{
 			Chunks:                 out,
+			Checkpoint:             checkpoint,
+			DeltaStartSequence:     page.DeltaStartSequence,
 			FirstRetainedSequence:  page.FirstRetainedSequence,
 			NextStartSequence:      page.NextStartSeq,
 			HasMore:                page.HasMore,
@@ -392,6 +438,53 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 				TotalBytes: stats.TotalBytes,
 			},
 		})
+		return
+
+	case "checkpoint":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req historyCheckpointRequest
+		if err := readJSON(w, r, &req, maxCheckpointJSONBodyBytes); err != nil {
+			var httpErr *httpError
+			if errors.As(err, &httpErr) {
+				http.Error(w, httpErr.message, httpErr.status)
+				return
+			}
+			http.Error(w, "invalid checkpoint payload", http.StatusBadRequest)
+			return
+		}
+		checkpointBytes, err := base64.StdEncoding.Strict().DecodeString(req.BytesBase64)
+		if err != nil || len(checkpointBytes) == 0 {
+			http.Error(w, "invalid checkpoint bytes", http.StatusBadRequest)
+			return
+		}
+		if len(checkpointBytes) > maxCheckpointBytes {
+			http.Error(w, "checkpoint bytes exceed limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		checkpoint := terminal.TerminalHistoryCheckpoint{
+			FormatVersion:          req.FormatVersion,
+			EngineID:               req.EngineID,
+			CoveredThroughSequence: req.CoveredThroughSequence,
+			GeometryGeneration:     req.GeometryGeneration,
+			ParserEpoch:            req.ParserEpoch,
+			Cols:                   req.Cols,
+			Rows:                   req.Rows,
+			ChecksumSHA256:         req.ChecksumSHA256,
+			StateDigestSHA256:      req.StateDigestSHA256,
+			Bytes:                  checkpointBytes,
+		}
+		if err := s.manager.CommitSessionHistoryCheckpoint(sessionID, checkpoint); err != nil {
+			if strings.Contains(err.Error(), "session not found") {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 
 	case "clear":

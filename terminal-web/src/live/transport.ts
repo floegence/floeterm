@@ -12,6 +12,7 @@ import type {
   TerminalNameUpdateEvent,
   TerminalSessionInfo,
   TerminalHistoryPage,
+  TerminalHistoryCheckpoint,
   TerminalGeometryEvent,
 } from '../types.js';
 import {
@@ -32,6 +33,7 @@ export type TerminalLiveControlPlane = Readonly<{
     historyGeneration: number,
   ): Promise<TerminalHistoryPage>;
   clear(sessionId: TerminalID): Promise<void>;
+  commitHistoryCheckpoint?(sessionId: TerminalID, checkpoint: TerminalHistoryCheckpoint): Promise<void>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
   createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
   deleteSession?(sessionId: TerminalID): Promise<void>;
@@ -268,6 +270,7 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
     history: options.control.history,
     historyPage: options.control.historyPage,
     clear: options.control.clear,
+    commitHistoryCheckpoint: options.control.commitHistoryCheckpoint,
     listSessions: options.control.listSessions,
     createSession: options.control.createSession,
     deleteSession: options.control.deleteSession ? async sessionId => {

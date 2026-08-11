@@ -37,6 +37,7 @@ type TerminalHistoryCheckpoint struct {
 	EngineID               string `json:"engine_id"`
 	CoveredThroughSequence int64  `json:"covered_through_sequence"`
 	GeometryGeneration     uint64 `json:"geometry_generation"`
+	ParserEpoch            uint64 `json:"parser_epoch"`
 	Cols                   int    `json:"cols"`
 	Rows                   int    `json:"rows"`
 	ChecksumSHA256         string `json:"checksum_sha256"`
@@ -410,7 +411,7 @@ func (s *TerminalHistorySpool) validateCheckpoint(checkpoint TerminalHistoryChec
 	if checkpoint.CoveredThroughSequence <= s.retentionFloor || checkpoint.CoveredThroughSequence > s.lastSequence {
 		return fmt.Errorf("terminal history checkpoint sequence is outside durable coverage")
 	}
-	if checkpoint.GeometryGeneration == 0 || checkpoint.Cols <= 0 || checkpoint.Rows <= 0 {
+	if checkpoint.GeometryGeneration == 0 || checkpoint.ParserEpoch == 0 || checkpoint.Cols <= 0 || checkpoint.Rows <= 0 {
 		return fmt.Errorf("terminal history checkpoint geometry is invalid")
 	}
 	if len(checkpoint.Bytes) == 0 {
@@ -482,7 +483,7 @@ func (s *TerminalHistorySpool) loadCheckpoint() error {
 	}
 	manifest.Checkpoint.Bytes = checkpointBytes
 	if manifest.Checkpoint.FormatVersion != 1 || manifest.Checkpoint.EngineID != "floegence-ghostty-web" ||
-		manifest.Checkpoint.CoveredThroughSequence <= 0 || manifest.Checkpoint.GeometryGeneration == 0 ||
+		manifest.Checkpoint.CoveredThroughSequence <= 0 || manifest.Checkpoint.GeometryGeneration == 0 || manifest.Checkpoint.ParserEpoch == 0 ||
 		manifest.Checkpoint.Cols <= 0 || manifest.Checkpoint.Rows <= 0 {
 		return fmt.Errorf("terminal history checkpoint manifest is incompatible")
 	}

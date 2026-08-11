@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TerminalCore } from './TerminalCore';
+import type { GhosttyAuthoritativeCheckpoint } from '../checkpoint/GhosttyCheckpointActor';
 
 let terminalInstance: MockTerminal | null = null;
 let pendingWriteCallback: (() => void) | null = null;
@@ -13,7 +14,19 @@ class MockTerminal {
   buffer = { active: { length: 0 } };
   element?: HTMLElement;
   renderer = { render: vi.fn(), getMetrics: () => ({ width: 8, height: 16 }) };
-  wasmTerm = { isAlternateScreen: () => false };
+  wasmTerm = {
+    isAlternateScreen: () => false,
+    validateCheckpoint: vi.fn(() => ({
+      formatVersion: 1,
+      cols: 80,
+      rows: 24,
+      historySequence: 7n,
+      geometryGeneration: 2n,
+      parserEpoch: 11n,
+    })),
+    restoreCheckpoint: vi.fn(),
+    getStateDigest: vi.fn(() => 'a'.repeat(64)),
+  };
   private dataHandler: ((data: string) => void) | null = null;
 
   handleMouseDown() {}
@@ -120,6 +133,43 @@ describe('TerminalCore history writes', () => {
 
     terminalInstance?.emitData('\x1b[12;34R');
     expect(onData).toHaveBeenCalledWith('\x1b[12;34R');
+    core.dispose();
+  });
+
+  it('restores an authoritative checkpoint through the published wasm terminal and fences presentation', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800 });
+    Object.defineProperty(container, 'clientHeight', { value: 400 });
+    const core = new TerminalCore(container);
+    await core.initialize();
+    const renderFence = vi.spyOn(core, 'forceResizeAndWaitForCommittedFrame').mockResolvedValue(undefined);
+    const fullRender = vi.spyOn(core as unknown as { forceFullRender: () => void }, 'forceFullRender');
+    const bytes = new Uint8Array([1, 2, 3]);
+    const checkpoint: GhosttyAuthoritativeCheckpoint = {
+      formatVersion: 1,
+      engineId: 'floegence-ghostty-web',
+      coveredThroughSequence: 7,
+      geometryGeneration: 2,
+      parserEpoch: 11,
+      cols: 80,
+      rows: 24,
+      checksumSha256: '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+      stateDigestSha256: 'a'.repeat(64),
+      bytes,
+    };
+
+    await (core as unknown as {
+      restoreAuthoritativeCheckpoint(value: GhosttyAuthoritativeCheckpoint): Promise<void>;
+    }).restoreAuthoritativeCheckpoint(checkpoint);
+
+    expect(terminalInstance?.wasmTerm.validateCheckpoint).toHaveBeenCalledWith(bytes);
+    expect(terminalInstance?.wasmTerm.restoreCheckpoint).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      { historySequence: 7n, geometryGeneration: 2n, parserEpoch: 11n },
+    );
+    expect(fullRender).toHaveBeenCalledTimes(1);
+    expect(renderFence).toHaveBeenCalledTimes(1);
     core.dispose();
   });
 });

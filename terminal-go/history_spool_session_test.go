@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSessionHistoryUsesDurableSpoolBeyondHotRingEviction(t *testing.T) {
@@ -71,6 +72,7 @@ func TestSessionHistoryPageUsesValidatedCheckpointAndContiguousDelta(t *testing.
 		EngineID:               "floegence-ghostty-web",
 		CoveredThroughSequence: 4,
 		GeometryGeneration:     1,
+		ParserEpoch:            1,
 		Cols:                   80,
 		Rows:                   24,
 		ChecksumSHA256:         hex.EncodeToString(checkpointChecksum[:]),
@@ -111,12 +113,51 @@ func TestSessionHistoryFailsClosedAfterDurableSpoolQuotaError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.processRawPTYData([]byte(strings.Repeat("a", 48)))
-	session.processRawPTYData([]byte(strings.Repeat("b", 48)))
+	first := strings.Repeat("a", 48)
+	second := strings.Repeat("b", 48)
+	third := strings.Repeat("c", 48)
+	session.processRawPTYData([]byte(first))
+
+	events := make(chan TerminalOutputEvent, 2)
+	attachment, err := session.AttachLiveConnection("quota-client", 1, 80, 24, LiveSubscriber{
+		OnOutput: func(event TerminalOutputEvent) bool {
+			events <- event
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attachment.Detach()
+
+	session.processRawPTYData([]byte(second))
+	session.processRawPTYData([]byte(third))
 
 	_, err = session.GetHistoryPage(HistoryPageOptions{StartSeq: 1, EndSeq: 2})
 	if err == nil || !strings.Contains(err.Error(), "quota exceeded") {
 		t.Fatalf("history after spool failure error = %v", err)
+	}
+
+	chunks, err := session.GetHistoryChunks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Sequence != 1 || string(chunks[0].Data) != first {
+		t.Fatalf("in-memory history changed after spool failure: %+v", chunks)
+	}
+	if session.committedSequence != 1 {
+		t.Fatalf("committed sequence after spool failure = %d, want 1", session.committedSequence)
+	}
+	for sequence, want := range []string{second, third} {
+		select {
+		case event := <-events:
+			wantSequence := int64(sequence + 2)
+			if event.Sequence != wantSequence || string(event.Data) != want {
+				t.Fatalf("live event after spool failure = %+v, want sequence %d data %q", event, wantSequence, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("live subscriber missed output %d after spool failure", sequence+2)
+		}
 	}
 }
 

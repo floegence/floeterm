@@ -76,6 +76,7 @@ import {
   normalizeTerminalScrollbarOptions,
   TerminalScrollbarOverlay,
 } from './TerminalScrollbarOverlay.js';
+import type { GhosttyAuthoritativeCheckpoint } from '../checkpoint/GhosttyCheckpointActor.js';
 
 type terminal_search_match = {
   row: number;
@@ -183,6 +184,14 @@ const ESTIMATED_RENDERER_BYTES = 4 * 1024 * 1024;
 const SNAPSHOT_RESET_PREFIX = '\x1bc\x1b[2J\x1b[H';
 
 const encodedByteLength = (value: string): number => new TextEncoder().encode(value).byteLength;
+
+const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Web Crypto SHA-256 is unavailable for checkpoint validation');
+  }
+  const digest = await crypto.subtle.digest('SHA-256', bytes.slice().buffer);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+};
 
 type terminal_theme_color_translator = {
   fg: Map<string, RgbColor>;
@@ -2644,6 +2653,97 @@ export class TerminalCore {
         resolve(true);
       });
     });
+  }
+
+  /**
+   * Restores a validated checkpoint produced by the published Ghostty engine.
+   * The terminal must already be at the checkpoint geometry; geometry changes
+   * remain owned by the history boundary before restore is attempted.
+   */
+  async restoreAuthoritativeCheckpoint(checkpoint: GhosttyAuthoritativeCheckpoint): Promise<void> {
+    if (!this.terminal || !this.isReady()) {
+      throw new Error('Cannot restore a checkpoint before initialization completes');
+    }
+    if (
+      checkpoint.formatVersion !== 1
+      || checkpoint.engineId !== 'floegence-ghostty-web'
+      || !Number.isSafeInteger(checkpoint.coveredThroughSequence)
+      || checkpoint.coveredThroughSequence <= 0
+      || !Number.isSafeInteger(checkpoint.geometryGeneration)
+      || checkpoint.geometryGeneration <= 0
+      || !Number.isSafeInteger(checkpoint.parserEpoch)
+      || checkpoint.parserEpoch <= 0
+      || !Number.isSafeInteger(checkpoint.cols)
+      || checkpoint.cols <= 0
+      || !Number.isSafeInteger(checkpoint.rows)
+      || checkpoint.rows <= 0
+      || !(checkpoint.bytes instanceof Uint8Array)
+      || checkpoint.bytes.byteLength === 0
+      || !/^[0-9a-f]{64}$/.test(checkpoint.stateDigestSha256)
+    ) {
+      throw new Error('Invalid authoritative terminal checkpoint metadata');
+    }
+
+    const terminalAny = this.terminal as unknown as {
+      cols?: number;
+      rows?: number;
+      wasmTerm?: {
+        validateCheckpoint?: (bytes: Uint8Array) => {
+          formatVersion: number;
+          cols: number;
+          rows: number;
+          historySequence: bigint;
+          geometryGeneration: bigint;
+          parserEpoch: bigint;
+        };
+        restoreCheckpoint?: (bytes: Uint8Array, coordinates: {
+          historySequence: bigint;
+          geometryGeneration: bigint;
+          parserEpoch: bigint;
+        }) => void;
+        getStateDigest?: () => string;
+      };
+    };
+    const wasmTerm = terminalAny.wasmTerm;
+    if (
+      !wasmTerm
+      || typeof wasmTerm.validateCheckpoint !== 'function'
+      || typeof wasmTerm.restoreCheckpoint !== 'function'
+      || typeof wasmTerm.getStateDigest !== 'function'
+    ) {
+      throw new Error('Published Ghostty terminal checkpoint API is unavailable');
+    }
+    if (terminalAny.cols !== checkpoint.cols || terminalAny.rows !== checkpoint.rows) {
+      throw new Error('Terminal geometry does not match authoritative checkpoint');
+    }
+
+    const bytes = checkpoint.bytes.slice();
+    if (await sha256Hex(bytes) !== checkpoint.checksumSha256) {
+      throw new Error('Authoritative terminal checkpoint checksum mismatch');
+    }
+    const coordinates = {
+      historySequence: BigInt(checkpoint.coveredThroughSequence),
+      geometryGeneration: BigInt(checkpoint.geometryGeneration),
+      parserEpoch: BigInt(checkpoint.parserEpoch),
+    };
+    const metadata = wasmTerm.validateCheckpoint(bytes);
+    if (
+      metadata.formatVersion !== checkpoint.formatVersion
+      || metadata.cols !== checkpoint.cols
+      || metadata.rows !== checkpoint.rows
+      || metadata.historySequence !== coordinates.historySequence
+      || metadata.geometryGeneration !== coordinates.geometryGeneration
+      || metadata.parserEpoch !== coordinates.parserEpoch
+    ) {
+      throw new Error('Authoritative terminal checkpoint coordinates do not match');
+    }
+    wasmTerm.restoreCheckpoint(bytes, coordinates);
+    if (wasmTerm.getStateDigest() !== checkpoint.stateDigestSha256) {
+      throw new Error('Authoritative terminal checkpoint state digest mismatch');
+    }
+    this.needsFullRenderOnNextWrite = true;
+    this.forceFullRender();
+    await this.forceResizeAndWaitForCommittedFrame();
   }
 
   getResourceEstimate(): TerminalResourceEstimate {

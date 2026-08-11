@@ -246,6 +246,37 @@ afterEach(() => {
 });
 
 describe('TerminalCore long-running top-like rendering', () => {
+  it('restores a published Ghostty checkpoint and commits the restored frame', async () => {
+    const core = await createCore(100, 30);
+    const internal = core as unknown as { terminal: CoreTerminal };
+    await writeFrame(core, topLikeFrame(0, 30, 100));
+    const before = snapshotGhostty(internal.terminal.wasmTerm);
+    const captured = internal.terminal.wasmTerm.captureCheckpoint({
+      historySequence: 1n,
+      geometryGeneration: 1n,
+      parserEpoch: 1n,
+    });
+    const digest = internal.terminal.wasmTerm.getStateDigest();
+    const checksumBytes = await crypto.subtle.digest('SHA-256', captured.bytes.slice().buffer);
+    const checksumSha256 = Array.from(new Uint8Array(checksumBytes), byte => byte.toString(16).padStart(2, '0')).join('');
+
+    await writeFrame(core, '\x1b[2J\x1b[Hchanged');
+    await core.restoreAuthoritativeCheckpoint({
+      formatVersion: 1,
+      engineId: 'floegence-ghostty-web',
+      coveredThroughSequence: 1,
+      geometryGeneration: 1,
+      parserEpoch: 1,
+      cols: 100,
+      rows: 30,
+      checksumSha256,
+      stateDigestSha256: digest,
+      bytes: captured.bytes,
+    });
+
+    expect(snapshotGhostty(internal.terminal.wasmTerm)).toEqual(before);
+  });
+
   it('keeps live-only demand rendering equivalent through 50,000 updates (same-Ghostty projection oracle)', async () => {
     // The reference terminal intentionally uses the same pinned Ghostty parser.
     // This proves projection/dirty cleanup/canvas parity, not independent VT semantics.

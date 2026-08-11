@@ -14,19 +14,31 @@ import (
 	terminal "github.com/floegence/floeterm/terminal-go"
 )
 
+type statePaths struct {
+	Root             string
+	HistorySpoolRoot string
+}
+
 func main() {
 	var addr string
 	var staticDir string
+	var stateDir string
 	var logLevel string
 	var performanceDiagnostics bool
 	flag.StringVar(&addr, "addr", ":8080", "HTTP listen address")
 	flag.StringVar(&staticDir, "static", "", "path to app/web dist directory")
+	flag.StringVar(&stateDir, "state-dir", "", "path to durable FloeTerm state (defaults to the user config directory)")
 	flag.StringVar(&logLevel, "log-level", "info", "log level: debug|info|warn|error")
 	flag.BoolVar(&performanceDiagnostics, "performance-diagnostics", false, "enable loopback performance diagnostics endpoint")
 	flag.Parse()
 
 	if staticDir == "" {
 		staticDir = resolveDefaultStaticDir()
+	}
+	paths, err := resolveStatePaths(stateDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -state-dir: %v\n", err)
+		os.Exit(2)
 	}
 
 	level := terminal.LogInfo
@@ -49,7 +61,8 @@ func main() {
 		StaticDir:                    staticDir,
 		EnablePerformanceDiagnostics: performanceDiagnostics,
 		ManagerConfig: terminal.ManagerConfig{
-			Logger: logger,
+			Logger:           logger,
+			HistorySpoolRoot: paths.HistorySpoolRoot,
 			ShellArgsProvider: terminal.DefaultShellArgsProvider{
 				EnableCommandLifecycle: true,
 			},
@@ -64,6 +77,7 @@ func main() {
 	defer srv.Close()
 
 	logger.Info("floeterm server listening", "addr", addr)
+	logger.Info("using durable state", "stateDir", paths.Root)
 	if staticDir != "" {
 		logger.Info("serving web", "staticDir", staticDir)
 		if url := displayLocalAccessURL(addr); url != "" {
@@ -77,6 +91,25 @@ func main() {
 		logger.Error("http server exited", "error", err)
 		os.Exit(1)
 	}
+}
+
+func resolveStatePaths(configuredRoot string) (statePaths, error) {
+	root := strings.TrimSpace(configuredRoot)
+	if root == "" {
+		configRoot, err := os.UserConfigDir()
+		if err != nil {
+			return statePaths{}, fmt.Errorf("resolve user config directory: %w", err)
+		}
+		root = filepath.Join(configRoot, "floeterm")
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return statePaths{}, fmt.Errorf("resolve state directory: %w", err)
+	}
+	return statePaths{
+		Root:             absoluteRoot,
+		HistorySpoolRoot: filepath.Join(absoluteRoot, "history-spool"),
+	}, nil
 }
 
 func displayLocalAccessURL(addr string) string {

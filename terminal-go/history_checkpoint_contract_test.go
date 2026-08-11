@@ -48,6 +48,7 @@ func TestHistoryEvictionRequiresAuthoritativeCheckpointContract(t *testing.T) {
 		EngineID:               "floegence-ghostty-web",
 		CoveredThroughSequence: 4,
 		GeometryGeneration:     1,
+		ParserEpoch:            1,
 		Cols:                   80,
 		Rows:                   24,
 		ChecksumSHA256:         hex.EncodeToString(checkpointChecksum[:]),

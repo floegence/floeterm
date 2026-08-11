@@ -323,12 +323,13 @@ type Session struct {
 	PTY        *os.File
 	Cmd        *exec.Cmd
 
-	isActive bool
-	closed   bool
-	cleaned  bool
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
+	isActive        bool
+	closed          bool
+	cleaned         bool
+	mu              sync.RWMutex
+	historyCommitMu sync.Mutex
+	ctx             context.Context
+	cancel          context.CancelFunc
 
 	connections     map[string]*ConnectionInfo
 	ringBuffer      *TerminalRingBuffer

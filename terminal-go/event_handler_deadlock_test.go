@@ -138,6 +138,51 @@ func TestOnTerminalDataHandlerMayWriteWithoutDeadlock(t *testing.T) {
 	}
 }
 
+func TestLiveSessionClosedSubscriberMayCloseAgainWithoutDeadlock(t *testing.T) {
+	session := &Session{
+		ID:              "reentrant-close",
+		connections:     make(map[string]*ConnectionInfo),
+		liveAttachments: make(map[string]liveAttachment),
+		ringBuffer:      NewTerminalRingBuffer(8),
+		config:          newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	callbackReturned := make(chan struct{})
+	outputReceived := make(chan struct{}, 1)
+	session.liveAttachments["client"] = liveAttachment{
+		generation: 1,
+		subscriber: LiveSubscriber{
+			OnOutput: func(TerminalOutputEvent) bool {
+				outputReceived <- struct{}{}
+				return true
+			},
+			OnSessionClosed: func() {
+				_ = session.Close()
+				close(callbackReturned)
+			},
+		},
+	}
+
+	go func() {
+		_ = session.Close()
+	}()
+
+	select {
+	case <-callbackReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnSessionClosed subscriber deadlocked while closing the same session")
+	}
+
+	session.processRawPTYData([]byte("stale-after-close"))
+	if chunks := session.ringBuffer.ReadAllChunks(); len(chunks) != 0 {
+		t.Fatalf("closed session committed stale PTY output: %+v", chunks)
+	}
+	select {
+	case <-outputReceived:
+		t.Fatal("closed session broadcast stale PTY output")
+	default:
+	}
+}
+
 type deletingDataHandler struct {
 	manager *Manager
 	reaped  <-chan struct{}

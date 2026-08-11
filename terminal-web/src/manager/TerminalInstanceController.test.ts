@@ -16,6 +16,7 @@ import {
   type TerminalInstanceSnapshot,
   type TerminalTransport,
 } from '../types';
+import type { GhosttyAuthoritativeCheckpoint } from '../checkpoint/GhosttyCheckpointActor';
 
 type MockCoreOptions = {
   container: HTMLElement;
@@ -48,8 +49,10 @@ class MockCore implements TerminalCoreLike {
   connected = false;
   historyReplayStarted = 0;
   historyReplayEnded = 0;
+  restoredCheckpoints: GhosttyAuthoritativeCheckpoint[] = [];
   appearanceCalls: unknown[] = [];
   fixedDimensionCalls: Array<{ cols: number; rows: number } | null> = [];
+  operations: string[] = [];
   focusCalls: Array<TerminalFocusOptions | undefined> = [];
   readonly config?: unknown;
   readonly container: HTMLElement;
@@ -77,6 +80,7 @@ class MockCore implements TerminalCoreLike {
     callback?.();
   }
   writeFrame(data: string | Uint8Array, callback?: () => void): void {
+    this.operations.push(`write:${new TextDecoder().decode(data as Uint8Array)}`);
     this.write(data, callback);
   }
 
@@ -97,6 +101,7 @@ class MockCore implements TerminalCoreLike {
   forceResize(): void {}
   setFixedDimensions(dimensions: { cols: number; rows: number } | null): void {
     this.fixedDimensionCalls.push(dimensions);
+    if (dimensions) this.operations.push(`geometry:${dimensions.cols}x${dimensions.rows}`);
     if (dimensions) this.dimensions = dimensions;
   }
   setAppearance(appearance: unknown): void { this.appearanceCalls.push(appearance); }
@@ -105,6 +110,10 @@ class MockCore implements TerminalCoreLike {
   setPresentationScale(): void {}
   startHistoryReplay(): void { this.historyReplayStarted += 1; }
   endHistoryReplay(): void { this.historyReplayEnded += 1; }
+  async restoreAuthoritativeCheckpoint(checkpoint: GhosttyAuthoritativeCheckpoint): Promise<void> {
+    this.operations.push(`restore:${checkpoint.coveredThroughSequence}`);
+    this.restoredCheckpoints.push(checkpoint);
+  }
 }
 
 const makeTransport = (overrides: Partial<TerminalTransport> = {}): TerminalTransport => ({
@@ -140,7 +149,7 @@ const makeEventSource = () => {
 };
 
 type MountControllerOptions = Partial<MockCoreOptions> & Partial<Pick<TerminalInstanceOptions,
-  'sessionId' | 'isActive' | 'transport' | 'eventSource' | 'coreConstructor' | 'config' | 'scheduler' | 'logger'
+  'sessionId' | 'isActive' | 'transport' | 'eventSource' | 'coreConstructor' | 'config' | 'scheduler' | 'logger' | 'checkpointCompaction'
 >> & {
   autoRunTimers?: boolean;
 };
@@ -157,6 +166,7 @@ const mountController = async (opts: MountControllerOptions = {}) => {
     ...(opts.scheduler ? { scheduler: opts.scheduler } : {}),
     ...(opts.config ? { config: opts.config } : {}),
     ...(opts.logger ? { logger: opts.logger } : {}),
+    ...(opts.checkpointCompaction ? { checkpointCompaction: opts.checkpointCompaction } : {}),
   });
   const snapshots: TerminalInstanceSnapshot[] = [];
   const unsubscribe = controller.subscribe(snapshot => snapshots.push(snapshot));
@@ -522,6 +532,358 @@ describe('TerminalInstanceController', () => {
     expect(coreInstances[0]!.writes.map(item => new TextDecoder().decode(item as Uint8Array))).toEqual(['after-clear']);
     expect(controller.getSnapshot().connection.state).toBe('connected');
 
+    controller.dispose();
+  });
+
+  it('restores a history checkpoint before applying its contiguous delta', async () => {
+    const attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 5,
+      historyGeneration: 2,
+      historyStartSequence: 5,
+      geometryGeneration: 2,
+      cols: 100,
+      rows: 30,
+    });
+    const checkpoint: GhosttyAuthoritativeCheckpoint = {
+      formatVersion: 1,
+      engineId: 'floegence-ghostty-web',
+      coveredThroughSequence: 4,
+      geometryGeneration: 1,
+      parserEpoch: 2,
+      cols: 80,
+      rows: 24,
+      checksumSha256: 'a'.repeat(64),
+      stateDigestSha256: 'b'.repeat(64),
+      bytes: new Uint8Array([1, 2, 3]),
+    };
+    const historyPage = vi.fn().mockResolvedValue({
+      chunks: [{
+        sequence: 5,
+        timestampMs: 5,
+        data: new TextEncoder().encode('delta'),
+        geometryGeneration: 2,
+        cols: 100,
+        rows: 30,
+      }],
+      checkpoint,
+      deltaStartSequence: 5,
+      firstRetainedSequence: 5,
+      nextStartSequence: 6,
+      hasMore: false,
+      coveredThroughSequence: 5,
+      snapshotEndSequence: 5,
+      historyGeneration: 2,
+      historyReset: false,
+      historyTruncated: false,
+      totalBytes: 5,
+    });
+    const transport = makeTransport({
+      history: vi.fn().mockRejectedValue(new Error('legacy history path must not be used')),
+    }) as TerminalTransport & {
+      attachWithHistoryBoundary: typeof attachWithHistoryBoundary;
+      historyPage: typeof historyPage;
+    };
+    transport.attachWithHistoryBoundary = attachWithHistoryBoundary;
+    transport.historyPage = historyPage;
+
+    const { controller } = await mountController({ transport, autoRunTimers: false });
+    const core = coreInstances[0]!;
+    await flushPromises();
+    await vi.runAllTimersAsync();
+
+    expect(core.restoredCheckpoints).toEqual([checkpoint]);
+    expect(core.writes.map(item => new TextDecoder().decode(item as Uint8Array))).toEqual(['delta']);
+    expect(core.operations).toEqual(['geometry:80x24', 'restore:4', 'geometry:100x30', 'write:delta']);
+    expect(controller.getSnapshot().connection.state).toBe('connected');
+    controller.dispose();
+  });
+
+  it('fails closed when a checkpoint belongs to a different history generation', async () => {
+    const attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 1,
+      historyGeneration: 2,
+      historyStartSequence: 1,
+      geometryGeneration: 1,
+      cols: 100,
+      rows: 30,
+    });
+    const checkpoint: GhosttyAuthoritativeCheckpoint = {
+      formatVersion: 1,
+      engineId: 'floegence-ghostty-web',
+      coveredThroughSequence: 1,
+      geometryGeneration: 1,
+      parserEpoch: 3,
+      cols: 80,
+      rows: 24,
+      checksumSha256: 'a'.repeat(64),
+      stateDigestSha256: 'b'.repeat(64),
+      bytes: new Uint8Array([1]),
+    };
+    const transport = makeTransport({
+      history: vi.fn().mockRejectedValue(new Error('legacy history path must not be used')),
+    }) as TerminalTransport & {
+      attachWithHistoryBoundary: typeof attachWithHistoryBoundary;
+      historyPage: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = attachWithHistoryBoundary;
+    transport.historyPage = vi.fn().mockResolvedValue({
+      chunks: [],
+      checkpoint,
+      deltaStartSequence: 2,
+      firstRetainedSequence: 1,
+      nextStartSequence: 0,
+      hasMore: false,
+      coveredThroughSequence: 1,
+      snapshotEndSequence: 1,
+      historyGeneration: 2,
+      historyReset: false,
+      historyTruncated: false,
+      totalBytes: 1,
+    });
+    const { controller } = await mountController({ transport, autoRunTimers: false });
+    await flushPromises();
+
+    expect(controller.getSnapshot().connection.state).toBe('failed');
+    expect(controller.getSnapshot().connection.error?.message).toMatch(/parser epoch/i);
+    controller.dispose();
+  });
+
+  it('captures ordered live output and commits only a self-verified checkpoint', async () => {
+    const order: string[] = [];
+    const checkpoint: GhosttyAuthoritativeCheckpoint = {
+      formatVersion: 1,
+      engineId: 'floegence-ghostty-web',
+      coveredThroughSequence: 1,
+      geometryGeneration: 3,
+      parserEpoch: 2,
+      cols: 100,
+      rows: 30,
+      checksumSha256: 'a'.repeat(64),
+      stateDigestSha256: 'b'.repeat(64),
+      bytes: new Uint8Array([1, 2, 3]),
+    };
+    const actor = {
+      start: vi.fn(async () => { order.push('start'); }),
+      append: vi.fn(() => { order.push('append'); }),
+      capture: vi.fn(async () => { order.push('capture'); return checkpoint; }),
+      dispose: vi.fn(),
+    };
+    const commitHistoryCheckpoint = vi.fn(async () => { order.push('commit'); });
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+      commitHistoryCheckpoint: typeof commitHistoryCheckpoint;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 2,
+      historyStartSequence: 1,
+      geometryGeneration: 3,
+      cols: 100,
+      rows: 30,
+    });
+    transport.historyPage = vi.fn();
+    transport.commitHistoryCheckpoint = commitHistoryCheckpoint;
+    const events = makeEventSource();
+    const { controller } = await mountController({
+      transport,
+      eventSource: events.source,
+      checkpointCompaction: {
+        captureEveryBytes: 1,
+        createActor: () => actor,
+      },
+      autoRunTimers: false,
+    });
+    await flushPromises();
+
+    events.emit({
+      sessionId: 's1',
+      type: 'data',
+      sequence: 1,
+      data: new TextEncoder().encode('live'),
+      geometryGeneration: 3,
+      cols: 100,
+      rows: 30,
+    });
+    await vi.runAllTimersAsync();
+    await flushPromises();
+
+    expect(actor.start).toHaveBeenCalledWith({ cols: 100, rows: 30, parserEpoch: 2 });
+    expect(actor.append).toHaveBeenCalledWith([{
+      sequence: 1,
+      data: new TextEncoder().encode('live'),
+      geometryGeneration: 3,
+      cols: 100,
+      rows: 30,
+    }]);
+    expect(order).toEqual(['start', 'append', 'capture', 'commit']);
+    expect(commitHistoryCheckpoint).toHaveBeenCalledWith('s1', checkpoint);
+    expect(coreInstances[0]!.writes.map(value => new TextDecoder().decode(value as Uint8Array))).toEqual(['live']);
+    controller.dispose();
+  });
+
+  it('keeps rendering and never commits when checkpoint capture fails', async () => {
+    const actor = {
+      start: vi.fn().mockResolvedValue(undefined),
+      append: vi.fn(),
+      capture: vi.fn().mockRejectedValue(new Error('checkpoint worker failed')),
+      dispose: vi.fn(),
+    };
+    const commitHistoryCheckpoint = vi.fn();
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+      commitHistoryCheckpoint: typeof commitHistoryCheckpoint;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 1,
+      cols: 100,
+      rows: 30,
+    });
+    transport.historyPage = vi.fn();
+    transport.commitHistoryCheckpoint = commitHistoryCheckpoint;
+    const events = makeEventSource();
+    const { controller } = await mountController({
+      transport,
+      eventSource: events.source,
+      checkpointCompaction: { captureEveryBytes: 1, createActor: () => actor },
+      autoRunTimers: false,
+    });
+    await flushPromises();
+
+    events.emit({
+      sessionId: 's1',
+      type: 'data',
+      sequence: 1,
+      data: new TextEncoder().encode('one'),
+      geometryGeneration: 1,
+      cols: 100,
+      rows: 30,
+    });
+    await vi.runAllTimersAsync();
+    await flushPromises();
+    events.emit({
+      sessionId: 's1',
+      type: 'data',
+      sequence: 2,
+      data: new TextEncoder().encode('two'),
+      geometryGeneration: 1,
+      cols: 100,
+      rows: 30,
+    });
+    await vi.runAllTimersAsync();
+    await flushPromises();
+
+    expect(coreInstances[0]!.writes.map(value => new TextDecoder().decode(value as Uint8Array))).toEqual(['one', 'two']);
+    expect(commitHistoryCheckpoint).not.toHaveBeenCalled();
+    expect(actor.append).toHaveBeenCalledTimes(1);
+    expect(actor.dispose).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().connection.state).toBe('connected');
+    controller.dispose();
+  });
+
+  it('keeps rendering when checkpoint append exceeds its queue budget', async () => {
+    const actor = {
+      start: vi.fn().mockResolvedValue(undefined),
+      append: vi.fn(() => { throw new Error('checkpoint queue exceeds budget'); }),
+      capture: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const commitHistoryCheckpoint = vi.fn();
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+      commitHistoryCheckpoint: typeof commitHistoryCheckpoint;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0, historyGeneration: 1, historyStartSequence: 1,
+      geometryGeneration: 1, cols: 100, rows: 30,
+    });
+    transport.historyPage = vi.fn();
+    transport.commitHistoryCheckpoint = commitHistoryCheckpoint;
+    const events = makeEventSource();
+    const { controller } = await mountController({
+      transport, eventSource: events.source,
+      checkpointCompaction: { captureEveryBytes: 1, createActor: () => actor }, autoRunTimers: false,
+    });
+    await flushPromises();
+    events.emit({ sessionId: 's1', type: 'data', sequence: 1, data: new TextEncoder().encode('live'), geometryGeneration: 1, cols: 100, rows: 30 });
+    await vi.runAllTimersAsync();
+    await flushPromises();
+
+    expect(coreInstances[0]!.writes.map(value => new TextDecoder().decode(value as Uint8Array))).toEqual(['live']);
+    expect(actor.dispose).toHaveBeenCalledTimes(1);
+    expect(commitHistoryCheckpoint).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().connection.state).toBe('connected');
+    controller.dispose();
+  });
+
+  it('discards an in-flight checkpoint when history is cleared', async () => {
+    const capture = deferred<GhosttyAuthoritativeCheckpoint>();
+    const actor = {
+      start: vi.fn().mockResolvedValue(undefined),
+      append: vi.fn(),
+      capture: vi.fn(() => capture.promise),
+      dispose: vi.fn(),
+    };
+    const commitHistoryCheckpoint = vi.fn();
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+      commitHistoryCheckpoint: typeof commitHistoryCheckpoint;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 1,
+      cols: 100,
+      rows: 30,
+    });
+    transport.historyPage = vi.fn();
+    transport.commitHistoryCheckpoint = commitHistoryCheckpoint;
+    const events = makeEventSource();
+    const { controller } = await mountController({
+      transport,
+      eventSource: events.source,
+      checkpointCompaction: { captureEveryBytes: 1, createActor: () => actor },
+      autoRunTimers: false,
+    });
+    await flushPromises();
+
+    events.emit({
+      sessionId: 's1',
+      type: 'data',
+      sequence: 1,
+      data: new TextEncoder().encode('before-clear'),
+      geometryGeneration: 1,
+      cols: 100,
+      rows: 30,
+    });
+    await vi.runAllTimersAsync();
+    await flushPromises();
+    expect(actor.capture).toHaveBeenCalledWith(1);
+
+    controller.actions.clear();
+    capture.resolve({
+      formatVersion: 1,
+      engineId: 'floegence-ghostty-web',
+      coveredThroughSequence: 1,
+      geometryGeneration: 1,
+      parserEpoch: 1,
+      cols: 100,
+      rows: 30,
+      checksumSha256: 'a'.repeat(64),
+      stateDigestSha256: 'b'.repeat(64),
+      bytes: new Uint8Array([1]),
+    });
+    await flushPromises();
+
+    expect(actor.dispose).toHaveBeenCalledTimes(1);
+    expect(commitHistoryCheckpoint).not.toHaveBeenCalled();
     controller.dispose();
   });
 

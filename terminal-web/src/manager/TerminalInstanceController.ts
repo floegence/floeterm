@@ -4,6 +4,7 @@ import { createTerminalError } from '../utils/errors.js';
 import { getDefaultTerminalConfig, getThemeColors } from '../utils/config.js';
 import { createConsoleLogger, noopLogger } from '../utils/logger.js';
 import { concatChunks } from '../utils/history.js';
+import { createGhosttyCheckpointActor } from '../checkpoint/GhosttyCheckpointActor.js';
 import {
   TerminalState,
   computeConnectionState,
@@ -11,6 +12,7 @@ import {
   type Logger,
   type TerminalConnectionController,
   type TerminalConnectionState,
+  type TerminalCheckpointActorLike,
   type TerminalCoreConstructor,
   type TerminalCoreLike,
   type TerminalAtomicTransport,
@@ -44,6 +46,7 @@ enum ConnectionState {
 const MAX_WRITE_BATCH_CHUNKS = 2048;
 const MAX_WRITE_BATCH_BYTES = 512 * 1024;
 const MAX_IMMEDIATE_LIVE_BATCH_BYTES = 256;
+const DEFAULT_CHECKPOINT_CAPTURE_BYTES = 4 * 1024 * 1024;
 
 const isAtomicTransport = (transport: TerminalInstanceOptions['transport']): transport is TerminalAtomicTransport => (
   typeof (transport as Partial<TerminalAtomicTransport>).attachWithHistoryBoundary === 'function'
@@ -81,6 +84,10 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   private terminalGeometryUnsubscribe: (() => void) | null = null;
   private lastGeometryGeneration = 0;
   private pendingGeometryEvents: TerminalGeometryEvent[] = [];
+  private checkpointActor: TerminalCheckpointActorLike | null = null;
+  private checkpointActorTail: Promise<void> = Promise.resolve();
+  private checkpointBytesSinceCommit = 0;
+  private checkpointActorGeneration = 0;
   private sequenceBuffer = new SequenceBuffer();
   private replayCompleteReceived = false;
   private isReplayActive = false;
@@ -123,6 +130,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       this.addChunkToQueue(chunk);
     },
     clear: () => {
+      this.disposeCheckpointActor();
       this.terminalCore?.clear();
       this.dataQueue = [];
       const sessionId = this.options.sessionId;
@@ -428,6 +436,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.initializationAbortController?.abort();
     this.initializationAbortController = null;
     this.isInitializing = false;
+    this.disposeCheckpointActor();
     if (this.terminalCore) {
       this.terminalCore.dispose();
       this.terminalCore = null;
@@ -604,6 +613,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
           this.lastAppliedSequence = chunk.sequence;
         }
       }
+      this.scheduleCheckpointChunks(batch);
       this.applyPendingGeometryEvents();
     } finally {
       this.isProcessing = false;
@@ -790,7 +800,14 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
 
   private async recoverAtomicHistory(
     sessionId: string,
-    attachment: { historyBoundarySequence: number; historyGeneration: number; historyStartSequence: number },
+    attachment: {
+      historyBoundarySequence: number;
+      historyGeneration: number;
+      historyStartSequence: number;
+      geometryGeneration: number;
+      cols: number;
+      rows: number;
+    },
   ): Promise<void> {
     const boundary = attachment.historyBoundarySequence;
     const historyGeneration = attachment.historyGeneration;
@@ -815,7 +832,12 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.lastAppliedSequence = Math.max(this.lastAppliedSequence, historyStartSequence - 1);
     this.applyPendingGeometryEvents();
     let queuedHistoryOutput = false;
+    let restoredCheckpoint = false;
+    let checkpointActorConfigured = false;
     let startSequence = Math.max(this.lastAppliedSequence + 1, historyStartSequence);
+    if (boundary === 0 && historyStartSequence === 1) {
+      checkpointActorConfigured = this.configureCheckpointActor(attachment, undefined, 0);
+    }
     while (startSequence <= boundary) {
       const page: TerminalHistoryPage = await this.options.transport.historyPage(
         sessionId,
@@ -829,8 +851,62 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       if (page.snapshotEndSequence !== boundary) {
         throw new Error('terminal history snapshot boundary does not match live attachment');
       }
-      if (page.historyTruncated) {
+      if (page.checkpoint) {
+        if (restoredCheckpoint) {
+          throw new Error('terminal history page repeated its authoritative checkpoint');
+        }
+        const checkpoint = page.checkpoint;
+        if (checkpoint.parserEpoch !== historyGeneration) {
+          throw new Error('terminal history checkpoint parser epoch does not match history generation');
+        }
+        if (
+          checkpoint.formatVersion !== 1
+          || checkpoint.engineId !== 'floegence-ghostty-web'
+          || !Number.isSafeInteger(checkpoint.coveredThroughSequence)
+          || checkpoint.coveredThroughSequence < 0
+          || checkpoint.coveredThroughSequence > boundary
+          || !Number.isSafeInteger(checkpoint.geometryGeneration)
+          || checkpoint.geometryGeneration <= 0
+          || !Number.isSafeInteger(checkpoint.parserEpoch)
+          || checkpoint.parserEpoch <= 0
+          || !Number.isSafeInteger(checkpoint.cols)
+          || checkpoint.cols <= 0
+          || !Number.isSafeInteger(checkpoint.rows)
+          || checkpoint.rows <= 0
+          || !(checkpoint.bytes instanceof Uint8Array)
+          || checkpoint.bytes.byteLength === 0
+          || !/^[0-9a-f]{64}$/.test(checkpoint.checksumSha256)
+          || !/^[0-9a-f]{64}$/.test(checkpoint.stateDigestSha256)
+        ) {
+          throw new Error('terminal history authoritative checkpoint is invalid');
+        }
+        if (page.deltaStartSequence !== undefined && page.deltaStartSequence !== checkpoint.coveredThroughSequence + 1) {
+          throw new Error('terminal history checkpoint delta boundary is invalid');
+        }
+        if (!this.terminalCore?.restoreAuthoritativeCheckpoint) {
+          throw new Error('terminal history checkpoint restore is unavailable');
+        }
+        this.terminalCore.setFixedDimensions(
+          { cols: checkpoint.cols, rows: checkpoint.rows },
+          { notifyResize: false },
+        );
+        await this.terminalCore.restoreAuthoritativeCheckpoint({
+          ...checkpoint,
+          bytes: checkpoint.bytes.slice(),
+        });
+        restoredCheckpoint = true;
+        checkpointActorConfigured = this.configureCheckpointActor(attachment, checkpoint, checkpoint.coveredThroughSequence);
+        this.lastAppliedSequence = Math.max(this.lastAppliedSequence, checkpoint.coveredThroughSequence);
+        startSequence = Math.max(startSequence, checkpoint.coveredThroughSequence + 1);
+      } else if (page.historyTruncated) {
         throw new Error('terminal history was truncated before the acknowledged live boundary');
+      }
+      if (!checkpointActorConfigured && startSequence === historyStartSequence) {
+        checkpointActorConfigured = this.configureCheckpointActor(
+          attachment,
+          undefined,
+          historyStartSequence - 1,
+        );
       }
       if (
         !Number.isSafeInteger(page.coveredThroughSequence)
@@ -884,6 +960,110 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     }
     this.replayCompleteReceived = true;
     this.finishReplayIfIdle();
+  }
+
+  private configureCheckpointActor(
+    attachment: { historyGeneration: number; geometryGeneration: number; cols: number; rows: number },
+    checkpoint: TerminalHistoryPage['checkpoint'],
+    initialSequence: number,
+  ): boolean {
+    if (this.checkpointActor || !isAtomicTransport(this.options.transport)) return this.checkpointActor !== null;
+    if (typeof this.options.transport.commitHistoryCheckpoint !== 'function') return false;
+    const captureEveryBytes = this.options.checkpointCompaction?.captureEveryBytes
+      ?? DEFAULT_CHECKPOINT_CAPTURE_BYTES;
+    if (!Number.isSafeInteger(captureEveryBytes) || captureEveryBytes <= 0) {
+      this.logger.warn('[TerminalInstanceController] Checkpoint compaction budget is invalid');
+      return false;
+    }
+    const actor = this.options.checkpointCompaction?.createActor?.() ?? createGhosttyCheckpointActor();
+    const generation = ++this.checkpointActorGeneration;
+    this.checkpointActor = actor;
+    this.checkpointBytesSinceCommit = 0;
+    this.checkpointActorTail = actor.start({
+      cols: checkpoint?.cols ?? attachment.cols,
+      rows: checkpoint?.rows ?? attachment.rows,
+      parserEpoch: checkpoint?.parserEpoch ?? attachment.historyGeneration,
+      ...(!checkpoint && initialSequence > 0 ? { initialSequence } : {}),
+      ...(checkpoint ? { checkpoint } : {}),
+    }).catch(error => {
+      this.disableCheckpointActor(actor, generation, error);
+    });
+    return true;
+  }
+
+  private scheduleCheckpointChunks(chunks: readonly TerminalDataChunk[]): void {
+    const actor = this.checkpointActor;
+    const sessionId = this.options.sessionId;
+    if (!actor || !sessionId || !isAtomicTransport(this.options.transport)) return;
+    const commit = this.options.transport.commitHistoryCheckpoint;
+    if (!commit) return;
+    const generation = this.checkpointActorGeneration;
+    const captureEveryBytes = this.options.checkpointCompaction?.captureEveryBytes
+      ?? DEFAULT_CHECKPOINT_CAPTURE_BYTES;
+    let actorChunks: Array<{
+      sequence: number;
+      data: Uint8Array;
+      geometryGeneration: number;
+      cols: number;
+      rows: number;
+    }>;
+    try {
+      actorChunks = chunks.map(chunk => {
+        if (
+          !Number.isSafeInteger(chunk.sequence) || chunk.sequence <= 0
+          || !Number.isSafeInteger(chunk.geometryGeneration) || (chunk.geometryGeneration ?? 0) <= 0
+          || !Number.isSafeInteger(chunk.cols) || (chunk.cols ?? 0) <= 0
+          || !Number.isSafeInteger(chunk.rows) || (chunk.rows ?? 0) <= 0
+        ) {
+          throw new Error('checkpoint compaction requires sequenced geometry-tagged output');
+        }
+        return {
+          sequence: chunk.sequence,
+          data: chunk.data.slice(),
+          geometryGeneration: chunk.geometryGeneration!,
+          cols: chunk.cols!,
+          rows: chunk.rows!,
+        };
+      });
+    } catch (error) {
+      this.disableCheckpointActor(actor, generation, error);
+      return;
+    }
+    const addedBytes = actorChunks.reduce((total, chunk) => total + chunk.data.byteLength, 0);
+    this.checkpointActorTail = this.checkpointActorTail.then(async () => {
+      if (this.checkpointActor !== actor || this.checkpointActorGeneration !== generation) return;
+      actor.append(actorChunks);
+      this.checkpointBytesSinceCommit += addedBytes;
+      if (this.checkpointBytesSinceCommit < captureEveryBytes) return;
+      const targetSequence = actorChunks[actorChunks.length - 1]!.sequence;
+      const checkpoint = await actor.capture(targetSequence);
+      if (this.checkpointActor !== actor || this.checkpointActorGeneration !== generation) return;
+      await commit.call(this.options.transport, sessionId, checkpoint);
+      if (this.checkpointActor === actor && this.checkpointActorGeneration === generation) {
+        this.checkpointBytesSinceCommit = 0;
+      }
+    }).catch(error => {
+      this.disableCheckpointActor(actor, generation, error);
+    });
+  }
+
+  private disableCheckpointActor(actor: TerminalCheckpointActorLike, generation: number, error: unknown): void {
+    if (this.checkpointActor !== actor || this.checkpointActorGeneration !== generation) return;
+    this.logger.warn('[TerminalInstanceController] Checkpoint compaction stopped; durable raw history remains retained', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    this.checkpointActor = null;
+    this.checkpointBytesSinceCommit = 0;
+    actor.dispose();
+  }
+
+  private disposeCheckpointActor(): void {
+    const actor = this.checkpointActor;
+    this.checkpointActor = null;
+    this.checkpointActorGeneration += 1;
+    this.checkpointBytesSinceCommit = 0;
+    actor?.dispose();
+    this.checkpointActorTail = Promise.resolve();
   }
 
   private scheduleConnectionRetry(): void {

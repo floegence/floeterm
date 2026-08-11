@@ -264,6 +264,7 @@ export interface TerminalCoreLike {
   serialize(): string;
   captureRestorableSnapshot?(options?: TerminalRestorableSnapshotOptions): TerminalRestorableSnapshot | null;
   restoreSnapshot?(snapshot: TerminalRestorableSnapshot): Promise<boolean>;
+  restoreAuthoritativeCheckpoint?(checkpoint: TerminalHistoryCheckpoint): Promise<void>;
   getResourceEstimate?(): TerminalResourceEstimate;
   getSelectionText(): string;
   hasSelection(): boolean;
@@ -450,6 +451,43 @@ export interface TerminalAtomicAttachResult {
   rows: number;
 }
 
+export interface TerminalHistoryCheckpoint {
+  formatVersion: 1;
+  engineId: 'floegence-ghostty-web';
+  coveredThroughSequence: number;
+  geometryGeneration: number;
+  parserEpoch: number;
+  cols: number;
+  rows: number;
+  checksumSha256: string;
+  stateDigestSha256: string;
+  bytes: Uint8Array;
+}
+
+export interface TerminalCheckpointActorLike {
+  start(options: {
+    cols: number;
+    rows: number;
+    parserEpoch: number;
+    initialSequence?: number;
+    checkpoint?: TerminalHistoryCheckpoint;
+  }): Promise<void>;
+  append(chunks: ReadonlyArray<{
+    sequence: number;
+    data: Uint8Array;
+    geometryGeneration: number;
+    cols: number;
+    rows: number;
+  }>): void;
+  capture(targetSequence: number): Promise<TerminalHistoryCheckpoint>;
+  dispose(): void;
+}
+
+export interface TerminalCheckpointCompactionOptions {
+  captureEveryBytes?: number;
+  createActor?: () => TerminalCheckpointActorLike;
+}
+
 export interface TerminalGeometryEvent {
   sessionId: TerminalID;
   generation: number;
@@ -460,6 +498,8 @@ export interface TerminalGeometryEvent {
 
 export interface TerminalHistoryPage {
   chunks: TerminalDataChunk[];
+  checkpoint?: TerminalHistoryCheckpoint;
+  deltaStartSequence?: number;
   firstRetainedSequence: number;
   nextStartSequence: number;
   hasMore: boolean;
@@ -483,6 +523,7 @@ export interface TerminalAtomicTransport extends TerminalTransport {
     endSequence: number,
     historyGeneration: number,
   ): Promise<TerminalHistoryPage>;
+  commitHistoryCheckpoint?(sessionId: TerminalID, checkpoint: TerminalHistoryCheckpoint): Promise<void>;
 }
 
 // TerminalEventSource exposes streaming event subscriptions.
@@ -603,6 +644,7 @@ export interface TerminalManagerOptions {
   config?: TerminalConfig;
   coreConstructor?: TerminalCoreConstructor;
   scheduler?: TerminalInstanceScheduler;
+  checkpointCompaction?: TerminalCheckpointCompactionOptions;
 }
 
 export interface TerminalManagerAppearance {

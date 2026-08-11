@@ -7,6 +7,7 @@ import {
   createTerminalInstance,
   createTerminalOutputPipeline,
   createPagedTerminalOutputCoordinator,
+  createGhosttyCheckpointActor,
   classifyTerminalAgentCli,
   getTerminalInitializationSchedulerStats,
   getTerminalRenderSchedulerStats,
@@ -14,6 +15,8 @@ import {
   preparePagedTerminalHistory,
   resetTerminalRenderSchedulerStats,
   type AtomicPagedTerminalOutputCoordinatorHandle,
+  type GhosttyAuthoritativeCheckpoint,
+  type GhosttyCheckpointActor,
   type PagedTerminalOutputCoordinatorHandle,
   type PreparedPagedTerminalHistory,
   type TerminalAppearance,
@@ -43,6 +46,7 @@ describe('public framework-neutral API', () => {
     expect(createTerminalInstance).toBeTypeOf('function');
     expect(createTerminalOutputPipeline).toBeTypeOf('function');
     expect(createPagedTerminalOutputCoordinator).toBeTypeOf('function');
+    expect(createGhosttyCheckpointActor).toBeTypeOf('function');
     expect(preloadTerminalResources).toBeTypeOf('function');
     expect(preparePagedTerminalHistory).toBeTypeOf('function');
     expect(classifyTerminalAgentCli('codex')).toBe('codex');
@@ -138,6 +142,10 @@ describe('public framework-neutral API', () => {
       estimatedBytes: 0,
       rendererType: 'canvas',
     };
+    const checkpointActor: GhosttyCheckpointActor | null = null;
+    const authoritativeCheckpoint: GhosttyAuthoritativeCheckpoint | null = null;
+    expect(checkpointActor).toBeNull();
+    expect(authoritativeCheckpoint).toBeNull();
     const preparedHistory: Promise<PreparedPagedTerminalHistory> = preparePagedTerminalHistory({
       fetchPage: async () => ({
         chunks: [pipelineChunk],

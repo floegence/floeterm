@@ -3,11 +3,14 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +38,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 			Logger:            terminal.NopLogger{},
 			ShellResolver:     fixedShellResolver{shell: "/bin/sh"},
 			ShellArgsProvider: fixedShellArgsProvider{args: []string{"-c", "cat"}},
+			HistorySpoolRoot:  t.TempDir(),
 		},
 	})
 	httpSrv := httptest.NewServer(srv.Handler())
@@ -43,6 +47,175 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 		srv.Close()
 	})
 	return srv, httpSrv
+}
+
+func checkpointRequestForRecord(record livev1.OutputRecord, parserEpoch uint64, checkpointBytes []byte) historyCheckpointRequest {
+	checksum := sha256.Sum256(checkpointBytes)
+	return historyCheckpointRequest{
+		FormatVersion:          1,
+		EngineID:               "floegence-ghostty-web",
+		CoveredThroughSequence: int64(record.Sequence),
+		GeometryGeneration:     record.GeometryGeneration,
+		ParserEpoch:            parserEpoch,
+		Cols:                   int(record.Cols),
+		Rows:                   int(record.Rows),
+		ChecksumSHA256:         fmt.Sprintf("%x", checksum),
+		StateDigestSHA256:      strings.Repeat("c", 64),
+		BytesBase64:            base64.StdEncoding.EncodeToString(checkpointBytes),
+	}
+}
+
+func postCheckpoint(t *testing.T, baseURL, sessionID string, request historyCheckpointRequest) *http.Response {
+	t.Helper()
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.Post(
+		baseURL+"/api/sessions/"+sessionID+"/checkpoint",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func TestCheckpointHTTPCommitReturnsCheckpointWithContiguousDelta(t *testing.T) {
+	_, httpSrv := newTestServer(t)
+	created := createTestSession(t, httpSrv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	connection := attachLiveTestConnection(t, ctx, httpSrv.URL, created.ID, "checkpoint-http")
+	defer connection.Close(websocket.StatusNormalClosure, "done")
+
+	firstInput, err := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("checkpoint-one\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Write(ctx, websocket.MessageBinary, firstInput); err != nil {
+		t.Fatal(err)
+	}
+	first := readOutputContaining(t, ctx, connection, []byte("checkpoint-one"))
+	checkpointBytes := []byte("opaque-self-restored-checkpoint")
+	response := postCheckpoint(t, httpSrv.URL, created.ID, checkpointRequestForRecord(first, 1, checkpointBytes))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("checkpoint status=%d body=%s", response.StatusCode, body)
+	}
+
+	secondInput, err := livev1.EncodeInput(livev1.Input{Sequence: 2, Data: []byte("checkpoint-two\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Write(ctx, websocket.MessageBinary, secondInput); err != nil {
+		t.Fatal(err)
+	}
+	second := readOutputContaining(t, ctx, connection, []byte("checkpoint-two"))
+
+	historyResponse, err := http.Get(fmt.Sprintf(
+		"%s/api/sessions/%s/history?startSeq=1&endSeq=%d&historyGeneration=1",
+		httpSrv.URL, created.ID, second.Sequence,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer historyResponse.Body.Close()
+	if historyResponse.StatusCode != http.StatusOK {
+		t.Fatalf("history status=%d", historyResponse.StatusCode)
+	}
+	var page historyPageResponse
+	if err := json.NewDecoder(historyResponse.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Checkpoint == nil || page.Checkpoint.CoveredThroughSequence != int64(first.Sequence) {
+		t.Fatalf("checkpoint page = %+v", page.Checkpoint)
+	}
+	if page.DeltaStartSequence != int64(first.Sequence+1) || len(page.Chunks) == 0 || page.Chunks[0].Sequence != int64(first.Sequence+1) {
+		t.Fatalf("checkpoint delta is not contiguous: %+v", page)
+	}
+}
+
+func TestCheckpointHTTPRejectsInvalidPayloadsWithoutAdvancingRetention(t *testing.T) {
+	srv, httpSrv := newTestServer(t)
+	created := createTestSession(t, httpSrv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	connection := attachLiveTestConnection(t, ctx, httpSrv.URL, created.ID, "checkpoint-invalid")
+	defer connection.Close(websocket.StatusNormalClosure, "done")
+	input, err := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("checkpoint-invalid\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Write(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	record := readOutputContaining(t, ctx, connection, []byte("checkpoint-invalid"))
+	valid := checkpointRequestForRecord(record, 1, []byte("checkpoint"))
+
+	wrongChecksum := valid
+	wrongChecksum.ChecksumSHA256 = strings.Repeat("0", 64)
+	wrongEpoch := valid
+	wrongEpoch.ParserEpoch = 2
+	invalidBase64 := valid
+	invalidBase64.BytesBase64 = "%%%"
+	emptyBytes := valid
+	emptyBytes.BytesBase64 = ""
+	for _, testCase := range []struct {
+		name    string
+		request historyCheckpointRequest
+		status  int
+	}{
+		{name: "checksum", request: wrongChecksum, status: http.StatusConflict},
+		{name: "parser epoch", request: wrongEpoch, status: http.StatusConflict},
+		{name: "base64", request: invalidBase64, status: http.StatusBadRequest},
+		{name: "empty bytes", request: emptyBytes, status: http.StatusBadRequest},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := postCheckpoint(t, httpSrv.URL, created.ID, testCase.request)
+			defer response.Body.Close()
+			if response.StatusCode != testCase.status {
+				body, _ := io.ReadAll(response.Body)
+				t.Fatalf("status=%d want=%d body=%s", response.StatusCode, testCase.status, body)
+			}
+		})
+	}
+
+	unknownFieldBody, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownFieldBody = append(unknownFieldBody[:len(unknownFieldBody)-1], []byte(`,"legacyPsk":"forbidden"}`)...)
+	unknownResponse, err := http.Post(httpSrv.URL+"/api/sessions/"+created.ID+"/checkpoint", "application/json", bytes.NewReader(unknownFieldBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unknownResponse.Body.Close()
+	if unknownResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown field status=%d", unknownResponse.StatusCode)
+	}
+
+	oversized := valid
+	oversized.BytesBase64 = base64.StdEncoding.EncodeToString(make([]byte, maxCheckpointBytes+1))
+	oversizedResponse := postCheckpoint(t, httpSrv.URL, created.ID, oversized)
+	defer oversizedResponse.Body.Close()
+	if oversizedResponse.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status=%d", oversizedResponse.StatusCode)
+	}
+
+	session, ok := srv.manager.GetSession(created.ID)
+	if !ok {
+		t.Fatal("session disappeared")
+	}
+	page, err := session.GetHistoryPage(terminal.HistoryPageOptions{StartSeq: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Checkpoint != nil || page.FirstRetainedSequence != 1 || len(page.Chunks) == 0 {
+		t.Fatalf("invalid checkpoint advanced retention: %+v", page)
+	}
 }
 
 func createTestSession(t *testing.T, baseURL string) apiSessionInfo {
@@ -73,6 +246,35 @@ func TestAPISessionInfoIncludesOutputActivity(t *testing.T) {
 	})
 	if got.OutputActivity.Phase != "settled" || got.OutputActivity.Revision != 7 || got.OutputActivity.UpdatedAtMs != 99 {
 		t.Fatalf("output activity = %#v", got.OutputActivity)
+	}
+}
+
+func TestHistoryPageResponseSerializesAuthoritativeCheckpoint(t *testing.T) {
+	response := historyPageResponse{
+		DeltaStartSequence: 5,
+		Checkpoint: &historyCheckpointResponse{
+			FormatVersion:          1,
+			EngineID:               "floegence-ghostty-web",
+			CoveredThroughSequence: 7,
+			GeometryGeneration:     2,
+			ParserEpoch:            11,
+			Cols:                   80,
+			Rows:                   24,
+			ChecksumSHA256:         "a" + strings.Repeat("0", 63),
+			StateDigestSHA256:      "b" + strings.Repeat("0", 63),
+			BytesBase64:            base64.StdEncoding.EncodeToString([]byte("checkpoint")),
+		},
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded historyPageResponse
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.DeltaStartSequence != 5 || decoded.Checkpoint == nil || decoded.Checkpoint.BytesBase64 == "" || decoded.Checkpoint.CoveredThroughSequence != 7 {
+		t.Fatalf("checkpoint response = %+v", decoded.Checkpoint)
 	}
 }
 

@@ -28,8 +28,22 @@ type ApiHistoryChunk = {
   rows?: number;
 };
 
-type ApiHistoryPage = Omit<TerminalHistoryPage, 'chunks'> & {
+type ApiHistoryCheckpoint = {
+  formatVersion: 1;
+  engineId: 'floegence-ghostty-web';
+  coveredThroughSequence: number;
+  geometryGeneration: number;
+  parserEpoch: number;
+  cols: number;
+  rows: number;
+  checksumSha256: string;
+  stateDigestSha256: string;
+  bytes: string;
+};
+
+type ApiHistoryPage = Omit<TerminalHistoryPage, 'chunks' | 'checkpoint'> & {
   chunks: ApiHistoryChunk[];
+  checkpoint?: ApiHistoryCheckpoint;
 };
 
 const decodeBase64 = (input: string): Uint8Array => {
@@ -37,6 +51,15 @@ const decodeBase64 = (input: string): Uint8Array => {
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
   return out;
+};
+
+const encodeBase64 = (input: Uint8Array): string => {
+  let binary = '';
+  const batchBytes = 0x8000;
+  for (let offset = 0; offset < input.byteLength; offset += batchBytes) {
+    binary += String.fromCharCode(...input.subarray(offset, Math.min(input.byteLength, offset + batchBytes)));
+  }
+  return btoa(binary);
 };
 
 const MIN_TERMINAL_COLS = 20;
@@ -109,6 +132,12 @@ export const createTerminalRuntime = (connId: string) => {
     );
     return {
       ...page,
+      ...(page.checkpoint ? {
+        checkpoint: {
+          ...page.checkpoint,
+          bytes: decodeBase64(page.checkpoint.bytes),
+        },
+      } : {}),
       chunks: page.chunks.map(chunk => ({
         sequence: chunk.sequence,
         timestampMs: chunk.timestampMs,
@@ -117,7 +146,7 @@ export const createTerminalRuntime = (connId: string) => {
         cols: chunk.cols,
         rows: chunk.rows,
       })),
-    };
+    } as TerminalHistoryPage;
   };
 
   const history = async (sessionId: TerminalID, startSeq: number, endSeq: number): Promise<TerminalDataChunk[]> => {
@@ -153,6 +182,15 @@ export const createTerminalRuntime = (connId: string) => {
       historyPage,
       clear: async sessionId => {
         await requestNoContent(`/api/sessions/${encodeURIComponent(sessionId)}/clear`, { method: 'POST' });
+      },
+      commitHistoryCheckpoint: async (sessionId, checkpoint) => {
+        await requestNoContent(`/api/sessions/${encodeURIComponent(sessionId)}/checkpoint`, {
+          method: 'POST',
+          body: JSON.stringify({
+            ...checkpoint,
+            bytes: encodeBase64(checkpoint.bytes),
+          }),
+        });
       },
       listSessions: async () => await requestJson<ApiSessionInfo[]>('/api/sessions', { method: 'GET' }),
       createSession: async (name, workingDir) => await requestJson<ApiSessionInfo>('/api/sessions', {

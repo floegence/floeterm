@@ -20,12 +20,63 @@ const page = (overrides: Partial<PagedTerminalHistoryPage> = {}): PagedTerminalH
   coveredThroughSequence: 0,
   ...overrides,
 });
+const checkpoint = (coveredThroughSequence: number) => ({
+  formatVersion: 1 as const,
+  engineId: 'floegence-ghostty-web' as const,
+  coveredThroughSequence,
+  geometryGeneration: 1,
+  parserEpoch: 7,
+  cols: 80,
+  rows: 24,
+  checksumSha256: '1'.repeat(64),
+  stateDigestSha256: '2'.repeat(64),
+  bytes: encoder.encode('checkpoint'),
+});
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe('PagedTerminalOutputCoordinator', () => {
+  it('restores a validated checkpoint before replaying its contiguous geometry-tagged delta', async () => {
+    const order: string[] = [];
+    const restoreCheckpoint = vi.fn(async value => {
+      order.push(`restore:${value.coveredThroughSequence}`);
+    });
+    const coordinator = createPagedTerminalOutputCoordinator({
+      fetchPage: async () => page({
+        checkpoint: checkpoint(4),
+        deltaStartSequence: 5,
+        chunks: [chunk(5, 'delta-five')],
+        firstRetainedSequence: 5,
+        coveredThroughSequence: 5,
+        snapshotEndSequence: 5,
+        historyGeneration: 1,
+        historyTruncated: true,
+      }),
+      restoreCheckpoint,
+      applyHistoryGeometry: geometry => order.push(`geometry:${geometry.generation}`),
+      write: () => undefined,
+      writeHistory: data => order.push(`write:${decoder.decode(data)}`),
+    });
+
+    await coordinator.attach(1, 5);
+
+    expect(restoreCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
+      coveredThroughSequence: 4,
+      geometryGeneration: 1,
+      cols: 80,
+      rows: 24,
+    }));
+    expect(order).toEqual(['restore:4', 'geometry:1', 'write:delta-five']);
+    expect(coordinator.getSnapshot()).toMatchObject({
+      state: 'live',
+      baselineReady: true,
+      coveredThroughSequence: 5,
+    });
+    coordinator.dispose();
+  });
+
   it('applies recorded history geometry before each geometry-specific write batch', async () => {
     const writes: string[] = [];
     const geometry: string[] = [];
@@ -460,16 +511,12 @@ describe('PagedTerminalOutputCoordinator', () => {
 
     await coordinator.attach(0, 3, { preparedHistory: prepared });
 
-    expect(fetchPage.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
-      startSequence: 3,
-      historyGeneration: undefined,
-    }));
-    expect(writes.join('')).toBe('[clear]new-three');
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(writes.join('')).toBe('');
     expect(coordinator.getSnapshot()).toMatchObject({
-      baselineReady: true,
-      coveredThroughSequence: 3,
-      failure: null,
-      preparedHistoryOutcome: { status: 'rejected', rebased: true },
+      state: 'failed',
+      baselineReady: false,
+      failure: { code: 'history_checkpoint_missing', retryable: false },
     });
     coordinator.dispose();
   });
@@ -501,12 +548,11 @@ describe('PagedTerminalOutputCoordinator', () => {
 
     await coordinator.attach(0, 2, { preparedHistory: prepared });
 
-    expect(writes.join('')).toBe('[clear]');
+    expect(writes.join('')).toBe('');
     expect(coordinator.getSnapshot()).toMatchObject({
-      baselineReady: true,
-      coveredThroughSequence: 2,
-      failure: null,
-      preparedHistoryOutcome: { status: 'rejected', rebased: true },
+      state: 'failed',
+      baselineReady: false,
+      failure: { code: 'history_checkpoint_missing', retryable: false },
     });
     coordinator.dispose();
   });
@@ -746,7 +792,7 @@ describe('PagedTerminalOutputCoordinator', () => {
     coordinator.dispose();
   });
 
-  it('closes an explicit fence that has been fully evicted without a reverse range', async () => {
+  it('fails closed when an explicit fence is fully evicted without a checkpoint', async () => {
     const cleared = vi.fn();
     const truncated = vi.fn();
     const fetchPage = vi.fn().mockResolvedValue(page({
@@ -766,9 +812,13 @@ describe('PagedTerminalOutputCoordinator', () => {
 
     expect(fetchPage).toHaveBeenCalledTimes(1);
     expect(fetchPage).toHaveBeenCalledWith(expect.objectContaining({ startSequence: 1, endSequence: 2 }));
-    expect(cleared).toHaveBeenCalledTimes(1);
-    expect(truncated).toHaveBeenCalledWith('history-evicted');
-    expect(coordinator.getSnapshot()).toMatchObject({ baselineReady: true, coveredThroughSequence: 2 });
+    expect(cleared).not.toHaveBeenCalled();
+    expect(truncated).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      state: 'failed',
+      baselineReady: false,
+      failure: { code: 'history_checkpoint_missing', retryable: false },
+    });
     coordinator.dispose();
   });
 
@@ -1304,16 +1354,14 @@ describe('PagedTerminalOutputCoordinator', () => {
 
     await coordinator.attach(1);
 
-    expect(fetchPage).toHaveBeenCalledTimes(3);
-    expect(fetchPage.mock.calls[2]?.[0]).toEqual(expect.objectContaining({ startSequence: 6 }));
+    expect(fetchPage).toHaveBeenCalledTimes(2);
     expect(coordinator.getSnapshot()).toMatchObject({
-      baselineReady: true,
-      state: 'live',
-      failure: null,
-      coveredThroughSequence: 6,
+      baselineReady: false,
+      state: 'failed',
+      failure: { code: 'history_checkpoint_missing', retryable: false },
     });
-    expect(truncations).toEqual(['history-evicted']);
-    expect(writes.join('')).toBe('[clear]six');
+    expect(truncations).toEqual([]);
+    expect(writes.join('')).toBe('');
     coordinator.dispose();
   });
 

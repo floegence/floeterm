@@ -11,6 +11,16 @@ export {
 } from './core/TerminalRenderScheduler.js';
 export { getTerminalInitializationSchedulerStats } from './internal/TerminalInitializationScheduler.js';
 export { createTerminalOutputPipeline } from './core/TerminalOutputPipeline.js';
+export { createGhosttyCheckpointActor } from './checkpoint/GhosttyCheckpointActor.js';
+export type {
+  GhosttyAuthoritativeCheckpoint,
+  GhosttyCheckpointActor,
+  GhosttyCheckpointActorOptions,
+  GhosttyCheckpointActorSnapshot,
+  GhosttyCheckpointActorStartOptions,
+  GhosttyCheckpointActorState,
+  GhosttyCheckpointChunk,
+} from './checkpoint/GhosttyCheckpointActor.js';
 export {
   createPagedTerminalOutputCoordinator,
   preparePagedTerminalHistory,
@@ -127,6 +137,7 @@ export type {
   TerminalWorkStateUpdateEvent,
   TerminalDataChunk,
   TerminalDataEvent,
+  TerminalHistoryCheckpoint,
   TerminalHistoryPage,
   TerminalAtomicAttachResult,
   TerminalAtomicTransport,

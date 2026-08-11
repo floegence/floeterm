@@ -20,6 +20,11 @@ var errSessionClosed = errors.New("session is closed")
 
 const naturalExitPTYDrainTimeout = 500 * time.Millisecond
 
+// Keep PTY reads flowing while the ordered commit path synchronizes durable
+// history. Each queued packet retains its independently captured geometry, and
+// the fixed capacity provides bounded backpressure instead of dropping output.
+const ptyReadQueueCapacity = 2048
+
 type sessionActivation struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -514,9 +519,11 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) cleanup() {
+	s.historyCommitMu.Lock()
 	s.mu.Lock()
 	if s.cleaned {
 		s.mu.Unlock()
+		s.historyCommitMu.Unlock()
 		return
 	}
 	s.cleaned = true
@@ -545,6 +552,7 @@ func (s *Session) cleanup() {
 	}
 	liveSubscribers := s.detachLiveSubscribersForClose()
 	s.mu.Unlock()
+	s.historyCommitMu.Unlock()
 	cleanupShellLifecycleBootstraps(bootstraps)
 
 	activation.complete(errSessionClosed)
@@ -659,7 +667,15 @@ func (s *Session) GetHistoryPage(options HistoryPageOptions) (HistoryPage, error
 	if effectiveStart <= 0 {
 		effectiveStart = 1
 	}
-	if effectiveStart <= snapshotEnd && page.FirstRetainedSequence > effectiveStart {
+	useDurableHistory := effectiveStart <= snapshotEnd && page.FirstRetainedSequence > effectiveStart
+	if !useDurableHistory && s.historySpool != nil && effectiveStart <= snapshotEnd {
+		checkpoint, err := s.historySpool.Checkpoint()
+		if err != nil {
+			return HistoryPage{}, fmt.Errorf("read terminal history checkpoint: %w", err)
+		}
+		useDurableHistory = checkpoint != nil && effectiveStart <= checkpoint.CoveredThroughSequence
+	}
+	if useDurableHistory {
 		if s.historySpool == nil {
 			page.HistoryTruncated = true
 		} else {
@@ -752,6 +768,8 @@ func (s *Session) GetHistoryFromSequence(fromSeq int64) ([]TerminalDataChunk, er
 // CommitHistoryCheckpoint publishes a checkpoint only after the durable spool
 // validates its sequence, geometry, digest, and blob checksum.
 func (s *Session) CommitHistoryCheckpoint(checkpoint TerminalHistoryCheckpoint) error {
+	s.historyCommitMu.Lock()
+	defer s.historyCommitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.historySpoolErr != nil {
@@ -762,6 +780,9 @@ func (s *Session) CommitHistoryCheckpoint(checkpoint TerminalHistoryCheckpoint) 
 	}
 	if checkpoint.CoveredThroughSequence > s.committedSequence {
 		return fmt.Errorf("terminal history checkpoint exceeds committed output")
+	}
+	if checkpoint.ParserEpoch != uint64(s.historyGeneration) {
+		return fmt.Errorf("terminal history checkpoint parser epoch does not match history generation")
 	}
 	if err := s.historySpool.CommitCheckpoint(checkpoint); err != nil {
 		return fmt.Errorf("commit terminal history checkpoint: %w", err)
@@ -784,6 +805,8 @@ func (s *Session) GetHistoryStats() (RingBufferStats, error) {
 
 // ClearHistory removes stored PTY output from the ring buffer.
 func (s *Session) ClearHistory() error {
+	s.historyCommitMu.Lock()
+	defer s.historyCommitMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -858,7 +881,7 @@ func (s *Session) readPTYOutput(
 	defer close(monitorWatcherDone)
 	defer monitor.Close()
 
-	reads := make(chan ptyReadResult, 32)
+	reads := make(chan ptyReadResult, ptyReadQueueCapacity)
 	go readPTYPacketsWithPendingGeometry(
 		ptyFile,
 		reads,
@@ -1072,7 +1095,14 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 	timestamp := time.Now().UnixMilli()
 
 	if len(displayData) > 0 {
+		s.historyCommitMu.Lock()
+
 		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			s.historyCommitMu.Unlock()
+			return
+		}
 		s.sequenceNumber++
 		seqNum := s.sequenceNumber
 		s.LastActive = time.Now()
@@ -1089,18 +1119,28 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 			Cols:               geometry.Cols,
 			Rows:               geometry.Rows,
 		}
+		historySpool := s.historySpool
+		historySpoolReady := s.historySpoolErr == nil
+		ringBuffer := s.ringBuffer
+		s.mu.Unlock()
+
 		durableCommitted := false
-		if s.historySpool != nil && s.historySpoolErr == nil {
-			if err := s.historySpool.Append(chunk); err != nil {
-				s.historySpoolErr = err
+		if historySpool != nil && historySpoolReady {
+			if err := historySpool.Append(chunk); err != nil {
+				s.mu.Lock()
+				if s.historySpool == historySpool && s.historySpoolErr == nil {
+					s.historySpoolErr = err
+				}
+				s.mu.Unlock()
 				s.config.logger.Error("Failed to append terminal history spool", "sessionID", s.ID, "error", err)
 			} else {
 				durableCommitted = true
 			}
 		}
 		ringCommitted := false
-		if s.ringBuffer != nil {
-			if err := s.ringBuffer.writeOwnedWithSequenceAndGeometry(
+		historyCommitAllowed := historySpool == nil || durableCommitted
+		if ringBuffer != nil && historyCommitAllowed {
+			if err := ringBuffer.writeOwnedWithSequenceAndGeometry(
 				displayData,
 				seqNum,
 				timestamp,
@@ -1114,6 +1154,8 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 				ringCommitted = true
 			}
 		}
+
+		s.mu.Lock()
 		if durableCommitted || ringCommitted {
 			s.committedSequence = seqNum
 		}
@@ -1122,6 +1164,7 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 			subscribers = append(subscribers, attachment.subscriber)
 		}
 		s.mu.Unlock()
+		s.historyCommitMu.Unlock()
 
 		s.broadcastData(TerminalOutputEvent{
 			Data:        displayData,

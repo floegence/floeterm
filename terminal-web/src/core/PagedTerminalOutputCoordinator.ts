@@ -3,6 +3,7 @@ import type {
   TerminalOutputPipelineScheduler,
 } from './TerminalOutputPipeline.js';
 import { scheduleUiTurn } from '../internal/scheduleUiTurn.js';
+import type { GhosttyAuthoritativeCheckpoint } from '../checkpoint/GhosttyCheckpointActor.js';
 
 export type PagedTerminalOutputState =
   | 'idle'
@@ -24,6 +25,8 @@ export interface PagedTerminalHistoryRequest {
 
 export interface PagedTerminalHistoryPage {
   chunks: readonly TerminalOutputPipelineChunk[];
+  checkpoint?: GhosttyAuthoritativeCheckpoint;
+  deltaStartSequence?: number;
   hasMore: boolean;
   nextCursor?: string | number;
   firstAvailableSequence?: number;
@@ -80,6 +83,9 @@ export type PagedTerminalOutputFailureCode =
   | 'history_coverage_incomplete'
   | 'history_contract_missing'
   | 'history_contract_invalid'
+  | 'history_checkpoint_missing'
+  | 'history_checkpoint_invalid'
+  | 'history_checkpoint_restore_failed'
   | 'retained_live_overflow'
   | 'history_evicted';
 
@@ -137,6 +143,7 @@ export interface PagedTerminalOutputCoordinatorOptions {
     cols: number;
     rows: number;
   }>) => unknown | Promise<unknown>;
+  restoreCheckpoint?: (checkpoint: GhosttyAuthoritativeCheckpoint) => unknown | Promise<unknown>;
   clear?: () => void;
   transformChunk?: (chunk: TerminalOutputPipelineChunk) => Uint8Array | null;
   isInteractive?: () => boolean;
@@ -327,6 +334,52 @@ const validateHistoryGeometryOrder = (
 const sameHistoryGeometry = (left: HistoryGeometry, right: HistoryGeometry): boolean => (
   left.generation === right.generation && left.cols === right.cols && left.rows === right.rows
 );
+
+const validateCheckpointForPage = (
+  checkpoint: GhosttyAuthoritativeCheckpoint | undefined,
+  page: PagedTerminalHistoryPage,
+  requestedStart: number,
+  snapshotEnd: number | undefined,
+  firstRetained: number | undefined,
+): GhosttyAuthoritativeCheckpoint | undefined => {
+  if (checkpoint === undefined) return undefined;
+  if (
+    checkpoint.formatVersion !== 1
+    || checkpoint.engineId !== 'floegence-ghostty-web'
+    || !Number.isSafeInteger(checkpoint.coveredThroughSequence)
+    || checkpoint.coveredThroughSequence < Math.max(0, requestedStart - 1)
+    || (snapshotEnd !== undefined && checkpoint.coveredThroughSequence > snapshotEnd)
+    || !Number.isSafeInteger(checkpoint.geometryGeneration)
+    || checkpoint.geometryGeneration <= 0
+    || !Number.isSafeInteger(checkpoint.parserEpoch)
+    || checkpoint.parserEpoch <= 0
+    || !Number.isSafeInteger(checkpoint.cols)
+    || checkpoint.cols <= 0
+    || !Number.isSafeInteger(checkpoint.rows)
+    || checkpoint.rows <= 0
+    || !(checkpoint.bytes instanceof Uint8Array)
+    || checkpoint.bytes.byteLength === 0
+    || !/^[0-9a-f]{64}$/.test(checkpoint.checksumSha256)
+    || !/^[0-9a-f]{64}$/.test(checkpoint.stateDigestSha256)
+  ) {
+    throw new HistoryContractError('history_checkpoint_invalid', 'terminal history checkpoint metadata is invalid');
+  }
+  const expectedDeltaStart = checkpoint.coveredThroughSequence + 1;
+  if (page.deltaStartSequence !== expectedDeltaStart) {
+    throw new HistoryContractError(
+      'history_checkpoint_invalid',
+      'terminal history checkpoint delta boundary is invalid',
+    );
+  }
+  if (firstRetained !== undefined && firstRetained !== expectedDeltaStart) {
+    throw new HistoryContractError(
+      'history_checkpoint_invalid',
+      'terminal history checkpoint retention floor is invalid',
+      firstRetained,
+    );
+  }
+  return { ...checkpoint, bytes: checkpoint.bytes.slice() };
+};
 
 export const preparePagedTerminalHistory = async (
   options: PreparePagedTerminalHistoryOptions,
@@ -886,6 +939,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       let historyGeneration: number | undefined = preparedHistory?.historyGeneration;
       let coveredEnd = preparedHistory?.coveredThroughSequence ?? this.coveredThroughSequence;
       let firstPage = preparedHistory === null;
+      let restoredCheckpointSequence: number | undefined;
       const preparedBaseline = preparedHistory === null
         ? undefined
         : Math.max(
@@ -914,6 +968,43 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           'firstRetainedSequence',
           true,
         );
+        const pageCheckpoint = validateCheckpointForPage(
+          page.checkpoint,
+          page,
+          Math.max(1, startSequence),
+          pageSnapshotEnd,
+          firstRetained,
+        );
+        let restoredCheckpointThisPage = false;
+        if (pageCheckpoint) {
+          if (restoredCheckpointSequence !== undefined) {
+            throw new HistoryContractError(
+              'history_checkpoint_invalid',
+              'terminal history checkpoint was repeated during pagination',
+            );
+          }
+          if (!this.options.restoreCheckpoint) {
+            throw new HistoryContractError(
+              'history_checkpoint_missing',
+              'terminal history checkpoint restore is not configured',
+            );
+          }
+          try {
+            await this.options.restoreCheckpoint(pageCheckpoint);
+          } catch (error) {
+            throw new HistoryContractError(
+              'history_checkpoint_restore_failed',
+              'terminal history checkpoint restore failed',
+              pageCheckpoint.coveredThroughSequence,
+            );
+          }
+          restoredCheckpointSequence = pageCheckpoint.coveredThroughSequence;
+          restoredCheckpointThisPage = true;
+          this.coveredThroughSequence = pageCheckpoint.coveredThroughSequence;
+          this.scheduledThroughSequence = pageCheckpoint.coveredThroughSequence;
+          coveredEnd = Math.max(coveredEnd, pageCheckpoint.coveredThroughSequence);
+          if (preparedHistory !== null) historyChunks.length = 0;
+        }
         if (
           preparedHistory !== null
           && (pageSnapshotEnd === undefined || pageGeneration === undefined || firstRetained === undefined)
@@ -932,8 +1023,15 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
             firstRetained > effectivePageStart
             || (preparedHistory !== null && firstRetained > preparedHistory.firstRetainedSequence)
           );
-        const generationNeedsRebase = page.historyReset || generationChanged;
-        const retentionNeedsRebase = page.historyTruncated || retentionAdvanced;
+        const generationNeedsRebase = !restoredCheckpointThisPage && (page.historyReset || generationChanged);
+        const retentionNeedsRebase = !restoredCheckpointThisPage && (page.historyTruncated || retentionAdvanced);
+        if (retentionNeedsRebase && !pageCheckpoint && !this.historyRebasePrepared) {
+          throw new HistoryContractError(
+            'history_checkpoint_missing',
+            'truncated terminal history requires a validated checkpoint',
+            firstRetained,
+          );
+        }
         const fencedRangeFullyEvicted = this.recoveryEndSequence !== undefined
           && firstRetained !== undefined
           && firstRetained > this.recoveryEndSequence;
@@ -991,7 +1089,7 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
           }
           historyGeneration = pageGeneration;
           const effectiveStart = Math.max(1, startSequence);
-          if (!fencedRangeFullyEvicted && firstRetained !== undefined && firstRetained > effectiveStart) {
+          if (!restoredCheckpointThisPage && !fencedRangeFullyEvicted && firstRetained !== undefined && firstRetained > effectiveStart) {
             if (!this.historyRebasePrepared) {
               this.options.clear?.();
               this.options.onHistoryTruncated?.('history-evicted');
@@ -1089,7 +1187,11 @@ class PagedTerminalOutputCoordinator implements PagedTerminalOutputCoordinatorHa
       this.failure = {
         code: contract?.code ?? 'history_fetch_failed',
         phase: this.recoveryKind === 'initial' ? 'initial' : 'catch_up',
-        retryable: contract?.code !== 'history_contract_missing' && contract?.code !== 'history_contract_invalid',
+        retryable: contract?.code !== 'history_contract_missing'
+          && contract?.code !== 'history_contract_invalid'
+          && contract?.code !== 'history_checkpoint_missing'
+          && contract?.code !== 'history_checkpoint_invalid'
+          && contract?.code !== 'history_checkpoint_restore_failed',
         attempt: this.retryAttempt,
         coveredSequence: this.coveredThroughSequence,
         firstRetainedSequence: contract?.firstRetainedSequence,
