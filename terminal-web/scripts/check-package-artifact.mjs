@@ -10,7 +10,7 @@ import ts from 'typescript';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const EXPECTED_PACKAGE_VERSION = '0.13.6';
+const EXPECTED_PACKAGE_VERSION = '0.14.0';
 const EXPECTED_GHOSTTY_WEB_VERSION = '0.5.0-rc.0';
 const GHOSTTY_WEB_PACKAGE_NAME = '@floegence/ghostty-web';
 const EXPECTED_TERMINAL_THEME_IDS = [
