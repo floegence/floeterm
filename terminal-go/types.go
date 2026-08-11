@@ -325,6 +325,7 @@ type Session struct {
 
 	isActive        bool
 	closed          bool
+	outputClosed    bool
 	cleaned         bool
 	mu              sync.RWMutex
 	historyCommitMu sync.Mutex

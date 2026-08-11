@@ -528,6 +528,7 @@ func (s *Session) cleanup() {
 	}
 	s.cleaned = true
 	s.closed = true
+	s.outputClosed = true
 	s.resizeQueued = false
 	s.resizeRunning = false
 
@@ -1098,7 +1099,7 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 		s.historyCommitMu.Lock()
 
 		s.mu.Lock()
-		if s.closed {
+		if s.outputClosed {
 			s.mu.Unlock()
 			s.historyCommitMu.Unlock()
 			return

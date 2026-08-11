@@ -486,6 +486,26 @@ func TestNaturalExitDrainsTailOutputBeforeRemovingSession(t *testing.T) {
 	}
 }
 
+func TestNaturalExitAdmissionFenceStillCommitsDrainingPTYOutput(t *testing.T) {
+	session := &Session{
+		ID:              "natural-exit-drain",
+		connections:     make(map[string]*ConnectionInfo),
+		liveAttachments: make(map[string]liveAttachment),
+		ringBuffer:      NewTerminalRingBuffer(8),
+		config:          newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	// Natural process exit must reject reactivation immediately, while the PTY
+	// reader remains authoritative until its already-buffered output is drained.
+	session.closeActivationAdmission()
+	session.processRawPTYData([]byte("floeterm-draining-tail"))
+
+	chunks := session.ringBuffer.ReadAllChunks()
+	if len(chunks) != 1 || string(chunks[0].Data) != "floeterm-draining-tail" {
+		t.Fatalf("draining tail chunks = %+v, want one committed tail chunk", chunks)
+	}
+}
+
 func TestCleanupReapsLateSuccessfulPTYStartExactlyOnce(t *testing.T) {
 	manager := NewManager(ManagerConfig{
 		Logger:            NopLogger{},
