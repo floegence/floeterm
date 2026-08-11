@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TerminalCore } from './TerminalCore';
 import type { TerminalEventHandlers } from '../types';
 
-vi.mock('ghostty-web', () => {
+vi.mock('@floegence/ghostty-web', () => {
   class MockTerminal {
     cols: number;
     rows: number;

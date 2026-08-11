@@ -125,7 +125,7 @@ type ghostty_disposable = {
   dispose?: () => void;
 };
 
-type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
+type ghostty_runtime_terminal = import('@floegence/ghostty-web').Terminal & {
   getScrollbackLength?: () => number;
   getViewportY?: () => number;
   scrollLines?: (amount: number) => void;
@@ -142,7 +142,7 @@ type ghostty_runtime_terminal = import('ghostty-web').Terminal & {
   registerLinkProvider?: (provider: TerminalLinkProvider) => void;
 };
 
-type ghostty_cell_like = Partial<import('ghostty-web').GhosttyCell>;
+type ghostty_cell_like = Partial<import('@floegence/ghostty-web').GhosttyCell>;
 
 type ghostty_renderer_with_row_cache = {
   __floetermDemandCursorPatched?: boolean;
@@ -229,7 +229,7 @@ type terminal_fabric_dimensions = {
   rows: number;
 };
 
-type ghostty_fit_addon_with_geometry_patch = import('ghostty-web').FitAddon & {
+type ghostty_fit_addon_with_geometry_patch = import('@floegence/ghostty-web').FitAddon & {
   __floetermGeometryPatchApplied?: boolean;
   proposeDimensions?: () => { cols: number; rows: number } | undefined;
 };
@@ -603,12 +603,12 @@ function normalizeFabricIdentifier(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'terminal';
 }
 
-// TerminalCore provides a focused wrapper around ghostty-web (xterm.js API-compatible) and its fit addon.
+// TerminalCore provides a focused wrapper around @floegence/ghostty-web (xterm.js API-compatible) and its fit addon.
 export class TerminalCore {
   private terminal: ghostty_runtime_terminal | null = null;
   private ownedRuntime: GhosttyRuntimeInstance | null = null;
   private ownedRuntimeMemory: WebAssembly.Memory | null = null;
-  private fitAddon: import('ghostty-web').FitAddon | null = null;
+  private fitAddon: import('@floegence/ghostty-web').FitAddon | null = null;
   private needsFullRenderOnNextWrite = false;
   private demandRenderForceAll = false;
   private readonly renderTask: TerminalRenderTask;
@@ -750,7 +750,7 @@ export class TerminalCore {
     TerminalCore.nextRenderTaskId += 1;
   }
 
-  // initialize creates the ghostty-web terminal instance and binds addons.
+  // initialize creates the @floegence/ghostty-web terminal instance and binds addons.
   async initialize(options: TerminalInitializationOptions = {}): Promise<void> {
     if (this.isDisposed) {
       throw new Error('Cannot initialize a disposed TerminalCore');
@@ -900,10 +900,10 @@ export class TerminalCore {
   private async createTerminalInstance(signal?: AbortSignal): Promise<void> {
     const TerminalCtor = getGhosttyTerminalConstructor();
     if (!TerminalCtor) {
-      throw new Error('ghostty-web module not loaded');
+      throw new Error('@floegence/ghostty-web module not loaded');
     }
     if (!this.ownedRuntime) {
-      throw new Error('ghostty-web runtime not acquired');
+      throw new Error('@floegence/ghostty-web runtime not acquired');
     }
 
     const defaultConfig: TerminalConfig = {
@@ -966,7 +966,7 @@ export class TerminalCore {
 
     const FitAddonCtor = getGhosttyFitAddonConstructor();
     if (!FitAddonCtor) {
-      throw new Error('Required ghostty-web addons not loaded');
+      throw new Error('Required @floegence/ghostty-web addons not loaded');
     }
 
     this.fitAddon = new FitAddonCtor();
@@ -1010,7 +1010,7 @@ export class TerminalCore {
   private mountInputElement(renderHost: HTMLDivElement): void {
     const input = resolveTerminalInputElement(renderHost);
     if (!input) {
-      throw new Error('ghostty-web terminal input element was not created');
+      throw new Error('@floegence/ghostty-web terminal input element was not created');
     }
 
     const body = this.container.ownerDocument.body;
@@ -1067,7 +1067,7 @@ export class TerminalCore {
     detector.registerProvider(new UrlRegexProvider(
       createUnicodeSafeUrlProviderTerminal(this.terminal as UrlProviderTerminal),
     ));
-    (this.terminal as unknown as { linkDetector: import('ghostty-web').LinkDetector }).linkDetector = detector;
+    (this.terminal as unknown as { linkDetector: import('@floegence/ghostty-web').LinkDetector }).linkDetector = detector;
   }
 
   private installFitAddonGeometryPatch(): void {
@@ -1400,7 +1400,7 @@ export class TerminalCore {
     }
 
     terminalAny.__floetermDemandRenderLoopPatched = true;
-    // ghostty-web currently starts a perpetual RAF loop from open(). TerminalCore
+    // @floegence/ghostty-web currently starts a perpetual RAF loop from open(). TerminalCore
     // already knows every meaningful invalidation point, so keep rendering
     // demand-driven while preserving the upstream terminal surface.
     terminalAny.startRenderLoop = () => {
@@ -2340,7 +2340,7 @@ export class TerminalCore {
       this.logger.debug('[TerminalCore] Resize failed', { error });
     }
 
-    // Some ghostty-web builds may not always emit onResize for programmatic fit().
+    // Some @floegence/ghostty-web builds may not always emit onResize for programmatic fit().
     // Emit a deduped notification based on the actual terminal dimensions.
     if (this.resizeNotifySeq !== startSeq) {
       return;
@@ -2394,7 +2394,7 @@ export class TerminalCore {
       return;
     }
 
-    // Some ghostty-web builds may not emit onResize for programmatic resize().
+    // Some @floegence/ghostty-web builds may not emit onResize for programmatic resize().
     if (this.resizeNotifySeq !== startSeq) {
       return;
     }
@@ -3166,7 +3166,7 @@ export class TerminalCore {
       sm.selectionEnd = { col: endCol, absoluteRow: match.row };
       sm.markCurrentSelectionDirty?.();
       sm.selectionChangedEmitter?.fire?.();
-      // ghostty-web 不会因为 selection change 自动触发 render；主动刷新以保证 UI（按钮/快捷键）操作立即可见。
+      // @floegence/ghostty-web 不会因为 selection change 自动触发 render；主动刷新以保证 UI（按钮/快捷键）操作立即可见。
       this.forceFullRender();
       return;
     }
@@ -3192,7 +3192,7 @@ export class TerminalCore {
       } catch {
       }
     }
-    // ghostty-web 不会因为 clearSelection 自动触发 render；主动刷新以清除残留高亮。
+    // @floegence/ghostty-web 不会因为 clearSelection 自动触发 render；主动刷新以清除残留高亮。
     this.forceFullRender();
   }
 
@@ -3251,7 +3251,7 @@ export class TerminalCore {
     },
     theme: Record<string, string>
   ): void {
-    // ghostty-web emits a warning when mutating options.theme after open().
+    // @floegence/ghostty-web emits a warning when mutating options.theme after open().
     // Apply theme directly to the renderer to avoid noisy console output.
     if (!terminalAny.isOpen && this.terminal) {
       this.terminal.options.theme = theme;

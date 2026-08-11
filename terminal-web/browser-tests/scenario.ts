@@ -1,4 +1,4 @@
-import { Ghostty, Terminal } from 'ghostty-web';
+import { Ghostty, Terminal } from '@floegence/ghostty-web';
 
 import {
   TerminalCore,

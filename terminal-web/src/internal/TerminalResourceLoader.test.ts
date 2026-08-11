@@ -196,7 +196,7 @@ describe('inspectGhosttyRuntimeMemory', () => {
     'fails closed for an incompatible memory value %#',
     (memory) => {
       expect(() => inspectGhosttyRuntimeMemory({ memory } as never))
-        .toThrow(/ghostty-web@0\.4\.0-next\.14\.g6a1a50d compatibility check failed/);
+        .toThrow(/@floegence\/ghostty-web@0\.5\.0-rc\.0 compatibility check failed/);
     },
   );
 

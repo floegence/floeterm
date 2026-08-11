@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { Ghostty, type GhosttyCell, type GhosttyTerminal } from 'ghostty-web';
+import { Ghostty, type GhosttyCell, type GhosttyTerminal } from '@floegence/ghostty-web';
 
 import { TerminalCore } from './TerminalCore.js';
 

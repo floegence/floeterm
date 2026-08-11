@@ -157,7 +157,7 @@ For authoritative license texts and copyright notices, refer to each upstream pr
 - gensync@1.0.0-beta.2 (License: MIT)
 - get-intrinsic@1.3.0 (License: MIT)
 - get-proto@1.0.1 (License: MIT)
-- ghostty-web@0.4.0-next.14.g6a1a50d (License: MIT)
+- @floegence/ghostty-web@0.5.0-rc.0 (License: MIT)
 - gopd@1.2.0 (License: MIT)
 - has-symbols@1.1.0 (License: MIT)
 - has-tostringtag@1.0.2 (License: MIT)

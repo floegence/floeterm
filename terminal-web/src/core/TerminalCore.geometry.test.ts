@@ -9,7 +9,7 @@ const mockState = vi.hoisted(() => ({
   remeasureFont: vi.fn(),
 }));
 
-vi.mock('ghostty-web', () => {
+vi.mock('@floegence/ghostty-web', () => {
   class MockTerminal {
     cols: number;
     rows: number;
@@ -234,7 +234,7 @@ describe('TerminalCore geometry stability', () => {
     expect(() => core.setFixedDimensions({ cols: 501, rows: 24 })).toThrow(/fixedDimensions\.cols.*1.*500/i);
   });
 
-  it('preserves ghostty-web scrollbar reserve by default', async () => {
+  it('preserves @floegence/ghostty-web scrollbar reserve by default', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });

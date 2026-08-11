@@ -71,7 +71,7 @@
   ],
   "dependencies": {
     "@floegence/beamterm-renderer": "1.0.2",
-    "ghostty-web": "0.4.0-next.14.g6a1a50d"
+    "@floegence/ghostty-web": "0.5.0-rc.0"
   },
   "overrides": {
     "ws": "^8.21.0"

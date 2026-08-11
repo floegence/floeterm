@@ -64,7 +64,7 @@ class MockTerminal {
   dispose() {}
 }
 
-vi.mock('ghostty-web', () => {
+vi.mock('@floegence/ghostty-web', () => {
   class MockGhostty {
     readonly memory = new WebAssembly.Memory({ initial: 1 });
     static load = vi.fn(async () => new MockGhostty());

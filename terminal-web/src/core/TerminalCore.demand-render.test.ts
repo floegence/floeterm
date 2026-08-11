@@ -79,7 +79,7 @@ vi.mock('../fabric/TerminalLiveFabric', async importOriginal => {
   };
 });
 
-vi.mock('ghostty-web', () => {
+vi.mock('@floegence/ghostty-web', () => {
   const cell = (codepoint: number) => ({
     codepoint,
     fg_r: 255,
@@ -375,7 +375,7 @@ describe('TerminalCore demand rendering', () => {
     delete (document as unknown as { fonts?: unknown }).fonts;
   });
 
-  it('does not keep ghostty-web rendering while the terminal is idle', async () => {
+  it('does not keep @floegence/ghostty-web rendering while the terminal is idle', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
 
@@ -1270,7 +1270,7 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
-  it('delegates changed rows to ghostty-web native line rendering', async () => {
+  it('delegates changed rows to @floegence/ghostty-web native line rendering', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;
     terminal.cursorY = 99;

@@ -7,14 +7,14 @@ import {
   type TerminalInitializationScheduler,
 } from './TerminalInitializationScheduler.js';
 
-export type GhosttyRuntimeInstance = InstanceType<typeof import('ghostty-web').Ghostty>;
+export type GhosttyRuntimeInstance = InstanceType<typeof import('@floegence/ghostty-web').Ghostty>;
 
 type GhosttyResourceModule = Pick<
-  typeof import('ghostty-web'),
+  typeof import('@floegence/ghostty-web'),
   'Terminal' | 'FitAddon' | 'LinkDetector' | 'OSC8LinkProvider' | 'UrlRegexProvider' | 'Ghostty'
 >;
 
-type GhosttyModuleImporter = () => Promise<typeof import('ghostty-web')>;
+type GhosttyModuleImporter = () => Promise<typeof import('@floegence/ghostty-web')>;
 type GhosttyRuntimeScheduler = Pick<TerminalInitializationScheduler, 'request'>;
 type GhosttyRuntimeReservation = {
   promise: Promise<GhosttyRuntimeInstance>;
@@ -29,10 +29,10 @@ const REQUIRED_GHOSTTY_EXPORTS = [
   'Ghostty',
 ] as const;
 
-export const resolveGhosttyRuntime = (module: typeof import('ghostty-web')): GhosttyResourceModule => {
+export const resolveGhosttyRuntime = (module: typeof import('@floegence/ghostty-web')): GhosttyResourceModule => {
   for (const exportName of REQUIRED_GHOSTTY_EXPORTS) {
     if (typeof module[exportName] !== 'function') {
-      throw new Error(`ghostty-web is missing the required ${exportName} export`);
+      throw new Error(`@floegence/ghostty-web is missing the required ${exportName} export`);
     }
   }
   return module;
@@ -65,9 +65,9 @@ export const waitWithAbort = <T>(promise: Promise<T>, signal?: AbortSignal): Pro
 };
 
 const runtimeMemoryCompatibilityError = (): Error => new Error(
-  `ghostty-web@${EXPECTED_GHOSTTY_WEB_COMPAT_VERSION} compatibility check failed: `
+  `@floegence/ghostty-web@${EXPECTED_GHOSTTY_WEB_COMPAT_VERSION} compatibility check failed: `
   + 'the owned Ghostty runtime does not expose a WebAssembly.Memory at "memory"; '
-  + 'review or remove the version-bound compatibility adapters before changing ghostty-web',
+  + 'review or remove the version-bound compatibility adapters before changing @floegence/ghostty-web',
 );
 
 export const inspectGhosttyRuntimeMemory = (runtime: GhosttyRuntimeInstance): WebAssembly.Memory => {
@@ -89,7 +89,7 @@ export class GhosttyResourceLoader {
   private reservation: GhosttyRuntimeReservation | null = null;
 
   constructor(
-    private readonly importModule: GhosttyModuleImporter = () => import('ghostty-web'),
+    private readonly importModule: GhosttyModuleImporter = () => import('@floegence/ghostty-web'),
     private readonly scheduler: GhosttyRuntimeScheduler = terminalInitializationScheduler,
   ) {}
 
@@ -101,12 +101,12 @@ export class GhosttyResourceLoader {
     const reservation = this.reservation;
     if (reservation) {
       this.reservation = null;
-      logger.debug('[TerminalCore] Consuming preloaded ghostty-web WASM runtime');
+      logger.debug('[TerminalCore] Consuming preloaded @floegence/ghostty-web WASM runtime');
       return reservation.promise;
     }
 
     const module = await this.loadModule(logger);
-    logger.debug('[TerminalCore] Creating isolated ghostty-web WASM runtime');
+    logger.debug('[TerminalCore] Creating isolated @floegence/ghostty-web WASM runtime');
     return module.Ghostty.load();
   }
 
@@ -117,12 +117,12 @@ export class GhosttyResourceLoader {
     const loadPromise = (async () => {
       const permit = await request.permit;
       if (!permit) {
-        throw new Error('ghostty-web runtime preload was cancelled before it started');
+        throw new Error('@floegence/ghostty-web runtime preload was cancelled before it started');
       }
 
       try {
         const module = await this.loadModule(logger);
-        logger.debug('[TerminalCore] Preloading one isolated ghostty-web WASM runtime');
+        logger.debug('[TerminalCore] Preloading one isolated @floegence/ghostty-web WASM runtime');
         return await module.Ghostty.load();
       } finally {
         permit.release();
@@ -139,17 +139,17 @@ export class GhosttyResourceLoader {
     return reservation.promise;
   }
 
-  getTerminalConstructor(): typeof import('ghostty-web').Terminal | null {
+  getTerminalConstructor(): typeof import('@floegence/ghostty-web').Terminal | null {
     return this.module?.Terminal ?? null;
   }
 
-  getFitAddonConstructor(): typeof import('ghostty-web').FitAddon | null {
+  getFitAddonConstructor(): typeof import('@floegence/ghostty-web').FitAddon | null {
     return this.module?.FitAddon ?? null;
   }
 
   getLinkConstructors() {
     if (!this.module) {
-      throw new Error('Required ghostty-web link providers not loaded');
+      throw new Error('Required @floegence/ghostty-web link providers not loaded');
     }
 
     return {
@@ -161,12 +161,12 @@ export class GhosttyResourceLoader {
 
   private loadModule(logger: Logger): Promise<GhosttyResourceModule> {
     if (typeof window === 'undefined') {
-      return Promise.reject(new Error('ghostty-web can only be loaded in a browser environment'));
+      return Promise.reject(new Error('@floegence/ghostty-web can only be loaded in a browser environment'));
     }
     if (this.module) return Promise.resolve(this.module);
 
     if (!this.modulePromise) {
-      logger.debug('[TerminalCore] Loading ghostty-web module');
+      logger.debug('[TerminalCore] Loading @floegence/ghostty-web module');
       const modulePromise = this.importModule()
         .then(resolveGhosttyRuntime)
         .then(module => {
@@ -195,11 +195,11 @@ export const acquireGhosttyRuntime = (logger: Logger): Promise<GhosttyRuntimeIns
   ghosttyResourceLoader.acquireRuntime(logger)
 );
 
-export const getGhosttyTerminalConstructor = (): typeof import('ghostty-web').Terminal | null => (
+export const getGhosttyTerminalConstructor = (): typeof import('@floegence/ghostty-web').Terminal | null => (
   ghosttyResourceLoader.getTerminalConstructor()
 );
 
-export const getGhosttyFitAddonConstructor = (): typeof import('ghostty-web').FitAddon | null => (
+export const getGhosttyFitAddonConstructor = (): typeof import('@floegence/ghostty-web').FitAddon | null => (
   ghosttyResourceLoader.getFitAddonConstructor()
 );
 

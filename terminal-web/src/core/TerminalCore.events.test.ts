@@ -36,7 +36,7 @@ class MockUrlRegexProvider implements TerminalLinkProvider {
   }
 }
 
-vi.mock('ghostty-web', () => {
+vi.mock('@floegence/ghostty-web', () => {
   class MockTerminal {
     cols: number;
     rows: number;

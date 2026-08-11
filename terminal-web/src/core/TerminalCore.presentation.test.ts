@@ -6,7 +6,7 @@ import type { TerminalEventHandlers } from '../types';
 
 const fitSpy = vi.fn();
 
-vi.mock('ghostty-web', () => {
+vi.mock('@floegence/ghostty-web', () => {
   class MockTerminal {
     cols: number;
     rows: number;

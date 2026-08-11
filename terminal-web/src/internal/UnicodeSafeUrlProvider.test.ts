@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { UrlRegexProvider } from 'ghostty-web';
+import { UrlRegexProvider } from '@floegence/ghostty-web';
 import { createUnicodeSafeUrlProviderTerminal } from './UnicodeSafeUrlProvider';
 
 const terminalWithCodepoints = (codepoints: number[]) => ({

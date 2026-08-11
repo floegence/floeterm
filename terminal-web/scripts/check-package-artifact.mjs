@@ -11,7 +11,8 @@ const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
 const EXPECTED_PACKAGE_VERSION = '0.13.6';
-const EXPECTED_GHOSTTY_WEB_VERSION = '0.4.0-next.14.g6a1a50d';
+const EXPECTED_GHOSTTY_WEB_VERSION = '0.5.0-rc.0';
+const GHOSTTY_WEB_PACKAGE_NAME = '@floegence/ghostty-web';
 const EXPECTED_TERMINAL_THEME_IDS = [
   'dark', 'light', 'solarizedDark', 'monokai', 'tokyoNight',
   'polarVeil', 'copperCircuit', 'violetDusk', 'cedarGrove', 'midnightInk',
@@ -442,14 +443,14 @@ async function assertGhosttyScrollbackCompatibilityArtifact(installedPackageRoot
   if (installedManifest.version !== EXPECTED_PACKAGE_VERSION) {
     throw new Error(`installed terminal-web package version must be ${EXPECTED_PACKAGE_VERSION}`);
   }
-  if (installedManifest.dependencies?.['ghostty-web'] !== EXPECTED_GHOSTTY_WEB_VERSION) {
+  if (installedManifest.dependencies?.[GHOSTTY_WEB_PACKAGE_NAME] !== EXPECTED_GHOSTTY_WEB_VERSION) {
     throw new Error(
       `installed terminal-web package must pin ghostty-web exactly to ${EXPECTED_GHOSTTY_WEB_VERSION}`,
     );
   }
 
   const installedGhosttyManifest = JSON.parse(await readFile(
-    path.join(installRoot, 'node_modules', 'ghostty-web', 'package.json'),
+    path.join(installRoot, 'node_modules', '@floegence', 'ghostty-web', 'package.json'),
     'utf8',
   ));
   if (installedGhosttyManifest.version !== EXPECTED_GHOSTTY_WEB_VERSION) {

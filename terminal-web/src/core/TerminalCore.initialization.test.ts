@@ -16,7 +16,7 @@ vi.mock('@floegence/beamterm-renderer', () => ({
   main: moduleState.rendererMain,
 }));
 
-vi.mock('ghostty-web', () => {
+vi.mock('@floegence/ghostty-web', () => {
   class MockTerminal {
     cols = 80;
     rows = 24;
