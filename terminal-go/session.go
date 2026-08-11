@@ -668,23 +668,38 @@ func (s *Session) GetHistoryPage(options HistoryPageOptions) (HistoryPage, error
 	if effectiveStart <= 0 {
 		effectiveStart = 1
 	}
-	useDurableHistory := effectiveStart <= snapshotEnd && page.FirstRetainedSequence > effectiveStart
-	if !useDurableHistory && s.historySpool != nil && effectiveStart <= snapshotEnd {
+	historyReset := effectiveStart < s.historyStartSequence
+	durableStart := effectiveStart
+	if historyReset {
+		durableStart = s.historyStartSequence
+	}
+	useDurableHistory := durableStart <= snapshotEnd && page.FirstRetainedSequence > durableStart
+	if !useDurableHistory && s.historySpool != nil && durableStart <= snapshotEnd {
 		checkpoint, err := s.historySpool.Checkpoint()
 		if err != nil {
 			return HistoryPage{}, fmt.Errorf("read terminal history checkpoint: %w", err)
 		}
-		useDurableHistory = checkpoint != nil && effectiveStart <= checkpoint.CoveredThroughSequence
+		useDurableHistory = checkpoint != nil && durableStart <= checkpoint.CoveredThroughSequence
 	}
 	if useDurableHistory {
 		if s.historySpool == nil {
 			page.HistoryTruncated = true
 		} else {
-			durablePage, err := s.readDurableHistoryPageLocked(options, effectiveStart, snapshotEnd)
+			durablePage, err := s.readDurableHistoryPageLocked(options, durableStart, snapshotEnd)
 			if err != nil {
 				return HistoryPage{}, err
 			}
 			page = durablePage
+		}
+	}
+	if historyReset {
+		page.HistoryReset = true
+		page.DeltaStartSequence = s.historyStartSequence
+		if page.FirstRetainedSequence == 0 || page.FirstRetainedSequence < s.historyStartSequence {
+			page.FirstRetainedSequence = s.historyStartSequence
+		}
+		if page.FirstRetainedSequence == s.historyStartSequence {
+			page.HistoryTruncated = false
 		}
 	}
 	if len(page.Chunks) > 0 && s.config.historyFilter != nil {

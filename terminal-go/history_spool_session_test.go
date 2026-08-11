@@ -189,3 +189,65 @@ func TestSessionHistorySpoolContinuesFromGlobalSequenceAfterClear(t *testing.T) 
 		t.Fatalf("history after clear = %+v", page)
 	}
 }
+
+func TestSessionHistoryClearRebasesRequestsBehindRemovedCheckpoint(t *testing.T) {
+	manager := NewManager(ManagerConfig{
+		Logger:                      NopLogger{},
+		HistoryBufferSize:           2,
+		HistoryBufferMaxChunks:      2,
+		HistorySpoolRoot:            t.TempDir(),
+		HistorySpoolSegmentMaxBytes: 128,
+		HistorySpoolMaxBytes:        1 << 20,
+	})
+	t.Cleanup(manager.Cleanup)
+	session, err := manager.CreateSession("clear-checkpoint", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.processRawPTYData([]byte("before"))
+	checkpointBytes := []byte("checkpoint-before-clear")
+	checkpointChecksum := sha256.Sum256(checkpointBytes)
+	stateDigest := sha256.Sum256([]byte("state-before-clear"))
+	if err := session.CommitHistoryCheckpoint(TerminalHistoryCheckpoint{
+		FormatVersion:          1,
+		EngineID:               "floegence-ghostty-web",
+		CoveredThroughSequence: 1,
+		GeometryGeneration:     1,
+		ParserEpoch:            1,
+		Cols:                   80,
+		Rows:                   24,
+		ChecksumSHA256:         hex.EncodeToString(checkpointChecksum[:]),
+		StateDigestSHA256:      hex.EncodeToString(stateDigest[:]),
+		Bytes:                  checkpointBytes,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.ClearHistory(); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := session.GetHistoryPage(HistoryPageOptions{StartSeq: 1, EndSeq: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !empty.HistoryReset || empty.Checkpoint != nil || empty.FirstRetainedSequence != 2 || empty.DeltaStartSequence != 2 {
+		t.Fatalf("empty history clear reset boundary = %+v", empty)
+	}
+	if len(empty.Chunks) != 0 || empty.CoveredThroughSequence != 1 || empty.SnapshotEndSequence != 1 {
+		t.Fatalf("empty history clear coverage = %+v", empty)
+	}
+	session.processRawPTYData([]byte("after"))
+
+	page, err := session.GetHistoryPage(HistoryPageOptions{StartSeq: 1, EndSeq: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.HistoryReset || page.Checkpoint != nil || page.FirstRetainedSequence != 2 {
+		t.Fatalf("history clear reset boundary = %+v", page)
+	}
+	if page.CoveredThroughSequence != 2 || page.SnapshotEndSequence != 2 || page.DeltaStartSequence != 2 {
+		t.Fatalf("history clear coverage = %+v", page)
+	}
+	if len(page.Chunks) != 1 || page.Chunks[0].Sequence != 2 || string(page.Chunks[0].Data) != "after" {
+		t.Fatalf("history clear delta = %+v", page.Chunks)
+	}
+}
