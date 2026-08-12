@@ -151,6 +151,78 @@ func TestDecoderHandlesFragmentedAndCoalescedFrames(t *testing.T) {
 	}
 }
 
+func TestDecoderHandlesEveryFragmentBoundary(t *testing.T) {
+	output, err := EncodeOutputBatch(OutputBatch{
+		GeometryGeneration: 5,
+		Cols:               120,
+		Rows:               40,
+		Records: []OutputRecord{
+			{Sequence: 9, TimestampMs: 10, GeometryGeneration: 5, Cols: 120, Rows: 40, Data: []byte("\x1b[2J\x1b[Htop")},
+			{Sequence: 10, TimestampMs: 11, GeometryGeneration: 5, Cols: 120, Rows: 40, Data: []byte("中e\xcc\x81🙂")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for split := 1; split < len(output); split++ {
+		decoder := NewDecoder()
+		frames, pushErr := decoder.Push(output[:split])
+		if pushErr != nil || len(frames) != 0 {
+			t.Fatalf("split %d first push frames=%d err=%v", split, len(frames), pushErr)
+		}
+		frames, pushErr = decoder.Push(output[split:])
+		if pushErr != nil || len(frames) != 1 || frames[0].Type != FrameOutputBatch {
+			t.Fatalf("split %d second push frames=%#v err=%v", split, frames, pushErr)
+		}
+		decoded, decodeErr := DecodeOutputBatch(frames[0])
+		if decodeErr != nil || len(decoded.Records) != 2 || !bytes.Equal(decoded.Records[0].Data, []byte("\x1b[2J\x1b[Htop")) || !bytes.Equal(decoded.Records[1].Data, []byte("中e\xcc\x81🙂")) {
+			t.Fatalf("split %d decoded=%+v err=%v", split, decoded, decodeErr)
+		}
+	}
+}
+
+func TestDecoderPreservesResizeBoundaryStreamAcrossEveryByte(t *testing.T) {
+	frames := make([][]byte, 0, 5)
+	appendFrame := func(encoded []byte, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, encoded)
+	}
+	appendFrame(EncodeAttached(Attached{HistoryBoundarySequence: 8, HistoryGeneration: 1, HistoryStartSequence: 1, GeometryGeneration: 4, Cols: 80, Rows: 24}))
+	appendFrame(EncodeOutputBatch(OutputBatch{GeometryGeneration: 4, Cols: 80, Rows: 24, Records: []OutputRecord{{Sequence: 9, TimestampMs: 10, GeometryGeneration: 4, Cols: 80, Rows: 24, Data: []byte("\x1b[?1049h\x1b[HOLD")}}}))
+	appendFrame(EncodeResizeApplied(ResizeApplied{Sequence: 3, GeometryGeneration: 5, OutputSequenceBoundary: 9, Cols: 120, Rows: 40}))
+	appendFrame(EncodeGeometryChanged(EffectiveGeometry{Generation: 5, OutputSequenceBoundary: 9, Cols: 120, Rows: 40}))
+	appendFrame(EncodeOutputBatch(OutputBatch{GeometryGeneration: 5, Cols: 120, Rows: 40, Records: []OutputRecord{{Sequence: 10, TimestampMs: 11, GeometryGeneration: 5, Cols: 120, Rows: 40, Data: []byte("\x1b[2J\x1b[HNEW中e\xcc\x81🙂")}}}))
+	stream := bytes.Join(frames, nil)
+	decoder := NewDecoder()
+	var decoded []Frame
+	for index := range stream {
+		pushed, err := decoder.Push(stream[index : index+1])
+		if err != nil {
+			t.Fatalf("byte %d: %v", index, err)
+		}
+		decoded = append(decoded, pushed...)
+	}
+	if len(decoded) != 5 {
+		t.Fatalf("decoded %d frames, want 5", len(decoded))
+	}
+	resize, err := DecodeResizeApplied(decoded[2])
+	if err != nil || resize.OutputSequenceBoundary != 9 || resize.GeometryGeneration != 5 {
+		t.Fatalf("resize boundary=%+v error=%v", resize, err)
+	}
+	geometry, err := DecodeGeometryChanged(decoded[3])
+	if err != nil || geometry.OutputSequenceBoundary != 9 || geometry.Generation != 5 {
+		t.Fatalf("geometry boundary=%+v error=%v", geometry, err)
+	}
+	oldOutput, oldErr := DecodeOutputBatch(decoded[1])
+	newOutput, newErr := DecodeOutputBatch(decoded[4])
+	if oldErr != nil || newErr != nil || oldOutput.Records[0].Sequence != 9 || newOutput.Records[0].Sequence != 10 || oldOutput.GeometryGeneration != 4 || newOutput.GeometryGeneration != 5 {
+		t.Fatalf("old=%+v/%v new=%+v/%v", oldOutput, oldErr, newOutput, newErr)
+	}
+}
+
 func TestDecoderRejectsReservedBitsAndOversizedPayload(t *testing.T) {
 	decoder := NewDecoder()
 	_, err := decoder.Push([]byte{byte(FrameInput), 0, 0, 1, 0, 0, 0, 0})

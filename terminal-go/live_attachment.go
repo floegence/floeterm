@@ -41,10 +41,14 @@ func (s *Session) AttachLiveConnection(
 	if s == nil || connectionID == "" || generation == 0 || cols <= 0 || rows <= 0 || subscriber.OnOutput == nil {
 		return LiveConnectionAttachment{}, errors.New("invalid terminal live attachment")
 	}
+	if err := s.beginPTYResize(); err != nil {
+		return LiveConnectionAttachment{}, err
+	}
 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		s.endPTYResize()
 		return LiveConnectionAttachment{}, errSessionClosed
 	}
 	if s.liveAttachments == nil {
@@ -53,6 +57,7 @@ func (s *Session) AttachLiveConnection(
 	previous, exists := s.liveAttachments[connectionID]
 	if exists && previous.generation >= generation {
 		s.mu.Unlock()
+		s.endPTYResize()
 		return LiveConnectionAttachment{}, ErrLiveAttachmentSuperseded
 	}
 	previousConnection := s.connections[connectionID]
@@ -80,6 +85,7 @@ func (s *Session) AttachLiveConnection(
 				delete(s.connections, connectionID)
 			}
 			s.mu.Unlock()
+			s.endPTYResize()
 			return LiveConnectionAttachment{}, err
 		}
 	}
@@ -98,6 +104,7 @@ func (s *Session) AttachLiveConnection(
 		geometrySubscribers = s.liveSubscribersLocked()
 	}
 	s.mu.Unlock()
+	s.endPTYResize()
 
 	if exists && previous.subscriber.OnSuperseded != nil {
 		previous.subscriber.OnSuperseded()
@@ -109,6 +116,10 @@ func (s *Session) AttachLiveConnection(
 	var once sync.Once
 	detach := func() {
 		once.Do(func() {
+			if err := s.beginPTYResize(); err != nil {
+				s.config.logger.Warn("Failed to order PTY resize after live detach", "sessionID", s.ID, "error", err)
+				return
+			}
 			s.mu.Lock()
 			previousGeneration := s.geometryGeneration
 			var detachedGeometry TerminalGeometry
@@ -128,6 +139,7 @@ func (s *Session) AttachLiveConnection(
 				}
 			}
 			s.mu.Unlock()
+			s.endPTYResize()
 			if len(detachedSubscribers) > 0 {
 				s.broadcastGeometry(detachedGeometry, detachedSubscribers)
 			}

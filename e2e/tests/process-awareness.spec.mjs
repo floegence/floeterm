@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
+import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
 const activeSession = async (request, sessionId) => {
   const response = await request.get('/api/sessions');
@@ -16,7 +17,10 @@ test('reports silent and fullscreen foreground commands without idle false posit
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
       && window.__floetermPerfHarness.getTerminalInfo()
   ));
-  const sessionId = await page.evaluate(() => sessionStorage.getItem('floeterm_session_id'));
+  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
+    .getAttribute('data-single-session-id');
+  if (!sessionId) throw new Error('single terminal session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
 
   await expect.poll(async () => {
     const session = await activeSession(request, sessionId);
@@ -40,7 +44,7 @@ test('reports silent and fullscreen foreground commands without idle false posit
     const session = await activeSession(request, sessionId);
     return `${session?.foregroundCommand?.phase ?? ''}:${session?.foregroundCommand?.displayName ?? ''}:${session?.outputActivity?.phase ?? ''}`;
   }).toBe('running:top:streaming');
-  await page.evaluate(() => window.__floetermPerfHarness.sendInput('\x03'));
+  await page.evaluate(() => window.__floetermPerfHarness.sendInput('q'));
   await expect.poll(async () => {
     const session = await activeSession(request, sessionId);
     return `${session?.foregroundCommand?.phase ?? ''}:${session?.outputActivity?.phase ?? ''}`;
@@ -56,7 +60,15 @@ test('reports output streaming and quiet boundaries while the command remains ru
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
       && window.__floetermPerfHarness.getTerminalInfo()
   ));
-  const sessionId = await page.evaluate(() => sessionStorage.getItem('floeterm_session_id'));
+  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
+    .getAttribute('data-single-session-id');
+  if (!sessionId) throw new Error('single terminal session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
+
+  await expect.poll(async () => {
+    const session = await activeSession(request, sessionId);
+    return `${session?.foregroundCommand?.phase ?? ''}:${session?.outputActivity?.phase ?? ''}`;
+  }).toBe('idle:unknown');
 
   await page.evaluate(() => window.__floetermPerfHarness.sendInput(
     "sh -c 'printf first; sleep 5; printf second; sleep 5'\r",

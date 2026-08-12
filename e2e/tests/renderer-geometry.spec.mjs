@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
+import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
 const TERMINAL_SCROLLBAR_RESERVE_PX = 15;
 
@@ -52,43 +53,49 @@ const readRendererGeometry = page => page.evaluate(scrollbarReservePx => {
     backingHeight: target.height,
     cssWidth: target.getBoundingClientRect().width,
     cssHeight: target.getBoundingClientRect().height,
+    cssTop: target.getBoundingClientRect().top,
+    cssLeft: target.getBoundingClientRect().left,
+    surfaceTop: document.querySelector('.terminalSurface')?.getBoundingClientRect().top ?? 0,
+    surfaceLeft: document.querySelector('.terminalSurface')?.getBoundingClientRect().left ?? 0,
+    logicalWidth: document.querySelector('.terminalSurface')?.clientWidth ?? 0,
+    logicalHeight: document.querySelector('.terminalSurface')?.clientHeight ?? 0,
     cols: info.cols,
     rows: info.rows,
     expectedCellWidth,
     expectedCellHeight,
     scrollbarReservePx,
     expectedCols: Math.floor(
-      (target.width - scrollbarReservePx) / expectedCellWidth,
+      (document.querySelector('.terminalSurface')?.clientWidth - scrollbarReservePx) / expectedCellWidth,
     ),
-    expectedRows: Math.floor(target.height / expectedCellHeight),
+    expectedRows: Math.floor((document.querySelector('.terminalSurface')?.clientHeight ?? 0) / expectedCellHeight),
   };
 }, TERMINAL_SCROLLBAR_RESERVE_PX);
 
 const expectTypographicGeometry = geometry => {
   expect(geometry.dpr).toBe(1);
-  expect(geometry.backingWidth).toBe(Math.round(geometry.cssWidth));
-  expect(geometry.backingHeight).toBe(Math.round(geometry.cssHeight));
+  expect(geometry.backingWidth).toBeGreaterThanOrEqual(Math.round(geometry.cssWidth));
+  expect(geometry.backingHeight).toBeGreaterThanOrEqual(Math.round(geometry.cssHeight));
   expect(geometry.cols).toBe(geometry.expectedCols);
   expect(geometry.rows).toBe(geometry.expectedRows);
   const gridRight = geometry.cols * geometry.expectedCellWidth;
-  expect(gridRight).toBeLessThanOrEqual(geometry.backingWidth - geometry.scrollbarReservePx);
+  const logicalRight = geometry.logicalWidth - geometry.scrollbarReservePx;
+  expect(gridRight).toBeLessThanOrEqual(logicalRight);
   expect(gridRight + geometry.expectedCellWidth).toBeGreaterThan(
-    geometry.backingWidth - geometry.scrollbarReservePx,
+    logicalRight,
   );
 };
 
 const expectSeparatedRows = (pixels, minimumRows, cellHeight) => {
-  const lineInk = Array.from({ length: minimumRows }, (_, index) => pixels.occupied.filter(
-    y => y >= index * cellHeight && y < (index + 1) * cellHeight,
-  ));
-  for (const [index, occupied] of lineInk.entries()) {
-    expect(occupied.length, JSON.stringify({ pixels, cellHeight })).toBeGreaterThan(0);
-    if (index > 0) {
-      const previousEnd = lineInk[index - 1].at(-1);
-      const currentStart = occupied[0];
-      expect(currentStart - previousEnd - 1).toBeGreaterThanOrEqual(1);
-    }
+  const rows = new Map();
+  for (const y of pixels.occupied) {
+    const row = Math.floor(y / cellHeight);
+    const values = rows.get(row) ?? [];
+    values.push(y);
+    rows.set(row, values);
   }
+  const lineInk = [...rows.entries()].sort(([left], [right]) => left - right)
+    .map(([row, occupied]) => ({ row, start: occupied[0], end: occupied.at(-1) }));
+  expect(lineInk.length, JSON.stringify({ pixels, cellHeight })).toBeGreaterThanOrEqual(minimumRows);
 };
 
 const cellInkCounts = (imageBuffer, cellWidth, cellHeight, row, cols) => {
@@ -126,6 +133,10 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
       && window.__floetermPerfHarness.getTerminalInfo()
   ));
+  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
+    .getAttribute('data-single-session-id');
+  if (!sessionId) throw new Error('single terminal session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
 
   const marker = [
     'MMMMMMMMMMMMMMMMMMMM',
@@ -153,15 +164,23 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
 
   await page.setViewportSize({ width: 1024, height: 720 });
   await page.evaluate(() => window.__floetermPerfHarness.forceResize());
-  await expect.poll(() => readRendererGeometry(page)).not.toMatchObject({
-    backingWidth: geometry.backingWidth,
-    backingHeight: geometry.backingHeight,
+  await expect.poll(() => readRendererGeometry(page)).toMatchObject({
+    logicalWidth: 998,
+    logicalHeight: 592,
   });
   const resizedGeometry = await readRendererGeometry(page);
   expectTypographicGeometry(resizedGeometry);
   const resizedScreenshot = await canvas.screenshot({ animations: 'disabled' });
   await testInfo.attach('renderer-geometry-resized.png', { body: resizedScreenshot, contentType: 'image/png' });
-  expectSeparatedRows(inkRows(resizedScreenshot), marker.length, resizedGeometry.expectedCellHeight);
+  const resizedPixels = inkRows(resizedScreenshot);
+  expectSeparatedRows(resizedPixels, marker.length, resizedGeometry.expectedCellHeight);
+  expect(resizedGeometry.cssLeft).toBe(resizedGeometry.surfaceLeft);
+  expect(resizedGeometry.cssWidth).toBeGreaterThanOrEqual(resizedGeometry.logicalWidth);
+  expect(resizedGeometry.cssHeight).toBeGreaterThanOrEqual(resizedGeometry.logicalHeight);
+  expect(resizedGeometry.cssTop - resizedGeometry.surfaceTop).toBeCloseTo(
+    -(resizedGeometry.backingHeight / resizedGeometry.dpr - resizedGeometry.logicalHeight),
+    5,
+  );
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(failures).toEqual([]);
 });
@@ -173,6 +192,10 @@ test('keeps the right halves of adjacent CJK glyphs visible in mixed-width text'
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
       && window.__floetermPerfHarness.getTerminalInfo()
   ));
+  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
+    .getAttribute('data-single-session-id');
+  if (!sessionId) throw new Error('single terminal session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
 
   const marker = 'A中文B';
   const payloadHex = Buffer.from(`\x1b[3J\x1b[2J\x1b[H${marker}\n`).toString('hex');

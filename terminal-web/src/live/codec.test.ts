@@ -7,6 +7,9 @@ import {
   TerminalLiveDecoder,
   TerminalLiveFrameType,
   decodeInput,
+	decodeGeometryChanged,
+	decodeOutputBatch,
+	decodeResizeApplied,
   encodeAttach,
   encodeAttached,
   encodeInput,
@@ -79,6 +82,55 @@ describe('terminal/live_v1 codec', () => {
       TerminalLiveFrameType.Input,
       TerminalLiveFrameType.Resize,
     ]);
+  });
+
+  it('decodes output at every byte fragmentation boundary', () => {
+    const encoded = encodeOutputBatch({
+      geometryGeneration: 5n,
+      cols: 120,
+      rows: 40,
+      records: [
+        { sequence: 9n, timestampMs: 10n, data: new TextEncoder().encode('\x1b[2J\x1b[Htop') },
+        { sequence: 10n, timestampMs: 11n, data: new TextEncoder().encode('中e\u0301🙂') },
+      ],
+    });
+    for (let split = 1; split < encoded.byteLength; split += 1) {
+      const decoder = new TerminalLiveDecoder();
+      expect(decoder.push(encoded.subarray(0, split)), `split ${split} first push`).toEqual([]);
+      const frames = decoder.push(encoded.subarray(split));
+      expect(frames.map(frame => frame.type), `split ${split} second push`).toEqual([
+        TerminalLiveFrameType.OutputBatch,
+      ]);
+    }
+  });
+
+  it('preserves a resize boundary stream across every byte', () => {
+	const encodedFrames = [
+	  encodeAttached({ historyBoundarySequence: 8n, historyGeneration: 1n, historyStartSequence: 1n, geometryGeneration: 4n, cols: 80, rows: 24 }),
+	  encodeOutputBatch({ geometryGeneration: 4n, cols: 80, rows: 24, records: [{ sequence: 9n, timestampMs: 10n, data: new TextEncoder().encode('\x1b[?1049h\x1b[HOLD') }] }),
+	  encodeResizeApplied({ sequence: 3n, geometryGeneration: 5n, outputSequenceBoundary: 9n, cols: 120, rows: 40 }),
+	  encodeGeometryChanged({ generation: 5n, outputSequenceBoundary: 9n, cols: 120, rows: 40 }),
+	  encodeOutputBatch({ geometryGeneration: 5n, cols: 120, rows: 40, records: [{ sequence: 10n, timestampMs: 11n, data: new TextEncoder().encode('\x1b[2J\x1b[HNEW中e\u0301🙂') }] }),
+	];
+	const stream = new Uint8Array(encodedFrames.reduce((total, frame) => total + frame.byteLength, 0));
+	let offset = 0;
+	for (const frame of encodedFrames) {
+	  stream.set(frame, offset);
+	  offset += frame.byteLength;
+	}
+	const decoder = new TerminalLiveDecoder();
+	const decoded = Array.from(stream).flatMap((_, index) => decoder.push(stream.subarray(index, index + 1)));
+	expect(decoded.map(frame => frame.type)).toEqual([
+	  TerminalLiveFrameType.Attached,
+	  TerminalLiveFrameType.OutputBatch,
+	  TerminalLiveFrameType.ResizeApplied,
+	  TerminalLiveFrameType.GeometryChanged,
+	  TerminalLiveFrameType.OutputBatch,
+	]);
+	expect(decodeResizeApplied(decoded[2]!)).toMatchObject({ geometryGeneration: 5n, outputSequenceBoundary: 9n, cols: 120, rows: 40 });
+	expect(decodeGeometryChanged(decoded[3]!)).toMatchObject({ generation: 5n, outputSequenceBoundary: 9n, cols: 120, rows: 40 });
+	expect(decodeOutputBatch(decoded[1]!)).toMatchObject({ geometryGeneration: 4n, records: [{ sequence: 9n }] });
+	expect(decodeOutputBatch(decoded[4]!)).toMatchObject({ geometryGeneration: 5n, records: [{ sequence: 10n }] });
   });
 
   it('rejects reserved bits and oversized frames', () => {

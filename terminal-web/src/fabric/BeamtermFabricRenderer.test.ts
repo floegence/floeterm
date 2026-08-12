@@ -361,6 +361,70 @@ describe('BeamtermFabricRenderer', () => {
     renderer.dispose();
   });
 
+  it('does not resize or repaint the surface again for identical css geometry and DPR', async () => {
+    const host = document.createElement('div');
+    Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(host, 'clientHeight', { value: 400, configurable: true });
+    document.body.appendChild(host);
+
+    const renderer = new BeamtermFabricRenderer();
+    await renderer.initialize({
+      container: host,
+      logger,
+      fontFamily: 'monospace',
+      fontSize: 12,
+      theme: { background: '#0b0f14', foreground: '#c9d1d9' },
+      getGhosttyCanvas: () => null,
+      focusInputSurface: vi.fn(),
+      forwardWheel: vi.fn(),
+      onRendererError: vi.fn(),
+    });
+    rendererState.resize.mockClear();
+    rendererState.render.mockClear();
+
+    renderer.resize(800, 400);
+
+    expect(rendererState.resize).not.toHaveBeenCalled();
+    expect(rendererState.render).not.toHaveBeenCalled();
+    renderer.dispose();
+  });
+
+  it('resizes and repaints identical css geometry when DPR changes', async () => {
+    const originalDpr = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1 });
+    const host = document.createElement('div');
+    Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(host, 'clientHeight', { value: 400, configurable: true });
+    document.body.appendChild(host);
+
+    const renderer = new BeamtermFabricRenderer();
+    await renderer.initialize({
+      container: host,
+      logger,
+      fontFamily: 'monospace',
+      fontSize: 12,
+      theme: { background: '#0b0f14', foreground: '#c9d1d9' },
+      getGhosttyCanvas: () => null,
+      focusInputSurface: vi.fn(),
+      forwardWheel: vi.fn(),
+      onRendererError: vi.fn(),
+    });
+    rendererState.resize.mockClear();
+    rendererState.render.mockClear();
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+
+    renderer.resize(800, 400);
+
+    expect(rendererState.resize).toHaveBeenCalledWith(800, 400);
+    expect(rendererState.render).toHaveBeenCalledTimes(1);
+    renderer.dispose();
+    if (originalDpr) {
+      Object.defineProperty(window, 'devicePixelRatio', originalDpr);
+    } else {
+      Reflect.deleteProperty(window, 'devicePixelRatio');
+    }
+  });
+
   it('does not clear retained content when a force frame produces no source rows', async () => {
     const host = document.createElement('div');
     Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });

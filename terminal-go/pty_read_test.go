@@ -4,12 +4,137 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
 	"testing"
+	"time"
+
+	"github.com/creack/pty"
 )
 
 type cappedReader struct {
 	reader *bytes.Reader
 	limit  int
+}
+
+type readBarrierReader struct {
+	data       []byte
+	readReturn chan<- struct{}
+	read       bool
+}
+
+func (r *readBarrierReader) Read(target []byte) (int, error) {
+	if r.read {
+		return 0, io.EOF
+	}
+	r.read = true
+	n := copy(target, r.data)
+	close(r.readReturn)
+	return n, io.EOF
+}
+
+func TestPTYReadPacketPrecedesConcurrentResizeBoundary(t *testing.T) {
+	oldGeometry := TerminalGeometry{Generation: 4, Cols: 195, Rows: 60}
+	packetCaptureStarted := make(chan struct{})
+	allowPacketCapture := make(chan struct{})
+	reads := make(chan ptyReadResult, 1)
+	events := make(chan TerminalOutputEvent, 1)
+	readerReturned := make(chan struct{})
+	session := &Session{
+		ID:       "read-resize-boundary",
+		PTY:      &os.File{},
+		isActive: true,
+		connections: map[string]*ConnectionInfo{
+			"view": {ConnID: "view", Cols: oldGeometry.Cols, Rows: oldGeometry.Rows},
+		},
+		ringBuffer:           NewTerminalRingBuffer(1024),
+		historyGeneration:    1,
+		historyStartSequence: 1,
+		lastAppliedCols:      oldGeometry.Cols,
+		lastAppliedRows:      oldGeometry.Rows,
+		geometryGeneration:   oldGeometry.Generation,
+		setPTYSize: func(*os.File, *pty.Winsize) error {
+			return nil
+		},
+		eventHandler: &captureHandler{dataCh: make(chan []byte, 1)},
+		liveAttachments: map[string]liveAttachment{
+			"view": {
+				generation: 1,
+				subscriber: LiveSubscriber{OnOutput: func(event TerminalOutputEvent) bool {
+					events <- event
+					return true
+				}},
+			},
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	go readPTYPacketsWithPendingGeometry(
+		&readBarrierReader{data: []byte("old-grid-frame"), readReturn: readerReturned},
+		reads,
+		func() (int, error) { return 0, nil },
+		nil,
+		func(buffer []byte) (int, error, TerminalGeometry) {
+			return session.readPTYPacketOrdered(buffer, func(target []byte) (int, error) {
+				n, err := (&readBarrierReader{data: []byte("old-grid-frame"), readReturn: readerReturned}).Read(target)
+				close(packetCaptureStarted)
+				<-allowPacketCapture
+				return n, err
+			}, nil)
+		},
+	)
+
+	select {
+	case <-packetCaptureStarted:
+	case <-time.After(time.Second):
+		t.Fatal("PTY read did not reach the pre-capture barrier")
+	}
+	select {
+	case <-readerReturned:
+	case <-time.After(time.Second):
+		t.Fatal("PTY Read did not return before the geometry barrier")
+	}
+	resizeReturned := make(chan struct {
+		geometry TerminalGeometry
+		err      error
+	}, 1)
+	go func() {
+		geometry, err := session.ApplyConnectionSize("view", 120, 40)
+		resizeReturned <- struct {
+			geometry TerminalGeometry
+			err      error
+		}{geometry: geometry, err: err}
+	}()
+	select {
+	case result := <-resizeReturned:
+		t.Fatalf("resize crossed a PTY packet that had already been read: %+v", result)
+	default:
+	}
+	close(allowPacketCapture)
+
+	packet := <-reads
+	session.processAdmittedPTYDataAtGeometry(packet.data, packet.geometry)
+	event := <-events
+	var resizeGeometry TerminalGeometry
+	select {
+	case result := <-resizeReturned:
+		if result.err != nil {
+			t.Fatalf("apply concurrent resize: %v", result.err)
+		}
+		resizeGeometry = result.geometry
+	case <-time.After(time.Second):
+		t.Fatal("resize did not return after the pre-resize packet committed")
+	}
+
+	if packet.geometry != oldGeometry {
+		t.Errorf("pre-resize PTY packet geometry=%+v, want old geometry %+v", packet.geometry, oldGeometry)
+	}
+	if resizeGeometry.OutputSequenceBoundary < event.Sequence {
+		t.Fatalf(
+			"resize ACK boundary=%d did not cover pre-resize packet sequence=%d",
+			resizeGeometry.OutputSequenceBoundary,
+			event.Sequence,
+		)
+	}
 }
 
 func (r *cappedReader) Read(target []byte) (int, error) {

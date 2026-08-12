@@ -98,10 +98,15 @@ func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (Term
 		return TerminalGeometry{}, err
 	}
 
+	if err := s.beginPTYResize(); err != nil {
+		return TerminalGeometry{}, err
+	}
+
 	s.mu.Lock()
 	conn, exists := s.connections[connectionID]
 	if !exists {
 		s.mu.Unlock()
+		s.endPTYResize()
 		return TerminalGeometry{}, fmt.Errorf("terminal connection %q is not attached", connectionID)
 	}
 	previousCols, previousRows := conn.Cols, conn.Rows
@@ -111,12 +116,14 @@ func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (Term
 	if !s.isActive {
 		geometry := s.effectiveGeometryLocked()
 		s.mu.Unlock()
+		s.endPTYResize()
 		return geometry, nil
 	}
 	if err := s.reconcilePTYSizeLocked("connection-applied", true); err != nil {
 		conn.Cols = previousCols
 		conn.Rows = previousRows
 		s.mu.Unlock()
+		s.endPTYResize()
 		return TerminalGeometry{}, err
 	}
 	geometry := s.effectiveGeometryLocked()
@@ -125,6 +132,7 @@ func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (Term
 		subscribers = s.liveSubscribersLocked()
 	}
 	s.mu.Unlock()
+	s.endPTYResize()
 	if len(subscribers) > 0 {
 		s.broadcastGeometry(geometry, subscribers)
 	}
@@ -231,6 +239,12 @@ func (s *Session) runPTYSizeReconciler() {
 		if !ok || unchanged {
 			continue
 		}
+		// Serialize the kernel resize with PTY packets that have already
+		// returned from Read but are still awaiting ordered history commit.
+		if err := s.beginPTYResize(); err != nil {
+			s.config.logger.Warn("Failed to order PTY resize", "sessionID", s.ID, "reason", reason, "error", err)
+			continue
+		}
 		err := setSize(ptyFile, buildWinSize(cols, rows))
 
 		s.mu.Lock()
@@ -248,6 +262,7 @@ func (s *Session) runPTYSizeReconciler() {
 			subscribers = s.liveSubscribersLocked()
 		}
 		s.mu.Unlock()
+		s.endPTYResize()
 		if len(subscribers) > 0 {
 			s.broadcastGeometry(geometry, subscribers)
 		}
@@ -259,6 +274,10 @@ func (s *Session) runPTYSizeReconciler() {
 }
 
 func (s *Session) resizePTYToMinimumSize() error {
+	if err := s.beginPTYResize(); err != nil {
+		return err
+	}
+	defer s.endPTYResize()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.reconcilePTYSizeLocked("connection-reconcile", false)
@@ -315,6 +334,10 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 
 // ResizePTY resizes the PTY to the specified dimensions.
 func (s *Session) ResizePTY(cols, rows int) error {
+	if err := s.beginPTYResize(); err != nil {
+		return err
+	}
+	defer s.endPTYResize()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

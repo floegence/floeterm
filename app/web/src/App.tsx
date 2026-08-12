@@ -410,22 +410,6 @@ const SingleTerminalPane = (props: {
   });
 
   onMount(() => {
-    const scheduleResize = () => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          terminal.actions().forceResize();
-        });
-      });
-    };
-
-    scheduleResize();
-    const postLayoutTimer = window.setTimeout(scheduleResize, 200);
-    window.addEventListener('resize', scheduleResize);
-    window.addEventListener('orientationchange', scheduleResize);
-    const vv = window.visualViewport;
-    vv?.addEventListener('resize', scheduleResize);
-    vv?.addEventListener('scroll', scheduleResize);
-
     let intervalId: number | null = null;
     const stop = () => {
       if (intervalId === null) {
@@ -453,11 +437,6 @@ const SingleTerminalPane = (props: {
 
     onCleanup(() => {
       mounted = false;
-      window.clearTimeout(postLayoutTimer);
-      window.removeEventListener('resize', scheduleResize);
-      window.removeEventListener('orientationchange', scheduleResize);
-      vv?.removeEventListener('resize', scheduleResize);
-      vv?.removeEventListener('scroll', scheduleResize);
       stop();
       document.removeEventListener('visibilitychange', onVisibilityChange);
       if (clearStatsRefreshTimer !== null) {
@@ -661,21 +640,6 @@ const MirrorTerminalConnection = (props: {
   });
   onCleanup(() => props.onHarnessChange(props.label, null));
 
-  onMount(() => {
-    const scheduleResize = () => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => terminal.actions().forceResize());
-      });
-    };
-    scheduleResize();
-    const settleTimer = window.setTimeout(scheduleResize, 180);
-    window.addEventListener('resize', scheduleResize);
-    onCleanup(() => {
-      window.clearTimeout(settleTimer);
-      window.removeEventListener('resize', scheduleResize);
-    });
-  });
-
   return (
     <section class="mirrorTerminalView" data-mirror-view={props.label}>
       <div class="tileHeader">
@@ -872,26 +836,6 @@ const GridTerminalTile = (props: {
     }, props.streamStartDelayMs);
     onCleanup(() => window.clearTimeout(timeoutId));
   });
-
-  onMount(() => {
-    const scheduleResize = () => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          terminal.actions().forceResize();
-        });
-      });
-    };
-
-    scheduleResize();
-    const settleTimer = window.setTimeout(scheduleResize, 180);
-    window.addEventListener('resize', scheduleResize);
-
-    onCleanup(() => {
-      window.clearTimeout(settleTimer);
-      window.removeEventListener('resize', scheduleResize);
-    });
-  });
-
   return (
     <section
       class="gridTerminalTile"

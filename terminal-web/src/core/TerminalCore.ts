@@ -215,6 +215,7 @@ type terminal_render_snapshot = {
   rows: number | null;
   scrollbackLength: number | null;
   viewportY: number | null;
+  alternateScreen: boolean;
 };
 
 type terminal_cursor_position = {
@@ -3388,7 +3389,9 @@ export class TerminalCore {
       wasmTerm?: {
         getCursor?: () => { y?: number };
         getScrollbackLength?: () => number;
+        isAlternateScreen?: () => boolean;
       };
+      isAlternateScreen?: () => boolean;
     } | null;
     if (!terminalAny) {
       return null;
@@ -3407,12 +3410,16 @@ export class TerminalCore {
       return Number.NaN;
     })();
     const viewportY = Number(terminalAny.viewportY ?? 0);
+    const alternateScreen = Boolean(
+      terminalAny.isAlternateScreen?.() ?? terminalAny.wasmTerm?.isAlternateScreen?.(),
+    );
 
     return {
       cursorY: Number.isFinite(cursorY) ? cursorY : null,
       rows: Number.isFinite(rows) ? rows : null,
       scrollbackLength: Number.isFinite(scrollbackLength) ? scrollbackLength : null,
       viewportY: Number.isFinite(viewportY) ? viewportY : null,
+      alternateScreen,
     };
   }
 
@@ -3434,20 +3441,15 @@ export class TerminalCore {
       return true;
     }
 
-    if (
-      before.scrollbackLength !== null
-      && after.scrollbackLength !== null
-      && before.scrollbackLength !== after.scrollbackLength
-    ) {
-      return true;
-    }
-
     return Boolean(
+      !after.alternateScreen
+      &&
       before.cursorY !== null
       && after.cursorY !== null
       && before.rows !== null
       && before.cursorY >= before.rows - 1
       && after.cursorY < before.cursorY
+      && before.scrollbackLength === 0
     );
   }
 

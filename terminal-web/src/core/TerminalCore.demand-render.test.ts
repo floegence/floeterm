@@ -1015,6 +1015,67 @@ describe('TerminalCore demand rendering', () => {
     core.dispose();
   });
 
+  it('keeps live scrollback growth incremental when the viewport and cursor stay stable', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+    terminal.write = vi.fn(function (this: any, data: string | Uint8Array, cb?: () => void) {
+      this.writes.push(data);
+      this.scrollbackLength += 1;
+      cb?.();
+    });
+
+    core.writeFrame('live');
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(false);
+
+    core.dispose();
+  });
+
+  it('keeps alternate-screen cursor wrapping incremental during live output', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+    terminal.wasmTerm.isAlternateScreen = () => true;
+    terminal.rows = 2;
+    terminal.cursorY = 1;
+    terminal.write = vi.fn(function (this: any, data: string | Uint8Array, cb?: () => void) {
+      this.writes.push(data);
+      this.cursorY = 0;
+      cb?.();
+    });
+
+    core.writeFrame('top');
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(false);
+
+    core.dispose();
+  });
+
+  it('keeps established normal-buffer scrolling incremental after the first wrap', async () => {
+    const core = await createCore();
+    const terminal = mockState.lastTerminal;
+    terminal.renderSpy.mockClear();
+    terminal.rows = 2;
+    terminal.cursorY = 1;
+    terminal.scrollbackLength = 12;
+    terminal.write = vi.fn(function (this: any, data: string | Uint8Array, cb?: () => void) {
+      this.writes.push(data);
+      this.scrollbackLength += 1;
+      this.cursorY = 0;
+      cb?.();
+    });
+
+    core.writeFrame('top');
+
+    expect(terminal.renderSpy).toHaveBeenCalledTimes(1);
+    expect(terminal.renderSpy.mock.calls[0]?.[1]).toBe(false);
+
+    core.dispose();
+  });
+
   it('forces a full repaint when a write returns the viewport to the bottom', async () => {
     const core = await createCore();
     const terminal = mockState.lastTerminal;

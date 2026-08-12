@@ -166,6 +166,7 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
   private lastRenderedRows = 0;
   private lastDirtyCells = 0;
   private geometry: TerminalFabricGeometry | null = null;
+  private surfacePixelRatio: number | null = null;
   private surfaceBackgroundCss: string | null = null;
   private hostInlineBackgroundColor: string | null = null;
   private sourceGridCoverage: SourceGridCoverage | null = null;
@@ -398,9 +399,16 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     }
     const cssWidth = Math.max(1, Math.floor(width));
     const cssHeight = Math.max(1, Math.floor(height));
-    this.canvas.style.width = `${cssWidth}px`;
-    this.canvas.style.height = `${cssHeight}px`;
+    const pixelRatio = readDevicePixelRatio();
+    if (
+      this.geometry?.width === cssWidth
+      && this.geometry.height === cssHeight
+      && this.surfacePixelRatio === pixelRatio
+    ) {
+      return;
+    }
     this.renderer.resize(cssWidth, cssHeight);
+    this.syncCanvasBackingSurface(cssWidth, cssHeight, pixelRatio);
     this.surfaceCoverageKey = '';
     if (this.sourceGridCoverage && this.module) {
       const batch = this.renderer.batch();
@@ -417,6 +425,21 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     }
     this.renderer.render();
     this.geometry = readBeamtermGeometry(this.renderer, this.canvas, cssWidth, cssHeight);
+    this.surfacePixelRatio = pixelRatio;
+  }
+
+  private syncCanvasBackingSurface(cssWidth: number, cssHeight: number, pixelRatio: number): void {
+    if (!this.canvas) {
+      return;
+    }
+    const backingWidth = Math.max(cssWidth, this.canvas.width / pixelRatio);
+    const backingHeight = Math.max(cssHeight, this.canvas.height / pixelRatio);
+    this.canvas.style.width = `${backingWidth}px`;
+    this.canvas.style.height = `${backingHeight}px`;
+    this.canvas.style.left = '0';
+    this.canvas.style.top = `${-(backingHeight - cssHeight)}px`;
+    this.canvas.style.right = 'auto';
+    this.canvas.style.bottom = 'auto';
   }
 
   getGeometry(): TerminalFabricGeometry | null {
@@ -488,6 +511,7 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     this.frameBatch = null;
     this.renderer?.free();
     this.renderer = null;
+    this.surfacePixelRatio = null;
     this.module = null;
     this.initialized = false;
     this.geometry = null;
@@ -800,6 +824,10 @@ const resolveCanvasBackingScale = (backingSize: number, cssSize: number): number
     return scale;
   }
 
+  return readDevicePixelRatio();
+};
+
+const readDevicePixelRatio = (): number => {
   const dpr = typeof window !== 'undefined' ? Number(window.devicePixelRatio) : 1;
   return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
 };

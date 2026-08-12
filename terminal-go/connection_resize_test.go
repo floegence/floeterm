@@ -106,6 +106,57 @@ func TestConnectionResizeCoalescesRapidUpdates(t *testing.T) {
 	}
 }
 
+func TestConnectionResizeFixedRapidVectorConvergesToLatestIntent(t *testing.T) {
+	vector := [][2]int{{120, 40}, {63, 18}, {160, 52}, {88, 31}, {132, 46}}
+	var calls []*pty.Winsize
+	var callsMu sync.Mutex
+	firstStarted := make(chan struct{})
+	allowFirst := make(chan struct{})
+	session := &Session{
+		ID:              "resize-fixed-vector",
+		PTY:             &os.File{},
+		isActive:        true,
+		connections:     map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 80, Rows: 24}},
+		lastAppliedCols: 80,
+		lastAppliedRows: 24,
+		setPTYSize: func(_ *os.File, size *pty.Winsize) error {
+			callsMu.Lock()
+			copySize := *size
+			calls = append(calls, &copySize)
+			first := len(calls) == 1
+			callsMu.Unlock()
+			if first {
+				close(firstStarted)
+				<-allowFirst
+			}
+			return nil
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	session.UpdateConnectionSize("view", vector[0][0], vector[0][1])
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first vector resize did not start")
+	}
+	for _, size := range vector[1:] {
+		session.UpdateConnectionSize("view", size[0], size[1])
+	}
+	close(allowFirst)
+	waitForResizeCalls(t, &callsMu, &calls, 2)
+	waitForResizeIdle(t, session)
+
+	callsMu.Lock()
+	defer callsMu.Unlock()
+	if len(calls) != 2 || calls[0].Cols != 120 || calls[0].Rows != 40 || calls[1].Cols != 132 || calls[1].Rows != 46 {
+		t.Fatalf("fixed resize vector did not coalesce to first/latest: %+v", calls)
+	}
+	if session.lastAppliedCols != 132 || session.lastAppliedRows != 46 || session.geometryGeneration != 2 {
+		t.Fatalf("final geometry=%dx%d generation=%d", session.lastAppliedCols, session.lastAppliedRows, session.geometryGeneration)
+	}
+}
+
 func waitForResizeCalls(t *testing.T, mu *sync.Mutex, calls *[]*pty.Winsize, expected int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

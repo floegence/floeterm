@@ -366,12 +366,29 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 		s.closeUnclaimedPTY(cmd, ptmx)
 		return fmt.Errorf("failed to initialize PTY output monitor: %w", err)
 	}
+	ptyReadFD, err := syscall.Dup(int(ptmx.Fd()))
+	if err != nil {
+		_ = outputMonitor.Close()
+		s.closeUnclaimedPTY(cmd, ptmx)
+		return fmt.Errorf("failed to duplicate PTY output descriptor: %w", err)
+	}
+	readerWake, resizeWake, err := os.Pipe()
+	if err != nil {
+		_ = syscall.Close(ptyReadFD)
+		_ = outputMonitor.Close()
+		s.closeUnclaimedPTY(cmd, ptmx)
+		return fmt.Errorf("failed to create PTY reader wake pipe: %w", err)
+	}
+	resizeWakeFD := int(resizeWake.Fd())
 
 	s.mu.Lock()
 	if s.activation != activation || s.closed || sessionContextDone(activation.ctx) || s.isActive {
 		active := s.isActive
 		s.mu.Unlock()
 		_ = outputMonitor.Close()
+		_ = syscall.Close(ptyReadFD)
+		_ = readerWake.Close()
+		_ = resizeWake.Close()
 		s.closeUnclaimedPTY(cmd, ptmx)
 		if active {
 			return nil
@@ -404,11 +421,15 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 		s.schedulePTYSizeReconcileLocked("activation-completed")
 	}
 	s.mu.Unlock()
+	s.ptyOrderMu.Lock()
+	s.ptyReaderReady = true
+	s.ptyReaderWakeFD = resizeWakeFD
+	s.ptyOrderMu.Unlock()
 
 	// Publish activation success before process observation can report a natural
 	// exit and close the session.
 	activation.complete(nil)
-	go s.readPTYOutput(ptmx, outputMonitor, done, readerDone)
+	go s.readPTYOutput(ptyReadFD, readerWake, resizeWake, outputMonitor, done, readerDone)
 	go s.waitProcessExit(cmd, ptmx, readerDone, done)
 
 	s.config.logger.Info("Started PTY session", "sessionID", s.ID, "cols", cols, "rows", rows)
@@ -519,6 +540,7 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) cleanup() {
+	s.closePTYOrdering()
 	s.historyCommitMu.Lock()
 	s.mu.Lock()
 	if s.cleaned {
@@ -866,7 +888,9 @@ func (s *Session) broadcastData(event TerminalOutputEvent, subscribers []LiveSub
 }
 
 func (s *Session) readPTYOutput(
-	ptyFile *os.File,
+	ptyFD int,
+	readerWake *os.File,
+	resizeWake *os.File,
 	monitor ptyOutputMonitor,
 	processDone <-chan struct{},
 	done chan struct{},
@@ -876,10 +900,23 @@ func (s *Session) readPTYOutput(
 	}
 	s.config.logger.Info("Starting PTY output reader", "sessionID", s.ID)
 
-	if ptyFile == nil {
-		s.config.logger.Warn("PTY is nil", "sessionID", s.ID)
+	if ptyFD < 0 {
+		s.config.logger.Warn("PTY output descriptor is invalid", "sessionID", s.ID)
 		return
 	}
+	defer syscall.Close(ptyFD)
+	defer func() {
+		s.ptyOrderMu.Lock()
+		if s.ptyReaderWakeFD == int(resizeWake.Fd()) {
+			s.ptyReaderReady = false
+			s.ptyReaderWakeFD = -1
+			s.ptyResizeDrain = false
+			s.ptyOrderConditionLocked().Broadcast()
+		}
+		s.ptyOrderMu.Unlock()
+		_ = readerWake.Close()
+		_ = resizeWake.Close()
+	}()
 	if monitor == nil {
 		s.config.logger.Error("PTY output monitor is nil", "sessionID", s.ID)
 		return
@@ -889,7 +926,7 @@ func (s *Session) readPTYOutput(
 		go func() {
 			select {
 			case <-processDone:
-				_ = monitor.Close()
+				_, _ = resizeWake.Write([]byte{1})
 			case <-monitorWatcherDone:
 			}
 		}()
@@ -899,11 +936,11 @@ func (s *Session) readPTYOutput(
 
 	reads := make(chan ptyReadResult, ptyReadQueueCapacity)
 	go readPTYPacketsWithPendingGeometry(
-		ptyFile,
+		nil,
 		reads,
 		monitor.PendingBytes,
 		processDone,
-		s.captureTerminalGeometry,
+		s.readPTYPacketFunc(ptyFD, int(readerWake.Fd()), monitor, processDone),
 	)
 	buffer := make([]byte, 32*1024)
 	var pending *ptyReadResult
@@ -924,7 +961,7 @@ func (s *Session) readPTYOutput(
 		pending = nextPending
 		if n > 0 {
 			raw := append([]byte(nil), buffer[:n]...)
-			s.processRawPTYDataAtGeometry(raw, geometry)
+			s.processAdmittedPTYDataAtGeometry(raw, geometry)
 		}
 		if err != nil {
 			if tail := s.flushPrivateShellLifecycleFilter(); len(tail) > 0 {
@@ -960,17 +997,24 @@ func readPTYPacketsWithPendingGeometry(
 	reads chan<- ptyReadResult,
 	pendingBytes func() (int, error),
 	processDone <-chan struct{},
-	captureGeometry func() TerminalGeometry,
+	readPacket func([]byte) (int, error, TerminalGeometry),
 ) {
 	defer close(reads)
 	buffer := make([]byte, 32*1024)
 	coalesce := false
 	for {
-		n, err := reader.Read(buffer)
+		var geometry TerminalGeometry
+		var n int
+		var err error
+		if readPacket != nil {
+			n, err, geometry = readPacket(buffer)
+		} else {
+			n, err = reader.Read(buffer)
+		}
 		total := n
 		morePending := false
 		if total > 0 && err == nil {
-			if coalesce && captureGeometry == nil {
+			if coalesce && readPacket == nil {
 				for total < len(buffer) {
 					available, availableErr := currentPendingBytes(pendingBytes, processDone)
 					if availableErr != nil {
@@ -1003,10 +1047,6 @@ func readPTYPacketsWithPendingGeometry(
 			}
 		}
 		if total > 0 {
-			var geometry TerminalGeometry
-			if captureGeometry != nil {
-				geometry = captureGeometry()
-			}
 			reads <- ptyReadResult{
 				data:     append([]byte(nil), buffer[:total]...),
 				err:      err,
@@ -1024,6 +1064,10 @@ func readPTYPacketsWithPendingGeometry(
 		coalesce = morePending
 	}
 }
+
+// ptyReadResult is admitted only after the reader has linearized the completed
+// Read with the session order domain. The geometry is carried with the packet
+// and is never recaptured during ordered history commit.
 
 func currentPendingBytes(
 	pendingBytes func() (int, error),
@@ -1093,23 +1137,292 @@ func (s *Session) captureTerminalGeometry() TerminalGeometry {
 	return s.effectiveGeometryLocked()
 }
 
+func (s *Session) ptyOrderConditionLocked() *sync.Cond {
+	if s.ptyOrderCond == nil {
+		s.ptyOrderCond = sync.NewCond(&s.ptyOrderMu)
+	}
+	return s.ptyOrderCond
+}
+
+func (s *Session) closePTYOrdering() {
+	s.ptyOrderMu.Lock()
+	condition := s.ptyOrderConditionLocked()
+	if !s.ptyOrderClosed {
+		s.ptyOrderClosed = true
+		s.ptyResizeDrain = false
+		if s.ptyReaderReady && s.ptyReaderWakeFD >= 0 {
+			_, _ = syscall.Write(s.ptyReaderWakeFD, []byte{1})
+		}
+		condition.Broadcast()
+	}
+	for s.ptyReadBytes > 0 {
+		condition.Wait()
+	}
+	s.ptyOrderMu.Unlock()
+}
+
+func (s *Session) readPTYPacketFunc(
+	fd int,
+	cancelFD int,
+	monitor ptyOutputMonitor,
+	processDone <-chan struct{},
+) func([]byte) (int, error, TerminalGeometry) {
+	return func(buffer []byte) (int, error, TerminalGeometry) {
+		readable := false
+		for {
+			s.ptyOrderMu.Lock()
+			condition := s.ptyOrderConditionLocked()
+			for s.ptyResizeActive && !s.ptyOrderClosed {
+				condition.Wait()
+			}
+			if s.ptyOrderClosed {
+				s.ptyOrderMu.Unlock()
+				return 0, io.EOF, TerminalGeometry{}
+			}
+			if s.ptyResizeDrain {
+				drainPTYReaderWake(cancelFD)
+				s.ptyResizeDrain = false
+				s.ptyResizeActive = true
+				condition.Broadcast()
+				for s.ptyResizeActive {
+					condition.Wait()
+				}
+				s.ptyOrderMu.Unlock()
+				continue
+			}
+			available := len(buffer)
+			if !readable {
+				var err error
+				available, err = monitor.PendingBytes()
+				if err != nil {
+					s.ptyOrderMu.Unlock()
+					return 0, err, TerminalGeometry{}
+				}
+			}
+			if available <= 0 && !readable {
+				s.ptyOrderMu.Unlock()
+				if channelClosed(processDone) {
+					return 0, io.EOF, TerminalGeometry{}
+				}
+				ptyReadable, waitErr := waitPTYReadable(fd, cancelFD)
+				if waitErr != nil {
+					return 0, waitErr, TerminalGeometry{}
+				}
+				if !ptyReadable {
+					drainPTYReaderWake(cancelFD)
+					continue
+				}
+				readable = true
+				continue
+			}
+			readSize := min(available, len(buffer))
+			n, readErr := syscall.Read(fd, buffer[:readSize])
+			readable = false
+			if errors.Is(readErr, syscall.EAGAIN) || errors.Is(readErr, syscall.EWOULDBLOCK) {
+				s.ptyOrderMu.Unlock()
+				continue
+			}
+			geometry := s.captureTerminalGeometry()
+			if n > 0 {
+				s.ptyReadBytes += int64(n)
+			}
+			s.ptyOrderMu.Unlock()
+			return n, readErr, geometry
+		}
+	}
+}
+
+func drainPTYReaderWake(fd int) {
+	if fd < 0 {
+		return
+	}
+	_ = syscall.SetNonblock(fd, true)
+	var buffer [64]byte
+	for {
+		if _, err := syscall.Read(fd, buffer[:]); err != nil {
+			break
+		}
+	}
+	_ = syscall.SetNonblock(fd, false)
+}
+
+func channelClosed(channel <-chan struct{}) bool {
+	if channel == nil {
+		return false
+	}
+	select {
+	case <-channel:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Session) readPTYPacketOrdered(
+	buffer []byte,
+	read func([]byte) (int, error),
+	waitReadable func() error,
+) (int, error, TerminalGeometry) {
+	for {
+		s.ptyOrderMu.Lock()
+		condition := s.ptyOrderConditionLocked()
+		for s.ptyResizeActive && !s.ptyOrderClosed {
+			condition.Wait()
+		}
+		if s.ptyOrderClosed {
+			s.ptyOrderMu.Unlock()
+			return 0, io.EOF, TerminalGeometry{}
+		}
+		if read == nil {
+			s.ptyOrderMu.Unlock()
+			return 0, io.EOF, TerminalGeometry{}
+		}
+		n, err := read(buffer)
+		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+			s.ptyOrderMu.Unlock()
+			if waitReadable != nil {
+				if waitErr := waitReadable(); waitErr != nil {
+					return 0, waitErr, TerminalGeometry{}
+				}
+			}
+			continue
+		}
+		geometry := s.captureTerminalGeometry()
+		if n > 0 {
+			s.ptyReadBytes += int64(n)
+		}
+		s.ptyOrderMu.Unlock()
+		return n, err, geometry
+	}
+}
+
+func (s *Session) completePTYRead(size int, commitErr error) {
+	s.ptyOrderMu.Lock()
+	if size <= 0 {
+		if s.ptyOrderErr == nil {
+			s.ptyOrderErr = fmt.Errorf("invalid PTY read completion size %d", size)
+		}
+	} else if int64(size) > s.ptyReadBytes {
+		if s.ptyOrderErr == nil {
+			s.ptyOrderErr = fmt.Errorf(
+				"PTY read completion size %d exceeds admitted bytes %d",
+				size,
+				s.ptyReadBytes,
+			)
+		}
+		s.ptyReadBytes = 0
+	} else {
+		s.ptyReadBytes -= int64(size)
+	}
+	if commitErr != nil && s.ptyOrderErr == nil {
+		s.ptyOrderErr = commitErr
+	}
+	s.ptyOrderConditionLocked().Broadcast()
+	s.ptyOrderMu.Unlock()
+}
+
+func (s *Session) beginPTYResize() error {
+	s.ptyOrderMu.Lock()
+	condition := s.ptyOrderConditionLocked()
+	for (s.ptyResizeActive || s.ptyResizeDrain) && !s.ptyOrderClosed {
+		condition.Wait()
+	}
+	if s.ptyOrderClosed {
+		s.ptyOrderMu.Unlock()
+		return errSessionClosed
+	}
+	if s.ptyReaderReady && s.ptyReaderWakeFD >= 0 {
+		s.ptyResizeDrain = true
+		if _, err := syscall.Write(s.ptyReaderWakeFD, []byte{1}); err != nil {
+			s.ptyResizeDrain = false
+			s.ptyOrderMu.Unlock()
+			return fmt.Errorf("wake terminal output reader for resize: %w", err)
+		}
+		for s.ptyResizeDrain && s.ptyReaderReady && !s.ptyOrderClosed {
+			condition.Wait()
+		}
+		if s.ptyOrderClosed {
+			if s.ptyResizeActive {
+				s.ptyResizeActive = false
+			}
+			s.ptyResizeDrain = false
+			condition.Broadcast()
+			s.ptyOrderMu.Unlock()
+			return errSessionClosed
+		}
+		if !s.ptyResizeActive {
+			if !s.ptyReaderReady {
+				s.ptyOrderMu.Unlock()
+				return errSessionClosed
+			}
+			s.ptyOrderMu.Unlock()
+			return errors.New("terminal output reader did not transfer resize ownership")
+		}
+	} else {
+		s.ptyResizeActive = true
+	}
+	for s.ptyReadBytes > 0 && !s.ptyOrderClosed {
+		condition.Wait()
+	}
+	if s.ptyOrderClosed {
+		s.ptyResizeActive = false
+		condition.Broadcast()
+		s.ptyOrderMu.Unlock()
+		return errSessionClosed
+	}
+	if s.ptyOrderErr != nil {
+		err := s.ptyOrderErr
+		s.ptyResizeActive = false
+		condition.Broadcast()
+		s.ptyOrderMu.Unlock()
+		return fmt.Errorf("terminal output ordering failed: %w", err)
+	}
+	s.ptyOrderMu.Unlock()
+	return nil
+}
+
+func (s *Session) endPTYResize() {
+	s.ptyOrderMu.Lock()
+	s.ptyResizeActive = false
+	s.ptyOrderConditionLocked().Broadcast()
+	s.ptyOrderMu.Unlock()
+}
+
 func (s *Session) processRawPTYData(data []byte) {
 	s.processRawPTYDataAtGeometry(data, s.captureTerminalGeometry())
 }
 
 func (s *Session) processRawPTYDataAtGeometry(data []byte, geometry TerminalGeometry) {
 	displayData := s.filterPrivateShellLifecycleMarkers(data)
-	s.publishPTYDisplayDataAtGeometry(displayData, geometry)
+	s.publishPTYDisplayDataAtGeometry(displayData, geometry, nil)
+	s.checkShellIntegrationChange(data)
+}
+
+func (s *Session) processAdmittedPTYDataAtGeometry(data []byte, geometry TerminalGeometry) {
+	displayData := s.filterPrivateShellLifecycleMarkers(data)
+	s.publishPTYDisplayDataAtGeometry(displayData, geometry, func(commitErr error) {
+		s.completePTYRead(len(data), commitErr)
+	})
 	s.checkShellIntegrationChange(data)
 }
 
 func (s *Session) publishPTYDisplayData(displayData []byte) {
-	s.publishPTYDisplayDataAtGeometry(displayData, s.captureTerminalGeometry())
+	s.publishPTYDisplayDataAtGeometry(displayData, s.captureTerminalGeometry(), nil)
 }
 
-func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry TerminalGeometry) {
+func (s *Session) publishPTYDisplayDataAtGeometry(
+	displayData []byte,
+	geometry TerminalGeometry,
+	onCommitted func(error),
+) {
 	timestamp := time.Now().UnixMilli()
 
+	if len(displayData) == 0 {
+		if onCommitted != nil {
+			onCommitted(nil)
+		}
+		return
+	}
 	if len(displayData) > 0 {
 		s.historyCommitMu.Lock()
 
@@ -1117,6 +1430,9 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 		if s.outputClosed {
 			s.mu.Unlock()
 			s.historyCommitMu.Unlock()
+			if onCommitted != nil {
+				onCommitted(errSessionClosed)
+			}
 			return
 		}
 		s.sequenceNumber++
@@ -1142,7 +1458,13 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 
 		durableCommitted := false
 		if historySpool != nil && historySpoolReady {
-			if err := historySpool.Append(chunk); err != nil {
+			appendHistory := s.appendHistorySpool
+			if appendHistory == nil {
+				appendHistory = func(spool *TerminalHistorySpool, chunk TerminalDataChunk) error {
+					return spool.Append(chunk)
+				}
+			}
+			if err := appendHistory(historySpool, chunk); err != nil {
 				s.mu.Lock()
 				if s.historySpool == historySpool && s.historySpoolErr == nil {
 					s.historySpoolErr = err
@@ -1181,6 +1503,13 @@ func (s *Session) publishPTYDisplayDataAtGeometry(displayData []byte, geometry T
 		}
 		s.mu.Unlock()
 		s.historyCommitMu.Unlock()
+		if onCommitted != nil {
+			var commitErr error
+			if !durableCommitted && !ringCommitted {
+				commitErr = errors.New("terminal output was not committed to durable or ring history")
+			}
+			onCommitted(commitErr)
+		}
 
 		s.broadcastData(TerminalOutputEvent{
 			Data:        displayData,

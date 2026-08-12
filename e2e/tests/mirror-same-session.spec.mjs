@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { PNG } from 'pngjs';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
+import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
 const readMirror = page => page.evaluate(() => {
   const harness = window.__floetermMirrorHarness;
@@ -32,6 +33,9 @@ const openMirror = async page => {
     return harness?.getViews().length === 2
       && harness.getViews().every(view => view.getSnapshot().connection.isConnected && view.getTerminalInfo());
   });
+  const sessionId = await page.locator('[data-testid="mirror-runtime-state"]').getAttribute('data-session-id');
+  if (!sessionId) throw new Error('mirror session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
 };
 
 const resetMirrorStreamDiagnostics = page => page.evaluate(() => {
@@ -184,16 +188,6 @@ test('applies the minimum live-view dimensions to the shared PTY', async ({ page
   const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
-  const readyMarker = 'MIRROR_E2E_SHELL_READY';
-  const readyMarkerHex = Buffer.from(`${readyMarker}\n`).toString('hex');
-  await page.evaluate(markerHex => {
-    window.__floetermMirrorHarness.getViews()[0].sendInput(
-      `python3 -c "import os;os.write(1,bytes.fromhex('${markerHex}'))"\r`,
-    );
-  }, readyMarkerHex);
-  await page.waitForFunction(marker => (
-    window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes(marker))
-  ), readyMarker);
   await page.evaluate(async () => {
     await Promise.all(window.__floetermMirrorHarness.getViews().map(view => view.synchronizeSize()));
   });

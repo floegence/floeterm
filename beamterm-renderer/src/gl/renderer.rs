@@ -16,7 +16,9 @@ pub struct Renderer {
     state: GlState,
     canvas_padding_color: (f32, f32, f32),
     logical_size_px: (i32, i32),
+    backing_size_px: (i32, i32),
     pixel_ratio: f32,
+    backing_pixel_ratio: f32,
     auto_resize_canvas_css: bool,
 }
 
@@ -77,7 +79,9 @@ impl Renderer {
             state,
             canvas_padding_color: (0.0, 0.0, 0.0),
             logical_size_px: (width, height),
+            backing_size_px: (0, 0),
             pixel_ratio: 1.0,
+            backing_pixel_ratio: 1.0,
             auto_resize_canvas_css,
         };
         renderer.resize(width as _, height as _);
@@ -87,23 +91,43 @@ impl Renderer {
     /// Resizes the canvas and updates the viewport.
     pub fn resize(&mut self, width: i32, height: i32) {
         self.logical_size_px = (width, height);
-        let (w, h) = self.physical_size();
+        let target_size = self.physical_size();
+        let reset_backing = self.backing_size_px != (0, 0)
+            && self.pixel_ratio != self.backing_pixel_ratio;
+        let next_backing = resolve_backing_size(self.backing_size_px, target_size, reset_backing);
 
-        self.canvas.set_width(w as u32);
-        self.canvas.set_height(h as u32);
+        if next_backing != self.backing_size_px {
+            self.canvas.set_width(next_backing.0.max(1) as u32);
+            self.canvas.set_height(next_backing.1.max(1) as u32);
+            self.backing_size_px = next_backing;
+            self.backing_pixel_ratio = self.pixel_ratio;
+        }
 
         if self.auto_resize_canvas_css {
             let _ = self
                 .canvas
                 .style()
-                .set_property("width", &format!("{width}px"));
+                .set_property(
+                    "width",
+                    &format!("{}px", next_backing.0 as f32 / self.pixel_ratio),
+                );
             let _ = self
                 .canvas
                 .style()
-                .set_property("height", &format!("{height}px"));
+                .set_property(
+                    "height",
+                    &format!("{}px", next_backing.1 as f32 / self.pixel_ratio),
+                );
         }
 
-        self.state.viewport(&self.gl, 0, 0, w, h);
+        let viewport = resolve_logical_viewport(target_size);
+        self.state.viewport(
+            &self.gl,
+            viewport.0,
+            viewport.1,
+            viewport.2,
+            viewport.3,
+        );
     }
 
     /// Clears the framebuffer with the specified color.
@@ -198,6 +222,22 @@ impl Renderer {
     pub(crate) fn set_pixel_ratio(&mut self, pixel_ratio: f32) {
         self.pixel_ratio = pixel_ratio;
     }
+
+}
+
+fn resolve_backing_size(
+    current: (i32, i32),
+    requested: (i32, i32),
+    reset: bool,
+) -> (i32, i32) {
+    if reset {
+        return requested;
+    }
+    (current.0.max(requested.0), current.1.max(requested.1))
+}
+
+fn resolve_logical_viewport(logical: (i32, i32)) -> (i32, i32, i32, i32) {
+    (0, 0, logical.0, logical.1)
 }
 
 fn unpack_rgb(color: u32) -> (f32, f32, f32) {
@@ -210,7 +250,7 @@ fn unpack_rgb(color: u32) -> (f32, f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::unpack_rgb;
+    use super::{resolve_backing_size, resolve_logical_viewport, unpack_rgb};
 
     #[test]
     fn unpacks_canvas_padding_color_as_normalized_rgb() {
@@ -220,5 +260,33 @@ mod tests {
         assert!((red - 26.0 / 255.0).abs() < f32::EPSILON);
         assert!((green - 43.0 / 255.0).abs() < f32::EPSILON);
         assert!((blue - 60.0 / 255.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn retains_backing_capacity_across_shrink_and_regrow_until_reset_or_growth() {
+        assert_eq!(
+            resolve_backing_size((1200, 700), (700, 500), false),
+            (1200, 700),
+        );
+        assert_eq!(
+            resolve_backing_size((1200, 700), (1100, 650), false),
+            (1200, 700),
+        );
+        assert_eq!(
+            resolve_backing_size((1200, 700), (1400, 800), false),
+            (1400, 800),
+        );
+        assert_eq!(
+            resolve_backing_size((1200, 700), (700, 500), true),
+            (700, 500),
+        );
+    }
+
+    #[test]
+    fn retained_backing_keeps_the_logical_viewport_at_the_canvas_origin() {
+        assert_eq!(
+            resolve_logical_viewport((700, 500)),
+            (0, 0, 700, 500),
+        );
     }
 }

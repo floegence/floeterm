@@ -329,14 +329,24 @@ type Session struct {
 	cleaned         bool
 	mu              sync.RWMutex
 	historyCommitMu sync.Mutex
+	ptyOrderMu      sync.Mutex
+	ptyOrderCond    *sync.Cond
+	ptyResizeActive bool
+	ptyResizeDrain  bool
+	ptyReadBytes    int64
+	ptyOrderErr     error
+	ptyOrderClosed  bool
+	ptyReaderReady  bool
+	ptyReaderWakeFD int
 	ctx             context.Context
 	cancel          context.CancelFunc
 
-	connections     map[string]*ConnectionInfo
-	ringBuffer      *TerminalRingBuffer
-	historySpool    *TerminalHistorySpool
-	historySpoolErr error
-	liveAttachments map[string]liveAttachment
+	connections        map[string]*ConnectionInfo
+	ringBuffer         *TerminalRingBuffer
+	historySpool       *TerminalHistorySpool
+	historySpoolErr    error
+	appendHistorySpool func(*TerminalHistorySpool, TerminalDataChunk) error
+	liveAttachments    map[string]liveAttachment
 
 	sequenceNumber       int64
 	committedSequence    int64

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
+import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
 const createSession = async request => {
   const response = await request.post('/api/sessions', {
@@ -44,6 +45,7 @@ const openSharedSessionPage = async (page, sessionId, viewport) => {
       && harness?.getSnapshot().connection.isConnected
       && harness.getTerminalInfo();
   }, sessionId);
+  await waitForInteractiveShell(page, sessionId);
 };
 
 const forceResizeAfterCommittedLayout = async page => {
