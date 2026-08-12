@@ -4,6 +4,9 @@ use web_sys::HtmlCanvasElement;
 
 use crate::{error::Error, js};
 
+const MAX_RETAINED_BACKING_AXIS_PX: i32 = 8192;
+const MAX_RETAINED_BACKING_BYTES: i64 = 64 * 1024 * 1024;
+
 /// High-level WebGL2 renderer for terminal-style applications.
 ///
 /// The `Renderer` manages the WebGL2 rendering context, canvas, and provides
@@ -92,8 +95,8 @@ impl Renderer {
     pub fn resize(&mut self, width: i32, height: i32) {
         self.logical_size_px = (width, height);
         let target_size = self.physical_size();
-        let reset_backing = self.backing_size_px != (0, 0)
-            && self.pixel_ratio != self.backing_pixel_ratio;
+        let reset_backing =
+            self.backing_size_px != (0, 0) && self.pixel_ratio != self.backing_pixel_ratio;
         let next_backing = resolve_backing_size(self.backing_size_px, target_size, reset_backing);
 
         if next_backing != self.backing_size_px {
@@ -104,30 +107,19 @@ impl Renderer {
         }
 
         if self.auto_resize_canvas_css {
-            let _ = self
-                .canvas
-                .style()
-                .set_property(
-                    "width",
-                    &format!("{}px", next_backing.0 as f32 / self.pixel_ratio),
-                );
-            let _ = self
-                .canvas
-                .style()
-                .set_property(
-                    "height",
-                    &format!("{}px", next_backing.1 as f32 / self.pixel_ratio),
-                );
+            let _ = self.canvas.style().set_property(
+                "width",
+                &format!("{}px", next_backing.0 as f32 / self.pixel_ratio),
+            );
+            let _ = self.canvas.style().set_property(
+                "height",
+                &format!("{}px", next_backing.1 as f32 / self.pixel_ratio),
+            );
         }
 
-        let viewport = resolve_logical_viewport(target_size);
-        self.state.viewport(
-            &self.gl,
-            viewport.0,
-            viewport.1,
-            viewport.2,
-            viewport.3,
-        );
+        let viewport = resolve_logical_viewport(next_backing, target_size);
+        self.state
+            .viewport(&self.gl, viewport.0, viewport.1, viewport.2, viewport.3);
     }
 
     /// Clears the framebuffer with the specified color.
@@ -152,7 +144,10 @@ impl Renderer {
     /// Returns an error if the drawable's `prepare` step fails (e.g., GPU buffer
     /// upload or shader compilation errors).
     pub fn render(&mut self, drawable: &impl Drawable) -> Result<(), crate::Error> {
-        let mut context = RenderContext { gl: &self.gl, state: &mut self.state };
+        let mut context = RenderContext {
+            gl: &self.gl,
+            state: &mut self.state,
+        };
 
         drawable.prepare(&mut context)?;
         drawable.draw(&mut context);
@@ -211,9 +206,10 @@ impl Renderer {
         self.gl = gl;
         self.raw_gl = raw_gl;
 
-        // Restore viewport using physical (device) pixels
-        let (width, height) = self.physical_size();
-        self.state.viewport(&self.gl, 0, 0, width, height);
+        // Restore the logical viewport at the visible top of retained backing.
+        let viewport = resolve_logical_viewport(self.backing_size_px, self.physical_size());
+        self.state
+            .viewport(&self.gl, viewport.0, viewport.1, viewport.2, viewport.3);
 
         Ok(())
     }
@@ -222,14 +218,9 @@ impl Renderer {
     pub(crate) fn set_pixel_ratio(&mut self, pixel_ratio: f32) {
         self.pixel_ratio = pixel_ratio;
     }
-
 }
 
-fn resolve_backing_size(
-    current: (i32, i32),
-    requested: (i32, i32),
-    reset: bool,
-) -> (i32, i32) {
+fn resolve_backing_size(current: (i32, i32), requested: (i32, i32), reset: bool) -> (i32, i32) {
     if reset {
         return requested;
     }
@@ -240,14 +231,25 @@ fn resolve_backing_size(
             current_axis.max(requested_axis)
         }
     };
-    (
+    let retained = (
         resolve_axis(current.0, requested.0),
         resolve_axis(current.1, requested.1),
-    )
+    );
+    let retained_bytes = i64::from(retained.0.max(0))
+        .saturating_mul(i64::from(retained.1.max(0)))
+        .saturating_mul(4);
+    if retained.0 > MAX_RETAINED_BACKING_AXIS_PX
+        || retained.1 > MAX_RETAINED_BACKING_AXIS_PX
+        || retained_bytes > MAX_RETAINED_BACKING_BYTES
+    {
+        requested
+    } else {
+        retained
+    }
 }
 
-fn resolve_logical_viewport(logical: (i32, i32)) -> (i32, i32, i32, i32) {
-    (0, 0, logical.0, logical.1)
+fn resolve_logical_viewport(backing: (i32, i32), logical: (i32, i32)) -> (i32, i32, i32, i32) {
+    (0, backing.1.saturating_sub(logical.1), logical.0, logical.1)
 }
 
 fn unpack_rgb(color: u32) -> (f32, f32, f32) {
@@ -298,13 +300,25 @@ mod tests {
             resolve_backing_size((1400, 1000), (700, 500), false),
             (1400, 1000),
         );
+        assert_eq!(
+            resolve_backing_size((8192, 4096), (1200, 700), false),
+            (1200, 700),
+        );
+        assert_eq!(
+            resolve_backing_size((9000, 700), (9000, 700), false),
+            (9000, 700),
+        );
     }
 
     #[test]
-    fn retained_backing_keeps_the_logical_viewport_at_the_canvas_origin() {
+    fn retained_backing_keeps_logical_row_zero_at_the_visible_canvas_top() {
         assert_eq!(
-            resolve_logical_viewport((700, 500)),
-            (0, 0, 700, 500),
+            resolve_logical_viewport((1200, 700), (700, 500)),
+            (0, 200, 700, 500),
+        );
+        assert_eq!(
+            resolve_logical_viewport((700, 500), (700, 500)),
+            (0, 0, 700, 500)
         );
     }
 }

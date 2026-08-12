@@ -437,7 +437,7 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     this.canvas.style.width = `${backingWidth}px`;
     this.canvas.style.height = `${backingHeight}px`;
     this.canvas.style.left = '0';
-    this.canvas.style.top = `${-(backingHeight - cssHeight)}px`;
+    this.canvas.style.top = '0';
     this.canvas.style.right = 'auto';
     this.canvas.style.bottom = 'auto';
   }

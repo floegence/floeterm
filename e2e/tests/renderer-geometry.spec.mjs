@@ -126,6 +126,13 @@ const cellInkCounts = (imageBuffer, cellWidth, cellHeight, row, cols) => {
   });
 };
 
+const screenshotVisibleTerminal = async page => {
+  const surface = page.locator('.terminalSurface');
+  const box = await surface.boundingBox();
+  if (!box) throw new Error('terminal surface has no visible bounds');
+  return page.screenshot({ animations: 'disabled', clip: box });
+};
+
 test('uses typographic cell advance and line-box metrics without glyph overlap', async ({ page }, testInfo) => {
   const failures = captureBrowserFailures(page);
   await page.goto('/?mode=single&perf_probe=1');
@@ -158,7 +165,7 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
   const geometry = await readRendererGeometry(page);
   expectTypographicGeometry(geometry);
 
-  const screenshot = await canvas.screenshot({ animations: 'disabled' });
+  const screenshot = await screenshotVisibleTerminal(page);
   await testInfo.attach('renderer-geometry.png', { body: screenshot, contentType: 'image/png' });
   expectSeparatedRows(inkRows(screenshot), marker.length, geometry.expectedCellHeight);
 
@@ -170,17 +177,15 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
   });
   const resizedGeometry = await readRendererGeometry(page);
   expectTypographicGeometry(resizedGeometry);
-  const resizedScreenshot = await canvas.screenshot({ animations: 'disabled' });
+  const resizedScreenshot = await screenshotVisibleTerminal(page);
   await testInfo.attach('renderer-geometry-resized.png', { body: resizedScreenshot, contentType: 'image/png' });
   const resizedPixels = inkRows(resizedScreenshot);
   expectSeparatedRows(resizedPixels, marker.length, resizedGeometry.expectedCellHeight);
+  expect(resizedPixels.occupied[0]).toBeLessThan(resizedGeometry.expectedCellHeight);
   expect(resizedGeometry.cssLeft).toBe(resizedGeometry.surfaceLeft);
   expect(resizedGeometry.cssWidth).toBeGreaterThanOrEqual(resizedGeometry.logicalWidth);
   expect(resizedGeometry.cssHeight).toBeGreaterThanOrEqual(resizedGeometry.logicalHeight);
-  expect(resizedGeometry.cssTop - resizedGeometry.surfaceTop).toBeCloseTo(
-    -(resizedGeometry.backingHeight / resizedGeometry.dpr - resizedGeometry.logicalHeight),
-    5,
-  );
+  expect(resizedGeometry.cssTop).toBeCloseTo(resizedGeometry.surfaceTop, 5);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(failures).toEqual([]);
 });
