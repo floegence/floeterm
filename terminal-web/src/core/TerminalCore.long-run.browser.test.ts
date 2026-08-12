@@ -335,6 +335,54 @@ describe('TerminalCore long-running top-like rendering', () => {
     reference.free();
   });
 
+  it('keeps repeated normal-buffer scrolling and stale-pixel cleanup equivalent', async () => {
+    const cols = 48;
+    const rows = 8;
+    const core = await createCore(cols, rows);
+    const projection = instrumentProjection(core);
+    const ghostty = await Ghostty.load();
+    const reference = ghostty.createTerminal(cols, rows, {
+      scrollbackLimit: 256,
+      fgColor: 0xffffff,
+      bgColor: 0x000000,
+    });
+
+    for (let batch = 0; batch < 8; batch += 1) {
+      const data = Array.from({ length: rows + 3 }, (_, offset) => {
+        const index = batch * (rows + 3) + offset;
+        const label = index % 2 === 0
+          ? `normal-${index.toString().padStart(3, '0')}-中文-cafe\u0301-😀-\x1b]8;;https://example.test/${index}\x07link\x1b]8;;\x07`
+          : `normal-${index.toString().padStart(3, '0')}-short`;
+        return `\x1b[${31 + (index % 7)}m${label}\x1b[0m\r\n`;
+      }).join('');
+      reference.write(data);
+      await writeFrame(core, data);
+      compareStates(projection.state(), snapshotGhostty(reference), batch, boundedHexWindow(data));
+    }
+
+    const cleanup = `\x1b[2Kshort\x1b[0m`;
+    reference.write(cleanup);
+    await writeFrame(core, cleanup);
+    compareStates(projection.state(), snapshotGhostty(reference), 8, boundedHexWindow(cleanup));
+
+    const canvas = document.querySelector<HTMLCanvasElement>('.floeterm-beamterm-canvas');
+    expect(canvas).not.toBeNull();
+    if (!canvas) return;
+    const geometry = projection.geometry();
+    expect(geometry).not.toBeNull();
+    if (!geometry) return;
+    const image = snapshotCanvas(canvas);
+    expect(countInk(
+      image,
+      Math.floor(image.width * 0.5),
+      image.width,
+      Math.floor((rows - 1) * image.height / geometry.rows),
+      image.height,
+    )).toBe(0);
+
+    reference.free();
+  });
+
   it('keeps TerminalCore geometry projection ordered (transport boundary is covered in live contracts)', async () => {
     const geometries = [
       { cols: 100, rows: 30 },

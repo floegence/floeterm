@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
+import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
 const openTerminalWithHistory = async page => {
   await page.goto('/?mode=single&perf_probe=1');
@@ -8,6 +9,10 @@ const openTerminalWithHistory = async page => {
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
       && window.__floetermPerfHarness.getTerminalInfo()
   ));
+  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
+    .getAttribute('data-single-session-id');
+  if (!sessionId) throw new Error('single terminal session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
   await page.evaluate(() => window.__floetermPerfHarness.sendInput(
     `python3 -c "for i in range(320): print(f'SCROLLBAR_PHYSICAL_{i:04d}')"\r`,
   ));
@@ -26,11 +31,11 @@ const openTerminalWithHistory = async page => {
 };
 
 test('uses real mouse, wheel, keyboard, focus, selection, and media preferences', async ({ context, page }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
-    origin: 'http://127.0.0.1:8282',
-  });
   const failures = captureBrowserFailures(page);
   const { scrollbar, surface, terminal } = await openTerminalWithHistory(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+    origin: new URL(page.url()).origin,
+  });
   const surfaceBox = await surface.boundingBox();
   const scrollbarBox = await scrollbar.boundingBox();
   if (!surfaceBox) throw new Error('terminal surface has no bounding box');

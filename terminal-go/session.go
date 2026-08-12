@@ -1531,13 +1531,34 @@ func (s *Session) WriteDataWithSource(data []byte, sourceConnID string) error {
 		return fmt.Errorf("PTY not available")
 	}
 
-	if _, err := s.PTY.Write(data); err != nil {
+	writePTY := s.writePTY
+	if writePTY == nil {
+		writePTY = s.PTY.Write
+	}
+	if err := writeTerminalInput(writePTY, data); err != nil {
 		s.config.logger.Error("Failed to write to PTY", "sessionID", s.ID, "error", err)
 		return err
 	}
 
 	s.LastActive = time.Now()
 
+	return nil
+}
+
+func writeTerminalInput(write func([]byte) (int, error), data []byte) error {
+	for len(data) > 0 {
+		n, err := write(data)
+		if n < 0 || n > len(data) {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
 	return nil
 }
 

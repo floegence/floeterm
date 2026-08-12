@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
+import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
 test('renders dynamic-atlas glyphs through the owned WebGL2 backend without warnings', async ({ page }) => {
   const failures = captureBrowserFailures(page);
@@ -9,6 +10,10 @@ test('renders dynamic-atlas glyphs through the owned WebGL2 backend without warn
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
       && window.__floetermPerfHarness.getTerminalInfo()
   ));
+  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
+    .getAttribute('data-single-session-id');
+  if (!sessionId) throw new Error('single terminal session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
 
   const canvas = page.locator('.floeterm-beamterm-canvas');
   await expect(canvas).toBeVisible();

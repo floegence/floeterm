@@ -233,7 +233,17 @@ fn resolve_backing_size(
     if reset {
         return requested;
     }
-    (current.0.max(requested.0), current.1.max(requested.1))
+    let resolve_axis = |current_axis: i32, requested_axis: i32| {
+        if current_axis > requested_axis.saturating_mul(2) {
+            requested_axis
+        } else {
+            current_axis.max(requested_axis)
+        }
+    };
+    (
+        resolve_axis(current.0, requested.0),
+        resolve_axis(current.1, requested.1),
+    )
 }
 
 fn resolve_logical_viewport(logical: (i32, i32)) -> (i32, i32, i32, i32) {
@@ -263,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn retains_backing_capacity_across_shrink_and_regrow_until_reset_or_growth() {
+    fn retains_backing_capacity_within_a_bounded_regrowth_window() {
         assert_eq!(
             resolve_backing_size((1200, 700), (700, 500), false),
             (1200, 700),
@@ -279,6 +289,14 @@ mod tests {
         assert_eq!(
             resolve_backing_size((1200, 700), (700, 500), true),
             (700, 500),
+        );
+        assert_eq!(
+            resolve_backing_size((2400, 1400), (700, 500), false),
+            (700, 500),
+        );
+        assert_eq!(
+            resolve_backing_size((1400, 1000), (700, 500), false),
+            (1400, 1000),
         );
     }
 

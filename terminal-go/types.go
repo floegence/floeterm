@@ -380,6 +380,7 @@ type Session struct {
 	geometryGeneration uint64
 	startPTYProcess    func(*exec.Cmd, *pty.Winsize) (*os.File, error)
 	waitProcess        func(*exec.Cmd) error
+	writePTY           func([]byte) (int, error)
 	setPTYSize         func(*os.File, *pty.Winsize) error
 	requestPTYRedraw   func(*os.File) error
 	resizeQueued       bool

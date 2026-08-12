@@ -3,6 +3,7 @@ package terminal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -432,6 +433,98 @@ func TestSessionWritesIdenticalRapidInputExactlyOncePerCall(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("second identical input was suppressed")
+	}
+}
+
+func TestSessionWritesAcceptedInputCompletelyAcrossShortPTYWrites(t *testing.T) {
+	payload := []byte("printf '\\033[3J\\033[2J\\033[H'; printf 'FLOETERM_WRAP_'; printf '%180s' '' | tr ' ' X; printf '_END\\n'\r")
+	var written bytes.Buffer
+	writes := 0
+	session := &Session{
+		ID:  "session-short-input-write",
+		PTY: &os.File{},
+		writePTY: func(data []byte) (int, error) {
+			writes++
+			return written.Write(data[:min(7, len(data))])
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	if err := session.WriteDataWithSource(payload, "client"); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(written.Bytes(), payload) {
+		t.Fatalf("PTY input = %q, want complete %q", written.Bytes(), payload)
+	}
+	if writes <= 1 {
+		t.Fatalf("PTY write calls = %d, want multiple short writes", writes)
+	}
+}
+
+func TestSessionFailsClosedWhenPTYWriteMakesNoProgress(t *testing.T) {
+	session := &Session{
+		ID:       "session-zero-input-write",
+		PTY:      &os.File{},
+		writePTY: func([]byte) (int, error) { return 0, nil },
+		config:   newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	err := session.WriteDataWithSource([]byte("command\r"), "client")
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("zero-progress PTY write error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+func TestSessionDoesNotRepeatAcceptedPrefixWhenPTYWriteReturnsAnError(t *testing.T) {
+	wantErr := errors.New("pty write failed")
+	payload := []byte("command\r")
+	var written bytes.Buffer
+	writes := 0
+	session := &Session{
+		ID:  "session-partial-error-input-write",
+		PTY: &os.File{},
+		writePTY: func(data []byte) (int, error) {
+			writes++
+			accepted := min(3, len(data))
+			_, _ = written.Write(data[:accepted])
+			return accepted, wantErr
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	err := session.WriteDataWithSource(payload, "client")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("partial PTY write error = %v, want %v", err, wantErr)
+	}
+	if got, want := written.String(), string(payload[:3]); got != want {
+		t.Fatalf("accepted PTY input = %q, want exactly-once prefix %q", got, want)
+	}
+	if writes != 1 {
+		t.Fatalf("PTY write calls = %d, want 1 after partial error", writes)
+	}
+}
+
+func TestSessionFailsClosedWhenPTYWriteReturnsInvalidCount(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		n    int
+	}{
+		{name: "negative", n: -1},
+		{name: "beyond input", n: len("command\r") + 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			session := &Session{
+				ID:       "session-invalid-count-input-write",
+				PTY:      &os.File{},
+				writePTY: func([]byte) (int, error) { return testCase.n, nil },
+				config:   newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+			}
+
+			err := session.WriteDataWithSource([]byte("command\r"), "client")
+			if !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("invalid-count PTY write error = %v, want %v", err, io.ErrShortWrite)
+			}
+		})
 	}
 }
 

@@ -468,8 +468,8 @@ body {
 .terminalPane canvas,
 .tileTerminal canvas {
   display: block;
-  max-height: 100%;
-  max-width: 100%;
+  max-height: none;
+  max-width: none;
   image-rendering: auto;
 }
 
