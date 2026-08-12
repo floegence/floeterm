@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/creack/pty"
@@ -91,6 +92,17 @@ func (s *Session) UpdateConnectionSize(connectionID string, cols, rows int) {
 // ApplyConnectionSize records one view's dimensions and returns only after the
 // shared PTY reflects the minimum rows and columns required by all live views.
 func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (TerminalGeometry, error) {
+	return s.applyConnectionSize(connectionID, cols, rows, false)
+}
+
+// ApplyConnectionSizeForAttach applies the initial live attachment size. The
+// attach path may request one same-size foreground redraw so a client whose
+// retained history is incomplete can receive a fresh post-boundary frame.
+func (s *Session) ApplyConnectionSizeForAttach(connectionID string, cols, rows int) (TerminalGeometry, error) {
+	return s.applyConnectionSize(connectionID, cols, rows, true)
+}
+
+func (s *Session) applyConnectionSize(connectionID string, cols, rows int, force bool) (TerminalGeometry, error) {
 	if connectionID == "" {
 		return TerminalGeometry{}, fmt.Errorf("connection ID is required")
 	}
@@ -119,7 +131,11 @@ func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (Term
 		s.endPTYResize()
 		return geometry, nil
 	}
-	if err := s.reconcilePTYSizeLocked("connection-applied", true); err != nil {
+	reason := "connection-applied"
+	if force {
+		reason = "connection-attached"
+	}
+	if err := s.reconcilePTYSizeLocked(reason, force); err != nil {
 		conn.Cols = previousCols
 		conn.Rows = previousRows
 		s.mu.Unlock()
@@ -314,22 +330,35 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 			s.geometryGeneration = 1
 		}
 	}
-	// TIOCSWINSZ already notifies the foreground process group when the grid
-	// changes. A separate signal is only needed to request a fresh frame after
-	// a forced same-size attach whose retained history was truncated.
+	// TIOCSWINSZ notifies the foreground process group when the grid changes.
+	// A separate signal is reserved for a forced same-size attach that needs a
+	// fresh post-boundary frame after retained history was truncated.
 	if !changed && force {
-		requestRedraw := s.requestPTYRedraw
-		if requestRedraw == nil && s.setPTYSize == nil {
-			requestRedraw = requestPTYForegroundRedraw
-		}
-		if requestRedraw != nil {
-			if err := requestRedraw(s.PTY); err != nil {
-				s.config.logger.Warn("Failed to request PTY foreground redraw", "sessionID", s.ID, "reason", reason, "error", err)
-			}
-		}
+		s.requestPTYForegroundRedraw(s.PTY, reason)
 	}
 	s.config.logger.Debug("PTY resized", "sessionID", s.ID, "cols", cols, "rows", rows, "reason", reason)
 	return nil
+}
+
+func (s *Session) requestPTYForegroundRedraw(ptyFile *os.File, reason string) {
+	requestRedraw := s.requestPTYRedraw
+	if requestRedraw == nil && s.setPTYSize == nil {
+		requestRedraw = requestPTYForegroundRedraw
+	}
+	if requestRedraw == nil {
+		return
+	}
+	if err := requestRedraw(ptyFile); err != nil {
+		s.config.logger.Warn("Failed to request PTY foreground redraw", "sessionID", s.ID, "reason", reason, "error", err)
+		return
+	}
+	s.config.logger.Debug(
+		"Requested PTY foreground redraw",
+		"sessionID", s.ID,
+		"reason", reason,
+		"generation", s.geometryGeneration,
+		"outputSequenceBoundary", s.committedSequence,
+	)
 }
 
 // ResizePTY resizes the PTY to the specified dimensions.

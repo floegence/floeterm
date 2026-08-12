@@ -43,6 +43,25 @@ func TestPTYEnvironmentSupportsExplicitNoColorMode(t *testing.T) {
 	assertSingleEnvValue(t, capturedEnv, "NO_COLOR", "1")
 }
 
+func TestPTYEnvironmentUsesTheKernelWinsizeInsteadOfFixedColumnsAndLines(t *testing.T) {
+	capturedEnv := capturePTYEnvironment(t, ManagerConfig{
+		Logger: NopLogger{},
+		EnvProvider: StaticEnvProvider{Env: []string{
+			"PATH=/usr/bin:/bin",
+			"COLUMNS=199",
+			"LINES=48",
+		}},
+		ShellResolver:     testShellResolver{shell: "/bin/sh"},
+		ShellArgsProvider: testShellArgsProvider{},
+	})
+
+	for _, key := range []string{"COLUMNS", "LINES"} {
+		if countEnvKey(capturedEnv, key) != 0 {
+			t.Fatalf("PTY environment fixed %s and can override TIOCGWINSZ: %v", key, capturedEnv)
+		}
+	}
+}
+
 func capturePTYEnvironment(t *testing.T, config ManagerConfig) []string {
 	t.Helper()
 	manager := NewManager(config)

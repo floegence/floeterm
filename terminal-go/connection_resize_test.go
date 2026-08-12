@@ -337,7 +337,9 @@ func TestApplyConnectionSizeReturnsOnlyAfterThePTYResizeCompletes(t *testing.T) 
 func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testing.T) {
 	resizeCalls := 0
 	redrawCalls := 0
-	session := &Session{
+	var resizeObservedGeneration uint64
+	var session *Session
+	session = &Session{
 		ID:       "geometry-generation",
 		PTY:      &os.File{},
 		isActive: true,
@@ -350,6 +352,7 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 		geometryGeneration: 7,
 		setPTYSize: func(_ *os.File, _ *pty.Winsize) error {
 			resizeCalls++
+			resizeObservedGeneration = session.geometryGeneration
 			return nil
 		},
 		requestPTYRedraw: func(_ *os.File) error {
@@ -370,7 +373,10 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 		t.Fatalf("changed geometry resize calls = %d", resizeCalls)
 	}
 	if redrawCalls != 0 {
-		t.Fatalf("changed geometry redraw calls = %d, want 0", redrawCalls)
+		t.Fatalf("changed geometry emitted an extra redraw signal: calls=%d", redrawCalls)
+	}
+	if resizeObservedGeneration != 7 {
+		t.Fatalf("PTY ioctl observed generation=%d, want pre-resize generation 7", resizeObservedGeneration)
 	}
 
 	geometry, err = session.ApplyConnectionSize("wide", 160, 40)
@@ -380,11 +386,11 @@ func TestEffectiveGeometryGenerationChangesOnlyWhenTheSharedPTYChanges(t *testin
 	if geometry.Generation != 8 || geometry.Cols != 80 || geometry.Rows != 40 {
 		t.Fatalf("unchanged geometry advanced generation: %+v", geometry)
 	}
-	if resizeCalls != 2 {
-		t.Fatalf("explicit unchanged resize was not reapplied: calls=%d", resizeCalls)
+	if resizeCalls != 1 {
+		t.Fatalf("unchanged resize repeated the PTY ioctl: calls=%d, want 1 total", resizeCalls)
 	}
-	if redrawCalls != 1 {
-		t.Fatalf("explicit unchanged resize did not request a foreground redraw: calls=%d, want 1", redrawCalls)
+	if redrawCalls != 0 {
+		t.Fatalf("unchanged resize requested a foreground redraw: calls=%d", redrawCalls)
 	}
 }
 
@@ -408,5 +414,40 @@ func TestForcedSameSizeResizeContinuesWhenForegroundRedrawIsUnavailable(t *testi
 	}
 	if geometry.Generation != 9 || geometry.Cols != 120 || geometry.Rows != 40 {
 		t.Fatalf("geometry changed after best-effort redraw failure: %+v", geometry)
+	}
+}
+
+func TestApplyConnectionSizeDeduplicatesAnUnchangedEffectiveGrid(t *testing.T) {
+	resizeCalls := 0
+	redrawCalls := 0
+	session := &Session{
+		ID:                 "same-size-no-op",
+		PTY:                &os.File{},
+		isActive:           true,
+		connections:        map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 120, Rows: 40}},
+		lastAppliedCols:    120,
+		lastAppliedRows:    40,
+		geometryGeneration: 9,
+		committedSequence:  23,
+		setPTYSize: func(*os.File, *pty.Winsize) error {
+			resizeCalls++
+			return nil
+		},
+		requestPTYRedraw: func(*os.File) error {
+			redrawCalls++
+			return nil
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	geometry, err := session.ApplyConnectionSize("view", 120, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resizeCalls != 0 || redrawCalls != 0 {
+		t.Fatalf("unchanged effective grid caused ioctl/redraw storm: resize=%d redraw=%d", resizeCalls, redrawCalls)
+	}
+	if geometry.Generation != 9 || geometry.OutputSequenceBoundary != 23 || geometry.Cols != 120 || geometry.Rows != 40 {
+		t.Fatalf("unchanged effective geometry=%+v", geometry)
 	}
 }

@@ -91,7 +91,7 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		attachment.Detach()
 		return Attached{}, nil, fmt.Errorf("%w: %v", ErrActivationFailed, err)
 	}
-	geometry, err := session.ApplyConnectionSize(request.ConnectionID, int(request.Cols), int(request.Rows))
+	geometry, err := session.ApplyConnectionSizeForAttach(request.ConnectionID, int(request.Cols), int(request.Rows))
 	if err != nil {
 		attachment.Detach()
 		return Attached{}, nil, err

@@ -232,7 +232,7 @@ func TestSessionSameSizeAttachRequestsFreshFrameAfterHistoryEviction(t *testing.
 		t.Fatalf("unexpected retained history: %+v", page.Chunks)
 	}
 
-	geometry, err := session.ApplyConnectionSize("client", 120, 40)
+	geometry, err := session.ApplyConnectionSizeForAttach("client", 120, 40)
 	if err != nil {
 		t.Fatal(err)
 	}

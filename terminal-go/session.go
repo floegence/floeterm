@@ -195,8 +195,6 @@ func applyTerminalEnvironment(env []string, terminalEnv TerminalEnv, cols, rows 
 		"LC_ALL="+terminalEnv.LcAll,
 		"TERM_PROGRAM="+terminalEnv.TermProgram,
 		"TERM_PROGRAM_VERSION="+terminalEnv.TermProgramVersion,
-		"COLUMNS="+fmt.Sprintf("%d", cols),
-		"LINES="+fmt.Sprintf("%d", rows),
 		"PROMPT_EOL_MARK=",
 		"TERMINFO="+terminalEnv.Terminfo,
 		"TERM_FEATURES="+terminalEnv.TermFeatures,
