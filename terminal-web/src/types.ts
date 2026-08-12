@@ -596,6 +596,7 @@ export interface TerminalManagerActions {
   findPrevious: (term: string, options?: SearchOptions) => boolean;
   clearSearch: () => void;
   serialize: () => string;
+  readBufferLine: (row: number, options?: { trimRight?: boolean }) => string;
   getSelectionText: () => string;
   hasSelection: () => boolean;
   copySelection: (source?: TerminalCopySelectionSource) => Promise<TerminalCopySelectionResult>;

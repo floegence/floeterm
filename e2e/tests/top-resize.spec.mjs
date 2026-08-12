@@ -12,6 +12,7 @@ const readState = (page, includeTerminalState = false) => page.evaluate(includeS
     geometry: harness.getGeometryDiagnostics(),
     stream: harness.getStreamDiagnostics(),
     serialized: includeState ? harness.serialize() : '',
+    visibleLines: includeState ? harness.getVisibleLines() : [],
     connected: harness.getSnapshot().connection.isConnected,
     hasError: harness.getSnapshot().state.hasError,
     alternate: includeState ? harness.getFabricDiagnostics().sourceGrid : null,
@@ -27,6 +28,27 @@ const setTerminalHostSize = async (page, width, height) => {
     host.style.height = `${nextHeight}px`;
     window.__floetermPerfHarness.forceResize();
   }, { width, height });
+};
+
+const setTerminalGridSize = async (page, targetCols, targetRows) => {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const current = await page.evaluate(() => {
+      const host = document.querySelector('.terminalContainer');
+      const snapshot = window.__floetermPerfHarness?.getSnapshot();
+      if (!(host instanceof HTMLElement) || !snapshot) throw new Error('terminal host geometry is unavailable');
+      const rect = host.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, ...snapshot.state.dimensions };
+    });
+    if (current.cols === targetCols && current.rows === targetRows) return;
+    await setTerminalHostSize(
+      page,
+      Math.max(120, current.width + (targetCols - current.cols) * 7),
+      Math.max(120, current.height + (targetRows - current.rows) * 14),
+    );
+    await page.waitForTimeout(25);
+  }
+  const state = await readState(page);
+  throw new Error(`failed to calibrate terminal grid: got ${state.host.cols}x${state.host.rows}, want ${targetCols}x${targetRows}`);
 };
 
 const waitForConvergence = async (page, previousGeneration) => {
@@ -66,6 +88,138 @@ const historyContains = async (request, sessionId, marker) => {
   }
   return Buffer.concat(chunks).includes(Buffer.from(marker));
 };
+
+const readHistoryChunks = async (request, sessionId) => {
+  let startSequence = 1;
+  let historyGeneration = 0;
+  const chunks = [];
+  for (let pageIndex = 0; pageIndex < 8; pageIndex += 1) {
+    const response = await request.get(
+      `/api/sessions/${encodeURIComponent(sessionId)}/history?startSeq=${startSequence}&endSeq=-1&historyGeneration=${historyGeneration}&maxBytes=524288`,
+    );
+    expect(response.ok()).toBe(true);
+    const history = await response.json();
+    historyGeneration = history.historyGeneration;
+    if (history.historyReset) {
+      startSequence = history.firstRetainedSequence || 1;
+      chunks.length = 0;
+      continue;
+    }
+    chunks.push(...history.chunks.map(chunk => ({
+      ...chunk,
+      bytes: Buffer.from(chunk.data, 'base64'),
+    })));
+    if (!history.hasMore) break;
+    startSequence = history.nextStartSequence;
+  }
+  return chunks;
+};
+
+const waitForAuthoritativeTopFrame = async (page, request, sessionId, geometry) => {
+  let evidence = null;
+  let diagnostic = null;
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const [state, chunks] = await Promise.all([
+      readState(page, true),
+      readHistoryChunks(request, sessionId),
+    ]);
+    const postBoundary = chunks.filter(chunk => (
+      chunk.sequence > geometry.outputSequenceBoundary
+        && chunk.geometryGeneration === geometry.generation
+        && chunk.cols === geometry.cols
+        && chunk.rows === geometry.rows
+    ));
+    const raw = Buffer.concat(postBoundary.map(chunk => chunk.bytes));
+    const row0 = state.visibleLines[0] ?? '';
+    const row1 = state.visibleLines[1] ?? '';
+    const converged = raw.includes(Buffer.from('\x1b[H\x1b[2J'))
+      && raw.includes(Buffer.from('Processes:'))
+      && row0.startsWith('Processes:')
+      && row1.startsWith('Load Avg:');
+    diagnostic = {
+      geometry,
+      currentGeometry: state.geometry,
+      stream: state.stream,
+      visibleLines: state.visibleLines.slice(0, 8),
+      postBoundary: postBoundary.map(chunk => ({
+        sequence: chunk.sequence,
+        generation: chunk.geometryGeneration,
+        cols: chunk.cols,
+        rows: chunk.rows,
+        bytes: chunk.bytes.length,
+      })),
+      hasClearHome: raw.includes(Buffer.from('\x1b[H\x1b[2J')),
+      hasProcesses: raw.includes(Buffer.from('Processes:')),
+      rawTail: raw.subarray(Math.max(0, raw.length - 4096)).toString('latin1'),
+    };
+    if (converged) {
+      evidence = { state, postBoundary, raw };
+      break;
+    }
+    await page.waitForTimeout(100);
+  }
+  if (!evidence) {
+    throw new Error(`authoritative top frame did not converge: ${JSON.stringify(diagnostic)}`);
+  }
+  return evidence;
+};
+
+test('converges the visible real macOS top grid across exact grow shrink and rapid resizes', async ({ page, request }) => {
+  test.skip(process.platform !== 'darwin', 'real top resize coverage requires macOS top');
+  test.slow();
+  const failures = captureBrowserFailures(page);
+  await page.goto('/?mode=single&perf_probe=1');
+  await page.waitForFunction(() => (
+    window.__floetermPerfHarness?.getSnapshot().connection.isConnected
+      && window.__floetermPerfHarness.getTerminalInfo()
+  ));
+  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
+    .getAttribute('data-single-session-id');
+  if (!sessionId) throw new Error('single terminal session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
+
+  await setTerminalGridSize(page, 199, 48);
+  let state = await readState(page);
+  await waitForConvergence(page, state.geometry.generation - 1);
+  await page.evaluate(() => {
+    window.__floetermPerfHarness.sendInput('top -s 1\r');
+  });
+  await expect.poll(async () => {
+    const current = await readState(page, true);
+    return (current.visibleLines[0] ?? '').startsWith('Processes:')
+      && (current.visibleLines[1] ?? '').startsWith('Load Avg:');
+  }).toBe(true);
+
+  for (const [cols, rows] of [[102, 27], [160, 42], [88, 24], [140, 36]]) {
+    const previousGeneration = (await readState(page)).geometry.generation;
+    await setTerminalGridSize(page, cols, rows);
+    state = await waitForConvergence(page, previousGeneration);
+    expect(state.host).toEqual({ cols, rows });
+    const evidence = await waitForAuthoritativeTopFrame(page, request, sessionId, state.geometry);
+    expect(evidence.postBoundary.length).toBeGreaterThan(0);
+    for (let index = 1; index < evidence.postBoundary.length; index += 1) {
+      expect(evidence.postBoundary[index].sequence).toBe(evidence.postBoundary[index - 1].sequence + 1);
+    }
+    expect(evidence.state.stream.sequenceGaps).toBe(0);
+    expect(evidence.state.visibleLines[0]).toMatch(/^Processes:/);
+    expect(evidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
+    expect(evidence.state.visibleLines).toHaveLength(rows);
+  }
+
+  const beforeRapidGeneration = state.geometry.generation;
+  await setTerminalHostSize(page, 710, 430);
+  await setTerminalHostSize(page, 1180, 680);
+  await setTerminalGridSize(page, 102, 27);
+  state = await waitForConvergence(page, beforeRapidGeneration);
+  const rapidEvidence = await waitForAuthoritativeTopFrame(page, request, sessionId, state.geometry);
+  expect(state.host).toEqual({ cols: 102, rows: 27 });
+  expect(rapidEvidence.state.visibleLines[0]).toMatch(/^Processes:/);
+  expect(rapidEvidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
+  expect(rapidEvidence.state.stream.sequenceGaps).toBe(0);
+  expect(await page.locator('.terminalRendererError').count()).toBe(0);
+  expect(failures).toEqual([]);
+});
 
 test('keeps real macOS top correct across repeated terminal resizes', async ({ page, request }, testInfo) => {
   test.skip(process.platform !== 'darwin', 'real top resize coverage requires macOS top');

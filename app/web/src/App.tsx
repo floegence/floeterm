@@ -37,13 +37,14 @@ type FloetermPerfHarness = {
   sendInput(data: string): void;
   clear(): void;
   serialize(): string;
+  getVisibleLines(): string[];
   getSelectionText(): string;
   hasSelection(): boolean;
   getTerminalInfo(): ReturnType<TerminalManagerActions['getTerminalInfo']>;
   getSnapshot(): TerminalInstanceSnapshot;
   getFabricDiagnostics(): TerminalFabricDiagnostics;
   forceResize(): void;
-  getGeometryDiagnostics(): { generation: number; cols: number; rows: number };
+  getGeometryDiagnostics(): { generation: number; outputSequenceBoundary: number; cols: number; rows: number };
   getStreamDiagnostics(): {
     dataEvents: number;
     firstSequence: number;
@@ -90,6 +91,7 @@ const noopActions: TerminalManagerActions = {
   findPrevious: () => false,
   clearSearch: () => {},
   serialize: () => '',
+  readBufferLine: () => '',
   getSelectionText: () => '',
   hasSelection: () => false,
   copySelection: source => Promise.resolve({ copied: false, reason: 'empty_selection', source: source ?? 'command' }),
@@ -303,7 +305,7 @@ const SingleTerminalPane = (props: {
   let streamDiagnostics = initialStreamDiagnostics();
   let streamDecoder = new TextDecoder();
   let streamDiagnosticsAfterSequence = 0;
-  let geometryDiagnostics = { generation: 0, cols: 0, rows: 0 };
+  let geometryDiagnostics = { generation: 0, outputSequenceBoundary: 0, cols: 0, rows: 0 };
   const isMobile = createMediaQuery('(max-width: 640px), (pointer: coarse)');
   const fontSize = createMemo(() => (isMobile() ? 14 : 12));
   const terminal = createSolidTerminal(() => ({
@@ -338,6 +340,15 @@ const SingleTerminalPane = (props: {
       sendInput: data => terminal.actions().sendInput(data),
       clear: () => terminal.actions().clear(),
       serialize: () => terminal.actions().serialize(),
+      getVisibleLines: () => {
+        const info = terminal.actions().getTerminalInfo();
+        if (!info) return [];
+        const firstVisibleRow = Math.max(0, info.bufferLength - info.rows);
+        return Array.from(
+          { length: info.rows },
+          (_, index) => terminal.actions().readBufferLine(firstVisibleRow + index, { trimRight: true }),
+        );
+      },
       getSelectionText: () => terminal.actions().getSelectionText(),
       hasSelection: () => terminal.actions().hasSelection(),
       getTerminalInfo: () => terminal.actions().getTerminalInfo(),
@@ -383,6 +394,7 @@ const SingleTerminalPane = (props: {
     const unsubscribeGeometry = props.eventSource.onTerminalGeometry?.(props.sessionId, event => {
       geometryDiagnostics = {
         generation: event.generation,
+        outputSequenceBoundary: event.outputSequenceBoundary,
         cols: event.cols,
         rows: event.rows,
       };
@@ -537,7 +549,7 @@ const MirrorTerminalConnection = (props: {
   let streamDiagnostics = initialStreamDiagnostics();
   let streamDecoder = new TextDecoder();
   let streamDiagnosticsAfterSequence = 0;
-  let geometryDiagnostics = { generation: 0, cols: 0, rows: 0 };
+  let geometryDiagnostics = { generation: 0, outputSequenceBoundary: 0, cols: 0, rows: 0 };
   let renderDiagnostics = { count: 0, lastRenderAtMs: 0 };
   const terminal = createSolidTerminal(() => ({
     sessionId: props.sessionId,
@@ -583,6 +595,15 @@ const MirrorTerminalConnection = (props: {
     sendInput: data => terminal.actions().sendInput(data),
     clear: () => terminal.actions().clear(),
     serialize: () => terminal.actions().serialize(),
+    getVisibleLines: () => {
+      const info = terminal.actions().getTerminalInfo();
+      if (!info) return [];
+      const firstVisibleRow = Math.max(0, info.bufferLength - info.rows);
+      return Array.from(
+        { length: info.rows },
+        (_, index) => terminal.actions().readBufferLine(firstVisibleRow + index, { trimRight: true }),
+      );
+    },
     getSelectionText: () => terminal.actions().getSelectionText(),
     hasSelection: () => terminal.actions().hasSelection(),
     getTerminalInfo: () => terminal.actions().getTerminalInfo(),
@@ -629,6 +650,7 @@ const MirrorTerminalConnection = (props: {
     const unsubscribeGeometry = props.runtime.eventSource.onTerminalGeometry?.(props.sessionId, event => {
       geometryDiagnostics = {
         generation: event.generation,
+        outputSequenceBoundary: event.outputSequenceBoundary,
         cols: event.cols,
         rows: event.rows,
       };

@@ -100,6 +100,8 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   private retryCount = 0;
   private connectGeneration = 0;
   private resizeGeneration = 0;
+  private resizeRunning = false;
+  private pendingResize: { cols: number; rows: number } | null = null;
   private retryTimeout: ReturnType<typeof setTimeout> | null = null;
   private initializationAbortController: AbortController | null = null;
   private queueRetryTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -148,6 +150,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     findPrevious: (term, options) => this.terminalCore?.findPrevious(term, options) ?? false,
     clearSearch: () => this.terminalCore?.clearSearch(),
     serialize: () => this.terminalCore?.serialize() ?? '',
+    readBufferLine: (row, options) => this.terminalCore?.readBufferLine?.(row, options) ?? '',
     getSelectionText: () => this.terminalCore?.getSelectionText() ?? '',
     hasSelection: () => this.terminalCore?.hasSelection() ?? false,
     copySelection: source => this.terminalCore?.copySelection(source) ?? Promise.resolve({
@@ -379,8 +382,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     this.updateState({ state: newState });
   };
 
-  private handleResize = async (size: { cols: number; rows: number }): Promise<void> => {
-    const resizeGeneration = this.resizeGeneration;
+  private handleResize = (size: { cols: number; rows: number }): void => {
     this.dimensions = size;
     this.updateState({ dimensions: size });
     this.options.onResize?.(size.cols, size.rows);
@@ -393,15 +395,35 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       return;
     }
 
-    try {
-      await this.options.transport.resize(sessionId, size.cols, size.rows);
-    } catch (error) {
-      if (this.disposed || resizeGeneration !== this.resizeGeneration) {
-        return;
-      }
-      this.logger.warn('[TerminalInstanceController] Resize request failed', { error });
+    this.pendingResize = { ...size };
+    if (!this.resizeRunning) {
+      void this.runPendingResizes();
     }
   };
+
+  private async runPendingResizes(): Promise<void> {
+    if (this.resizeRunning) return;
+    this.resizeRunning = true;
+    const resizeGeneration = this.resizeGeneration;
+    try {
+      while (!this.disposed && resizeGeneration === this.resizeGeneration) {
+        const size = this.pendingResize;
+        this.pendingResize = null;
+        if (!size) break;
+        const sessionId = this.options.sessionId;
+        if (!sessionId) break;
+        try {
+          await this.options.transport.resize(sessionId, size.cols, size.rows);
+        } catch (error) {
+          if (this.disposed || resizeGeneration !== this.resizeGeneration) return;
+          this.logger.warn('[TerminalInstanceController] Resize request failed', { error });
+        }
+      }
+    } finally {
+      this.resizeRunning = false;
+      if (this.pendingResize && !this.disposed) void this.runPendingResizes();
+    }
+  }
 
   private handleError = (error: Error): void => {
     this.updateState({ error, state: TerminalState.ERROR });
@@ -433,6 +455,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
 
   private cleanupTerminal(): void {
     this.resizeGeneration += 1;
+    this.pendingResize = null;
     this.initializationAbortController?.abort();
     this.initializationAbortController = null;
     this.isInitializing = false;

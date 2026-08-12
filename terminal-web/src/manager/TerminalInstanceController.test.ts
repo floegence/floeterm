@@ -1017,6 +1017,118 @@ describe('TerminalInstanceController', () => {
     controller.dispose();
   });
 
+  it('coalesces rapid host resize intents to the first and latest transport resize', async () => {
+    const first = deferred<void>();
+    const latest = deferred<void>();
+    const resize = vi.fn().mockResolvedValue(undefined);
+    const transport = makeTransport({ resize });
+    const { controller } = await mountController({ transport });
+    const core = coreInstances[0]!;
+    await flushPromises();
+    resize.mockClear();
+    resize
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => latest.promise);
+
+    core.eventHandlers?.onResize?.({ cols: 120, rows: 36 });
+    core.eventHandlers?.onResize?.({ cols: 90, rows: 24 });
+    core.eventHandlers?.onResize?.({ cols: 102, rows: 27 });
+    await flushPromises();
+    expect(resize).toHaveBeenCalledTimes(1);
+    expect(resize).toHaveBeenLastCalledWith('s1', 120, 36);
+
+    first.resolve();
+    await flushPromises();
+    expect(resize).toHaveBeenCalledTimes(2);
+    expect(resize).toHaveBeenLastCalledWith('s1', 102, 27);
+
+    latest.resolve();
+    await flushPromises();
+    expect(controller.getSnapshot().state.dimensions).toEqual({ cols: 102, rows: 27 });
+    controller.dispose();
+  });
+
+  it('continues with the latest resize intent after an in-flight resize fails', async () => {
+    const first = deferred<void>();
+    const resize = vi.fn().mockResolvedValue(undefined);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const transport = makeTransport({ resize });
+    const { controller } = await mountController({ transport, logger });
+    const core = coreInstances[0]!;
+    resize.mockClear();
+    resize.mockImplementationOnce(() => first.promise).mockResolvedValueOnce(undefined);
+
+    core.eventHandlers?.onResize?.({ cols: 120, rows: 36 });
+    core.eventHandlers?.onResize?.({ cols: 102, rows: 27 });
+    first.reject(new Error('resize failed'));
+    await flushPromises();
+
+    expect(resize).toHaveBeenCalledTimes(2);
+    expect(resize).toHaveBeenNthCalledWith(1, 's1', 120, 36);
+    expect(resize).toHaveBeenNthCalledWith(2, 's1', 102, 27);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it('does not send a pending latest resize after disposal', async () => {
+    const first = deferred<void>();
+    const resize = vi.fn().mockResolvedValue(undefined);
+    const transport = makeTransport({ resize });
+    const { controller } = await mountController({ transport });
+    const core = coreInstances[0]!;
+    resize.mockClear();
+    resize.mockImplementationOnce(() => first.promise);
+
+    core.eventHandlers?.onResize?.({ cols: 120, rows: 36 });
+    core.eventHandlers?.onResize?.({ cols: 102, rows: 27 });
+    controller.dispose();
+    first.resolve();
+    await flushPromises();
+
+    expect(resize).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not overlap an old resize with a new session generation', async () => {
+    const oldResize = deferred<void>();
+    const resize = vi.fn().mockResolvedValue(undefined);
+    const transport = makeTransport({ resize }) as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 1,
+      cols: 100,
+      rows: 30,
+    });
+    transport.historyPage = vi.fn();
+    const { controller } = await mountController({ transport, autoRunTimers: false });
+    const firstCore = coreInstances[0]!;
+    await flushPromises();
+    resize.mockClear();
+    resize.mockImplementationOnce(() => oldResize.promise).mockResolvedValue(undefined);
+
+    firstCore.eventHandlers?.onResize?.({ cols: 120, rows: 36 });
+    await flushPromises();
+    expect(resize).toHaveBeenCalledTimes(1);
+
+    controller.updateOptions({ sessionId: 's2' });
+    await flushPromises();
+    const secondCore = coreInstances[coreInstances.length - 1]!;
+    expect(secondCore).not.toBe(firstCore);
+    secondCore.eventHandlers?.onResize?.({ cols: 102, rows: 27 });
+    await flushPromises();
+    expect(resize.mock.calls).toEqual([['s1', 120, 36]]);
+
+    oldResize.resolve();
+    await flushPromises();
+    expect(resize).toHaveBeenCalledTimes(2);
+    expect(resize).toHaveBeenLastCalledWith('s2', 102, 27);
+    controller.dispose();
+  });
+
   it('does not report an in-flight resize as a product warning after disposal', async () => {
     const resizeResult = deferred<void>();
     const logger = {
