@@ -165,6 +165,67 @@ const waitForAuthoritativeTopFrame = async (page, request, sessionId, geometry) 
   return evidence;
 };
 
+const assertTopKeepsAdvancingAndVisible = async (page, request, sessionId, cycles = 3) => {
+  let state = await readState(page, true);
+  let browserSequence = state.stream.lastSequence;
+  let history = await readHistoryChunks(request, sessionId);
+  let historySequence = history.at(-1)?.sequence ?? 0;
+  for (let cycle = 0; cycle < cycles; cycle += 1) {
+    const deadline = Date.now() + 3000;
+    let advanced = false;
+    while (Date.now() < deadline) {
+      [state, history] = await Promise.all([
+        readState(page, true),
+        readHistoryChunks(request, sessionId),
+      ]);
+      const nextHistorySequence = history.at(-1)?.sequence ?? 0;
+      expect(state.visibleLines[0], `top header disappeared during refresh cycle ${cycle + 1}`).toMatch(/^Processes:/);
+      expect(state.visibleLines[1], `top load row disappeared during refresh cycle ${cycle + 1}`).toMatch(/^Load Avg:/);
+      expect(state.stream.sequenceGaps).toBe(0);
+      if (nextHistorySequence > historySequence && state.stream.lastSequence > browserSequence) {
+        historySequence = nextHistorySequence;
+        browserSequence = state.stream.lastSequence;
+        advanced = true;
+        break;
+      }
+      await page.waitForTimeout(100);
+    }
+    expect(advanced, `top output stalled for 3 seconds during refresh cycle ${cycle + 1}`).toBe(true);
+  }
+};
+
+const installPresentationTrace = async page => {
+  await page.addInitScript(() => {
+    const trace = [];
+    const lastVisibility = new WeakMap();
+    const record = node => {
+      if (!(node instanceof HTMLElement) || !node.hasAttribute('data-floeterm-terminal-render-host')) return;
+      const visibility = node.style.visibility;
+      if (lastVisibility.get(node) === visibility) return;
+      lastVisibility.set(node, visibility);
+      const harness = window.__floetermPerfHarness;
+      trace.push({
+        visibility,
+        dimensions: harness?.getSnapshot().state.dimensions ?? null,
+        geometry: harness?.getGeometryDiagnostics() ?? null,
+      });
+    };
+    const observer = new MutationObserver(records => {
+      for (const mutation of records) {
+        if (mutation.type === 'attributes') record(mutation.target);
+        for (const node of mutation.addedNodes) {
+          if (node instanceof HTMLElement) {
+            record(node);
+            node.querySelectorAll?.('[data-floeterm-terminal-render-host]').forEach(record);
+          }
+        }
+      }
+    });
+    observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
+    Object.defineProperty(window, '__floetermPresentationTrace', { value: trace, configurable: true });
+  });
+};
+
 test('converges the visible real macOS top grid across exact grow shrink and rapid resizes', async ({ page, request }) => {
   test.skip(process.platform !== 'darwin', 'real top resize coverage requires macOS top');
   test.slow();
@@ -205,6 +266,7 @@ test('converges the visible real macOS top grid across exact grow shrink and rap
     expect(evidence.state.visibleLines[0]).toMatch(/^Processes:/);
     expect(evidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
     expect(evidence.state.visibleLines).toHaveLength(rows);
+    await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
   }
 
   const beforeRapidGeneration = state.geometry.generation;
@@ -217,7 +279,68 @@ test('converges the visible real macOS top grid across exact grow shrink and rap
   expect(rapidEvidence.state.visibleLines[0]).toMatch(/^Processes:/);
   expect(rapidEvidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
   expect(rapidEvidence.state.stream.sequenceGaps).toBe(0);
+  await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
+  expect(failures).toEqual([]);
+});
+
+test('keeps replay geometry hidden after top advances while the page is detached', async ({ page, request }) => {
+  test.skip(process.platform !== 'darwin', 'real top refresh coverage requires macOS top');
+  test.slow();
+  const failures = captureBrowserFailures(page);
+  await page.goto('/?mode=single&perf_probe=1');
+  await page.waitForFunction(() => window.__floetermPerfHarness?.getSnapshot().connection.isConnected);
+  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
+    .getAttribute('data-single-session-id');
+  if (!sessionId) throw new Error('single terminal session id is unavailable');
+  await waitForInteractiveShell(page, sessionId);
+  await setTerminalGridSize(page, 199, 48);
+  await page.evaluate(() => window.__floetermPerfHarness.sendInput('top -s 1\r'));
+  await expect.poll(async () => {
+    const current = await readState(page, true);
+    return (current.visibleLines[0] ?? '').startsWith('Processes:')
+      && (current.visibleLines[1] ?? '').startsWith('Load Avg:');
+  }).toBe(true);
+  await setTerminalGridSize(page, 102, 27);
+  const beforeRefresh = await readState(page);
+  await waitForAuthoritativeTopFrame(page, request, sessionId, beforeRefresh.geometry);
+
+  const beforeDetachChunks = await readHistoryChunks(request, sessionId);
+  const beforeDetachSequence = beforeDetachChunks.at(-1)?.sequence ?? 0;
+  await page.goto('about:blank');
+  await expect.poll(async () => {
+    const chunks = await readHistoryChunks(request, sessionId);
+    return (chunks.at(-1)?.sequence ?? 0) - beforeDetachSequence;
+  }, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+
+  await installPresentationTrace(page);
+  await page.goto(`/?mode=single&session=${encodeURIComponent(sessionId)}&perf_probe=1`);
+  await page.waitForFunction(() => (
+    window.__floetermPerfHarness?.getSnapshot().connection.isConnected
+      && window.__floetermPerfHarness.getSnapshot().loadingState === 'ready'
+  ));
+  const refreshed = await readState(page, true);
+  const trace = await page.evaluate(() => window.__floetermPresentationTrace ?? []);
+  const visibleTransitions = trace.filter(event => event.visibility !== 'hidden');
+
+  expect(trace.length).toBeGreaterThanOrEqual(2);
+  expect(trace[0]?.visibility).toBe('hidden');
+  expect(visibleTransitions).toHaveLength(1);
+  expect(visibleTransitions[0]?.dimensions).toEqual(refreshed.host);
+  expect(visibleTransitions[0]?.geometry?.cols).toBe(refreshed.host.cols);
+  expect(visibleTransitions[0]?.geometry?.rows).toBe(refreshed.host.rows);
+  expect(refreshed.visibleLines[0]).toMatch(/^Processes:/);
+  expect(refreshed.visibleLines[1]).toMatch(/^Load Avg:/);
+  await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
+
+  const beforePostRefreshResize = refreshed.geometry.generation;
+  await setTerminalGridSize(page, 140, 36);
+  const resized = await waitForConvergence(page, beforePostRefreshResize);
+  const resizedEvidence = await waitForAuthoritativeTopFrame(page, request, sessionId, resized.geometry);
+  expect(resizedEvidence.state.visibleLines[0]).toMatch(/^Processes:/);
+  expect(resizedEvidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
+  expect(resizedEvidence.state.stream.sequenceGaps).toBe(0);
+  await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
   expect(failures).toEqual([]);
 });
 

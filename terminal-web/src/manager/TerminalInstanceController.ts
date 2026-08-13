@@ -91,6 +91,9 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   private sequenceBuffer = new SequenceBuffer();
   private replayCompleteReceived = false;
   private isReplayActive = false;
+  private replayPresentationGeneration = 0;
+  private replayPresentationPending = false;
+  private replayFinalGeometry: { generation: number; cols: number; rows: number } | null = null;
   private lastAppliedSequence = 0;
 
   private loadingState: TerminalLoadingState = 'idle';
@@ -102,6 +105,16 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   private resizeGeneration = 0;
   private resizeRunning = false;
   private pendingResize: { cols: number; rows: number } | null = null;
+  private latestResizeIntent: { cols: number; rows: number } | null = null;
+  private readonly resizeIdleWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void }>();
+  private resizeFailure: Error | null = null;
+  private lastSuccessfulResizeRequest: { cols: number; rows: number } | null = null;
+  private lastResizeEffectiveGeometry: TerminalGeometryEvent | null = null;
+  private readonly geometryApplyWaiters = new Set<{
+    geometry: TerminalGeometryEvent;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }>();
   private retryTimeout: ReturnType<typeof setTimeout> | null = null;
   private initializationAbortController: AbortController | null = null;
   private queueRetryTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -391,12 +404,18 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     if (!sessionId) {
       return;
     }
-    if (isAtomicTransport(this.options.transport) && this.connectionState !== ConnectionState.CONNECTED) {
+    if (
+      isAtomicTransport(this.options.transport)
+      && this.connectionState !== ConnectionState.CONNECTED
+      && !this.replayPresentationPending
+    ) {
       return;
     }
 
+    this.latestResizeIntent = { ...size };
     this.pendingResize = { ...size };
     if (!this.resizeRunning) {
+      this.resizeFailure = null;
       void this.runPendingResizes();
     }
   };
@@ -413,19 +432,46 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
         const sessionId = this.options.sessionId;
         if (!sessionId) break;
         try {
-          await this.options.transport.resize(sessionId, size.cols, size.rows);
+          const resizeWithGeometry = this.options.transport.resizeWithEffectiveGeometry;
+          if (resizeWithGeometry) {
+            const result = await resizeWithGeometry.call(this.options.transport, sessionId, size.cols, size.rows);
+            this.lastResizeEffectiveGeometry = { sessionId, ...result.effective };
+          } else {
+            await this.options.transport.resize(sessionId, size.cols, size.rows);
+            this.lastResizeEffectiveGeometry = null;
+          }
+          this.lastSuccessfulResizeRequest = { ...size };
+          this.resizeFailure = null;
         } catch (error) {
           if (this.disposed || resizeGeneration !== this.resizeGeneration) return;
+          this.resizeFailure = error instanceof Error ? error : new Error(String(error));
           this.logger.warn('[TerminalInstanceController] Resize request failed', { error });
         }
       }
     } finally {
       this.resizeRunning = false;
-      if (this.pendingResize && !this.disposed) void this.runPendingResizes();
+      if (this.pendingResize && !this.disposed) {
+        void this.runPendingResizes();
+      } else {
+        for (const waiter of this.resizeIdleWaiters) {
+          if (this.resizeFailure) waiter.reject(this.resizeFailure);
+          else waiter.resolve();
+        }
+        this.resizeIdleWaiters.clear();
+      }
     }
   }
 
+  private waitForPendingResizes(): Promise<void> {
+    if (!this.resizeRunning && !this.pendingResize) {
+      return this.resizeFailure ? Promise.reject(this.resizeFailure) : Promise.resolve();
+    }
+    return new Promise((resolve, reject) => this.resizeIdleWaiters.add({ resolve, reject }));
+  }
+
   private handleError = (error: Error): void => {
+    for (const waiter of this.geometryApplyWaiters) waiter.reject(error);
+    this.geometryApplyWaiters.clear();
     this.updateState({ error, state: TerminalState.ERROR });
     this.options.onError?.(error);
   };
@@ -454,8 +500,19 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
   }
 
   private cleanupTerminal(): void {
+    this.replayPresentationGeneration += 1;
+    this.replayPresentationPending = false;
+    this.replayFinalGeometry = null;
     this.resizeGeneration += 1;
     this.pendingResize = null;
+    this.latestResizeIntent = null;
+    this.resizeFailure = null;
+    this.lastSuccessfulResizeRequest = null;
+    this.lastResizeEffectiveGeometry = null;
+    for (const waiter of this.resizeIdleWaiters) waiter.resolve();
+    this.resizeIdleWaiters.clear();
+    for (const waiter of this.geometryApplyWaiters) waiter.resolve();
+    this.geometryApplyWaiters.clear();
     this.initializationAbortController?.abort();
     this.initializationAbortController = null;
     this.isInitializing = false;
@@ -472,12 +529,133 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     if (!this.replayCompleteReceived || this.dataQueue.length > 0 || this.isProcessing) {
       return;
     }
-    if (this.isReplayActive) {
-      this.terminalCore?.endHistoryReplay?.();
-      this.isReplayActive = false;
+    if (!this.isReplayActive || this.replayPresentationPending) {
+      return;
     }
-    this.setLoading('ready', '');
-    this.scheduleFocus();
+    const terminalCore = this.terminalCore;
+    if (!terminalCore) {
+      return;
+    }
+    this.isReplayActive = false;
+    terminalCore.endHistoryReplay?.();
+    const finalGeometry = this.replayFinalGeometry;
+    this.replayFinalGeometry = null;
+    if (finalGeometry && this.lastGeometryGeneration <= finalGeometry.generation) {
+      terminalCore.setFixedDimensions(
+        { cols: finalGeometry.cols, rows: finalGeometry.rows },
+        { notifyResize: false },
+      );
+      this.lastGeometryGeneration = finalGeometry.generation;
+    }
+    const generation = ++this.replayPresentationGeneration;
+    this.replayPresentationPending = true;
+    void this.presentStableReplay(terminalCore, generation).then(() => {
+      if (
+        this.disposed
+        || this.replayPresentationGeneration !== generation
+        || this.terminalCore !== terminalCore
+      ) {
+        return;
+      }
+      this.replayPresentationPending = false;
+      terminalCore.setPresentationVisible(true);
+      this.setLoading('ready', '');
+      this.scheduleFocus();
+    }).catch(error => {
+      if (
+        this.disposed
+        || this.replayPresentationGeneration !== generation
+        || this.terminalCore !== terminalCore
+      ) {
+        return;
+      }
+      this.replayPresentationPending = false;
+      this.handleError(error instanceof Error ? error : new Error(String(error)));
+    });
+  }
+
+  private async presentStableReplay(terminalCore: TerminalCoreLike, generation: number): Promise<void> {
+    while (true) {
+      await terminalCore.forceResizeAndWaitForPresentation();
+      await this.waitForPendingResizes();
+      if (
+        this.disposed
+        || this.replayPresentationGeneration !== generation
+        || this.terminalCore !== terminalCore
+      ) {
+        return;
+      }
+      const host = this.latestResizeIntent ?? terminalCore.measureHostDimensions?.();
+      const acknowledgedGeometry = this.lastResizeEffectiveGeometry;
+      if (acknowledgedGeometry) {
+        await this.waitForAppliedGeometry(acknowledgedGeometry);
+      }
+      const effective = terminalCore.getDimensions();
+      const acknowledgedRequest = this.lastSuccessfulResizeRequest;
+      const hostIsStable = host && (acknowledgedRequest
+        ? host.cols === acknowledgedRequest.cols && host.rows === acknowledgedRequest.rows
+        : host.cols === effective.cols && host.rows === effective.rows);
+      if (
+        host
+        && !hostIsStable
+      ) {
+        this.pendingResize = { ...host };
+        this.latestResizeIntent = { ...host };
+        this.resizeFailure = null;
+        await this.runPendingResizes();
+        await this.waitForPendingResizes();
+        const resizedGeometry = this.lastResizeEffectiveGeometry;
+        if (resizedGeometry) {
+          await this.waitForAppliedGeometry(resizedGeometry);
+        }
+        continue;
+      }
+      await terminalCore.forceResizeAndWaitForPresentation();
+      await this.waitForPendingResizes();
+      const finalAcknowledgedGeometry = this.lastResizeEffectiveGeometry;
+      if (finalAcknowledgedGeometry) {
+        await this.waitForAppliedGeometry(finalAcknowledgedGeometry);
+      }
+      const finalHost = this.latestResizeIntent ?? terminalCore.measureHostDimensions?.();
+      const finalAcknowledgedRequest = this.lastSuccessfulResizeRequest;
+      const finalEffective = terminalCore.getDimensions();
+      if (
+        !finalHost
+        || (finalAcknowledgedRequest
+          ? finalHost.cols === finalAcknowledgedRequest.cols
+            && finalHost.rows === finalAcknowledgedRequest.rows
+          : finalHost.cols === finalEffective.cols && finalHost.rows === finalEffective.rows)
+      ) {
+        return;
+      }
+    }
+  }
+
+  private waitForAppliedGeometry(geometry: TerminalGeometryEvent): Promise<void> {
+    if (this.hasAppliedGeometryOrSuccessor(geometry)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      this.geometryApplyWaiters.add({ geometry, resolve, reject });
+    });
+  }
+
+  private hasAppliedGeometryOrSuccessor(geometry: TerminalGeometryEvent): boolean {
+    const dimensions = this.terminalCore?.getDimensions();
+    if (!dimensions) return false;
+    return this.lastGeometryGeneration > geometry.generation
+      || (this.lastGeometryGeneration === geometry.generation
+        && dimensions.cols === geometry.cols
+        && dimensions.rows === geometry.rows);
+  }
+
+  private resolveAppliedGeometryWaiters(): void {
+    for (const waiter of this.geometryApplyWaiters) {
+      if (this.hasAppliedGeometryOrSuccessor(waiter.geometry)) {
+        this.geometryApplyWaiters.delete(waiter);
+        waiter.resolve();
+      }
+    }
   }
 
   private scheduleDataQueueFlush(allowImmediate = false): void {
@@ -736,6 +914,9 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
         this.logger ?? noopLogger
       );
       this.terminalCore = terminalCore;
+      if (this.isReplayActive) {
+        terminalCore.setPresentationVisible(false);
+      }
 
       await terminalCore.initialize({ priority: 'interactive', signal: abortController.signal });
       if (
@@ -758,7 +939,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
 
       void this.processDataQueue();
 
-      if (!this.isReplayActive || this.replayCompleteReceived) {
+      if (!this.isReplayActive && !this.replayPresentationPending) {
         this.setLoading('ready', '');
       } else {
         this.setLoading('processing_history', 'Restoring terminal...');
@@ -806,7 +987,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       this.setConnectionState(ConnectionState.CONNECTED);
       this.retryCount = 0;
       this.emit();
-      if (!this.isReplayActive || this.replayCompleteReceived) {
+      if (!this.isReplayActive && !this.replayPresentationPending) {
         this.setLoading('ready', '');
       } else {
         this.setLoading('processing_history', 'Restoring terminal...');
@@ -853,6 +1034,11 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
     }
 
     this.lastAppliedSequence = Math.max(this.lastAppliedSequence, historyStartSequence - 1);
+    this.replayFinalGeometry = {
+      generation: attachment.geometryGeneration,
+      cols: attachment.cols,
+      rows: attachment.rows,
+    };
     this.applyPendingGeometryEvents();
     let queuedHistoryOutput = false;
     let restoredCheckpoint = false;
@@ -1131,6 +1317,10 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
 
     this.isReplayActive = true;
     this.replayCompleteReceived = false;
+    this.replayPresentationGeneration += 1;
+    this.replayPresentationPending = false;
+    this.replayFinalGeometry = null;
+    this.terminalCore?.setPresentationVisible(false);
     this.terminalCore?.startHistoryReplay(30000);
     this.setLoading('processing_history', 'Restoring terminal...');
 
@@ -1168,9 +1358,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
         const terminalError = createTerminalError('connection', error);
         this.setConnectionState(ConnectionState.FAILED);
         this.setConnectionError(terminalError);
-        this.setLoading('ready', '');
-        this.updateState({ error, state: TerminalState.ERROR });
-        this.options.onError?.(error);
+        this.handleError(error);
         this.scheduleConnectionRetry();
       }
     }, { lastSeq });
@@ -1229,6 +1417,7 @@ export class FrameworkNeutralTerminalInstanceController implements TerminalInsta
       this.pendingGeometryEvents.shift();
       this.lastGeometryGeneration = event.generation;
       this.terminalCore.setFixedDimensions({ cols: event.cols, rows: event.rows });
+      this.resolveAppliedGeometryWaiters();
     }
   }
 

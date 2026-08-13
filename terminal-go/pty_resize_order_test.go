@@ -140,6 +140,141 @@ func TestPTYReaderAdmitsReadableTailWhenPendingSnapshotIsZero(t *testing.T) {
 	}
 }
 
+func TestPTYReaderRetriesInterruptedReadinessWait(t *testing.T) {
+	outputReader, outputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	readerWake, resizeWake, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = outputReader.Close()
+		_ = outputWriter.Close()
+		_ = readerWake.Close()
+		_ = resizeWake.Close()
+	})
+	want := []byte("after-readiness-interrupt")
+	if _, err := outputWriter.Write(want); err != nil {
+		t.Fatal(err)
+	}
+
+	waits := 0
+	session := &Session{
+		lastAppliedCols: 102, lastAppliedRows: 27, geometryGeneration: 7,
+		waitPTYRead: func(int, int) (bool, error) {
+			waits++
+			if waits == 1 {
+				return false, syscall.EINTR
+			}
+			return true, nil
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	readPacket := session.readPTYPacketFunc(
+		int(outputReader.Fd()),
+		int(readerWake.Fd()),
+		&ioctlWindowPendingMonitor{},
+		nil,
+	)
+	buffer := make([]byte, 128)
+	n, readErr, geometry := readPacket(buffer)
+	if readErr != nil || !bytes.Equal(buffer[:n], want) {
+		t.Fatalf("read=%q/%v, want %q/nil", buffer[:n], readErr, want)
+	}
+	if waits != 2 || geometry != (TerminalGeometry{Generation: 7, Cols: 102, Rows: 27}) {
+		t.Fatalf("waits=%d geometry=%+v, want 2 waits at generation 7", waits, geometry)
+	}
+	if session.ptyReadBytes != int64(len(want)) {
+		t.Fatalf("admitted bytes=%d, want %d exactly once", session.ptyReadBytes, len(want))
+	}
+}
+
+func TestPTYReaderRetriesInterruptedSyscallRead(t *testing.T) {
+	outputReader, outputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	readerWake, resizeWake, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = outputReader.Close()
+		_ = outputWriter.Close()
+		_ = readerWake.Close()
+		_ = resizeWake.Close()
+	})
+	want := []byte("after-read-interrupt")
+	if _, err := outputWriter.Write(want); err != nil {
+		t.Fatal(err)
+	}
+
+	reads := 0
+	session := &Session{
+		lastAppliedCols: 102, lastAppliedRows: 27, geometryGeneration: 7,
+		readPTY: func(fd int, target []byte) (int, error) {
+			reads++
+			if reads == 1 {
+				return 0, syscall.EINTR
+			}
+			return syscall.Read(fd, target)
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	monitor := &ioctlWindowPendingMonitor{pending: len(want)}
+	readPacket := session.readPTYPacketFunc(
+		int(outputReader.Fd()),
+		int(readerWake.Fd()),
+		monitor,
+		nil,
+	)
+	buffer := make([]byte, 128)
+	n, readErr, geometry := readPacket(buffer)
+	if readErr != nil || !bytes.Equal(buffer[:n], want) {
+		t.Fatalf("read=%q/%v, want %q/nil", buffer[:n], readErr, want)
+	}
+	if reads != 2 || geometry != (TerminalGeometry{Generation: 7, Cols: 102, Rows: 27}) {
+		t.Fatalf("reads=%d geometry=%+v, want 2 reads at generation 7", reads, geometry)
+	}
+	if session.ptyReadBytes != int64(len(want)) {
+		t.Fatalf("admitted bytes=%d, want %d exactly once", session.ptyReadBytes, len(want))
+	}
+}
+
+func TestPTYReaderStopsRetryingInterruptedSyscallAfterProcessDone(t *testing.T) {
+	processDone := make(chan struct{})
+	reads := 0
+	session := &Session{
+		lastAppliedCols: 102, lastAppliedRows: 27, geometryGeneration: 7,
+		readPTY: func(int, []byte) (int, error) {
+			reads++
+			if reads == 1 {
+				close(processDone)
+			}
+			if reads >= 100 {
+				return 0, io.EOF
+			}
+			return 0, syscall.EINTR
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	readPacket := session.readPTYPacketFunc(
+		-1,
+		-1,
+		&ioctlWindowPendingMonitor{pending: 1},
+		processDone,
+	)
+	_, readErr, _ := readPacket(make([]byte, 1))
+	if !errors.Is(readErr, io.EOF) {
+		t.Fatalf("read error=%v, want EOF after process completion", readErr)
+	}
+	if reads != 1 {
+		t.Fatalf("read calls=%d, want retry loop to stop after the first interrupted read", reads)
+	}
+}
+
 func (m *replenishedPendingMonitor) PendingBytes() (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

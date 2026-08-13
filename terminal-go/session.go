@@ -1009,6 +1009,16 @@ func readPTYPacketsWithPendingGeometry(
 		} else {
 			n, err = reader.Read(buffer)
 		}
+		if n == 0 && errors.Is(err, syscall.EINTR) {
+			if channelClosed(processDone) {
+				reads <- ptyReadResult{err: io.EOF}
+				return
+			}
+			continue
+		}
+		if n > 0 && errors.Is(err, syscall.EINTR) {
+			err = nil
+		}
 		total := n
 		morePending := false
 		if total > 0 && err == nil {
@@ -1202,7 +1212,14 @@ func (s *Session) readPTYPacketFunc(
 				if channelClosed(processDone) {
 					return 0, io.EOF, TerminalGeometry{}
 				}
-				ptyReadable, waitErr := waitPTYReadable(fd, cancelFD)
+				waitRead := s.waitPTYRead
+				if waitRead == nil {
+					waitRead = waitPTYReadable
+				}
+				ptyReadable, waitErr := waitRead(fd, cancelFD)
+				if errors.Is(waitErr, syscall.EINTR) {
+					continue
+				}
 				if waitErr != nil {
 					return 0, waitErr, TerminalGeometry{}
 				}
@@ -1214,10 +1231,17 @@ func (s *Session) readPTYPacketFunc(
 				continue
 			}
 			readSize := min(available, len(buffer))
-			n, readErr := syscall.Read(fd, buffer[:readSize])
+			readPTY := s.readPTY
+			if readPTY == nil {
+				readPTY = syscall.Read
+			}
+			n, readErr := readPTY(fd, buffer[:readSize])
 			readable = false
-			if errors.Is(readErr, syscall.EAGAIN) || errors.Is(readErr, syscall.EWOULDBLOCK) {
+			if errors.Is(readErr, syscall.EINTR) || errors.Is(readErr, syscall.EAGAIN) || errors.Is(readErr, syscall.EWOULDBLOCK) {
 				s.ptyOrderMu.Unlock()
+				if channelClosed(processDone) {
+					return 0, io.EOF, TerminalGeometry{}
+				}
 				continue
 			}
 			geometry := s.captureTerminalGeometry()

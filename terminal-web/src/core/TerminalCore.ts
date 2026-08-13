@@ -644,6 +644,7 @@ export class TerminalCore {
   private inputElement: HTMLTextAreaElement | null = null;
   private viewportHost: HTMLDivElement | null = null;
   private renderHost: HTMLDivElement | null = null;
+  private presentationVisible = true;
   private scrollbarOverlay: TerminalScrollbarOverlay | null = null;
 
   private resizeObserver: ResizeObserver | null = null;
@@ -1746,11 +1747,13 @@ export class TerminalCore {
     viewportHost.style.overflow = 'hidden';
 
     const renderHost = document.createElement('div');
+    renderHost.dataset.floetermTerminalRenderHost = '';
     renderHost.style.position = 'absolute';
     renderHost.style.inset = '0';
     renderHost.style.overflow = 'hidden';
     renderHost.style.transformOrigin = 'top left';
     renderHost.style.willChange = 'transform';
+    renderHost.style.visibility = this.presentationVisible ? '' : 'hidden';
 
     viewportHost.appendChild(renderHost);
     this.container.replaceChildren(viewportHost);
@@ -3620,6 +3623,18 @@ export class TerminalCore {
     this.flushPendingPresentationScale();
     this.performResize('force');
     this.requestDemandRender(true);
+  }
+
+  setPresentationVisible(visible: boolean): void {
+    if (this.isDisposed) {
+      return;
+    }
+    this.presentationVisible = visible;
+    const renderHost = this.renderHost;
+    if (!renderHost) {
+      return;
+    }
+    renderHost.style.visibility = visible ? '' : 'hidden';
   }
 
   /**

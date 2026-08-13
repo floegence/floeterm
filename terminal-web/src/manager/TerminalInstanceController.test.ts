@@ -54,6 +54,9 @@ class MockCore implements TerminalCoreLike {
   fixedDimensionCalls: Array<{ cols: number; rows: number } | null> = [];
   operations: string[] = [];
   focusCalls: Array<TerminalFocusOptions | undefined> = [];
+  presentationVisibility: boolean[] = [];
+  presentationRequests = 0;
+  presentationResult: Promise<void> = Promise.resolve();
   readonly config?: unknown;
   readonly container: HTMLElement;
   readonly eventHandlers?: TerminalEventHandlers;
@@ -91,6 +94,7 @@ class MockCore implements TerminalCoreLike {
   async copySelection() { return { copied: false as const, reason: 'empty_selection' as const, source: 'command' as const }; }
   getState(): TerminalState { return this.state; }
   getDimensions(): { cols: number; rows: number } { return this.dimensions; }
+  measureHostDimensions(): { cols: number; rows: number } | undefined { return this.dimensions; }
   getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null { return null; }
   findNext(): boolean { return false; }
   findPrevious(): boolean { return false; }
@@ -99,6 +103,15 @@ class MockCore implements TerminalCoreLike {
   focus(options?: TerminalFocusOptions): void { this.focusCalls.push(options); }
   setConnected(isConnected: boolean): void { this.connected = isConnected; }
   forceResize(): void {}
+  forceResizeAndWaitForPresentation(): Promise<void> {
+    this.presentationRequests += 1;
+    this.operations.push('present');
+    return this.presentationResult;
+  }
+  setPresentationVisible(visible: boolean): void {
+    this.presentationVisibility.push(visible);
+    this.operations.push(`visible:${visible}`);
+  }
   setFixedDimensions(dimensions: { cols: number; rows: number } | null): void {
     this.fixedDimensionCalls.push(dimensions);
     if (dimensions) this.operations.push(`geometry:${dimensions.cols}x${dimensions.rows}`);
@@ -419,6 +432,514 @@ describe('TerminalInstanceController', () => {
     controller.dispose();
   });
 
+  it('stages atomic history geometry and reveals only the stable attached presentation', async () => {
+    const history = deferred<TerminalHistoryPage>();
+    const presentation = deferred<void>();
+    class StagedCore extends MockCore {
+      override presentationResult = presentation.promise;
+    }
+    const transport = makeTransport({
+      history: vi.fn().mockRejectedValue(new Error('legacy history path must not be used')),
+    }) as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 2,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 9,
+      cols: 102,
+      rows: 27,
+    });
+    transport.historyPage = vi.fn(() => history.promise);
+    const { controller } = await mountController({
+      transport,
+      coreConstructor: StagedCore,
+      autoRunTimers: false,
+    });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    expect(core.presentationVisibility).toEqual([false]);
+    history.resolve({
+      chunks: [
+        { sequence: 1, timestampMs: 1, data: new TextEncoder().encode('old'), geometryGeneration: 7, cols: 120, rows: 55 },
+        { sequence: 2, timestampMs: 2, data: new TextEncoder().encode('newer'), geometryGeneration: 8, cols: 131, rows: 58 },
+      ],
+      firstRetainedSequence: 1,
+      nextStartSequence: 0,
+      hasMore: false,
+      coveredThroughSequence: 2,
+      snapshotEndSequence: 2,
+      historyGeneration: 1,
+      historyReset: false,
+      historyTruncated: false,
+      totalBytes: 8,
+    });
+    await flushPromises();
+    for (let frame = 0; frame < 4; frame += 1) {
+      await vi.runOnlyPendingTimersAsync();
+      await flushPromises();
+    }
+
+    expect(core.fixedDimensionCalls).toEqual([
+      { cols: 120, rows: 55 },
+      { cols: 131, rows: 58 },
+      { cols: 102, rows: 27 },
+    ]);
+    expect(core.presentationRequests).toBe(1);
+    expect(core.presentationVisibility).toEqual([false]);
+    expect(controller.getSnapshot().loadingState).toBe('processing_history');
+
+    presentation.resolve();
+    await flushPromises();
+
+    expect(core.presentationVisibility).toEqual([false, true]);
+    expect(core.operations.slice(-4)).toEqual(['geometry:102x27', 'present', 'present', 'visible:true']);
+    expect(controller.getSnapshot().loadingState).toBe('ready');
+    controller.dispose();
+  });
+
+  it('never reveals a stale replay presentation after disposal', async () => {
+    const presentation = deferred<void>();
+    class StagedCore extends MockCore {
+      override presentationResult = presentation.promise;
+    }
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 1,
+      cols: 102,
+      rows: 27,
+    });
+    transport.historyPage = vi.fn();
+    const { controller } = await mountController({ transport, coreConstructor: StagedCore, autoRunTimers: false });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    expect(core.presentationVisibility).toEqual([false]);
+    expect(core.presentationRequests).toBe(1);
+    controller.dispose();
+    presentation.resolve();
+    await flushPromises();
+
+    expect(core.presentationVisibility).toEqual([false]);
+  });
+
+  it('keeps replay hidden and enters error when final presentation fails', async () => {
+    class FailedPresentationCore extends MockCore {
+      override presentationResult = Promise.reject(new Error('renderer presentation failed'));
+    }
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 1,
+      cols: 102,
+      rows: 27,
+    });
+    transport.historyPage = vi.fn();
+    const { controller } = await mountController({
+      transport,
+      coreConstructor: FailedPresentationCore,
+      autoRunTimers: false,
+    });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    expect(core.presentationVisibility).toEqual([false]);
+    expect(controller.getSnapshot().state.state).toBe(TerminalState.ERROR);
+    expect(controller.getSnapshot().state.error?.message).toBe('renderer presentation failed');
+    expect(controller.getSnapshot().loadingState).not.toBe('ready');
+    controller.dispose();
+  });
+
+  it('waits for the replay host resize ACK and final frame before revealing', async () => {
+    const resizeApplied = deferred<void>();
+    const finalPresentation = deferred<void>();
+    class SettlingCore extends MockCore {
+      hostDimensions = { cols: 199, rows: 48 };
+      override presentationRequests = 0;
+      override forceResizeAndWaitForPresentation(): Promise<void> {
+        this.presentationRequests += 1;
+        this.operations.push('present');
+        this.eventHandlers?.onResize?.(this.hostDimensions);
+        return this.presentationRequests === 1 ? Promise.resolve() : finalPresentation.promise;
+      }
+      override measureHostDimensions() { return this.hostDimensions; }
+    }
+    const resize = vi.fn(async (_sessionId: string, cols: number, rows: number) => {
+      await resizeApplied.promise;
+      const core = coreInstances[0]!;
+      core.dimensions = { cols, rows };
+    });
+    const transport = makeTransport({ resize }) as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 4,
+      cols: 174,
+      rows: 37,
+    });
+    transport.historyPage = vi.fn();
+    const { controller } = await mountController({ transport, coreConstructor: SettlingCore, autoRunTimers: false });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    expect(resize).toHaveBeenCalledWith('s1', 199, 48);
+    expect(core.presentationVisibility).toEqual([false]);
+    expect(core.presentationRequests).toBe(1);
+
+    resizeApplied.resolve();
+    await flushPromises();
+    expect(core.presentationRequests).toBe(2);
+    expect(core.presentationVisibility).toEqual([false]);
+
+    finalPresentation.resolve();
+    await flushPromises();
+    expect(core.presentationVisibility).toEqual([false, true]);
+    expect(core.dimensions).toEqual({ cols: 199, rows: 48 });
+    expect(controller.getSnapshot().loadingState).toBe('ready');
+    controller.dispose();
+  });
+
+  it('waits for ACK geometry to cross its parser boundary before replay reveal', async () => {
+    const finalPresentation = deferred<void>();
+    const events = makeEventSource();
+    class BoundaryCore extends MockCore {
+      hostDimensions = { cols: 199, rows: 48 };
+      override forceResizeAndWaitForPresentation(): Promise<void> {
+        this.presentationRequests += 1;
+        this.eventHandlers?.onResize?.(this.hostDimensions);
+        return this.presentationRequests === 1 ? Promise.resolve() : finalPresentation.promise;
+      }
+      override measureHostDimensions() { return this.hostDimensions; }
+    }
+    const resizeWithEffectiveGeometry = vi.fn().mockResolvedValue({
+      requested: { cols: 199, rows: 48 },
+      effective: { generation: 5, outputSequenceBoundary: 1, cols: 199, rows: 48 },
+      runtimeAttachGeneration: 1,
+    });
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+      resizeWithEffectiveGeometry: typeof resizeWithEffectiveGeometry;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 4,
+      cols: 174,
+      rows: 37,
+    });
+    transport.historyPage = vi.fn();
+    transport.resizeWithEffectiveGeometry = resizeWithEffectiveGeometry;
+    const { controller } = await mountController({
+      transport,
+      eventSource: events.source,
+      coreConstructor: BoundaryCore,
+      config: { responsive: { reportHostDimensionsWithFixedGrid: true } },
+      autoRunTimers: false,
+    });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    expect(resizeWithEffectiveGeometry).toHaveBeenCalledWith('s1', 199, 48);
+    expect(core.presentationRequests).toBe(1);
+    expect(core.presentationVisibility).toEqual([false]);
+
+    events.emitGeometry({ sessionId: 's1', generation: 5, outputSequenceBoundary: 1, cols: 199, rows: 48 });
+    await flushPromises();
+    expect(core.presentationRequests).toBe(1);
+    events.emit({
+      sessionId: 's1',
+      type: 'data',
+      sequence: 1,
+      data: new TextEncoder().encode('redraw'),
+      geometryGeneration: 5,
+      cols: 199,
+      rows: 48,
+    });
+    await vi.runAllTimersAsync();
+    await flushPromises();
+    expect(core.presentationRequests).toBe(2);
+    expect(core.presentationVisibility).toEqual([false]);
+
+    finalPresentation.resolve();
+    await flushPromises();
+    expect(core.presentationVisibility).toEqual([false, true]);
+    controller.dispose();
+  });
+
+  it('fails a hidden replay when the stream errors before the ACK boundary is applied', async () => {
+    const events = makeEventSource();
+    class BoundaryCore extends MockCore {
+      override measureHostDimensions() { return { cols: 199, rows: 48 }; }
+      override forceResizeAndWaitForPresentation(): Promise<void> {
+        this.presentationRequests += 1;
+        this.eventHandlers?.onResize?.({ cols: 199, rows: 48 });
+        return Promise.resolve();
+      }
+    }
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+      resizeWithEffectiveGeometry: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 4,
+      cols: 174,
+      rows: 37,
+    });
+    transport.historyPage = vi.fn();
+    transport.resizeWithEffectiveGeometry = vi.fn().mockResolvedValue({
+      effective: { generation: 5, outputSequenceBoundary: 2, cols: 199, rows: 48 },
+    });
+    const { controller } = await mountController({
+      transport,
+      eventSource: events.source,
+      coreConstructor: BoundaryCore,
+      config: { responsive: { reportHostDimensionsWithFixedGrid: true } },
+      autoRunTimers: false,
+    });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    events.emitGeometry({ sessionId: 's1', generation: 5, outputSequenceBoundary: 2, cols: 199, rows: 48 });
+    events.emit({ sessionId: 's1', type: 'error', data: new Uint8Array(), error: 'stream failed at boundary' });
+    await flushPromises();
+
+    expect(core.presentationVisibility).toEqual([false]);
+    expect(controller.getSnapshot().state.state).toBe(TerminalState.ERROR);
+    expect(controller.getSnapshot().state.error?.message).toBe('stream failed at boundary');
+    expect(controller.getSnapshot().loadingState).not.toBe('ready');
+    controller.dispose();
+  });
+
+  it('accepts a newer applied geometry that supersedes the pending ACK geometry', async () => {
+    const events = makeEventSource();
+    class BoundaryCore extends MockCore {
+      override measureHostDimensions() { return { cols: 199, rows: 48 }; }
+      override forceResizeAndWaitForPresentation(): Promise<void> {
+        this.presentationRequests += 1;
+        this.eventHandlers?.onResize?.({ cols: 199, rows: 48 });
+        return Promise.resolve();
+      }
+    }
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+      resizeWithEffectiveGeometry: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 4,
+      cols: 174,
+      rows: 37,
+    });
+    transport.historyPage = vi.fn();
+    transport.resizeWithEffectiveGeometry = vi.fn().mockResolvedValue({
+      effective: { generation: 5, outputSequenceBoundary: 1, cols: 102, rows: 27 },
+    });
+    const { controller } = await mountController({
+      transport,
+      eventSource: events.source,
+      coreConstructor: BoundaryCore,
+      config: { responsive: { reportHostDimensionsWithFixedGrid: true } },
+      autoRunTimers: false,
+    });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    events.emitGeometry({ sessionId: 's1', generation: 5, outputSequenceBoundary: 1, cols: 102, rows: 27 });
+    events.emitGeometry({ sessionId: 's1', generation: 6, outputSequenceBoundary: 1, cols: 88, rows: 24 });
+    events.emit({
+      sessionId: 's1',
+      type: 'data',
+      sequence: 1,
+      data: new TextEncoder().encode('newer shared redraw'),
+      geometryGeneration: 6,
+      cols: 88,
+      rows: 24,
+    });
+    await vi.runAllTimersAsync();
+    await flushPromises();
+
+    expect(core.dimensions).toEqual({ cols: 88, rows: 24 });
+    expect(core.presentationVisibility).toEqual([false, true]);
+    expect(controller.getSnapshot().loadingState).toBe('ready');
+    controller.dispose();
+  });
+
+  it('reveals a larger shared view after the smaller effective geometry is applied', async () => {
+    const events = makeEventSource();
+    class SharedViewCore extends MockCore {
+      hostDimensions = { cols: 199, rows: 48 };
+      override forceResizeAndWaitForPresentation(): Promise<void> {
+        this.presentationRequests += 1;
+        this.eventHandlers?.onResize?.(this.hostDimensions);
+        return Promise.resolve();
+      }
+      override measureHostDimensions() { return this.hostDimensions; }
+    }
+    const resizeWithEffectiveGeometry = vi.fn().mockResolvedValue({
+      requested: { cols: 199, rows: 48 },
+      effective: { generation: 5, outputSequenceBoundary: 1, cols: 102, rows: 27 },
+      runtimeAttachGeneration: 1,
+    });
+    const transport = makeTransport() as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+      resizeWithEffectiveGeometry: typeof resizeWithEffectiveGeometry;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 4,
+      cols: 174,
+      rows: 37,
+    });
+    transport.historyPage = vi.fn();
+    transport.resizeWithEffectiveGeometry = resizeWithEffectiveGeometry;
+    const { controller } = await mountController({
+      transport,
+      eventSource: events.source,
+      coreConstructor: SharedViewCore,
+      config: { responsive: { reportHostDimensionsWithFixedGrid: true } },
+      autoRunTimers: false,
+    });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    events.emitGeometry({ sessionId: 's1', generation: 5, outputSequenceBoundary: 1, cols: 102, rows: 27 });
+    events.emit({
+      sessionId: 's1',
+      type: 'data',
+      sequence: 1,
+      data: new TextEncoder().encode('shared redraw'),
+      geometryGeneration: 5,
+      cols: 102,
+      rows: 27,
+    });
+    await vi.runAllTimersAsync();
+    await flushPromises();
+
+    expect(core.dimensions).toEqual({ cols: 102, rows: 27 });
+    expect(core.presentationVisibility).toEqual([false, true]);
+    expect(controller.getSnapshot().loadingState).toBe('ready');
+    controller.dispose();
+  });
+
+  it('does not let a superseded resize failure poison the final replay geometry', async () => {
+    const firstResize = deferred<void>();
+    const finalPresentation = deferred<void>();
+    class SettlingCore extends MockCore {
+      hostDimensions = { cols: 199, rows: 48 };
+      override forceResizeAndWaitForPresentation(): Promise<void> {
+        this.presentationRequests += 1;
+        this.eventHandlers?.onResize?.(this.hostDimensions);
+        return this.presentationRequests === 1 ? Promise.resolve() : finalPresentation.promise;
+      }
+      override measureHostDimensions() { return this.hostDimensions; }
+    }
+    const resize = vi.fn(async (_sessionId: string, cols: number, rows: number) => {
+      if (resize.mock.calls.length === 1) {
+        await firstResize.promise;
+        throw new Error('superseded resize failed');
+      }
+      coreInstances[0]!.dimensions = { cols, rows };
+    });
+    const transport = makeTransport({ resize }) as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 4,
+      cols: 174,
+      rows: 37,
+    });
+    transport.historyPage = vi.fn();
+    const { controller } = await mountController({ transport, coreConstructor: SettlingCore, autoRunTimers: false });
+    await flushPromises();
+    const core = coreInstances[0] as SettlingCore;
+
+    expect(resize).toHaveBeenCalledWith('s1', 199, 48);
+    core.hostDimensions = { cols: 102, rows: 27 };
+    core.eventHandlers?.onResize?.(core.hostDimensions);
+    firstResize.resolve();
+    await flushPromises();
+
+    expect(resize).toHaveBeenLastCalledWith('s1', 102, 27);
+    expect(core.presentationVisibility).toEqual([false]);
+    expect(controller.getSnapshot().state.state).not.toBe(TerminalState.ERROR);
+
+    finalPresentation.resolve();
+    await flushPromises();
+
+    expect(core.presentationVisibility).toEqual([false, true]);
+    expect(core.dimensions).toEqual({ cols: 102, rows: 27 });
+    expect(controller.getSnapshot().loadingState).toBe('ready');
+    controller.dispose();
+  });
+
+  it('keeps replay hidden when the final host resize fails', async () => {
+    class SettlingCore extends MockCore {
+      override measureHostDimensions() { return { cols: 199, rows: 48 }; }
+      override forceResizeAndWaitForPresentation(): Promise<void> {
+        this.presentationRequests += 1;
+        this.eventHandlers?.onResize?.({ cols: 199, rows: 48 });
+        return Promise.resolve();
+      }
+    }
+    const resizeError = new Error('resize ACK failed');
+    const transport = makeTransport({ resize: vi.fn().mockRejectedValue(resizeError) }) as TerminalTransport & {
+      attachWithHistoryBoundary: ReturnType<typeof vi.fn>;
+      historyPage: ReturnType<typeof vi.fn>;
+    };
+    transport.attachWithHistoryBoundary = vi.fn().mockResolvedValue({
+      historyBoundarySequence: 0,
+      historyGeneration: 1,
+      historyStartSequence: 1,
+      geometryGeneration: 4,
+      cols: 174,
+      rows: 37,
+    });
+    transport.historyPage = vi.fn();
+    const { controller } = await mountController({ transport, coreConstructor: SettlingCore, autoRunTimers: false });
+    await flushPromises();
+    const core = coreInstances[0]!;
+
+    expect(core.presentationVisibility).toEqual([false]);
+    expect(controller.getSnapshot().state.state).toBe(TerminalState.ERROR);
+    expect(controller.getSnapshot().state.error?.message).toBe('resize ACK failed');
+    expect(controller.getSnapshot().loadingState).not.toBe('ready');
+    controller.dispose();
+  });
+
   it('fails an atomic attach when history does not cover the acknowledged boundary', async () => {
     const attachWithHistoryBoundary = vi.fn().mockResolvedValue({
       historyBoundarySequence: 3,
@@ -593,7 +1114,17 @@ describe('TerminalInstanceController', () => {
 
     expect(core.restoredCheckpoints).toEqual([checkpoint]);
     expect(core.writes.map(item => new TextDecoder().decode(item as Uint8Array))).toEqual(['delta']);
-    expect(core.operations).toEqual(['geometry:80x24', 'restore:4', 'geometry:100x30', 'write:delta']);
+    expect(core.operations).toEqual([
+      'visible:false',
+      'geometry:80x24',
+      'restore:4',
+      'geometry:100x30',
+      'write:delta',
+      'geometry:100x30',
+      'present',
+      'present',
+      'visible:true',
+    ]);
     expect(controller.getSnapshot().connection.state).toBe('connected');
     controller.dispose();
   });
@@ -1124,8 +1655,10 @@ describe('TerminalInstanceController', () => {
 
     oldResize.resolve();
     await flushPromises();
-    expect(resize).toHaveBeenCalledTimes(2);
-    expect(resize).toHaveBeenLastCalledWith('s2', 102, 27);
+    expect(resize.mock.calls).toEqual([
+      ['s1', 120, 36],
+      ['s2', 102, 27],
+    ]);
     controller.dispose();
   });
 

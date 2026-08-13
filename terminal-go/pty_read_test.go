@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -297,5 +298,118 @@ func TestReadPTYPacketsPreservesDataReturnedWithEOF(t *testing.T) {
 	}
 	if _, ok := <-reads; ok {
 		t.Fatal("PTY result channel remained open after EOF")
+	}
+}
+
+func TestReadPTYPacketsRetriesInterruptedReadWithoutEndingOutput(t *testing.T) {
+	reads := make(chan ptyReadResult, 2)
+	call := 0
+	readPTYPacketsWithPendingGeometry(
+		nil,
+		reads,
+		func() (int, error) { return 0, nil },
+		nil,
+		func(target []byte) (int, error, TerminalGeometry) {
+			call++
+			switch call {
+			case 1:
+				return 0, syscall.EINTR, TerminalGeometry{}
+			case 2:
+				return copy(target, []byte("after-interrupt")), nil, TerminalGeometry{
+					Generation: 7,
+					Cols:       102,
+					Rows:       27,
+				}
+			default:
+				return 0, io.EOF, TerminalGeometry{}
+			}
+		},
+	)
+
+	first, ok := <-reads
+	if !ok {
+		t.Fatal("PTY result channel closed after EINTR")
+	}
+	if first.err != nil || string(first.data) != "after-interrupt" {
+		t.Fatalf("first result=%q/%v, want after-interrupt/nil", first.data, first.err)
+	}
+	if first.geometry != (TerminalGeometry{Generation: 7, Cols: 102, Rows: 27}) {
+		t.Fatalf("first geometry=%+v, want post-interrupt read geometry", first.geometry)
+	}
+
+	terminal, ok := <-reads
+	if !ok || !errors.Is(terminal.err, io.EOF) {
+		t.Fatalf("terminal result=%+v open=%v, want EOF", terminal, ok)
+	}
+	if _, ok := <-reads; ok {
+		t.Fatal("PTY result channel remained open after EOF")
+	}
+}
+
+func TestReadPTYPacketsStopsAfterInterruptedReadWhenProcessIsDone(t *testing.T) {
+	reads := make(chan ptyReadResult, 1)
+	processDone := make(chan struct{})
+	close(processDone)
+	calls := 0
+	readPTYPacketsWithPendingGeometry(
+		nil,
+		reads,
+		func() (int, error) { return 0, nil },
+		processDone,
+		func([]byte) (int, error, TerminalGeometry) {
+			calls++
+			return 0, syscall.EINTR, TerminalGeometry{}
+		},
+	)
+
+	result, ok := <-reads
+	if !ok || !errors.Is(result.err, io.EOF) {
+		t.Fatalf("terminal result=%+v open=%v, want EOF after process completion", result, ok)
+	}
+	if calls != 1 {
+		t.Fatalf("read calls=%d, want one interrupted call before the process fence", calls)
+	}
+}
+
+func TestReadPTYPacketsPreservesDataReturnedWithInterruptedRead(t *testing.T) {
+	reads := make(chan ptyReadResult, 3)
+	calls := 0
+	readPTYPacketsWithPendingGeometry(
+		nil,
+		reads,
+		func() (int, error) { return 0, nil },
+		nil,
+		func(target []byte) (int, error, TerminalGeometry) {
+			calls++
+			switch calls {
+			case 1:
+				return copy(target, []byte("before-interrupt")), syscall.EINTR, TerminalGeometry{
+					Generation: 4,
+					Cols:       80,
+					Rows:       24,
+				}
+			case 2:
+				return copy(target, []byte("after-interrupt")), nil, TerminalGeometry{
+					Generation: 4,
+					Cols:       80,
+					Rows:       24,
+				}
+			default:
+				return 0, io.EOF, TerminalGeometry{}
+			}
+		},
+	)
+
+	first := <-reads
+	second := <-reads
+	terminal := <-reads
+	if string(first.data) != "before-interrupt" || first.err != nil {
+		t.Fatalf("first result=%q/%v, want lossless data/nil", first.data, first.err)
+	}
+	if string(second.data) != "after-interrupt" || second.err != nil {
+		t.Fatalf("second result=%q/%v, want continued data/nil", second.data, second.err)
+	}
+	if !errors.Is(terminal.err, io.EOF) {
+		t.Fatalf("terminal error=%v, want EOF", terminal.err)
 	}
 }

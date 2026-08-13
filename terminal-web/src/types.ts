@@ -280,6 +280,8 @@ export interface TerminalCoreLike {
   focus(options?: TerminalFocusOptions): void;
   setConnected(isConnected: boolean): void;
   forceResize(): void;
+  forceResizeAndWaitForPresentation(): Promise<void>;
+  setPresentationVisible(visible: boolean): void;
   setFixedDimensions(dimensions: TerminalDimensions | null, options?: TerminalFixedDimensionsOptions): void;
   setAppearance?(appearance: TerminalAppearance): void;
   setScrollbarOptions?(options: Partial<TerminalScrollbarOptions>): void;
@@ -433,6 +435,13 @@ export interface TerminalWorkStateUpdateEvent {
 export interface TerminalTransport {
   attach(sessionId: TerminalID, cols: number, rows: number): Promise<void>;
   resize(sessionId: TerminalID, cols: number, rows: number): Promise<void>;
+  resizeWithEffectiveGeometry?(
+    sessionId: TerminalID,
+    cols: number,
+    rows: number,
+  ): Promise<{
+    effective: { generation: number; outputSequenceBoundary: number; cols: number; rows: number };
+  }>;
   sendInput(sessionId: TerminalID, input: string, sourceConnId?: string): Promise<void>;
   history(sessionId: TerminalID, startSeq: number, endSeq: number): Promise<TerminalDataChunk[]>;
   clear(sessionId: TerminalID): Promise<void>;

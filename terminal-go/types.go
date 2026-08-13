@@ -383,6 +383,8 @@ type Session struct {
 	writePTY           func([]byte) (int, error)
 	setPTYSize         func(*os.File, *pty.Winsize) error
 	requestPTYRedraw   func(*os.File) error
+	waitPTYRead        func(int, int) (bool, error)
+	readPTY            func(int, []byte) (int, error)
 	resizeQueued       bool
 	resizeRunning      bool
 	resizeReason       string

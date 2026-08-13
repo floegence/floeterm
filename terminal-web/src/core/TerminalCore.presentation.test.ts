@@ -188,4 +188,63 @@ describe('TerminalCore presentation scale', () => {
 
     core.dispose();
   });
+
+  it('stages presentation without changing layout or triggering a resize', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const handlers: TerminalEventHandlers = { onResize: vi.fn() };
+    const core = new TerminalCore(container, {}, handlers);
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+    core.setPresentationScale(2);
+    await vi.runAllTimersAsync();
+    fitSpy.mockReset();
+    vi.mocked(handlers.onResize!).mockClear();
+
+    const state = core as unknown as { renderHost?: HTMLDivElement | null };
+    const host = state.renderHost!;
+    const layout = {
+      width: host.style.width,
+      height: host.style.height,
+      transform: host.style.transform,
+    };
+
+    core.setPresentationVisible(false);
+    expect(host.style.visibility).toBe('hidden');
+    expect({ width: host.style.width, height: host.style.height, transform: host.style.transform }).toEqual(layout);
+    expect(fitSpy).not.toHaveBeenCalled();
+    expect(handlers.onResize).not.toHaveBeenCalled();
+
+    core.setPresentationVisible(true);
+    expect(host.style.visibility).toBe('');
+    expect({ width: host.style.width, height: host.style.height, transform: host.style.transform }).toEqual(layout);
+    expect(fitSpy).not.toHaveBeenCalled();
+    expect(handlers.onResize).not.toHaveBeenCalled();
+
+    core.dispose();
+    core.setPresentationVisible(true);
+  });
+
+  it('creates the render host hidden when staging begins before initialization', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'clientWidth', { value: 800, configurable: true });
+    Object.defineProperty(container, 'clientHeight', { value: 400, configurable: true });
+    const core = new TerminalCore(container, {});
+
+    core.setPresentationVisible(false);
+    const init = core.initialize();
+    await vi.runAllTimersAsync();
+    await init;
+
+    const host = container.querySelector('[data-floeterm-terminal-render-host]');
+    expect(host).toBeInstanceOf(HTMLDivElement);
+    expect((host as HTMLDivElement).style.visibility).toBe('hidden');
+    core.setPresentationVisible(true);
+    expect((host as HTMLDivElement).style.visibility).toBe('');
+    core.dispose();
+  });
 });
