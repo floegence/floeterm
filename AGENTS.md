@@ -178,6 +178,30 @@ make check
 
 - `make check` is expected to cover the core Go and web checks for this repository.
 
+## Real Product Behavior Acceptance
+
+- A change that affects a runtime, Desktop or web UI startup, cross-process
+  communication, persistence, or another user-visible integration flow is not
+  complete merely because unit tests or `make check` pass.
+- Reproduce the affected behavior before editing, then add the smallest useful
+  automated regression test and verify the real product flow after the fix.
+- Real-product smoke tests must use a task-owned state directory, user-data
+  directory, cache directory, temporary directory, processes, and dynamically
+  reserved ports. Never reuse a shared development state directory or default
+  port, and never stop processes owned by another task.
+- Exercise the actual user operations affected by the change, including their
+  observable UI and protocol results. Mock-only, source-only, and process-
+  readiness checks do not replace this evidence.
+- When startup recovery or persisted state is in scope, reuse the same isolated
+  task state for a cold restart and verify the affected operation again.
+- The smoke runner must clean up only its own processes and verify that its
+  ports are released. Keep an actionable report with the tested commit, state
+  path, ports, results, and failure logs or screenshots.
+- Report the work complete only after the focused tests, the applicable real-
+  product smoke, and the repository's final quality gate have passed on the
+  final frozen feature tip. If real execution is externally blocked, document
+  the blocker explicitly instead of claiming completion.
+
 ## Commit Messages
 
 Use Conventional Commit messages for every commit:
