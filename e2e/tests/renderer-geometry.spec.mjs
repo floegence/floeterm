@@ -53,6 +53,8 @@ const readRendererGeometry = page => page.evaluate(scrollbarReservePx => {
     backingHeight: target.height,
     cssWidth: target.getBoundingClientRect().width,
     cssHeight: target.getBoundingClientRect().height,
+    styleWidth: Number.parseFloat(getComputedStyle(target).width),
+    styleHeight: Number.parseFloat(getComputedStyle(target).height),
     cssTop: target.getBoundingClientRect().top,
     cssLeft: target.getBoundingClientRect().left,
     surfaceTop: document.querySelector('.terminalSurface')?.getBoundingClientRect().top ?? 0,
@@ -75,6 +77,12 @@ const expectTypographicGeometry = geometry => {
   expect(geometry.dpr).toBe(1);
   expect(geometry.backingWidth).toBeGreaterThanOrEqual(Math.round(geometry.cssWidth));
   expect(geometry.backingHeight).toBeGreaterThanOrEqual(Math.round(geometry.cssHeight));
+  // Retained backing is clipped by the logical host. Its intrinsic-to-CSS
+  // ratio must stay at DPR so the browser never compresses the GL viewport.
+  expect(geometry.backingWidth / geometry.styleWidth).toBeCloseTo(geometry.dpr, 5);
+  expect(geometry.backingHeight / geometry.styleHeight).toBeCloseTo(geometry.dpr, 5);
+  expect(geometry.styleWidth).toBeGreaterThanOrEqual(geometry.logicalWidth);
+  expect(geometry.styleHeight).toBeGreaterThanOrEqual(geometry.logicalHeight);
   expect(geometry.cols).toBe(geometry.expectedCols);
   expect(geometry.rows).toBe(geometry.expectedRows);
   const gridRight = geometry.cols * geometry.expectedCellWidth;
@@ -83,6 +91,31 @@ const expectTypographicGeometry = geometry => {
   expect(gridRight + geometry.expectedCellWidth).toBeGreaterThan(
     logicalRight,
   );
+};
+
+const rightEdgeInk = (imageBuffer, cellHeight, row) => {
+  const image = PNG.sync.read(imageBuffer);
+  const colorCounts = new Map();
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const key = `${image.data[offset] >> 2}:${image.data[offset + 1] >> 2}:${image.data[offset + 2] >> 2}`;
+    colorCounts.set(key, (colorCounts.get(key) ?? 0) + 1);
+  }
+  const backgroundKey = [...colorCounts.entries()].sort((left, right) => right[1] - left[1])[0][0];
+  const background = backgroundKey.split(':').map(value => Number(value) * 4 + 2);
+  const startX = Math.floor(image.width * 0.9);
+  const startY = Math.max(0, Math.floor(row * cellHeight));
+  const endY = Math.min(image.height, Math.ceil((row + 1) * cellHeight));
+  let ink = 0;
+  for (let y = startY; y < endY; y += 1) {
+    for (let x = startX; x < image.width; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      const distance = Math.abs(image.data[offset] - background[0])
+        + Math.abs(image.data[offset + 1] - background[1])
+        + Math.abs(image.data[offset + 2] - background[2]);
+      if (distance > 18) ink += 1;
+    }
+  }
+  return ink;
 };
 
 const expectSeparatedRows = (pixels, minimumRows, cellHeight) => {
@@ -177,6 +210,19 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
   });
   const resizedGeometry = await readRendererGeometry(page);
   expectTypographicGeometry(resizedGeometry);
+  const edgeRow = Math.min(6, resizedGeometry.rows - 1);
+  const edgeMarker = 'EDGE1234';
+  const edgeCol = resizedGeometry.cols - edgeMarker.length + 1;
+  const edgePayloadHex = Buffer.from(
+    `\x1b[${edgeRow + 1};1H\x1b[2K\x1b[${edgeRow + 1};${edgeCol}H${edgeMarker}`,
+  ).toString('hex');
+  await page.evaluate(hex => {
+    window.__floetermPerfHarness.sendInput(
+      `python3 -c "import os;os.write(1,bytes.fromhex('${hex}'))"\r`,
+    );
+  }, edgePayloadHex);
+  await page.waitForFunction(value => window.__floetermPerfHarness.serialize().includes(value), edgeMarker);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const resizedScreenshot = await screenshotVisibleTerminal(page);
   await testInfo.attach('renderer-geometry-resized.png', { body: resizedScreenshot, contentType: 'image/png' });
   const resizedPixels = inkRows(resizedScreenshot);
@@ -186,6 +232,7 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
   expect(resizedGeometry.cssWidth).toBeGreaterThanOrEqual(resizedGeometry.logicalWidth);
   expect(resizedGeometry.cssHeight).toBeGreaterThanOrEqual(resizedGeometry.logicalHeight);
   expect(resizedGeometry.cssTop).toBeCloseTo(resizedGeometry.surfaceTop, 5);
+  expect(rightEdgeInk(resizedScreenshot, resizedGeometry.expectedCellHeight, edgeRow)).toBeGreaterThan(8);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(failures).toEqual([]);
 });

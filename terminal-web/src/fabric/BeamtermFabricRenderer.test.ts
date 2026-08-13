@@ -162,6 +162,7 @@ describe('BeamtermFabricRenderer', () => {
     Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });
     Object.defineProperty(host, 'clientHeight', { value: 400, configurable: true });
     document.body.appendChild(host);
+
     const renderer = new BeamtermFabricRenderer();
     await renderer.initialize({
       container: host,
@@ -361,14 +362,14 @@ describe('BeamtermFabricRenderer', () => {
     renderer.dispose();
   });
 
-  it('keeps retained backing allocation separate from the logical css viewport after shrink', async () => {
+  it('keeps retained backing pixels at device scale while the host clips the logical viewport', async () => {
     const host = document.createElement('div');
     Object.defineProperty(host, 'clientWidth', { value: 1200, configurable: true });
     Object.defineProperty(host, 'clientHeight', { value: 600, configurable: true });
     document.body.appendChild(host);
 
     rendererState.resize.mockImplementation((width: number, height: number) => {
-      const canvas = host.querySelector('canvas');
+      const canvas = host.querySelector<HTMLCanvasElement>('canvas');
       if (canvas) {
         canvas.width = Math.max(canvas.width, width * 2);
         canvas.height = Math.max(canvas.height, height * 2);
@@ -388,19 +389,22 @@ describe('BeamtermFabricRenderer', () => {
       onRendererError: vi.fn(),
     });
 
-    renderer.resize(1200, 600);
     const canvas = host.querySelector<HTMLCanvasElement>('canvas');
     expect(canvas).not.toBeNull();
     if (!canvas) return;
+    renderer.resize(1200, 600);
     const retainedBackingWidth = canvas.width;
     const retainedBackingHeight = canvas.height;
 
     renderer.resize(640, 320);
 
-    expect(canvas.style.width).toBe('640px');
-    expect(canvas.style.height).toBe('320px');
+    expect(canvas.style.width).toBe('2400px');
+    expect(canvas.style.height).toBe('1200px');
     expect(canvas.width).toBeGreaterThanOrEqual(retainedBackingWidth);
     expect(canvas.height).toBeGreaterThanOrEqual(retainedBackingHeight);
+    expect(canvas.width / Number.parseFloat(canvas.style.width)).toBe(1);
+    expect(canvas.height / Number.parseFloat(canvas.style.height)).toBe(1);
+    expect(renderer.getGeometry()).toMatchObject({ width: 640, height: 320 });
     renderer.dispose();
   });
 

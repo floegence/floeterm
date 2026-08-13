@@ -71,9 +71,31 @@ const readPageState = page => page.evaluate(() => {
     geometry: harness.getGeometryDiagnostics(),
     stream: harness.getStreamDiagnostics(),
     serialized: harness.serialize(),
+    visibleLines: harness.getVisibleLines(),
     probe: window.__floetermPerfProbe.snapshot(),
   };
 });
+
+const waitForTopClockAtSharedRightEdge = async (target, expectedCols) => {
+  await expect.poll(async () => target.evaluate(({ cols }) => {
+    const harness = window.__floetermPerfHarness;
+    const row0 = harness?.getVisibleLines()[0] ?? '';
+    const clock = row0.match(/\b\d{2}:\d{2}:\d{2}\b/);
+    if (!clock || !row0.startsWith('Processes:')) return false;
+    const canvas = document.querySelector('.floeterm-beamterm-canvas');
+    const surface = document.querySelector('.terminalSurface');
+    if (!(canvas instanceof HTMLCanvasElement) || !(surface instanceof HTMLElement)) return false;
+    const cssWidth = Number.parseFloat(getComputedStyle(canvas).width);
+    const cssHeight = Number.parseFloat(getComputedStyle(canvas).height);
+    const widthScaleMatches = Math.abs(canvas.width / cssWidth - devicePixelRatio) < 0.01;
+    const heightScaleMatches = Math.abs(canvas.height / cssHeight - devicePixelRatio) < 0.01;
+    return harness.getTerminalInfo()?.cols === cols
+      && widthScaleMatches
+      && heightScaleMatches
+      && surface.clientWidth <= cssWidth
+      && surface.clientHeight <= cssHeight;
+  }, { cols: expectedCols })).toBe(true);
+};
 
 const readGeometryState = page => page.evaluate(() => {
   const harness = window.__floetermPerfHarness;
@@ -207,6 +229,19 @@ test('keeps one session correct while two independent pages resize and stream ou
     expect(sizeMatch).not.toBeNull();
     expect(Number(sizeMatch[1])).toBe(streamed[0].effective.rows);
     expect(Number(sizeMatch[2])).toBe(streamed[0].effective.cols);
+
+    await page.evaluate(() => window.__floetermPerfHarness.sendInput('top -s 1\r'));
+    await Promise.all([
+      waitForTopClockAtSharedRightEdge(page, converged.expected.cols),
+      waitForTopClockAtSharedRightEdge(secondPage, converged.expected.cols),
+    ]);
+    await Promise.all([page, secondPage].map(target => target.evaluate(() => (
+      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    ))));
+    const topStates = await Promise.all([readPageState(page), readPageState(secondPage)]);
+    expect(topStates.every(state => state.visibleLines[0]?.startsWith('Processes:'))).toBe(true);
+    expect(topStates.every(state => state.stream.sequenceGaps === 0)).toBe(true);
+    await page.evaluate(() => window.__floetermPerfHarness.sendInput('\x03'));
 
     const firstHost = converged.first.host;
     const generationBeforeDetach = converged.first.geometry.generation;

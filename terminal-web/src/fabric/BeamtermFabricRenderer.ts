@@ -408,7 +408,7 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
       return;
     }
     this.renderer.resize(cssWidth, cssHeight);
-    this.syncCanvasBackingSurface(cssWidth, cssHeight);
+    this.syncCanvasBackingSurface(cssWidth, cssHeight, pixelRatio);
     this.surfaceCoverageKey = '';
     if (this.sourceGridCoverage && this.module) {
       const batch = this.renderer.batch();
@@ -428,14 +428,17 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     this.surfacePixelRatio = pixelRatio;
   }
 
-  private syncCanvasBackingSurface(cssWidth: number, cssHeight: number): void {
+  private syncCanvasBackingSurface(cssWidth: number, cssHeight: number, pixelRatio: number): void {
     if (!this.canvas) {
       return;
     }
-    // Keep retained pixel allocation independent from the logical CSS viewport.
-    // A retained backing surface must never expand the visible grid and get clipped by its host.
-    this.canvas.style.width = `${cssWidth}px`;
-    this.canvas.style.height = `${cssHeight}px`;
+    // Keep one CSS pixel mapped to one device-independent backing pixel. The
+    // host clips the retained surface to the logical viewport; shrinking the
+    // whole retained bitmap into that viewport would compress every glyph.
+    const backingWidth = Math.max(cssWidth, this.canvas.width / pixelRatio);
+    const backingHeight = Math.max(cssHeight, this.canvas.height / pixelRatio);
+    this.canvas.style.width = `${backingWidth}px`;
+    this.canvas.style.height = `${backingHeight}px`;
     this.canvas.style.left = '0';
     this.canvas.style.top = '0';
     this.canvas.style.right = 'auto';

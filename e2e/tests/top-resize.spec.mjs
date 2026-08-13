@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { PNG } from 'pngjs';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
 import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
@@ -135,6 +136,7 @@ const waitForAuthoritativeTopFrame = async (page, request, sessionId, geometry) 
     const row1 = state.visibleLines[1] ?? '';
     const converged = raw.includes(Buffer.from('\x1b[H\x1b[2J'))
       && raw.includes(Buffer.from('Processes:'))
+      && /\x1b\[1;\d+H\d{2}:\d{2}:\d{2}/.test(raw.toString('latin1'))
       && row0.startsWith('Processes:')
       && row1.startsWith('Load Avg:');
     diagnostic = {
@@ -165,6 +167,36 @@ const waitForAuthoritativeTopFrame = async (page, request, sessionId, geometry) 
   return evidence;
 };
 
+const expectTopClockPixelsAtRightEdge = async (page, geometry) => {
+  const surface = page.locator('.terminalSurface');
+  const box = await surface.boundingBox();
+  if (!box) throw new Error('terminal surface has no visible bounds');
+  const screenshot = await page.screenshot({ animations: 'disabled', clip: box });
+  const image = PNG.sync.read(screenshot);
+  const colorCounts = new Map();
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const key = `${image.data[offset] >> 2}:${image.data[offset + 1] >> 2}:${image.data[offset + 2] >> 2}`;
+    colorCounts.set(key, (colorCounts.get(key) ?? 0) + 1);
+  }
+  const backgroundKey = [...colorCounts.entries()].sort((left, right) => right[1] - left[1])[0][0];
+  const background = backgroundKey.split(':').map(value => Number(value) * 4 + 2);
+  const cellWidth = (image.width - 15) / geometry.cols;
+  const startX = Math.max(0, Math.floor((geometry.cols - 9) * cellWidth));
+  const endY = Math.min(image.height, 20);
+  let ink = 0;
+  for (let y = 0; y < endY; y += 1) {
+    for (let x = startX; x < image.width; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      const distance = Math.abs(image.data[offset] - background[0])
+        + Math.abs(image.data[offset + 1] - background[1])
+        + Math.abs(image.data[offset + 2] - background[2]);
+      if (distance > 18) ink += 1;
+    }
+  }
+  expect(ink, JSON.stringify({ geometry, image: { width: image.width, height: image.height }, startX }))
+    .toBeGreaterThan(8);
+};
+
 const assertTopKeepsAdvancingAndVisible = async (page, request, sessionId, cycles = 3) => {
   let state = await readState(page, true);
   let browserSequence = state.stream.lastSequence;
@@ -191,6 +223,10 @@ const assertTopKeepsAdvancingAndVisible = async (page, request, sessionId, cycle
       await page.waitForTimeout(100);
     }
     expect(advanced, `top output stalled for 3 seconds during refresh cycle ${cycle + 1}`).toBe(true);
+
+    const authoritative = await waitForAuthoritativeTopFrame(page, request, sessionId, state.geometry);
+    expect(authoritative.state.visibleLines[0]).toMatch(/^Processes:/);
+    await expectTopClockPixelsAtRightEdge(page, state.geometry);
   }
 };
 
@@ -331,6 +367,8 @@ test('keeps replay geometry hidden after top advances while the page is detached
   expect(visibleTransitions[0]?.geometry?.rows).toBe(refreshed.host.rows);
   expect(refreshed.visibleLines[0]).toMatch(/^Processes:/);
   expect(refreshed.visibleLines[1]).toMatch(/^Load Avg:/);
+  await waitForAuthoritativeTopFrame(page, request, sessionId, refreshed.geometry);
+  await expectTopClockPixelsAtRightEdge(page, refreshed.geometry);
   await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
 
   const beforePostRefreshResize = refreshed.geometry.generation;
@@ -339,6 +377,7 @@ test('keeps replay geometry hidden after top advances while the page is detached
   const resizedEvidence = await waitForAuthoritativeTopFrame(page, request, sessionId, resized.geometry);
   expect(resizedEvidence.state.visibleLines[0]).toMatch(/^Processes:/);
   expect(resizedEvidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
+  await expectTopClockPixelsAtRightEdge(page, resized.geometry);
   expect(resizedEvidence.state.stream.sequenceGaps).toBe(0);
   await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
   expect(failures).toEqual([]);
