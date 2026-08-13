@@ -560,6 +560,7 @@ export interface TerminalEventSource {
     handler: (event: TerminalWorkStateUpdateEvent) => void,
   ): () => void;
   onTerminalGeometry?(sessionId: TerminalID, handler: (event: TerminalGeometryEvent) => void): () => void;
+  onTerminalPresentation?(sessionId: TerminalID, handler: (presentation: unknown) => void): () => void;
   onSessionDeleted?(sessionId: TerminalID, handler: () => void): () => void;
 }
 

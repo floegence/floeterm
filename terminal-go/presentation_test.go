@@ -2,6 +2,23 @@ package terminal
 
 import "testing"
 
+func TestSemanticPresentationWireFitsMaximumProductViewport(t *testing.T) {
+	p := SemanticPresentation{Sequence: 1, Geometry: TerminalGeometry{Generation: 1, Cols: 199, Rows: 48}, State: TerminalState{Sequence: 1}, Frame: SemanticFrame{Width: 199, Height: 48, BufferKind: "normal", Rows: make([]SemanticRow, 48)}}
+	for y := range p.Frame.Rows {
+		p.Frame.Rows[y].Cells = make([]SemanticCell, 199)
+		for x := range p.Frame.Rows[y].Cells {
+			p.Frame.Rows[y].Cells[x] = SemanticCell{Width: 1, Style: SemanticStyle{Foreground: "default", Background: "default"}}
+		}
+	}
+	data, err := EncodeSemanticPresentation(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) >= 256*1024 {
+		t.Fatalf("encoded presentation = %d bytes", len(data))
+	}
+}
+
 func TestPresentationStorePublishesAtomicLatestAndReliableFIFO(t *testing.T) {
 	store := NewPresentationStore(2)
 	first := SemanticPresentation{Sequence: 1, Geometry: TerminalGeometry{Cols: 80, Rows: 24}, Frame: SemanticFrame{Width: 80, Height: 24}}

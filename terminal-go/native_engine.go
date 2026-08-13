@@ -2,7 +2,22 @@
 
 package terminal
 
-import "github.com/floegence/floeterm/terminal-go/internal/nativevt"
+import (
+	"fmt"
+
+	"github.com/floegence/floeterm/terminal-go/internal/nativevt"
+)
+
+func semanticColor(color nativevt.Color) string {
+	switch color.Kind {
+	case 1:
+		return fmt.Sprintf("indexed:%d", color.PaletteIndex)
+	case 2:
+		return fmt.Sprintf("rgb:%02x%02x%02x", color.R, color.G, color.B)
+	default:
+		return "default"
+	}
+}
 
 type nativeSemanticEngine struct{ engine *nativevt.Engine }
 
@@ -33,7 +48,7 @@ func (e *nativeSemanticEngine) CaptureFrame() (SemanticFrame, error) {
 	for y := range f.Rows {
 		out.Rows[y].Cells = make([]SemanticCell, len(f.Rows[y].Cells))
 		for x, c := range f.Rows[y].Cells {
-			out.Rows[y].Cells[x] = SemanticCell{Text: c.Text, Hyperlink: c.Hyperlink, Width: uint8(c.Width), Style: SemanticStyle{Bold: c.Bold, Italic: c.Italic}}
+			out.Rows[y].Cells[x] = SemanticCell{Text: c.Text, Hyperlink: c.Hyperlink, Width: uint8(c.Width), Style: SemanticStyle{Foreground: semanticColor(c.Foreground), Background: semanticColor(c.Background), Bold: c.Bold, Italic: c.Italic}}
 		}
 	}
 	return out, nil

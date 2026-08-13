@@ -34,6 +34,7 @@ var (
 type Subscriber struct {
 	OnOutput        func(OutputRecord) bool
 	OnGeometry      func(EffectiveGeometry) bool
+	OnPresentation  func([]byte) bool
 	OnSessionClosed func()
 	OnSuperseded    func()
 }
@@ -194,9 +195,25 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 		}
 		return true
 	}
+	attachedProtocolWritten := false
+	var pendingPresentations [][]byte
+	writePresentation := func(data []byte) bool {
+		if !attachedProtocolWritten {
+			pendingPresentations = append(pendingPresentations, append([]byte(nil), data...))
+			return true
+		}
+		encoded, err := EncodeFrame(Frame{Type: FramePresentation, Payload: data})
+		if err != nil || writeBytes(encoded) != nil {
+			cancel()
+			_ = stream.Close()
+			return false
+		}
+		return true
+	}
 	attached, detach, err := s.backend.Attach(ctx, attachment, Subscriber{
-		OnOutput:   queue.enqueue,
-		OnGeometry: writeGeometry,
+		OnOutput:       queue.enqueue,
+		OnGeometry:     writeGeometry,
+		OnPresentation: writePresentation,
 		OnSessionClosed: func() {
 			sessionClosedOnce.Do(func() { close(sessionClosed) })
 		},
@@ -239,6 +256,13 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 			return io.ErrClosedPipe
 		}
 	}
+	attachedProtocolWritten = true
+	for _, presentation := range pendingPresentations {
+		if !writePresentation(presentation) {
+			return io.ErrClosedPipe
+		}
+	}
+	pendingPresentations = nil
 
 	writerDone := make(chan error, 1)
 	go func() {

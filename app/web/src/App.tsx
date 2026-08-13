@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import {
+  RendererSurface,
   createTerminalInstance,
-	RendererSurface,
   isTerminalThemeName,
   getTerminalFabricDiagnostics,
   getTerminalRenderSchedulerStats,
@@ -11,6 +11,8 @@ import {
   type TerminalManagerActions,
   type TerminalRenderSchedulerStats,
   TerminalState,
+  validatePresentation,
+  type SemanticPresentation,
   type TerminalThemeName,
 } from '@floegence/floeterm-terminal-web';
 import { applyTerminalThemeShell, ThemeSelector } from './themeCatalog';
@@ -307,57 +309,33 @@ const SingleTerminalPane = (props: {
   let streamDecoder = new TextDecoder();
   let streamDiagnosticsAfterSequence = 0;
   let geometryDiagnostics = { generation: 0, outputSequenceBoundary: 0, cols: 0, rows: 0 };
-  const isMobile = createMediaQuery('(max-width: 640px), (pointer: coarse)');
-  const fontSize = createMemo(() => (isMobile() ? 14 : 12));
-  const terminal = createSolidTerminal(() => ({
-    sessionId: props.sessionId,
-    isActive: true,
-    autoFocus: !isMobile(),
-    fontSize: fontSize(),
-    themeName: props.themeName,
-    transport: props.transport,
-    eventSource: props.eventSource,
-    onRender: () => undefined,
-    config: {
-      rendererType: 'webgl',
-      responsive: {
-        fitOnFocus: true,
-        emitResizeOnFocus: true,
-        notifyResizeOnlyWhenFocused: false,
-        reportHostDimensionsWithFixedGrid: true,
-      },
-    },
-  }));
-
   const [historyBytes, setHistoryBytes] = createSignal<number | null>(null);
   let mounted = true;
   let clearStatsRefreshTimer: number | null = null;
 	let semanticCanvas: HTMLCanvasElement | undefined;
 	let semanticRenderer: RendererSurface | undefined;
+	let inputBridge: HTMLTextAreaElement | undefined;
+  let presentationError = '';
+  let liveConnected = false;
+  let latestPresentation: SemanticPresentation | null = null;
+  let requestedCols = 0;
+  let requestedRows = 0;
+  let viewDimensions = { cols: 80, rows: 24 };
   const perfWindow = window as FloetermPerfWindow;
   const perfParams = new URLSearchParams(window.location.search);
   const perfHarness: FloetermPerfHarness | null = (
     perfParams.get('perf') === '1' || perfParams.get('perf_probe') === '1'
   )
     ? {
-      sendInput: data => terminal.actions().sendInput(data),
-      clear: () => terminal.actions().clear(),
-      serialize: () => terminal.actions().serialize(),
-      getVisibleLines: () => {
-        const info = terminal.actions().getTerminalInfo();
-        if (!info) return [];
-        const firstVisibleRow = Math.max(0, info.bufferLength - info.rows);
-        return Array.from(
-          { length: info.rows },
-          (_, index) => terminal.actions().readBufferLine(firstVisibleRow + index, { trimRight: true }),
-        );
-      },
-      getSelectionText: () => terminal.actions().getSelectionText(),
-      hasSelection: () => terminal.actions().hasSelection(),
-      getTerminalInfo: () => terminal.actions().getTerminalInfo(),
-      getSnapshot: () => terminal.snapshot(),
+      sendInput: data => { void props.transport.sendInput(props.sessionId, data); },
+      clear: () => { void props.transport.clear(props.sessionId); },
+      serialize: () => latestPresentation?.frame.rows.map(row => row.cells.map(cell => cell.text).join('')).join('\n') ?? '',
+      getVisibleLines: () => latestPresentation?.frame.rows.map(row => row.cells.map(cell => cell.text).join('').trimEnd()) ?? [],
+      getSelectionText: () => '', hasSelection: () => false,
+      getTerminalInfo: () => latestPresentation ? ({ rows: latestPresentation.frame.height, cols: latestPresentation.frame.width, bufferLength: latestPresentation.frame.height }) : null,
+      getSnapshot: () => ({ ...initialTerminalSnapshot, state: { ...initialTerminalSnapshot.state, dimensions: viewDimensions }, connection: { ...initialTerminalSnapshot.connection, isConnected: liveConnected || latestPresentation !== null, state: (liveConnected || latestPresentation !== null) ? 'connected' : 'connecting' } }),
       getFabricDiagnostics: () => getTerminalFabricDiagnostics(),
-      forceResize: () => terminal.actions().forceResize(),
+      forceResize: () => { void requestResize(); },
       getGeometryDiagnostics: () => ({ ...geometryDiagnostics }),
       getStreamDiagnostics: () => ({ ...streamDiagnostics }),
       resetStreamDiagnostics: (afterSequence = 0) => {
@@ -374,11 +352,29 @@ const SingleTerminalPane = (props: {
     }
   });
 
+  const requestResize = async () => {
+    const host = semanticCanvas?.parentElement?.getBoundingClientRect();
+    if (!host) return;
+    const cols = Math.max(20, Math.min(500, Math.floor(host.width / 9)));
+    const rows = Math.max(5, Math.min(200, Math.floor(host.height / 18)));
+    viewDimensions = { cols, rows };
+    if (cols === requestedCols && rows === requestedRows) { semanticRenderer?.resize(); return; }
+    requestedCols = cols; requestedRows = rows;
+    try {
+      const result = await props.transport.resizeWithEffectiveGeometry(props.sessionId, cols, rows);
+      geometryDiagnostics = { generation: result.effective.generation, outputSequenceBoundary: result.effective.outputSequenceBoundary, cols: result.effective.cols, rows: result.effective.rows };
+    } catch (error) { requestedCols = 0; requestedRows = 0; presentationError = error instanceof Error ? error.message : String(error); }
+  };
+
   onMount(() => {
 	if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas);
-	const presentationTimer = window.setInterval(() => {
-		void props.transport.getPresentation(props.sessionId).then(p => semanticRenderer?.apply(p)).catch(() => undefined);
-	}, 50);
+	const semanticResizeObserver = semanticCanvas && typeof ResizeObserver !== 'undefined'
+		? new ResizeObserver(() => { void requestResize().then(() => semanticRenderer?.resize()); })
+		: undefined;
+	if (semanticCanvas?.parentElement) semanticResizeObserver?.observe(semanticCanvas.parentElement);
+	const applyPresentation = (value: unknown) => { try { const presentation = validatePresentation(value); latestPresentation = presentation; semanticRenderer?.apply(presentation); presentationError = ''; } catch (error) { presentationError = error instanceof Error ? error.message : String(error); } };
+	const unsubscribePresentation = props.eventSource.onTerminalPresentation?.(props.sessionId, value => { liveConnected = true; applyPresentation(value); });
+	void props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48).then(async () => { liveConnected = true; await requestResize(); }).catch(error => { presentationError = error instanceof Error ? error.message : String(error); });
     const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
       if (event.type !== 'data') return;
       const sequence = Number(event.sequence ?? 0);
@@ -407,7 +403,8 @@ const SingleTerminalPane = (props: {
       };
     });
     onCleanup(() => {
-		window.clearInterval(presentationTimer);
+		unsubscribePresentation?.();
+		semanticResizeObserver?.disconnect();
       unsubscribeData();
       unsubscribeGeometry?.();
     });
@@ -425,8 +422,7 @@ const SingleTerminalPane = (props: {
   };
 
   createEffect(() => {
-    void fontSize();
-    terminal.actions().forceResize();
+    void requestResize();
   });
 
   onMount(() => {
@@ -467,7 +463,7 @@ const SingleTerminalPane = (props: {
   });
 
   const clearTerminal = () => {
-    terminal.actions().clear();
+    void props.transport.clear(props.sessionId);
     if (clearStatsRefreshTimer !== null) {
       window.clearTimeout(clearStatsRefreshTimer);
     }
@@ -478,13 +474,7 @@ const SingleTerminalPane = (props: {
   };
 
   const status = createMemo(() => {
-    const snapshot = terminal.snapshot();
-    const parts: string[] = [
-      snapshot.connection.isConnected ? 'live' : snapshot.connection.error?.message || snapshot.connection.state,
-    ];
-    if (snapshot.loadingMessage) {
-      parts.push(snapshot.loadingMessage);
-    }
+    const parts: string[] = ['live'];
     const bytes = historyBytes();
     if (bytes !== null) {
       parts.push(`history ${formatBytes(bytes)}`);
@@ -492,8 +482,7 @@ const SingleTerminalPane = (props: {
     return parts.join(' :: ');
   });
   const rendererError = createMemo(() => {
-    const snapshot = terminal.snapshot();
-    return snapshot.state.hasError ? snapshot.state.error?.message ?? 'Beamterm WebGL2 renderer failed' : '';
+    return presentationError;
   });
 
   return (
@@ -518,14 +507,16 @@ const SingleTerminalPane = (props: {
       </Show>
       <div class="terminalContainer">
         <div class="terminalPane">
-          <div class="terminalSurface" ref={terminal.mount} />
-		  <canvas class="semanticTerminalSurface" ref={semanticCanvas} aria-label="Semantic terminal surface" />
+          <canvas class="semanticTerminalSurface" ref={semanticCanvas} aria-label="Semantic terminal surface" />
+          <textarea class="terminalInputBridge" ref={inputBridge} aria-label="Terminal input"
+            onPaste={event => { const value = event.clipboardData?.getData('text/plain') ?? ''; if (value) { event.preventDefault(); void props.transport.sendInput(props.sessionId, value); } }}
+            onInput={event => { const value = event.currentTarget.value; if (value) { void props.transport.sendInput(props.sessionId, value); event.currentTarget.value = ''; } }} />
           <Show when={rendererError()}>
             {message => (
               <div class="terminalRendererError" role="alert">
                 <strong>Beamterm WebGL2 unavailable</strong>
                 <span>{message()}</span>
-                <button onClick={() => void terminal.actions().reinitialize?.()}>Retry renderer</button>
+                <span>presentation path stopped</span>
               </div>
             )}
           </Show>

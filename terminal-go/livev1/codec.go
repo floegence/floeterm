@@ -2,6 +2,7 @@ package livev1
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ const (
 	FrameResizeApplied   FrameType = 0x83
 	FrameSessionClosed   FrameType = 0x84
 	FrameGeometryChanged FrameType = 0x85
+	FramePresentation    FrameType = 0x86
 	FrameError           FrameType = 0xff
 )
 
@@ -115,11 +117,32 @@ type ProtocolError struct {
 func validFrameType(frameType FrameType) bool {
 	switch frameType {
 	case FrameAttach, FrameInput, FrameResize, FrameDetach,
-		FrameAttached, FrameOutputBatch, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FrameError:
+		FrameAttached, FrameOutputBatch, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation, FrameError:
 		return true
 	default:
 		return false
 	}
+}
+
+func EncodePresentation(value any) ([]byte, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) == 0 || len(payload) > MaxFramePayloadBytes {
+		return nil, ErrFrameTooLarge
+	}
+	return EncodeFrame(Frame{Type: FramePresentation, Payload: payload})
+}
+
+func DecodePresentation(frame Frame, value any) error {
+	if frame.Type != FramePresentation {
+		return ErrUnexpectedFrameType
+	}
+	if len(frame.Payload) == 0 || len(frame.Payload) > MaxFramePayloadBytes {
+		return ErrInvalidPayload
+	}
+	return json.Unmarshal(frame.Payload, value)
 }
 
 func EncodeFrame(frame Frame) ([]byte, error) {

@@ -77,6 +77,13 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 					Rows:                   uint32(geometry.Rows),
 				})
 			},
+			OnPresentation: func(p terminal.SemanticPresentation) bool {
+				if subscriber.OnPresentation == nil {
+					return true
+				}
+				encoded, err := terminal.EncodeSemanticPresentation(p)
+				return err == nil && subscriber.OnPresentation(encoded)
+			},
 			OnSessionClosed: subscriber.OnSessionClosed,
 			OnSuperseded:    subscriber.OnSuperseded,
 		},
@@ -97,6 +104,13 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		return Attached{}, nil, err
 	}
 	attachment.Geometry = geometry
+	if subscriber.OnPresentation != nil {
+		if p, ok := session.LatestPresentation(); ok {
+			if encoded, encodeErr := terminal.EncodeSemanticPresentation(p); encodeErr == nil {
+				_ = subscriber.OnPresentation(encoded)
+			}
+		}
+	}
 	return Attached{
 		HistoryBoundarySequence: uint64(attachment.HistoryBoundarySequence),
 		HistoryGeneration:       uint64(attachment.HistoryGeneration),

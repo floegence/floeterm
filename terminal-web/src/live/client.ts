@@ -5,6 +5,7 @@ import {
   TerminalLiveFrameType,
   decodeAttached,
   decodeGeometryChanged,
+  decodePresentation,
   decodeOutputBatch,
   decodeProtocolError,
   decodeResizeApplied,
@@ -92,6 +93,7 @@ export type ConnectTerminalLiveOptions = Readonly<{
   openStream: (kind: typeof StreamKind, options?: Readonly<{ signal?: AbortSignal }>) => Promise<TerminalByteStream>;
   attach: TerminalLiveAttachRequest;
   onOutputBatch: (records: readonly OutputRecord[], geometry: TerminalLiveGeometry) => void;
+  onPresentation?: (presentation: unknown) => void;
   onGeometry?: (geometry: TerminalLiveGeometry) => void;
   onClosed?: (reason: TerminalLiveCloseReason) => void;
   onError?: (error: Error) => void;
@@ -149,6 +151,7 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     private readonly reader: FrameReader,
     attached: Attached,
     private readonly onOutputBatch: (records: readonly OutputRecord[], geometry: TerminalLiveGeometry) => void,
+    private readonly onPresentation: ((presentation: unknown) => void) | undefined,
     private readonly onGeometry: ((geometry: TerminalLiveGeometry) => void) | undefined,
     private readonly onClosed: ((reason: TerminalLiveCloseReason) => void) | undefined,
     private readonly onError: ((error: Error) => void) | undefined,
@@ -286,6 +289,9 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
             }, applied.outputSequenceBoundary, applied.sequence);
             break;
           }
+          case TerminalLiveFrameType.Presentation:
+            this.onPresentation?.(decodePresentation(frame));
+            break;
           case TerminalLiveFrameType.GeometryChanged: {
             const geometry = decodeGeometryChanged(frame);
             this.queueGeometry({
@@ -415,6 +421,7 @@ export const connectTerminalLive = async (options: ConnectTerminalLiveOptions): 
       reader,
       decodeAttached(first),
       options.onOutputBatch,
+      options.onPresentation,
       options.onGeometry,
       options.onClosed,
       options.onError,

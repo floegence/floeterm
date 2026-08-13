@@ -1,4 +1,4 @@
-export type SemanticCell = { text: string; hyperlink?: string; width: number; style?: { bold?: boolean; italic?: boolean } };
+export type SemanticCell = { text: string; hyperlink?: string; width: number; style?: { foreground?: string; background?: string; bold?: boolean; italic?: boolean; underline?: boolean } };
 export type SemanticPresentation = {
   sequence: number;
   geometry: { generation: number; cols: number; rows: number };
@@ -17,7 +17,12 @@ export function validatePresentation(value: unknown): SemanticPresentation {
   if (p.frame?.width !== p.geometry.cols || p.frame?.height !== p.geometry.rows || !Array.isArray(p.frame.rows) || p.frame.rows.length !== p.frame.height) throw new Error('presentation frame does not match geometry');
   for (const row of p.frame.rows) {
     if (!Array.isArray(row.cells) || row.cells.length !== p.frame.width) throw new Error('invalid semantic row width');
-    for (const cell of row.cells) if (typeof cell.text !== 'string' || cell.text.length > 64 || !Number.isInteger(cell.width)) throw new Error('invalid semantic cell');
+    for (const cell of row.cells) {
+      if (typeof cell.text !== 'string' || cell.text.length > 64 || !Number.isInteger(cell.width)) throw new Error('invalid semantic cell');
+      for (const color of [cell.style?.foreground, cell.style?.background]) {
+        if (color !== undefined && !/^(default|indexed:\d{1,3}|rgb:[0-9a-fA-F]{6})$/.test(color)) throw new Error('invalid semantic color');
+      }
+    }
   }
   return p;
 }

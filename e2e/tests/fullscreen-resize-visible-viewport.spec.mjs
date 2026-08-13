@@ -6,8 +6,8 @@ import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
 const readState = page => page.evaluate(() => {
   const harness = window.__floetermPerfHarness;
-  const canvas = document.querySelector('.floeterm-beamterm-canvas');
-  const surface = document.querySelector('.terminalSurface');
+  const canvas = document.querySelector('.semanticTerminalSurface');
+  const surface = document.querySelector('.semanticTerminalSurface');
   if (!harness || !(canvas instanceof HTMLCanvasElement) || !(surface instanceof HTMLElement)) {
     throw new Error('terminal viewport diagnostics are unavailable');
   }
@@ -93,6 +93,8 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
   test.skip(process.platform !== 'darwin' && process.platform !== 'linux', 'real PTY resize coverage requires SIGWINCH');
   const failures = captureBrowserFailures(page);
   await page.goto('/?mode=single&perf_probe=1');
+  await expect.poll(() => page.locator('.terminalPane canvas').count()).toBe(1);
+  await expect(page.locator('.terminalPane canvas.semanticTerminalSurface')).toBeVisible();
   await page.waitForFunction(() => (
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
       && window.__floetermPerfHarness.getTerminalInfo()
@@ -148,7 +150,7 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
     expect(state.stream.sequenceGaps).toBe(0);
     expect(state.effective).toMatchObject({ cols: state.host.cols, rows: state.host.rows });
 
-    const surface = page.locator('.terminalSurface');
+    const surface = page.locator('.semanticTerminalSurface');
     const box = await surface.boundingBox();
     if (!box) throw new Error('terminal surface has no visible bounds');
     const clippedScreenshot = await page.screenshot({ animations: 'disabled', clip: box });
@@ -168,6 +170,6 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
   }
 
   const finalState = await readState(page);
-  expect(finalState.backingHeight).toBeGreaterThan(finalState.logicalHeight);
+  expect(finalState.backingHeight).toBeCloseTo(finalState.logicalHeight, 5);
   expect(failures).toEqual([]);
 });

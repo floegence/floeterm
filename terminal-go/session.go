@@ -891,6 +891,11 @@ func (s *Session) broadcastData(event TerminalOutputEvent, subscribers []LiveSub
 		if subscriber.OnOutput != nil {
 			subscriber.OnOutput(event)
 		}
+		if subscriber.OnPresentation != nil {
+			if presentation, ok := s.LatestPresentation(); ok {
+				subscriber.OnPresentation(presentation)
+			}
+		}
 	}
 }
 

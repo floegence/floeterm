@@ -1,54 +1,96 @@
 package terminal
 
 import (
+	"encoding/json"
 	"errors"
 	"sync"
 )
+
+func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
+	type wireCell [4]any
+	type wireStyle [5]any
+	styles := make([]wireStyle, 0, 16)
+	styleIndex := make(map[SemanticStyle]int)
+	rows := make([][]wireCell, len(p.Frame.Rows))
+	for y, row := range p.Frame.Rows {
+		rows[y] = make([]wireCell, len(row.Cells))
+		for x, cell := range row.Cells {
+			index, ok := styleIndex[cell.Style]
+			if !ok {
+				index = len(styles)
+				styleIndex[cell.Style] = index
+				styles = append(styles, wireStyle{cell.Style.Foreground, cell.Style.Background, cell.Style.Bold, cell.Style.Italic, cell.Style.Underline})
+			}
+			rows[y][x] = wireCell{cell.Text, cell.Width, index, cell.Hyperlink}
+		}
+	}
+	wire := map[string]any{
+		"v": 1, "sequence": p.Sequence, "geometry": p.Geometry, "state": p.State,
+		"frame": map[string]any{"width": p.Frame.Width, "height": p.Frame.Height, "bufferKind": p.Frame.BufferKind, "cursor": p.Frame.Cursor, "styles": styles, "rows": rows},
+	}
+	data, err := json.Marshal(wire)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data) > 256*1024 {
+		return nil, ErrPresentationBackpressure
+	}
+	return data, nil
+}
 
 var ErrPresentationBackpressure = errors.New("presentation reliable FIFO is full")
 
 // SemanticPresentation is the only replaceable display unit for a v4 session.
 // State and frame are published atomically and are always captured from one actor cut.
 type SemanticPresentation struct {
-	Sequence uint64
-	Geometry TerminalGeometry
-	State    TerminalState
-	Frame    SemanticFrame
+	Sequence uint64           `json:"sequence"`
+	Geometry TerminalGeometry `json:"geometry"`
+	State    TerminalState    `json:"state"`
+	Frame    SemanticFrame    `json:"frame"`
 }
 
 type TerminalState struct {
-	Sequence uint64
-	Title    string
-	Bell     uint64
+	Sequence uint64 `json:"sequence"`
+	Title    string `json:"title,omitempty"`
+	Bell     uint64 `json:"bell,omitempty"`
 }
 
 type SemanticFrame struct {
-	Width      int
-	Height     int
-	Rows       []SemanticRow
-	Cursor     SemanticCursor
-	BufferKind string
-	Graphics   []SemanticGraphic
+	Width      int               `json:"width"`
+	Height     int               `json:"height"`
+	Rows       []SemanticRow     `json:"rows"`
+	Cursor     SemanticCursor    `json:"cursor"`
+	BufferKind string            `json:"bufferKind"`
+	Graphics   []SemanticGraphic `json:"graphics,omitempty"`
 }
 
-type SemanticRow struct{ Cells []SemanticCell }
+type SemanticRow struct {
+	Cells []SemanticCell `json:"cells"`
+}
 type SemanticCell struct {
-	Text, Hyperlink string
-	Width           uint8
-	Style           SemanticStyle
+	Text      string        `json:"text"`
+	Hyperlink string        `json:"hyperlink,omitempty"`
+	Width     uint8         `json:"width"`
+	Style     SemanticStyle `json:"style"`
 }
 type SemanticStyle struct {
-	Foreground, Background  string
-	Bold, Italic, Underline bool
+	Foreground string `json:"foreground"`
+	Background string `json:"background"`
+	Bold       bool   `json:"bold,omitempty"`
+	Italic     bool   `json:"italic,omitempty"`
+	Underline  bool   `json:"underline,omitempty"`
 }
 type SemanticCursor struct {
-	X, Y    int
-	Visible bool
+	X       int  `json:"x"`
+	Y       int  `json:"y"`
+	Visible bool `json:"visible"`
 }
 type SemanticGraphic struct {
-	ID, Generation uint64
-	Pixels         []byte
-	Row, Column    int
+	ID         uint64 `json:"id"`
+	Generation uint64 `json:"generation"`
+	Pixels     []byte `json:"pixels"`
+	Row        int    `json:"row"`
+	Column     int    `json:"column"`
 }
 
 func clonePresentation(in SemanticPresentation) SemanticPresentation {

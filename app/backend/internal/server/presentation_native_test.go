@@ -33,10 +33,20 @@ func TestRealSessionExposesSemanticPresentationAfterPTYOutput(t *testing.T) {
 			t.Fatal(err)
 		}
 		if response.StatusCode == http.StatusOK {
-			var p terminal.SemanticPresentation
-			err = json.NewDecoder(response.Body).Decode(&p)
+			var wire map[string]json.RawMessage
+			err = json.NewDecoder(response.Body).Decode(&wire)
 			response.Body.Close()
 			if err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"sequence", "geometry", "state", "frame"} {
+				if _, ok := wire[key]; !ok {
+					t.Fatalf("presentation JSON lacks camelCase %q: keys=%v", key, wire)
+				}
+			}
+			var p terminal.SemanticPresentation
+			encoded, _ := json.Marshal(wire)
+			if err := json.Unmarshal(encoded, &p); err != nil {
 				t.Fatal(err)
 			}
 			var text strings.Builder

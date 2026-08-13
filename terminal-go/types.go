@@ -236,10 +236,10 @@ type TerminalSemanticWorkStateEventHandler interface {
 
 // TerminalGeometry identifies one applied PTY grid size.
 type TerminalGeometry struct {
-	Generation             uint64
-	OutputSequenceBoundary int64
-	Cols                   int
-	Rows                   int
+	Generation             uint64 `json:"generation"`
+	OutputSequenceBoundary int64  `json:"outputSequenceBoundary"`
+	Cols                   int    `json:"cols"`
+	Rows                   int    `json:"rows"`
 }
 
 // TerminalOutputEvent is committed once and shared by live output and history.
@@ -254,6 +254,7 @@ type TerminalOutputEvent struct {
 type LiveSubscriber struct {
 	OnOutput        func(TerminalOutputEvent) bool
 	OnGeometry      func(TerminalGeometry) bool
+	OnPresentation  func(SemanticPresentation) bool
 	OnSessionClosed func()
 	OnSuperseded    func()
 }

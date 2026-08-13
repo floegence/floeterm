@@ -39,6 +39,30 @@ func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 	}
 }
 
+func TestRealNativeActorPreservesIndexedAndRGBColors(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(4, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPresentationStore(2)
+	actor, err := NewSessionActor(engine, 4, 2, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer actor.Close()
+	if err := actor.ApplyPTYOutput([]byte("\x1b[38;2;1;2;3;41mX\x1b[0m")); err != nil {
+		t.Fatal(err)
+	}
+	presentation, ok := store.Latest()
+	if !ok {
+		t.Fatal("presentation unavailable")
+	}
+	style := presentation.Frame.Rows[0].Cells[0].Style
+	if style.Foreground != "rgb:010203" || style.Background != "indexed:1" {
+		t.Fatalf("style = %+v", style)
+	}
+}
+
 func TestSessionPTYOutputPublishesNativePresentationBeforeCompatibilityHistory(t *testing.T) {
 	engine, err := NewNativeSemanticEngine(20, 4)
 	if err != nil {

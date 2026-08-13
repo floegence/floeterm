@@ -19,6 +19,13 @@ type Cell struct {
 	Text, Hyperlink string
 	Width           int
 	Bold, Italic    bool
+	Foreground      Color
+	Background      Color
+}
+type Color struct {
+	Kind         int
+	R, G, B      uint8
+	PaletteIndex uint8
 }
 type Row struct{ Cells []Cell }
 type Frame struct {
@@ -95,7 +102,12 @@ func (e *Engine) Capture() (Frame, error) {
 			s := cells[y*int(out.width)+x]
 			a, b := int(s.text_offset), int(s.text_offset+s.text_len)
 			ha, hb := int(s.hyperlink_offset), int(s.hyperlink_offset+s.hyperlink_len)
-			f.Rows[y].Cells[x] = Cell{Text: string(data[a:b]), Hyperlink: string(data[ha:hb]), Width: int(s.width), Bold: s.bold != 0, Italic: s.italic != 0}
+			f.Rows[y].Cells[x] = Cell{
+				Text: string(data[a:b]), Hyperlink: string(data[ha:hb]), Width: int(s.width),
+				Bold: s.bold != 0, Italic: s.italic != 0,
+				Foreground: Color{Kind: int(s.foreground_kind), R: uint8(s.foreground_r), G: uint8(s.foreground_g), B: uint8(s.foreground_b), PaletteIndex: uint8(s.foreground_index)},
+				Background: Color{Kind: int(s.background_kind), R: uint8(s.background_r), G: uint8(s.background_g), B: uint8(s.background_b), PaletteIndex: uint8(s.background_index)},
+			}
 		}
 	}
 	return f, nil

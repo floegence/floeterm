@@ -16,6 +16,7 @@ export enum TerminalLiveFrameType {
   ResizeApplied = 0x83,
   SessionClosed = 0x84,
   GeometryChanged = 0x85,
+  Presentation = 0x86,
   Error = 0xff,
 }
 
@@ -63,6 +64,7 @@ export type GeometryChanged = Readonly<{
   cols: number;
   rows: number;
 }>;
+export type Presentation = Readonly<{ value: unknown }>;
 export type ProtocolError = Readonly<{ code: number; message: string }>;
 
 const encoder = new TextEncoder();
@@ -420,6 +422,30 @@ export const decodeProtocolError = (value: TerminalLiveFrame): ProtocolError => 
     throw new Error('invalid terminal live error payload');
   }
   return { code, message: decodeUtf8(value.payload.subarray(4)) };
+};
+
+export const decodePresentation = (value: TerminalLiveFrame): unknown => {
+  if (value.type !== TerminalLiveFrameType.Presentation) throw new Error('unexpected terminal live presentation frame');
+  if (value.payload.byteLength === 0 || value.payload.byteLength > MAX_FRAME_PAYLOAD_BYTES) throw new Error('invalid terminal live presentation payload');
+  const wire = JSON.parse(decoder.decode(value.payload)) as any;
+  if (wire?.v !== 1 || !Array.isArray(wire.frame?.styles) || !Array.isArray(wire.frame?.rows)) throw new Error('invalid terminal live presentation wire');
+  const styles = wire.frame.styles.map((style: unknown) => {
+    if (!Array.isArray(style) || style.length !== 5) throw new Error('invalid terminal live presentation style');
+    return { foreground: style[0], background: style[1], bold: style[2], italic: style[3], underline: style[4] };
+  });
+  return {
+    sequence: wire.sequence, geometry: wire.geometry, state: wire.state,
+    frame: {
+      width: wire.frame.width, height: wire.frame.height, bufferKind: wire.frame.bufferKind, cursor: wire.frame.cursor,
+      rows: wire.frame.rows.map((row: unknown) => {
+        if (!Array.isArray(row)) throw new Error('invalid terminal live presentation row');
+        return { cells: row.map((cell: unknown) => {
+          if (!Array.isArray(cell) || cell.length !== 4 || !Number.isInteger(cell[2]) || !styles[cell[2]]) throw new Error('invalid terminal live presentation cell');
+          return { text: cell[0], width: cell[1], style: styles[cell[2]], ...(cell[3] ? { hyperlink: cell[3] } : {}) };
+        }) };
+      }),
+    },
+  };
 };
 
 export const decodeUtf8 = (value: Uint8Array): string => decoder.decode(value);

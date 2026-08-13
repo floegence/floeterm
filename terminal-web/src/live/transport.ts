@@ -108,6 +108,7 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
   const listeners = new Map<string, Set<(event: TerminalDataEvent) => void>>();
   const deletionListeners = new Map<string, Set<() => void>>();
   const geometryListeners = new Map<string, Set<(event: TerminalGeometryEvent) => void>>();
+  const presentationListeners = new Map<string, Set<(presentation: unknown) => void>>();
   const lifecycleListeners = new Map<string, Set<(event: TerminalLiveAttachmentLifecycleEvent) => void>>();
   const entries = new Map<string, LiveEntry>();
   const activeGenerations = new Map<string, number>();
@@ -131,6 +132,9 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
   }>) => {
     const event: TerminalGeometryEvent = { sessionId, ...geometry };
     for (const listener of geometryListeners.get(sessionId) ?? []) listener(event);
+  };
+  const emitPresentation = (sessionId: string, presentation: unknown) => {
+    for (const listener of presentationListeners.get(sessionId) ?? []) listener(presentation);
   };
 
   const emitLifecycle = (event: TerminalLiveAttachmentLifecycleEvent): void => {
@@ -191,6 +195,10 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
             rows: geometry.rows,
           });
         }
+      },
+      onPresentation: presentation => {
+        if (!isCurrentGeneration(sessionId, generation)) return;
+        emitPresentation(sessionId, presentation);
       },
       onGeometry: geometry => {
         if (!isCurrentGeneration(sessionId, generation)) return;
@@ -296,6 +304,7 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
       listeners.clear();
       deletionListeners.clear();
       geometryListeners.clear();
+      presentationListeners.clear();
       lifecycleListeners.clear();
     },
   };
@@ -343,6 +352,11 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
         set.delete(handler);
         if (set.size === 0) geometryListeners.delete(sessionId);
       };
+    },
+    onTerminalPresentation: (sessionId, handler) => {
+      const set = presentationListeners.get(sessionId) ?? new Set();
+      set.add(handler); presentationListeners.set(sessionId, set);
+      return () => { set.delete(handler); if (set.size === 0) presentationListeners.delete(sessionId); };
     },
     onTerminalLiveAttachmentLifecycle: (sessionId, handler) => {
       const set = lifecycleListeners.get(sessionId) ?? new Set();
