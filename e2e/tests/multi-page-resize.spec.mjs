@@ -82,8 +82,8 @@ const waitForTopClockAtSharedRightEdge = async (target, expectedCols) => {
     const row0 = harness?.getVisibleLines()[0] ?? '';
     const clock = row0.match(/\b\d{2}:\d{2}:\d{2}\b/);
     if (!clock || !row0.startsWith('Processes:')) return false;
-    const canvas = document.querySelector('.floeterm-beamterm-canvas');
-    const surface = document.querySelector('.terminalSurface');
+    const canvas = document.querySelector('.semanticTerminalSurface');
+    const surface = document.querySelector('.terminalPane');
     if (!(canvas instanceof HTMLCanvasElement) || !(surface instanceof HTMLElement)) return false;
     const cssWidth = Number.parseFloat(getComputedStyle(canvas).width);
     const cssHeight = Number.parseFloat(getComputedStyle(canvas).height);

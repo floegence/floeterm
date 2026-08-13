@@ -120,6 +120,7 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		if actor, actorErr := NewSessionActor(engine, 80, 24, store); actorErr == nil {
 			session.semanticActor = actor
 			session.presentationStore = store
+			_ = actor.PublishInitialPresentation()
 		} else {
 			engine.Close()
 		}

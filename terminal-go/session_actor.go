@@ -35,6 +35,20 @@ func NewSessionActor(engine SemanticEngine, cols, rows int, store *PresentationS
 	return &SessionActor{engine: engine, store: store, geometry: TerminalGeometry{Generation: 1, Cols: cols, Rows: rows}}, nil
 }
 
+func (a *SessionActor) PublishInitialPresentation() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sequence != 0 {
+		return nil
+	}
+	frame, err := a.engine.CaptureFrame()
+	if err != nil {
+		return err
+	}
+	a.sequence = 1
+	return a.store.Publish(SemanticPresentation{Sequence: 1, Geometry: a.geometry, State: TerminalState{Sequence: 1}, Frame: frame})
+}
+
 func (a *SessionActor) ApplyPTYOutput(data []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
