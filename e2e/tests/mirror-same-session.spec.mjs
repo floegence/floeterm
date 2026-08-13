@@ -52,14 +52,13 @@ const expectMirrorGeometryConverged = async page => {
   await expect.poll(async () => {
     const state = await readMirror(page);
     if (!state || state.views.length !== 2) return false;
-    const expectedRows = Math.min(...state.views.map(view => view.viewport.rows));
-    const expectedCols = Math.min(...state.views.map(view => view.viewport.cols));
-    return state.views.every(view => (
-      view.info?.rows === expectedRows
-      && view.info?.cols === expectedCols
+    const canonical = state.views[0].geometry;
+    return canonical.generation > 0 && state.views.every(view => (
+      view.info?.rows === canonical.rows
+      && view.info?.cols === canonical.cols
       && view.geometry.generation > 0
-      && view.geometry.rows === expectedRows
-      && view.geometry.cols === expectedCols
+      && view.geometry.rows === canonical.rows
+      && view.geometry.cols === canonical.cols
     ));
   }).toBe(true);
 };
@@ -184,12 +183,30 @@ test('keeps independent viewport sizes on one shared terminal grid and screen st
   expect(consoleErrors).toEqual([]);
 });
 
-test('applies the minimum live-view dimensions to the shared PTY', async ({ page }) => {
+test('keeps observer viewport changes from resizing the controller-owned PTY', async ({ page }) => {
   const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
+  await expectMirrorGeometryConverged(page);
+  const beforeObserverResize = await readMirror(page);
+  const observerIndex = beforeObserverResize.views.findIndex(view => (
+    view.viewport.cols !== beforeObserverResize.views[0].geometry.cols
+      || view.viewport.rows !== beforeObserverResize.views[0].geometry.rows
+  ));
+  expect(observerIndex, JSON.stringify(beforeObserverResize, null, 2)).toBeGreaterThanOrEqual(0);
+  await page.evaluate(async index => {
+    await window.__floetermMirrorHarness.getViews()[index].synchronizeSize();
+  }, observerIndex);
+  await expect.poll(async () => {
+    const state = await readMirror(page);
+    return state.views.every(view => (
+      view.geometry.generation === beforeObserverResize.views[0].geometry.generation
+      && view.geometry.rows === beforeObserverResize.views[0].geometry.rows
+      && view.geometry.cols === beforeObserverResize.views[0].geometry.cols
+    ));
+  }).toBe(true);
   await page.evaluate(async () => {
-    await Promise.all(window.__floetermMirrorHarness.getViews().map(view => view.synchronizeSize()));
+    await window.__floetermMirrorHarness.getViews()[0].synchronizeSize();
   });
   await expectMirrorGeometryConverged(page);
 
@@ -205,8 +222,8 @@ test('applies the minimum live-view dimensions to the shared PTY', async ({ page
   const sizeState = await readMirror(page);
   const match = sizeState.views[0].serialized.match(new RegExp(`${sizeMarker} (\\d+) (\\d+)`));
   expect(match).not.toBeNull();
-  const expectedRows = Math.min(...sizeState.views.map(view => view.viewport.rows));
-  const expectedCols = Math.min(...sizeState.views.map(view => view.viewport.cols));
+  const expectedRows = sizeState.views[0].geometry.rows;
+  const expectedCols = sizeState.views[0].geometry.cols;
   const diagnostics = JSON.stringify({ expectedRows, expectedCols, sizeState }, null, 2);
   expect(Number(match[1]), diagnostics).toBe(expectedRows);
   expect(Number(match[2]), diagnostics).toBe(expectedCols);
