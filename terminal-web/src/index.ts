@@ -173,3 +173,6 @@ export {
   TERMINAL_THEME_NAMES,
 } from './utils/config.js';
 export { filterXtermAutoResponses } from './utils/xtermAutoResponseFilter.js';
+export { validatePresentation } from './semantic/presentation.js';
+export { RendererSurface } from './semantic/RendererSurface.js';
+export type { SemanticPresentation, SemanticCell } from './semantic/presentation.js';

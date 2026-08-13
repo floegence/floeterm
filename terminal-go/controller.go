@@ -91,7 +91,14 @@ func (s *Session) Interact(attachmentID, principalID string, transportGeneration
 	if write == nil {
 		write = s.PTY.Write
 	}
-	err := writeTerminalInput(write, input)
+	var err error
+	if s.semanticActor != nil {
+		err = s.semanticActor.Input(SemanticInput{Kind: "text", Text: string(input)}, func(encoded []byte) error {
+			return writeTerminalInput(write, encoded)
+		})
+	} else {
+		err = writeTerminalInput(write, input)
+	}
 	s.mu.Unlock()
 	return err
 }

@@ -413,6 +413,22 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			HistoryTruncated:       page.HistoryTruncated,
 			TotalBytes:             page.TotalBytes,
 		})
+	case "presentation":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		session, ok := s.manager.GetSession(sessionID)
+		if !ok {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		presentation, ok := session.LatestPresentation()
+		if !ok {
+			http.Error(w, "presentation not ready", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusOK, presentation)
 		return
 
 	case "stats":

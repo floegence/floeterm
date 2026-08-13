@@ -115,6 +115,15 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		},
 		config: sessionCfg,
 	}
+	if engine, engineErr := newProductSemanticEngine(80, 24); engineErr == nil {
+		store := NewPresentationStore(64)
+		if actor, actorErr := NewSessionActor(engine, 80, 24, store); actorErr == nil {
+			session.semanticActor = actor
+			session.presentationStore = store
+		} else {
+			engine.Close()
+		}
+	}
 
 	// Register the session before starting the PTY so the onExit callback can
 	// reliably remove it even if the process exits immediately.

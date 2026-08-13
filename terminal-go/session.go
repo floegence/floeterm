@@ -569,6 +569,8 @@ func (s *Session) cleanup() {
 	s.clearForegroundCommandLocked()
 	presentationStore := s.presentationStore
 	s.presentationStore = nil
+	semanticActor := s.semanticActor
+	s.semanticActor = nil
 
 	for connID := range s.connections {
 		delete(s.connections, connID)
@@ -577,7 +579,9 @@ func (s *Session) cleanup() {
 	s.mu.Unlock()
 	s.historyCommitMu.Unlock()
 	cleanupShellLifecycleBootstraps(bootstraps)
-	if presentationStore != nil {
+	if semanticActor != nil {
+		semanticActor.Close()
+	} else if presentationStore != nil {
 		presentationStore.Close()
 	}
 
@@ -1451,6 +1455,17 @@ func (s *Session) publishPTYDisplayDataAtGeometry(
 		return
 	}
 	if len(displayData) > 0 {
+		s.mu.RLock()
+		semanticActor := s.semanticActor
+		s.mu.RUnlock()
+		if semanticActor != nil {
+			if err := semanticActor.ApplyPTYOutput(displayData); err != nil {
+				if onCommitted != nil {
+					onCommitted(err)
+				}
+				return
+			}
+		}
 		s.historyCommitMu.Lock()
 
 		s.mu.Lock()

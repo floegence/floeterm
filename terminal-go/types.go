@@ -370,6 +370,7 @@ type Session struct {
 	presentationStore             *PresentationStore
 	controllerState               ControllerState
 	semanticAttachments           map[string]SemanticAttachment
+	semanticActor                 *SessionActor
 	contextFrames                 []terminalContextFrame
 	contextSeenFrameIDs           map[string]struct{}
 	contextForegroundRevision     uint64

@@ -322,6 +322,11 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 	if err := setSize(s.PTY, buildWinSize(cols, rows)); err != nil {
 		return fmt.Errorf("failed to resize PTY: %w", err)
 	}
+	if s.semanticActor != nil {
+		if err := s.semanticActor.Resize(cols, rows); err != nil {
+			return fmt.Errorf("resize semantic engine: %w", err)
+		}
+	}
 	if changed {
 		s.lastAppliedCols = cols
 		s.lastAppliedRows = rows

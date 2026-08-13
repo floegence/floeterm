@@ -1,9 +1,11 @@
 import type {
+	SemanticPresentation,
   TerminalDataChunk,
   TerminalHistoryPage,
   TerminalID,
   TerminalSessionInfo,
 } from '@floegence/floeterm-terminal-web';
+import { validatePresentation } from '@floegence/floeterm-terminal-web';
 import {
   StreamKind,
   createTerminalLiveTransport,
@@ -111,6 +113,7 @@ export type AppTerminalTransport = TerminalLiveTransport & {
   deleteSession: NonNullable<TerminalLiveTransport['deleteSession']>;
   renameSession: NonNullable<TerminalLiveTransport['renameSession']>;
   getSessionStats: (sessionId: TerminalID) => Promise<ApiSessionStats>;
+  getPresentation: (sessionId: TerminalID) => Promise<SemanticPresentation>;
 };
 
 export const createTerminalRuntime = (connId: string) => {
@@ -218,6 +221,9 @@ export const createTerminalRuntime = (connId: string) => {
       `/api/sessions/${encodeURIComponent(sessionId)}/stats`,
       { method: 'GET' },
     ),
+	getPresentation: async (sessionId: TerminalID) => validatePresentation(await requestJson<unknown>(
+		`/api/sessions/${encodeURIComponent(sessionId)}/presentation`, { method: 'GET' },
+	)),
   });
   return { transport, eventSource: bundle.eventSource };
 };

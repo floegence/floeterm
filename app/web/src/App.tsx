@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import {
   createTerminalInstance,
+	RendererSurface,
   isTerminalThemeName,
   getTerminalFabricDiagnostics,
   getTerminalRenderSchedulerStats,
@@ -331,6 +332,8 @@ const SingleTerminalPane = (props: {
   const [historyBytes, setHistoryBytes] = createSignal<number | null>(null);
   let mounted = true;
   let clearStatsRefreshTimer: number | null = null;
+	let semanticCanvas: HTMLCanvasElement | undefined;
+	let semanticRenderer: RendererSurface | undefined;
   const perfWindow = window as FloetermPerfWindow;
   const perfParams = new URLSearchParams(window.location.search);
   const perfHarness: FloetermPerfHarness | null = (
@@ -372,6 +375,10 @@ const SingleTerminalPane = (props: {
   });
 
   onMount(() => {
+	if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas);
+	const presentationTimer = window.setInterval(() => {
+		void props.transport.getPresentation(props.sessionId).then(p => semanticRenderer?.apply(p)).catch(() => undefined);
+	}, 50);
     const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
       if (event.type !== 'data') return;
       const sequence = Number(event.sequence ?? 0);
@@ -400,6 +407,7 @@ const SingleTerminalPane = (props: {
       };
     });
     onCleanup(() => {
+		window.clearInterval(presentationTimer);
       unsubscribeData();
       unsubscribeGeometry?.();
     });
@@ -511,6 +519,7 @@ const SingleTerminalPane = (props: {
       <div class="terminalContainer">
         <div class="terminalPane">
           <div class="terminalSurface" ref={terminal.mount} />
+		  <canvas class="semanticTerminalSurface" ref={semanticCanvas} aria-label="Semantic terminal surface" />
           <Show when={rendererError()}>
             {message => (
               <div class="terminalRendererError" role="alert">

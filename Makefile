@@ -90,7 +90,12 @@ app-web-build:
 .PHONY: run
 run: app-web-prepare
 	@set -euo pipefail; \
-	(cd app/backend && go run ./cmd/floeterm -addr 0.0.0.0:8280 -static ../web/dist -log-level debug -performance-diagnostics)
+	(cd app/backend && go run -tags floeterm_native ./cmd/floeterm -addr 127.0.0.1:8280 -static ../web/dist -log-level debug -performance-diagnostics)
+
+.PHONY: native-check
+native-check:
+	@(cd terminal-go && GOWORK=off go test -race -tags floeterm_native ./...)
+	@(cd app/backend && GOWORK=off go test -race -tags floeterm_native ./...)
 
 .PHONY: dev
 dev:
