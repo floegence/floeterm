@@ -115,10 +115,17 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
   const vector = [[1280, 720], [760, 460], [1180, 680], [820, 440]];
   for (const [width, height] of vector) {
     await setTerminalHostSize(page, width, height);
-    await expect.poll(async () => {
-      const state = await readState(page);
+    let resizeState;
+    let resizeTrace;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      resizeState = await readState(page);
+      resizeTrace = await page.evaluate(() => (
+        window.__floetermPerfHarness?.getResizeDiagnostics?.() ?? []
+      ));
+      const state = resizeState;
       const match = state.serialized.match(/FRAME_(\d+)_ROW0_(\d+)x(\d+)/);
-      return Boolean(
+      const converged = Boolean(
         match
         && Number(match[1]) > previousFrame
         && Number(match[2]) === state.host.rows
@@ -127,7 +134,20 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
         && state.geometry.cols === state.host.cols
         && state.geometry.rows === state.host.rows
       );
-    }).toBe(true);
+      if (converged) break;
+      await page.waitForTimeout(100);
+    }
+    const match = resizeState?.serialized.match(/FRAME_(\d+)_ROW0_(\d+)x(\d+)/);
+    const converged = Boolean(
+      match
+      && Number(match[1]) > previousFrame
+      && Number(match[2]) === resizeState.host.rows
+      && Number(match[3]) === resizeState.host.cols
+      && resizeState.geometry.generation > previousGeneration
+      && resizeState.geometry.cols === resizeState.host.cols
+      && resizeState.geometry.rows === resizeState.host.rows
+    );
+    expect(converged, JSON.stringify({ width, height, resizeState, resizeTrace })).toBe(true);
 
     const state = await readState(page);
     const frame = Number(state.serialized.match(/FRAME_(\d+)_ROW0_/)?.[1] ?? 0);
@@ -143,7 +163,33 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
       cols: state.host.cols,
       rows: state.host.rows,
     });
-    expect(frameChunk.sequence).toBeGreaterThan(state.geometry.outputSequenceBoundary);
+    const presentation = await page.evaluate(() => (
+      window.__floetermPerfHarness?.getPresentationDiagnostics?.() ?? null
+    ));
+    expect(frameChunk.sequence, JSON.stringify({
+      frame,
+      frameChunk: {
+        sequence: frameChunk.sequence,
+        geometryGeneration: frameChunk.geometryGeneration,
+        cols: frameChunk.cols,
+        rows: frameChunk.rows,
+      },
+      geometry: state.geometry,
+      presentation: presentation && {
+        sequence: presentation.sequence,
+        geometry: presentation.geometry,
+        frame: { width: presentation.frame.width, height: presentation.frame.height },
+      },
+      resize: await page.evaluate(() => (
+        window.__floetermPerfHarness?.getResizeDiagnostics?.() ?? []
+      )),
+      chunks: chunks.slice(-12).map(chunk => ({
+        sequence: chunk.sequence,
+        geometryGeneration: chunk.geometryGeneration,
+        cols: chunk.cols,
+        rows: chunk.rows,
+      })),
+    })).toBeGreaterThan(state.geometry.outputSequenceBoundary);
     expect(state.serialized).toContain(`FRAME_${frame}_LAST_${state.host.rows}x${state.host.cols}`);
     expect(state.canvasTop).toBeCloseTo(state.surfaceTop, 5);
     expect(state.canvasLeft).toBeCloseTo(state.surfaceLeft, 5);

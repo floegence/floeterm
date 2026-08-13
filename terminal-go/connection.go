@@ -352,9 +352,16 @@ func (s *Session) runPTYSizeReconciler() {
 			s.config.logger.Warn("Failed to order PTY resize", "sessionID", s.ID, "reason", reason, "error", err)
 			continue
 		}
+		s.mu.RLock()
+		targetGeneration := s.geometryGeneration + 1
+		if s.geometryGeneration == 0 {
+			targetGeneration = 1
+		}
+		targetGeometry := TerminalGeometry{Generation: targetGeneration, OutputSequenceBoundary: s.committedSequence, Cols: cols, Rows: rows}
+		s.mu.RUnlock()
 		err := setSize(ptyFile, buildWinSize(cols, rows))
 		if err == nil && s.semanticActor != nil {
-			err = s.semanticActor.Resize(cols, rows)
+			err = s.semanticActor.ResizeToGeometry(targetGeometry)
 		}
 
 		s.mu.Lock()
@@ -364,10 +371,7 @@ func (s *Session) runPTYSizeReconciler() {
 		if err == nil && stillCurrent {
 			s.lastAppliedCols = cols
 			s.lastAppliedRows = rows
-			s.geometryGeneration++
-			if s.geometryGeneration == 0 {
-				s.geometryGeneration = 1
-			}
+			s.geometryGeneration = targetGeometry.Generation
 			geometry = s.effectiveGeometryLocked()
 			subscribers = s.liveSubscribersLocked()
 		}
@@ -417,18 +421,22 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 	if err := setSize(s.PTY, buildWinSize(cols, rows)); err != nil {
 		return fmt.Errorf("failed to resize PTY: %w", err)
 	}
+	targetGeneration := s.geometryGeneration
+	if targetGeneration == 0 {
+		targetGeneration = 1
+	} else if changed {
+		targetGeneration++
+	}
+	targetGeometry := TerminalGeometry{Generation: targetGeneration, OutputSequenceBoundary: s.committedSequence, Cols: cols, Rows: rows}
 	if s.semanticActor != nil {
-		if err := s.semanticActor.Resize(cols, rows); err != nil {
+		if err := s.semanticActor.ResizeToGeometry(targetGeometry); err != nil {
 			return fmt.Errorf("resize semantic engine: %w", err)
 		}
 	}
 	if changed {
 		s.lastAppliedCols = cols
 		s.lastAppliedRows = rows
-		s.geometryGeneration++
-		if s.geometryGeneration == 0 {
-			s.geometryGeneration = 1
-		}
+		s.geometryGeneration = targetGeometry.Generation
 	}
 	// TIOCSWINSZ notifies the foreground process group when the grid changes.
 	// A separate signal is reserved for a forced same-size attach that needs a

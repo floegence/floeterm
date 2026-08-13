@@ -150,8 +150,46 @@ func TestSessionResizePublishesPresentationWithCanonicalGeometry(t *testing.T) {
 		t.Fatalf("resize presentation notifications=%d, want 1", len(presentations))
 	}
 	got := presentations[0]
-	if got.Geometry.Cols != 40 || got.Geometry.Rows != 8 || got.Frame.Width != 40 || got.Frame.Height != 8 {
+	canonical := session.CanonicalGeometry()
+	if got.Geometry != canonical || got.Frame.Width != 40 || got.Frame.Height != 8 {
 		t.Fatalf("resize presentation=%+v frame=%dx%d", got.Geometry, got.Frame.Width, got.Frame.Height)
+	}
+}
+
+func TestSameSizeReconnectRefreshKeepsOneCanonicalGeometryGeneration(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(20, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPresentationStore(8)
+	actor, err := NewSessionActor(engine, 20, 5, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		PTY:    &os.File{}, isActive: true, semanticActor: actor, presentationStore: store,
+		connections:     map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 20, Rows: 5}},
+		lastAppliedCols: 20, lastAppliedRows: 5, geometryGeneration: 1,
+		setPTYSize:       func(*os.File, *pty.Winsize) error { return nil },
+		requestPTYRedraw: func(*os.File) error { return nil },
+	}
+	defer session.cleanup()
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	store.TakeLatest()
+
+	geometry, err := session.ApplyConnectionSizeForAttach("view", 20, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presentation, ok := store.TakeLatest()
+	if !ok {
+		t.Fatal("same-size reconnect did not publish a fresh presentation")
+	}
+	if presentation.Geometry != geometry {
+		t.Fatalf("presentation geometry=%+v, canonical=%+v", presentation.Geometry, geometry)
 	}
 }
 

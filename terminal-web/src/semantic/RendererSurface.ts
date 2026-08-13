@@ -22,8 +22,13 @@ export class RendererSurface {
     const cssWidth = Math.max(1, host?.clientWidth || this.canvas.clientWidth || presentation.frame.width * 9);
     const cssHeight = Math.max(1, host?.clientHeight || this.canvas.clientHeight || presentation.frame.height * 18);
     const dpr = Math.max(1, globalThis.devicePixelRatio || 1);
-    this.canvas.width = Math.round(cssWidth * dpr);
-    this.canvas.height = Math.round(cssHeight * dpr);
+    const backingWidth = Math.round(cssWidth * dpr);
+    const backingHeight = Math.round(cssHeight * dpr);
+    // Assigning a backing dimension clears the canvas and may recreate its
+    // graphics resources. ResizeObserver can repeat the same size while the
+    // browser window is being dragged, so only reallocate on a real change.
+    if (this.canvas.width !== backingWidth) this.canvas.width = backingWidth;
+    if (this.canvas.height !== backingHeight) this.canvas.height = backingHeight;
     // Layout remains percentage-based so the browser can resize the visible
     // surface before ResizeObserver schedules the next backing-store update.
     this.canvas.style.width = '100%';

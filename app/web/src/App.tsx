@@ -17,6 +17,7 @@ import {
 } from '@floegence/floeterm-terminal-web';
 import { applyTerminalThemeShell, ThemeSelector } from './themeCatalog';
 import { createTerminalRuntime, type AppTerminalTransport } from './terminalApi';
+import { createSemanticResizeController } from './semanticResizeController';
 import {
   buildLiveGridCommand,
   createFloetermDemoRuntime,
@@ -45,6 +46,7 @@ type FloetermPerfHarness = {
   hasSelection(): boolean;
   getTerminalInfo(): ReturnType<TerminalManagerActions['getTerminalInfo']>;
   getPresentationDiagnostics?(): SemanticPresentation | null;
+  getResizeDiagnostics?(): readonly unknown[];
   getSnapshot(): TerminalInstanceSnapshot;
   getFabricDiagnostics(): TerminalFabricDiagnostics;
   forceResize(): void;
@@ -319,13 +321,11 @@ const SingleTerminalPane = (props: {
   const [presentationError, setPresentationError] = createSignal('');
   let liveConnected = false;
   let latestPresentation: SemanticPresentation | null = null;
-  let requestedCols = 0;
-  let requestedRows = 0;
-  let pendingResize: { cols: number; rows: number } | null = null;
-  let inFlightResize: { cols: number; rows: number } | null = null;
-  let resizeInFlight = false;
-  let resizeRetryTimer: number | null = null;
-  let reattachInFlight: Promise<void> | null = null;
+  const resizeDiagnostics: unknown[] = [];
+  const recordResizeDiagnostic = (value: unknown) => {
+    resizeDiagnostics.push(value);
+    if (resizeDiagnostics.length > 64) resizeDiagnostics.shift();
+  };
   let viewDimensions = { cols: 80, rows: 24 };
   const measuredDimensions = () => {
     const host = semanticCanvas?.parentElement?.getBoundingClientRect();
@@ -335,11 +335,43 @@ const SingleTerminalPane = (props: {
       rows: Math.max(5, Math.min(200, Math.floor(host.height / 18))),
     };
   };
-  const attachCurrentView = () => {
-    const dimensions = measuredDimensions();
-    viewDimensions = dimensions;
-    return props.transport.attachWithHistoryBoundary(props.sessionId, dimensions.cols, dimensions.rows);
-  };
+  const semanticResize = createSemanticResizeController({
+    measure: () => {
+      const dimensions = measuredDimensions();
+      viewDimensions = dimensions;
+      return dimensions;
+    },
+    repaint: () => { semanticRenderer?.resize(); },
+    attach: async dimensions => {
+      recordResizeDiagnostic({ action: 'attach-requested', dimensions: { ...dimensions } });
+      const attached = await props.transport.attachWithHistoryBoundary(
+        props.sessionId,
+        dimensions.cols,
+        dimensions.rows,
+      );
+      const geometry = {
+        generation: attached.geometryGeneration,
+        outputSequenceBoundary: attached.historyBoundarySequence,
+        cols: attached.cols,
+        rows: attached.rows,
+      };
+      recordResizeDiagnostic({ action: 'attach-applied', geometry });
+      return geometry;
+    },
+    resize: async dimensions => {
+      recordResizeDiagnostic({ action: 'resize-requested', dimensions: { ...dimensions } });
+      const result = await props.transport.resizeWithEffectiveGeometry(
+        props.sessionId,
+        dimensions.cols,
+        dimensions.rows,
+      );
+      recordResizeDiagnostic({ action: 'resize-applied', geometry: result.effective });
+      return result.effective;
+    },
+    onConnectionChange: connected => { liveConnected = connected; },
+    onGeometry: geometry => { geometryDiagnostics = { ...geometry }; },
+    onError: setPresentationError,
+  });
   const perfWindow = window as FloetermPerfWindow;
   const perfParams = new URLSearchParams(window.location.search);
   const perfHarness: FloetermPerfHarness | null = (
@@ -353,6 +385,7 @@ const SingleTerminalPane = (props: {
       getSelectionText: () => '', hasSelection: () => false,
       getTerminalInfo: () => latestPresentation ? ({ rows: latestPresentation.frame.height, cols: latestPresentation.frame.width, bufferLength: latestPresentation.frame.height }) : null,
       getPresentationDiagnostics: () => latestPresentation,
+      getResizeDiagnostics: () => resizeDiagnostics.map(value => structuredClone(value)),
       getSnapshot: () => ({ ...initialTerminalSnapshot, state: { ...initialTerminalSnapshot.state, dimensions: viewDimensions }, connection: { ...initialTerminalSnapshot.connection, isConnected: liveConnected || latestPresentation !== null, state: (liveConnected || latestPresentation !== null) ? 'connected' : 'connecting' } }),
       getFabricDiagnostics: () => getTerminalFabricDiagnostics(),
       forceResize: () => { void requestResize(); },
@@ -372,56 +405,9 @@ const SingleTerminalPane = (props: {
     }
   });
 
-  const drainResize = async (): Promise<void> => {
-    if (resizeInFlight || !pendingResize || !liveConnected) return;
-    resizeInFlight = true;
-    const next = pendingResize;
-    pendingResize = null;
-    inFlightResize = next;
-    try {
-      const result = await props.transport.resizeWithEffectiveGeometry(props.sessionId, next.cols, next.rows);
-      requestedCols = next.cols;
-      requestedRows = next.rows;
-      geometryDiagnostics = { generation: result.effective.generation, outputSequenceBoundary: result.effective.outputSequenceBoundary, cols: result.effective.cols, rows: result.effective.rows };
-    } catch (error) {
-      pendingResize ??= next;
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('not attached') && liveConnected) {
-        if (!reattachInFlight) {
-          reattachInFlight = attachCurrentView()
-            .then(() => { liveConnected = true; setPresentationError(''); })
-            .finally(() => { reattachInFlight = null; });
-        }
-        await reattachInFlight.catch(() => undefined);
-        if (resizeRetryTimer === null) resizeRetryTimer = window.setTimeout(() => { resizeRetryTimer = null; void drainResize(); }, 16);
-      } else {
-        requestedCols = 0;
-        requestedRows = 0;
-        setPresentationError(message);
-      }
-    } finally {
-      inFlightResize = null;
-      resizeInFlight = false;
-      if (pendingResize && resizeRetryTimer === null) void drainResize();
-    }
-  };
-
   const requestResize = async () => {
     if (!semanticCanvas?.parentElement) return;
-    const { cols, rows } = measuredDimensions();
-    viewDimensions = { cols, rows };
-    // Keep the visible surface aligned with the browser immediately. PTY
-    // admission may lag behind a drag, but the local canvas must never retain
-    // the previous window's CSS/backing dimensions while it is in flight.
-    semanticRenderer?.resize();
-    if (inFlightResize?.cols === cols && inFlightResize.rows === rows) {
-      pendingResize = null;
-      return;
-    }
-    if (!resizeInFlight && cols === requestedCols && rows === requestedRows) return;
-    pendingResize = { cols, rows };
-    await drainResize();
-    semanticRenderer?.resize();
+    await semanticResize.requestResize();
   };
 
   onMount(() => {
@@ -433,17 +419,10 @@ const SingleTerminalPane = (props: {
 	const applyPresentation = (value: unknown) => { try { const presentation = validatePresentation(value); latestPresentation = presentation; semanticRenderer?.apply(presentation); setPresentationError(''); } catch (error) { setPresentationError(error instanceof Error ? error.message : String(error)); } };
 	const unsubscribePresentation = props.eventSource.onTerminalPresentation?.(props.sessionId, value => { liveConnected = true; applyPresentation(value); });
 	const unsubscribeLifecycle = props.eventSource.onTerminalLiveAttachmentLifecycle?.(props.sessionId, event => {
-		if (event.state === 'attached') { liveConnected = true; setPresentationError(''); void drainResize(); return; }
-		liveConnected = false;
-		if (event.reason !== 'disposed' && event.reason !== 'session_deleted') {
-			if (!reattachInFlight) {
-				reattachInFlight = attachCurrentView()
-					.then(() => { liveConnected = true; setPresentationError(''); })
-					.finally(() => { reattachInFlight = null; });
-			}
-		}
+		if (event.state === 'attached') { semanticResize.handleAttached(); return; }
+		semanticResize.handleClosed(event.reason);
 	});
-	void attachCurrentView().then(async () => { liveConnected = true; await requestResize(); }).catch(error => { setPresentationError(error instanceof Error ? error.message : String(error)); });
+	void requestResize();
     const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
       if (event.type !== 'data') return;
       const sequence = Number(event.sequence ?? 0);
@@ -464,17 +443,18 @@ const SingleTerminalPane = (props: {
       }
     });
     const unsubscribeGeometry = props.eventSource.onTerminalGeometry?.(props.sessionId, event => {
-      geometryDiagnostics = {
+      semanticResize.handleGeometry({
         generation: event.generation,
         outputSequenceBoundary: event.outputSequenceBoundary,
         cols: event.cols,
         rows: event.rows,
-      };
+      });
     });
     onCleanup(() => {
 		unsubscribePresentation?.();
 		unsubscribeLifecycle?.();
 		semanticResizeObserver?.disconnect();
+		semanticResize.dispose();
       unsubscribeData();
       unsubscribeGeometry?.();
     });
@@ -584,7 +564,7 @@ const SingleTerminalPane = (props: {
           <Show when={rendererError()}>
             {message => (
               <div class="terminalRendererError" role="alert">
-                <strong>Beamterm WebGL2 unavailable</strong>
+                <strong>Terminal presentation unavailable</strong>
                 <span>{message()}</span>
                 <span>presentation path stopped</span>
               </div>

@@ -54,16 +54,28 @@ const setTerminalGridSize = async (page, targetCols, targetRows) => {
 
 const waitForConvergence = async (page, previousGeneration) => {
   let converged = null;
-  await expect.poll(async () => {
-    const state = await readState(page);
-    const ok = state.connected
-      && !state.hasError
-      && state.geometry.cols === state.host.cols
-      && state.geometry.rows === state.host.rows
-      && state.geometry.generation > previousGeneration;
-    if (ok) converged = state;
-    return ok;
-  }).toBe(true);
+  try {
+    await expect.poll(async () => {
+      const state = await readState(page);
+      const ok = state.connected
+        && !state.hasError
+        && state.geometry.cols === state.host.cols
+        && state.geometry.rows === state.host.rows
+        && state.geometry.generation > previousGeneration;
+      if (ok) converged = state;
+      return ok;
+    }).toBe(true);
+  } catch (error) {
+    const diagnostic = await page.evaluate(() => ({
+      presentation: window.__floetermPerfHarness?.getPresentationDiagnostics?.() ?? null,
+      resize: window.__floetermPerfHarness?.getResizeDiagnostics?.() ?? [],
+    }));
+    throw new Error(`terminal resize did not converge: ${JSON.stringify({
+      previousGeneration,
+      state: await readState(page, true),
+      diagnostic,
+    })}`, { cause: error });
+  }
   return converged;
 };
 
@@ -289,8 +301,26 @@ test('converges the visible real macOS top grid across exact grow shrink and rap
   }
 
   const beforeRapidGeneration = state.geometry.generation;
-  await setTerminalHostSize(page, 710, 430);
-  await setTerminalHostSize(page, 1180, 680);
+  for (let index = 0; index < 60; index += 1) {
+    await page.setViewportSize({
+      width: 760 + (index % 7) * 131,
+      height: 480 + (index % 5) * 97,
+    });
+    const surfaceFits = await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => {
+      const pane = document.querySelector('.terminalPane');
+      const canvas = document.querySelector('.semanticTerminalSurface');
+      if (!(pane instanceof HTMLElement) || !(canvas instanceof HTMLCanvasElement)) {
+        resolve(false);
+        return;
+      }
+      const canvasRect = canvas.getBoundingClientRect();
+      resolve(document.querySelectorAll('.terminalPane canvas').length === 1
+        && document.querySelectorAll('.terminalRendererError').length === 0
+        && Math.abs(canvasRect.width - pane.clientWidth) < 1
+        && Math.abs(canvasRect.height - pane.clientHeight) < 1);
+    })));
+    expect(surfaceFits, `top surface did not follow browser resize ${index + 1}`).toBe(true);
+  }
   await setTerminalGridSize(page, 102, 27);
   state = await waitForConvergence(page, beforeRapidGeneration);
   const rapidEvidence = await waitForAuthoritativeTopFrame(page, request, sessionId, state.geometry);

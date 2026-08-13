@@ -37,4 +37,25 @@ describe('semantic presentation', () => {
     expect(canvas.style.width).toBe('100%');
     expect(canvas.style.height).toBe('100%');
   });
+
+  it('does not reallocate the backing store for duplicate resize notifications', () => {
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:640,clientHeight:320};
+    let backingWidth = 0;
+    let backingHeight = 0;
+    const widthWrites = vi.fn((value: number) => { backingWidth = value; });
+    const heightWrites = vi.fn((value: number) => { backingHeight = value; });
+    const canvasMock={
+      get width() { return backingWidth; }, set width(value: number) { widthWrites(value); },
+      get height() { return backingHeight; }, set height(value: number) { heightWrites(value); },
+      clientWidth:640,clientHeight:320,parentElement:host,style:{},getContext:()=>context,
+    };
+    const renderer = new RendererSurface(canvasMock as unknown as HTMLCanvasElement);
+    renderer.apply(validatePresentation(valid()));
+    renderer.resize();
+    renderer.resize();
+
+    expect(widthWrites).toHaveBeenCalledTimes(1);
+    expect(heightWrites).toHaveBeenCalledTimes(1);
+  });
 });
