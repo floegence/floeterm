@@ -3,14 +3,33 @@ import type { SemanticPresentation } from './presentation.js';
 export class RendererSurface {
   private lastSequence = 0;
   private latest: SemanticPresentation | null = null;
+  private animationFrame: number | null = null;
   constructor(private readonly canvas: HTMLCanvasElement) {}
   apply(presentation: SemanticPresentation): void {
-    if (presentation.sequence < this.lastSequence) return;
+    if (presentation.sequence < Math.max(this.lastSequence, this.latest?.sequence ?? 0)) return;
     this.latest = presentation;
-    this.render(presentation);
+    this.scheduleRender();
   }
   resize(): void {
-    if (this.latest) this.render(this.latest);
+    this.scheduleRender();
+  }
+  dispose(): void {
+    if (this.animationFrame !== null && typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(this.animationFrame);
+    }
+    this.animationFrame = null;
+    this.latest = null;
+  }
+  private scheduleRender(): void {
+    if (!this.latest || this.animationFrame !== null) return;
+    if (typeof globalThis.requestAnimationFrame !== 'function') {
+      this.render(this.latest);
+      return;
+    }
+    this.animationFrame = globalThis.requestAnimationFrame(() => {
+      this.animationFrame = null;
+      if (this.latest) this.render(this.latest);
+    });
   }
   private render(presentation: SemanticPresentation): void {
     const context = this.canvas.getContext('2d');

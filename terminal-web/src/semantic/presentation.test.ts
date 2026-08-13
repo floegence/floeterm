@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validatePresentation } from './presentation';
 import { RendererSurface } from './RendererSurface';
 
 const valid = () => ({ sequence: 1, geometry: { generation: 1, cols: 2, rows: 1 }, state: { sequence: 1 }, frame: { width: 2, height: 1, bufferKind: 'normal', rows: [{ cells: [{ text: '界', width: 1, style: { foreground: 'rgb:e5e7eb', background: 'indexed:1' } }, { text: '', width: 2 }] }], cursor: { x: 0, y: 0, visible: true } } });
 describe('semantic presentation', () => {
+  afterEach(() => vi.unstubAllGlobals());
   it('requires atomic geometry and frame shape', () => { expect(validatePresentation(valid())).toEqual(valid()); expect(() => validatePresentation({ ...valid(), frame: { ...valid().frame, width: 3 } })).toThrow(/geometry/); });
   it('replaces the complete canvas and paints semantic colors at CSS/DPR geometry', () => {
     const clearRect=vi.fn(), fillRect=vi.fn(), fillText=vi.fn(), setTransform=vi.fn();
@@ -57,5 +58,38 @@ describe('semantic presentation', () => {
 
     expect(widthWrites).toHaveBeenCalledTimes(1);
     expect(heightWrites).toHaveBeenCalledTimes(1);
+  });
+
+  it('paints only the latest complete presentation once per browser frame', () => {
+    let animationFrame: FrameRequestCallback | undefined;
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      animationFrame = callback;
+      return 42;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    const fillText = vi.fn();
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText,setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:180,clientHeight:90};
+    const canvasMock={width:0,height:0,clientWidth:180,clientHeight:90,parentElement:host,style:{},getContext:()=>context};
+    const renderer = new RendererSurface(canvasMock as unknown as HTMLCanvasElement);
+    const presentation = (sequence: number, text: string) => validatePresentation({
+      ...valid(),
+      sequence,
+      state: { sequence },
+      frame: {
+        ...valid().frame,
+        rows: [{ cells: [{ ...valid().frame.rows[0].cells[0], text }, valid().frame.rows[0].cells[1]] }],
+      },
+    });
+
+    renderer.apply(presentation(1, 'one'));
+    renderer.apply(presentation(2, 'two'));
+    renderer.apply(presentation(3, 'three'));
+
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(fillText).not.toHaveBeenCalled();
+    animationFrame?.(16);
+    expect(fillText).toHaveBeenCalledTimes(1);
+    expect(fillText).toHaveBeenCalledWith('three', 0, 73.8);
   });
 });

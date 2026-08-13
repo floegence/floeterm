@@ -455,6 +455,7 @@ const SingleTerminalPane = (props: {
 		unsubscribeLifecycle?.();
 		semanticResizeObserver?.disconnect();
 		semanticResize.dispose();
+		semanticRenderer?.dispose();
       unsubscribeData();
       unsubscribeGeometry?.();
     });
