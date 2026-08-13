@@ -1,7 +1,11 @@
 import { defineConfig } from '@playwright/test';
 
-const port = Number(process.env.FLOETERM_E2E_PORT ?? 8282);
+const port = Number(process.env.FLOETERM_E2E_PORT);
 const stateDir = process.env.FLOETERM_E2E_STATE_DIR?.trim() ?? '';
+if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+  throw new Error('FLOETERM_E2E_PORT is required and must be a valid port');
+}
+if (!stateDir) throw new Error('FLOETERM_E2E_STATE_DIR is required');
 const stateArg = stateDir ? ` -state-dir ${JSON.stringify(stateDir)}` : '';
 const goRun = process.env.FLOETERM_E2E_GO_RUN?.trim() || 'go run -tags floeterm_native';
 const headed = Boolean(process.env.CI) || process.env.FLOETERM_E2E_HEADED === '1';

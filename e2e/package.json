@@ -6,7 +6,7 @@
   "scripts": {
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "node --test unit/*.test.mjs",
-    "test:e2e": "npm --prefix ../app/web run build && playwright test",
+    "test:e2e": "node scripts/runE2E.mjs",
     "perf:standalone": "node performance/runStandalonePerformance.mjs"
   },
   "devDependencies": {
