@@ -110,8 +110,12 @@ func (s *Session) attachLiveConnection(
 		Cols:     cols,
 		Rows:     rows,
 	}
+	var resizePresentation SemanticPresentation
+	var hasResizePresentation bool
 	if reconcile && s.isActive {
-		if err := s.reconcilePTYSizeLocked("live-connection-attached", false); err != nil {
+		var resizeErr error
+		resizePresentation, hasResizePresentation, resizeErr = s.reconcilePTYSizeLocked("live-connection-attached", false)
+		if resizeErr != nil {
 			if exists {
 				s.liveAttachments[connectionID] = previous
 			} else {
@@ -126,7 +130,7 @@ func (s *Session) attachLiveConnection(
 			if reconcile {
 				s.endPTYResize()
 			}
-			return LiveConnectionAttachment{}, err
+			return LiveConnectionAttachment{}, resizeErr
 		}
 	}
 	boundary := s.committedSequence
@@ -153,6 +157,9 @@ func (s *Session) attachLiveConnection(
 	}
 	if len(geometrySubscribers) > 0 {
 		s.broadcastGeometry(geometry, geometrySubscribers)
+		if hasResizePresentation {
+			s.broadcastPresentation(resizePresentation, geometrySubscribers)
+		}
 	}
 
 	var once sync.Once
@@ -168,13 +175,17 @@ func (s *Session) attachLiveConnection(
 			previousGeneration := s.geometryGeneration
 			var detachedGeometry TerminalGeometry
 			var detachedSubscribers []LiveSubscriber
+			var detachPresentation SemanticPresentation
+			var hasDetachPresentation bool
 			current, ok := s.liveAttachments[connectionID]
 			if ok && current.generation == generation {
 				delete(s.liveAttachments, connectionID)
 				delete(s.connections, connectionID)
 				if reconcile && s.isActive && len(s.connections) > 0 {
-					if err := s.reconcilePTYSizeLocked("live-connection-detached", false); err != nil {
-						s.config.logger.Warn("Failed to reconcile PTY after live detach", "sessionID", s.ID, "error", err)
+					var resizeErr error
+					detachPresentation, hasDetachPresentation, resizeErr = s.reconcilePTYSizeLocked("live-connection-detached", false)
+					if resizeErr != nil {
+						s.config.logger.Warn("Failed to reconcile PTY after live detach", "sessionID", s.ID, "error", resizeErr)
 					}
 				}
 				detachedGeometry = s.effectiveGeometryLocked()
@@ -188,6 +199,9 @@ func (s *Session) attachLiveConnection(
 			}
 			if len(detachedSubscribers) > 0 {
 				s.broadcastGeometry(detachedGeometry, detachedSubscribers)
+				if hasDetachPresentation {
+					s.broadcastPresentation(detachPresentation, detachedSubscribers)
+				}
 			}
 		})
 	}

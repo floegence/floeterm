@@ -95,16 +95,11 @@ func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (Term
 	return s.applyConnectionSize(connectionID, cols, rows, false)
 }
 
-// ApplyConnectionSizeLatest records the latest desired view size. A transient
-// PTY ordering/ioctl failure keeps the live transport usable; the reconciler
-// retries the latest desired size and the caller receives canonical geometry.
+// ApplyConnectionSizeLatest settles only after the requested geometry is
+// canonical. Failures remain failures; returning an old geometry would forge a
+// resize acknowledgement and leave the renderer believing the request landed.
 func (s *Session) ApplyConnectionSizeLatest(connectionID string, cols, rows int) (TerminalGeometry, error) {
-	geometry, err := s.applyConnectionSize(connectionID, cols, rows, false)
-	if err == nil {
-		return geometry, nil
-	}
-	s.UpdateConnectionSize(connectionID, cols, rows)
-	return s.CanonicalGeometry(), nil
+	return s.applyConnectionSize(connectionID, cols, rows, false)
 }
 
 // ApplyConnectionSizeForAttach applies the initial live attachment size. The
@@ -128,6 +123,11 @@ func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows in
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return TerminalGeometry{}, errSessionClosed
+	}
 	connection, exists := s.connections[connectionID]
 	if !exists {
 		s.mu.Unlock()
@@ -136,9 +136,13 @@ func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows in
 	}
 	previousCols, previousRows := connection.Cols, connection.Rows
 	previousGeneration := s.geometryGeneration
+	var presentation SemanticPresentation
+	var hasPresentation bool
 	connection.Cols, connection.Rows = cols, rows
 	if s.isActive {
-		if err := s.applyPTYSizeLocked(cols, rows, "semantic-controller", force); err != nil {
+		var err error
+		presentation, hasPresentation, err = s.applyPTYSizeLocked(cols, rows, "semantic-controller", force)
+		if err != nil {
 			connection.Cols, connection.Rows = previousCols, previousRows
 			s.mu.Unlock()
 			s.endPTYResize()
@@ -161,7 +165,9 @@ func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows in
 	s.endPTYResize()
 	if len(subscribers) > 0 {
 		s.broadcastGeometry(geometry, subscribers)
-		s.broadcastPendingPresentations(subscribers)
+		if hasPresentation {
+			s.broadcastPresentation(presentation, subscribers)
+		}
 	}
 	return geometry, nil
 }
@@ -205,6 +211,11 @@ func (s *Session) applyConnectionSize(connectionID string, cols, rows int, force
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return TerminalGeometry{}, errSessionClosed
+	}
 	conn, exists := s.connections[connectionID]
 	if !exists {
 		s.mu.Unlock()
@@ -225,7 +236,8 @@ func (s *Session) applyConnectionSize(connectionID string, cols, rows int, force
 	if force {
 		reason = "connection-attached"
 	}
-	if err := s.reconcilePTYSizeLocked(reason, force); err != nil {
+	presentation, hasPresentation, err := s.reconcilePTYSizeLocked(reason, force)
+	if err != nil {
 		conn.Cols = previousCols
 		conn.Rows = previousRows
 		s.mu.Unlock()
@@ -241,7 +253,9 @@ func (s *Session) applyConnectionSize(connectionID string, cols, rows int, force
 	s.endPTYResize()
 	if len(subscribers) > 0 {
 		s.broadcastGeometry(geometry, subscribers)
-		s.broadcastPendingPresentations(subscribers)
+		if hasPresentation {
+			s.broadcastPresentation(presentation, subscribers)
+		}
 	}
 	return geometry, nil
 }
@@ -305,10 +319,10 @@ func (s *Session) effectiveGeometryLocked() TerminalGeometry {
 	}
 }
 
-func (s *Session) reconcilePTYSizeLocked(reason string, force bool) error {
+func (s *Session) reconcilePTYSizeLocked(reason string, force bool) (SemanticPresentation, bool, error) {
 	cols, rows, ok := s.getMinimumTerminalSizeLocked()
 	if !ok {
-		return nil
+		return SemanticPresentation{}, false, nil
 	}
 	return s.applyPTYSizeLocked(cols, rows, reason, force)
 }
@@ -360,8 +374,11 @@ func (s *Session) runPTYSizeReconciler() {
 		targetGeometry := TerminalGeometry{Generation: targetGeneration, OutputSequenceBoundary: s.committedSequence, Cols: cols, Rows: rows}
 		s.mu.RUnlock()
 		err := setSize(ptyFile, buildWinSize(cols, rows))
+		var presentation SemanticPresentation
+		hasPresentation := false
 		if err == nil && s.semanticActor != nil {
-			err = s.semanticActor.ResizeToGeometry(targetGeometry)
+			presentation, err = s.semanticActor.ResizeToGeometryAndCapture(targetGeometry)
+			hasPresentation = err == nil
 		}
 
 		s.mu.Lock()
@@ -379,7 +396,9 @@ func (s *Session) runPTYSizeReconciler() {
 		s.endPTYResize()
 		if len(subscribers) > 0 {
 			s.broadcastGeometry(geometry, subscribers)
-			s.broadcastPendingPresentations(subscribers)
+			if hasPresentation {
+				s.broadcastPresentation(presentation, subscribers)
+			}
 		}
 
 		if err != nil && stillCurrent {
@@ -395,15 +414,16 @@ func (s *Session) resizePTYToMinimumSize() error {
 	defer s.endPTYResize()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.reconcilePTYSizeLocked("connection-reconcile", false)
+	_, _, err := s.reconcilePTYSizeLocked("connection-reconcile", false)
+	return err
 }
 
-func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) error {
+func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) (SemanticPresentation, bool, error) {
 	if s.PTY == nil {
-		return fmt.Errorf("PTY not available")
+		return SemanticPresentation{}, false, fmt.Errorf("PTY not available")
 	}
 	if err := validateTerminalSize(cols, rows); err != nil {
-		return err
+		return SemanticPresentation{}, false, err
 	}
 	changed := s.lastAppliedCols != cols || s.lastAppliedRows != rows
 	if !changed && !force {
@@ -411,7 +431,7 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 			s.geometryGeneration = 1
 		}
 		s.config.logger.Debug("PTY resize skipped", "sessionID", s.ID, "cols", cols, "rows", rows, "reason", reason)
-		return nil
+		return SemanticPresentation{}, false, nil
 	}
 
 	setSize := s.setPTYSize
@@ -419,7 +439,7 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 		setSize = pty.Setsize
 	}
 	if err := setSize(s.PTY, buildWinSize(cols, rows)); err != nil {
-		return fmt.Errorf("failed to resize PTY: %w", err)
+		return SemanticPresentation{}, false, fmt.Errorf("failed to resize PTY: %w", err)
 	}
 	targetGeneration := s.geometryGeneration
 	if targetGeneration == 0 {
@@ -428,10 +448,22 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 		targetGeneration++
 	}
 	targetGeometry := TerminalGeometry{Generation: targetGeneration, OutputSequenceBoundary: s.committedSequence, Cols: cols, Rows: rows}
+	var presentation SemanticPresentation
+	hasPresentation := false
 	if s.semanticActor != nil {
-		if err := s.semanticActor.ResizeToGeometry(targetGeometry); err != nil {
-			return fmt.Errorf("resize semantic engine: %w", err)
+		var err error
+		presentation, err = s.semanticActor.ResizeToGeometryAndCapture(targetGeometry)
+		if err != nil {
+			resizeErr := fmt.Errorf("resize semantic engine: %w", err)
+			if changed && s.lastAppliedCols > 0 && s.lastAppliedRows > 0 {
+				if rollbackErr := setSize(s.PTY, buildWinSize(s.lastAppliedCols, s.lastAppliedRows)); rollbackErr != nil {
+					resizeErr = fmt.Errorf("%w; PTY geometry rollback failed: %v", resizeErr, rollbackErr)
+					s.failClosedResizeLocked(resizeErr)
+				}
+			}
+			return SemanticPresentation{}, false, resizeErr
 		}
+		hasPresentation = true
 	}
 	if changed {
 		s.lastAppliedCols = cols
@@ -445,7 +477,17 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 		s.requestPTYForegroundRedraw(s.PTY, reason)
 	}
 	s.config.logger.Debug("PTY resized", "sessionID", s.ID, "cols", cols, "rows", rows, "reason", reason)
-	return nil
+	return presentation, hasPresentation, nil
+}
+
+func (s *Session) failClosedResizeLocked(cause error) {
+	s.closed = true
+	s.outputClosed = true
+	s.resizeQueued = false
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.config.logger.Error("Terminal session failed closed after resize rollback", "sessionID", s.ID, "error", cause)
 }
 
 func (s *Session) requestPTYForegroundRedraw(ptyFile *os.File, reason string) {
@@ -477,12 +519,17 @@ func (s *Session) ResizePTY(cols, rows int) error {
 	defer s.endPTYResize()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return errSessionClosed
+	}
 
 	if err := validateTerminalSize(cols, rows); err != nil {
 		return err
 	}
 	if len(s.connections) > 0 {
-		return s.reconcilePTYSizeLocked("legacy-resize-with-connections", true)
+		_, _, err := s.reconcilePTYSizeLocked("legacy-resize-with-connections", true)
+		return err
 	}
-	return s.applyPTYSizeLocked(cols, rows, "legacy-resize", true)
+	_, _, err := s.applyPTYSizeLocked(cols, rows, "legacy-resize", true)
+	return err
 }

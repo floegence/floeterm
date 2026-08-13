@@ -19,7 +19,7 @@ func TestSemanticPresentationWireFitsMaximumProductViewport(t *testing.T) {
 	}
 }
 
-func TestPresentationStorePublishesAtomicLatestAndReliableFIFO(t *testing.T) {
+func TestPresentationStorePublishesOneAtomicLatestSlot(t *testing.T) {
 	store := NewPresentationStore(2)
 	first := SemanticPresentation{Sequence: 1, Geometry: TerminalGeometry{Cols: 80, Rows: 24}, Frame: SemanticFrame{Width: 80, Height: 24}}
 	second := SemanticPresentation{Sequence: 2, Geometry: TerminalGeometry{Cols: 120, Rows: 40}, Frame: SemanticFrame{Width: 120, Height: 40}}
@@ -33,13 +33,12 @@ func TestPresentationStorePublishesAtomicLatestAndReliableFIFO(t *testing.T) {
 	if !ok || latest.Sequence != 2 || latest.Geometry != second.Geometry || latest.Frame.Width != 120 {
 		t.Fatalf("latest=%+v ok=%v", latest, ok)
 	}
-	got, ok := store.Next()
-	if !ok || got.Sequence != 1 || got.Geometry != first.Geometry {
-		t.Fatalf("first=%+v ok=%v", got, ok)
-	}
-	got, ok = store.Next()
+	got, ok := store.TakeLatest()
 	if !ok || got.Sequence != 2 || got.Geometry != second.Geometry {
-		t.Fatalf("second=%+v ok=%v", got, ok)
+		t.Fatalf("pending latest=%+v ok=%v", got, ok)
+	}
+	if _, ok := store.TakeLatest(); ok {
+		t.Fatal("latest presentation repeated without a new actor cut")
 	}
 }
 
@@ -50,7 +49,7 @@ func TestPresentationStoreDoesNotExposeMutableOwnedBuffers(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Frame.Rows[0].Cells[0].Text = "mutated"
-	got, _ := store.Next()
+	got, _ := store.TakeLatest()
 	if got.Frame.Rows[0].Cells[0].Text != "界" {
 		t.Fatalf("store retained caller buffer: %+v", got)
 	}
@@ -66,9 +65,6 @@ func TestPresentationStoreTakeLatestDropsSupersededFrames(t *testing.T) {
 	latest, ok := store.TakeLatest()
 	if !ok || latest.Sequence != 2 {
 		t.Fatalf("latest=%+v ok=%v", latest, ok)
-	}
-	if _, ok := store.Next(); ok {
-		t.Fatal("superseded frame remained queued after latest delivery")
 	}
 	if _, ok := store.TakeLatest(); ok {
 		t.Fatal("latest delivery repeated without a newly published presentation")

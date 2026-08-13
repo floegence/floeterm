@@ -20,16 +20,6 @@ const sameSize = (left: TerminalSize | null, right: TerminalSize): boolean => (
   left?.cols === right.cols && left.rows === right.rows
 );
 
-const isMissingAttachment = (error: unknown): boolean => (
-  error instanceof Error && (
-    error.name === 'AbortError'
-    || error.message.includes('not attached')
-    || error.message.includes('connection is closed')
-    || error.message.includes('stream ended')
-    || error.message.includes('was superseded')
-  )
-);
-
 export type SemanticResizeController = Readonly<{
   requestResize(): Promise<void>;
   handleAttached(): void;
@@ -107,7 +97,10 @@ export function createSemanticResizeController(
       } catch (error) {
         if (disposed) return;
         desired ??= next;
-        if (connected && resizeConnectionEpoch === connectionEpoch && !isMissingAttachment(error)) {
+        // Recovery is driven only by a lifecycle close event, never by parsing
+        // error text. A resize failure on the current transport is permanent
+        // for that command and must stay visible instead of forging a reconnect.
+        if (connected && resizeConnectionEpoch === connectionEpoch) {
           desired = null;
           options.onError(error instanceof Error ? error.message : String(error));
           return;

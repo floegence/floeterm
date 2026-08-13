@@ -37,7 +37,7 @@ describe('semantic resize controller', () => {
     expect(attach).toHaveBeenCalledTimes(1);
   });
 
-  it('reattaches once and applies the latest size when an in-flight resize loses its transport', async () => {
+  it('reattaches once and applies the latest size after an observed transport close', async () => {
     let size = { cols: 80, rows: 24 };
     let releaseFailedResize: (() => void) | undefined;
     const attach = vi.fn(async (next: { cols: number; rows: number }) => ({
@@ -67,6 +67,7 @@ describe('semantic resize controller', () => {
     await waitUntil(() => resize.mock.calls.length === 1);
     size = { cols: 132, rows: 41 };
     const latest = controller.requestResize();
+    controller.handleClosed('stream_ended');
     releaseFailedResize?.();
     await Promise.all([first, latest]);
 
@@ -81,6 +82,34 @@ describe('semantic resize controller', () => {
       rows: 41,
     });
     expect(onError).toHaveBeenLastCalledWith('');
+  });
+
+  it('does not infer a recoverable disconnect from a resize error message', async () => {
+    let size = { cols: 80, rows: 24 };
+    const attach = vi.fn(async (next: { cols: number; rows: number }) => ({
+      generation: 1,
+      outputSequenceBoundary: 0,
+      ...next,
+    }));
+    const onError = vi.fn();
+    const controller = createSemanticResizeController({
+      measure: () => size,
+      repaint: vi.fn(),
+      attach,
+      resize: vi.fn(async () => {
+        throw new Error('terminal live session is not attached');
+      }),
+      onConnectionChange: vi.fn(),
+      onGeometry: vi.fn(),
+      onError,
+    });
+
+    await controller.requestResize();
+    size = { cols: 120, rows: 40 };
+    await controller.requestResize();
+
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenLastCalledWith('terminal live session is not attached');
   });
 
   it('does not enqueue the same size again while its resize is in flight', async () => {

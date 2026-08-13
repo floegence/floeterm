@@ -11,6 +11,10 @@ export class RendererSurface {
     this.scheduleRender();
   }
   resize(): void {
+    // ResizeObserver runs after layout. Update the backing store immediately
+    // from the host content box so the browser never stretches an old bitmap
+    // across the new pane while the full paint waits for the next frame.
+    this.syncBackingStore();
     this.scheduleRender();
   }
   dispose(): void {
@@ -37,21 +41,7 @@ export class RendererSurface {
     // The canvas owns its backing store, but its containing pane owns the
     // layout bounds. Reading the canvas rect after writing inline dimensions
     // would make a resize self-referential and preserve the old viewport.
-    const host = this.canvas.parentElement;
-    const cssWidth = Math.max(1, host?.clientWidth || this.canvas.clientWidth || presentation.frame.width * 9);
-    const cssHeight = Math.max(1, host?.clientHeight || this.canvas.clientHeight || presentation.frame.height * 18);
-    const dpr = Math.max(1, globalThis.devicePixelRatio || 1);
-    const backingWidth = Math.round(cssWidth * dpr);
-    const backingHeight = Math.round(cssHeight * dpr);
-    // Assigning a backing dimension clears the canvas and may recreate its
-    // graphics resources. ResizeObserver can repeat the same size while the
-    // browser window is being dragged, so only reallocate on a real change.
-    if (this.canvas.width !== backingWidth) this.canvas.width = backingWidth;
-    if (this.canvas.height !== backingHeight) this.canvas.height = backingHeight;
-    // Layout remains percentage-based so the browser can resize the visible
-    // surface before ResizeObserver schedules the next backing-store update.
-    this.canvas.style.width = '100%';
-    this.canvas.style.height = '100%';
+    const { cssWidth, cssHeight, dpr } = this.syncBackingStore(presentation);
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     const cellWidth = cssWidth / presentation.frame.width;
     const cellHeight = cssHeight / presentation.frame.height;
@@ -89,6 +79,22 @@ export class RendererSurface {
       });
     });
     this.lastSequence = presentation.sequence;
+  }
+
+  private syncBackingStore(presentation = this.latest): { cssWidth: number; cssHeight: number; dpr: number } {
+    const host = this.canvas.parentElement;
+    const cssWidth = Math.max(1, host?.clientWidth || this.canvas.clientWidth || (presentation?.frame.width ?? 1) * 9);
+    const cssHeight = Math.max(1, host?.clientHeight || this.canvas.clientHeight || (presentation?.frame.height ?? 1) * 18);
+    const dpr = Math.max(1, globalThis.devicePixelRatio || 1);
+    const backingWidth = Math.round(cssWidth * dpr);
+    const backingHeight = Math.round(cssHeight * dpr);
+    // Backing assignments clear old pixels. Deduplicate exact observer repeats
+    // so a drag does not continually recreate the drawing surface.
+    if (this.canvas.width !== backingWidth) this.canvas.width = backingWidth;
+    if (this.canvas.height !== backingHeight) this.canvas.height = backingHeight;
+    this.canvas.style.width = '100%';
+    this.canvas.style.height = '100%';
+    return { cssWidth, cssHeight, dpr };
   }
 }
 

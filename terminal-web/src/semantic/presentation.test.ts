@@ -65,6 +65,27 @@ describe('semantic presentation', () => {
     expect(heightWrites).toHaveBeenCalledTimes(1);
   });
 
+  it('updates backing geometry synchronously before a coalesced resize paint', () => {
+    let animationFrame: FrameRequestCallback | undefined;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      animationFrame = callback;
+      return 42;
+    }));
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:320,clientHeight:160};
+    const canvasMock={width:0,height:0,clientWidth:320,clientHeight:160,parentElement:host,style:{},getContext:()=>context};
+    const renderer = new RendererSurface(canvasMock as unknown as HTMLCanvasElement);
+    renderer.apply(validatePresentation(valid()));
+    animationFrame?.(16);
+    host.clientWidth = 640;
+    host.clientHeight = 300;
+
+    renderer.resize();
+
+    expect(canvasMock.width).toBe(640);
+    expect(canvasMock.height).toBe(300);
+  });
+
   it('paints only the latest complete presentation once per browser frame', () => {
     let animationFrame: FrameRequestCallback | undefined;
     const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {

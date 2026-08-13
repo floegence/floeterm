@@ -3,6 +3,7 @@ package terminal
 import (
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -383,6 +384,168 @@ func TestApplyConnectionSizeReturnsOnlyAfterThePTYResizeCompletes(t *testing.T) 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("resize did not return after the PTY resize completed")
+	}
+}
+
+func TestApplyConnectionSizeLatestDoesNotAcknowledgeFailedResize(t *testing.T) {
+	sentinel := errors.New("ioctl failed")
+	session := &Session{
+		ID:              "resize-failed-ack",
+		PTY:             &os.File{},
+		isActive:        true,
+		connections:     map[string]*ConnectionInfo{"page-a": {ConnID: "page-a", Cols: 80, Rows: 24}},
+		lastAppliedCols: 80,
+		lastAppliedRows: 24,
+		setPTYSize: func(*os.File, *pty.Winsize) error {
+			return sentinel
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	geometry, err := session.ApplyConnectionSizeLatest("page-a", 120, 40)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("resize error=%v, want %v", err, sentinel)
+	}
+	if geometry != (TerminalGeometry{}) {
+		t.Fatalf("failed resize returned success geometry: %+v", geometry)
+	}
+	if canonical := session.CanonicalGeometry(); canonical.Cols != 80 || canonical.Rows != 24 {
+		t.Fatalf("failed resize changed canonical geometry: %+v", canonical)
+	}
+}
+
+func TestSemanticResizeWithoutActorDoesNotReplayOldPresentation(t *testing.T) {
+	store := NewPresentationStore(2)
+	old := SemanticPresentation{
+		Sequence: 1,
+		Geometry: TerminalGeometry{Generation: 1, Cols: 80, Rows: 24},
+		State:    TerminalState{Sequence: 1},
+		Frame:    SemanticFrame{Width: 80, Height: 24},
+	}
+	if err := store.Publish(old); err != nil {
+		t.Fatal(err)
+	}
+	var presentations []SemanticPresentation
+	session := &Session{
+		ID:                 "resize-no-old-presentation",
+		PTY:                &os.File{},
+		isActive:           true,
+		connections:        map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 80, Rows: 24}},
+		lastAppliedCols:    80,
+		lastAppliedRows:    24,
+		geometryGeneration: 1,
+		presentationStore:  store,
+		setPTYSize:         func(*os.File, *pty.Winsize) error { return nil },
+		config:             newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		liveAttachments: map[string]liveAttachment{"view": {generation: 1, subscriber: LiveSubscriber{
+			OnOutput: func(TerminalOutputEvent) bool { return true },
+			OnPresentation: func(p SemanticPresentation) bool {
+				presentations = append(presentations, p)
+				return true
+			},
+		}}},
+	}
+
+	geometry, err := session.ApplySemanticControllerSize("view", 120, 40, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Cols != 120 || geometry.Rows != 40 {
+		t.Fatalf("canonical geometry=%+v", geometry)
+	}
+	if len(presentations) != 0 {
+		t.Fatalf("resize replayed stale presentation: %+v", presentations)
+	}
+}
+
+func TestSemanticResizeCaptureFailureRollsBackPTYWithoutACKOrPresentation(t *testing.T) {
+	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24}}
+	store := NewPresentationStore(1)
+	actor, err := NewSessionActor(engine, 80, 24, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := store.Latest()
+	engine.captureErr = errors.New("capture failed")
+	var sizes [][2]int
+	var presentations []SemanticPresentation
+	session := &Session{
+		ID: "resize-capture-rollback", PTY: &os.File{}, isActive: true,
+		connections:     map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 80, Rows: 24}},
+		lastAppliedCols: 80, lastAppliedRows: 24, geometryGeneration: 1,
+		semanticActor: actor, presentationStore: store,
+		setPTYSize: func(_ *os.File, size *pty.Winsize) error {
+			sizes = append(sizes, [2]int{int(size.Cols), int(size.Rows)})
+			return nil
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		liveAttachments: map[string]liveAttachment{"view": {generation: 1, subscriber: LiveSubscriber{
+			OnOutput: func(TerminalOutputEvent) bool { return true },
+			OnPresentation: func(p SemanticPresentation) bool {
+				presentations = append(presentations, p)
+				return true
+			},
+		}}},
+	}
+
+	geometry, err := session.ApplySemanticControllerSize("view", 120, 40, false)
+	if err == nil || !strings.Contains(err.Error(), "capture failed") {
+		t.Fatalf("resize error=%v, want capture failure", err)
+	}
+	if geometry != (TerminalGeometry{}) {
+		t.Fatalf("failed resize returned ACK geometry: %+v", geometry)
+	}
+	if len(sizes) != 2 || sizes[0] != [2]int{120, 40} || sizes[1] != [2]int{80, 24} {
+		t.Fatalf("PTY resize/rollback calls=%v", sizes)
+	}
+	if canonical := session.CanonicalGeometry(); canonical.Cols != 80 || canonical.Rows != 24 || canonical.Generation != 1 {
+		t.Fatalf("canonical geometry changed after rollback: %+v", canonical)
+	}
+	if connection := session.connections["view"]; connection.Cols != 80 || connection.Rows != 24 {
+		t.Fatalf("connection geometry changed after rollback: %+v", connection)
+	}
+	after, _ := store.Latest()
+	if after.Sequence != before.Sequence || after.Geometry != before.Geometry || len(presentations) != 0 {
+		t.Fatalf("failed resize published state: before=%+v after=%+v notifications=%d", before, after, len(presentations))
+	}
+}
+
+func TestSemanticResizeRollbackFailureClosesFurtherAdmission(t *testing.T) {
+	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24}}
+	store := NewPresentationStore(1)
+	actor, err := NewSessionActor(engine, 80, 24, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.captureErr = errors.New("capture failed")
+	resizeCalls := 0
+	session := &Session{
+		ID: "resize-rollback-fail", PTY: &os.File{}, isActive: true,
+		connections:     map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 80, Rows: 24}},
+		lastAppliedCols: 80, lastAppliedRows: 24, geometryGeneration: 1,
+		semanticActor: actor, presentationStore: store,
+		setPTYSize: func(*os.File, *pty.Winsize) error {
+			resizeCalls++
+			if resizeCalls == 2 {
+				return errors.New("rollback ioctl failed")
+			}
+			return nil
+		},
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+
+	_, err = session.ApplySemanticControllerSize("view", 120, 40, false)
+	if err == nil || !strings.Contains(err.Error(), "capture failed") || !strings.Contains(err.Error(), "rollback ioctl failed") {
+		t.Fatalf("resize error=%v, want capture and rollback failures", err)
+	}
+	if !session.closed || !session.outputClosed {
+		t.Fatal("rollback failure did not fail the session closed")
+	}
+	if _, err := session.ApplySemanticControllerSize("view", 100, 30, false); !errors.Is(err, errSessionClosed) {
+		t.Fatalf("subsequent resize error=%v, want closed session admission", err)
 	}
 }
 

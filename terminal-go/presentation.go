@@ -106,20 +106,18 @@ func clonePresentation(in SemanticPresentation) SemanticPresentation {
 	return out
 }
 
-// PresentationStore exposes atomic latest presentation plus a bounded reliable FIFO.
+// PresentationStore owns one replaceable pending Presentation. A full frame is
+// self-contained, so retaining older frames would only backpressure the actor
+// and can never improve what a view eventually renders.
 type PresentationStore struct {
-	mu       sync.Mutex
-	latest   SemanticPresentation
-	queue    []SemanticPresentation
-	capacity int
-	closed   bool
+	mu      sync.Mutex
+	latest  SemanticPresentation
+	pending bool
+	closed  bool
 }
 
-func NewPresentationStore(capacity int) *PresentationStore {
-	if capacity < 1 {
-		capacity = 1
-	}
-	return &PresentationStore{capacity: capacity}
+func NewPresentationStore(_ int) *PresentationStore {
+	return &PresentationStore{}
 }
 
 func (s *PresentationStore) Publish(p SemanticPresentation) error {
@@ -129,22 +127,12 @@ func (s *PresentationStore) Publish(p SemanticPresentation) error {
 		return errSessionClosed
 	}
 	s.latest = clonePresentation(p)
-	if len(s.queue) >= s.capacity {
-		return ErrPresentationBackpressure
-	}
-	s.queue = append(s.queue, clonePresentation(p))
+	s.pending = true
 	return nil
 }
 
 func (s *PresentationStore) Next() (SemanticPresentation, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.queue) == 0 {
-		return SemanticPresentation{}, false
-	}
-	p := s.queue[0]
-	s.queue = s.queue[1:]
-	return clonePresentation(p), true
+	return s.TakeLatest()
 }
 
 // TakeLatest returns the newest immutable presentation and advances the
@@ -154,11 +142,11 @@ func (s *PresentationStore) Next() (SemanticPresentation, bool) {
 func (s *PresentationStore) TakeLatest() (SemanticPresentation, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.queue) == 0 {
+	if !s.pending {
 		return SemanticPresentation{}, false
 	}
 	p := clonePresentation(s.latest)
-	s.queue = nil
+	s.pending = false
 	return p, true
 }
 
@@ -171,7 +159,7 @@ func (s *PresentationStore) Latest() (SemanticPresentation, bool) {
 	return clonePresentation(s.latest), true
 }
 
-func (s *PresentationStore) Close() { s.mu.Lock(); s.closed = true; s.queue = nil; s.mu.Unlock() }
+func (s *PresentationStore) Close() { s.mu.Lock(); s.closed = true; s.pending = false; s.mu.Unlock() }
 
 func (s *Session) PublishPresentation(frame SemanticFrame, state TerminalState) error {
 	if s == nil {

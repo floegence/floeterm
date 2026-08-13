@@ -322,6 +322,8 @@ const SingleTerminalPane = (props: {
   let liveConnected = false;
   let latestPresentation: SemanticPresentation | null = null;
   const resizeDiagnostics: unknown[] = [];
+  let attachRequestCount = 0;
+  let lifecycleCloseCount = 0;
   const recordResizeDiagnostic = (value: unknown) => {
     resizeDiagnostics.push(value);
     if (resizeDiagnostics.length > 64) resizeDiagnostics.shift();
@@ -343,6 +345,7 @@ const SingleTerminalPane = (props: {
     },
     repaint: () => { semanticRenderer?.resize(); },
     attach: async dimensions => {
+      attachRequestCount += 1;
       recordResizeDiagnostic({ action: 'attach-requested', dimensions: { ...dimensions } });
       const attached = await props.transport.attachWithHistoryBoundary(
         props.sessionId,
@@ -385,7 +388,10 @@ const SingleTerminalPane = (props: {
       getSelectionText: () => '', hasSelection: () => false,
       getTerminalInfo: () => latestPresentation ? ({ rows: latestPresentation.frame.height, cols: latestPresentation.frame.width, bufferLength: latestPresentation.frame.height }) : null,
       getPresentationDiagnostics: () => latestPresentation,
-      getResizeDiagnostics: () => resizeDiagnostics.map(value => structuredClone(value)),
+      getResizeDiagnostics: () => [
+        { action: 'summary', attachRequestCount, lifecycleCloseCount },
+        ...resizeDiagnostics.map(value => structuredClone(value)),
+      ],
       getSnapshot: () => ({ ...initialTerminalSnapshot, state: { ...initialTerminalSnapshot.state, dimensions: viewDimensions }, connection: { ...initialTerminalSnapshot.connection, isConnected: liveConnected || latestPresentation !== null, state: (liveConnected || latestPresentation !== null) ? 'connected' : 'connecting' } }),
       getFabricDiagnostics: () => getTerminalFabricDiagnostics(),
       forceResize: () => { void requestResize(); },
@@ -420,6 +426,8 @@ const SingleTerminalPane = (props: {
 	const unsubscribePresentation = props.eventSource.onTerminalPresentation?.(props.sessionId, value => { liveConnected = true; applyPresentation(value); });
 	const unsubscribeLifecycle = props.eventSource.onTerminalLiveAttachmentLifecycle?.(props.sessionId, event => {
 		if (event.state === 'attached') { semanticResize.handleAttached(); return; }
+		lifecycleCloseCount += 1;
+		recordResizeDiagnostic({ action: 'lifecycle-closed', reason: event.reason, attachRequestCount, lifecycleCloseCount });
 		semanticResize.handleClosed(event.reason);
 	});
 	void requestResize();
