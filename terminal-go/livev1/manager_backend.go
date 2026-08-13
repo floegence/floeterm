@@ -47,6 +47,11 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 	if b.activate == nil {
 		return Attached{}, nil, ErrActivationFailed
 	}
+	principalID := "local"
+	if err := session.AttachSemanticView(request.ConnectionID, principalID, request.AttachGeneration); err != nil {
+		return Attached{}, nil, err
+	}
+	session.EnsureSemanticController(request.ConnectionID, principalID, request.AttachGeneration)
 	attachment, err := session.AttachLiveConnection(
 		request.ConnectionID,
 		request.AttachGeneration,
@@ -89,6 +94,7 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		},
 	)
 	if err != nil {
+		session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
 		if errors.Is(err, terminal.ErrLiveAttachmentSuperseded) {
 			return Attached{}, nil, fmt.Errorf("%w: %v", ErrProtocolViolation, err)
 		}
@@ -96,6 +102,7 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 	}
 	if err := b.activate(ctx, request.SessionID, int(request.Cols), int(request.Rows)); err != nil {
 		attachment.Detach()
+		session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
 		return Attached{}, nil, fmt.Errorf("%w: %v", ErrActivationFailed, err)
 	}
 	geometry, err := session.ApplyConnectionSizeForAttach(request.ConnectionID, int(request.Cols), int(request.Rows))
@@ -112,13 +119,16 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		}
 	}
 	return Attached{
-		HistoryBoundarySequence: uint64(attachment.HistoryBoundarySequence),
-		HistoryGeneration:       uint64(attachment.HistoryGeneration),
-		HistoryStartSequence:    uint64(attachment.HistoryStartSequence),
-		GeometryGeneration:      attachment.Geometry.Generation,
-		Cols:                    uint32(attachment.Geometry.Cols),
-		Rows:                    uint32(attachment.Geometry.Rows),
-	}, attachment.Detach, nil
+			HistoryBoundarySequence: uint64(attachment.HistoryBoundarySequence),
+			HistoryGeneration:       uint64(attachment.HistoryGeneration),
+			HistoryStartSequence:    uint64(attachment.HistoryStartSequence),
+			GeometryGeneration:      attachment.Geometry.Generation,
+			Cols:                    uint32(attachment.Geometry.Cols),
+			Rows:                    uint32(attachment.Geometry.Rows),
+		}, func() {
+			attachment.Detach()
+			session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
+		}, nil
 }
 
 func (b *ManagerBackend) WriteInput(_ context.Context, attachment Attach, input Input) error {
@@ -129,7 +139,14 @@ func (b *ManagerBackend) WriteInput(_ context.Context, attachment Attach, input 
 	if !ok || session == nil {
 		return ErrSessionNotFound
 	}
-	return session.WriteDataWithSource(input.Data, attachment.ConnectionID)
+	state := session.Controller()
+	if err := session.Interact(attachment.ConnectionID, "local", state.TransportGeneration, state.Epoch, input.Data); err != nil {
+		if errors.Is(err, terminal.ErrControllerEpoch) || errors.Is(err, terminal.ErrControllerTransport) || errors.Is(err, terminal.ErrControllerPrincipal) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (b *ManagerBackend) Resize(_ context.Context, attachment Attach, resize Resize) (EffectiveGeometry, error) {
@@ -139,6 +156,11 @@ func (b *ManagerBackend) Resize(_ context.Context, attachment Attach, resize Res
 	session, ok := b.manager.GetSession(attachment.SessionID)
 	if !ok || session == nil {
 		return EffectiveGeometry{}, ErrSessionNotFound
+	}
+	state := session.Controller()
+	if state.AttachmentID != attachment.ConnectionID {
+		canonical := session.CanonicalGeometry()
+		return EffectiveGeometry{Generation: canonical.Generation, OutputSequenceBoundary: uint64(canonical.OutputSequenceBoundary), Cols: uint32(canonical.Cols), Rows: uint32(canonical.Rows)}, nil
 	}
 	geometry, err := session.ApplyConnectionSize(attachment.ConnectionID, int(resize.Cols), int(resize.Rows))
 	if err != nil {

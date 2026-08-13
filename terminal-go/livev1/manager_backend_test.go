@@ -78,3 +78,32 @@ func TestManagerBackendDetachesConnectionWhenActivationFails(t *testing.T) {
 		t.Fatal("failed activation left the live connection attached")
 	}
 }
+
+func TestManagerBackendObserverResizeDoesNotChangeCanonicalGeometry(t *testing.T) {
+	manager := terminal.NewManager(terminal.ManagerConfig{Logger: terminal.NopLogger{}})
+	session, err := manager.CreateSession("controller-resize", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Cleanup)
+	backend := NewManagerBackend(manager, ManagerBackendOptions{Activate: func(context.Context, string, int, int) error { return nil }})
+	_, detachFirst, err := backend.Attach(context.Background(), Attach{AttachGeneration: 1, Cols: 120, Rows: 40, SessionID: session.ID, ConnectionID: "first"}, Subscriber{OnOutput: func(OutputRecord) bool { return true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detachFirst()
+	_, detachSecond, err := backend.Attach(context.Background(), Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: session.ID, ConnectionID: "second"}, Subscriber{OnOutput: func(OutputRecord) bool { return true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detachSecond()
+	before := session.CanonicalGeometry()
+	got, err := backend.Resize(context.Background(), Attach{AttachGeneration: 1, SessionID: session.ID, ConnectionID: "second"}, Resize{Sequence: 1, Cols: 60, Rows: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := session.CanonicalGeometry()
+	if after != before || int(got.Cols) != before.Cols || int(got.Rows) != before.Rows {
+		t.Fatalf("observer changed canonical geometry: before=%+v after=%+v ack=%+v", before, after, got)
+	}
+}
