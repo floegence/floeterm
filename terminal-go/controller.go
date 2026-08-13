@@ -117,3 +117,10 @@ func (s *Session) Controller() ControllerState {
 	defer s.mu.RUnlock()
 	return s.controllerState
 }
+
+func (s *Session) SemanticAttachmentGeneration(attachmentID string) (uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, ok := s.semanticAttachments[attachmentID]
+	return a.TransportGeneration, ok
+}

@@ -140,7 +140,14 @@ func (b *ManagerBackend) WriteInput(_ context.Context, attachment Attach, input 
 		return ErrSessionNotFound
 	}
 	state := session.Controller()
-	if err := session.Interact(attachment.ConnectionID, "local", state.TransportGeneration, state.Epoch, input.Data); err != nil {
+	if state.AttachmentID == "" {
+		state.Epoch = 0
+	}
+	generation, ok := session.SemanticAttachmentGeneration(attachment.ConnectionID)
+	if !ok {
+		return nil
+	}
+	if err := session.Interact(attachment.ConnectionID, "local", generation, state.Epoch, input.Data); err != nil {
 		if errors.Is(err, terminal.ErrControllerEpoch) || errors.Is(err, terminal.ErrControllerTransport) || errors.Is(err, terminal.ErrControllerPrincipal) {
 			return nil
 		}
