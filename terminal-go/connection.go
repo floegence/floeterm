@@ -102,6 +102,32 @@ func (s *Session) ApplyConnectionSizeForAttach(connectionID string, cols, rows i
 	return s.applyConnectionSize(connectionID, cols, rows, true)
 }
 
+func (s *Session) CanonicalGeometry() TerminalGeometry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.effectiveGeometryLocked()
+}
+
+// RegisterSemanticView records a view without making it participate in the
+// legacy min-size PTY reconciliation path.
+func (s *Session) RegisterSemanticView(connectionID string, cols, rows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connections == nil {
+		s.connections = make(map[string]*ConnectionInfo)
+	}
+	s.connections[connectionID] = &ConnectionInfo{ConnID: connectionID, JoinedAt: time.Now(), Cols: cols, Rows: rows}
+}
+
+func (s *Session) SetCanonicalGeometry(cols, rows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastAppliedCols, s.lastAppliedRows = cols, rows
+	if s.geometryGeneration == 0 {
+		s.geometryGeneration = 1
+	}
+}
+
 func (s *Session) applyConnectionSize(connectionID string, cols, rows int, force bool) (TerminalGeometry, error) {
 	if connectionID == "" {
 		return TerminalGeometry{}, fmt.Errorf("connection ID is required")

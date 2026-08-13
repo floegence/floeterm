@@ -41,6 +41,15 @@ func (s *Session) AttachSemanticView(attachmentID, principalID string, generatio
 	return nil
 }
 
+func (s *Session) EnsureSemanticController(attachmentID, principalID string, generation uint64) ControllerState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.controllerState.AttachmentID == "" {
+		s.controllerState = ControllerState{AttachmentID: attachmentID, PrincipalID: principalID, TransportGeneration: generation, Epoch: 1}
+	}
+	return s.controllerState
+}
+
 func (s *Session) LogicalDetachSemanticView(attachmentID string, generation uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
