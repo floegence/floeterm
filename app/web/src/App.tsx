@@ -320,6 +320,10 @@ const SingleTerminalPane = (props: {
   let latestPresentation: SemanticPresentation | null = null;
   let requestedCols = 0;
   let requestedRows = 0;
+  let pendingResize: { cols: number; rows: number } | null = null;
+  let resizeInFlight = false;
+  let resizeRetryTimer: number | null = null;
+  let reattachInFlight: Promise<void> | null = null;
   let viewDimensions = { cols: 80, rows: 24 };
   const perfWindow = window as FloetermPerfWindow;
   const perfParams = new URLSearchParams(window.location.search);
@@ -352,28 +356,69 @@ const SingleTerminalPane = (props: {
     }
   });
 
+  const drainResize = async (): Promise<void> => {
+    if (resizeInFlight || !pendingResize || !liveConnected) return;
+    resizeInFlight = true;
+    const next = pendingResize;
+    pendingResize = null;
+    requestedCols = next.cols;
+    requestedRows = next.rows;
+    try {
+      const result = await props.transport.resizeWithEffectiveGeometry(props.sessionId, next.cols, next.rows);
+      geometryDiagnostics = { generation: result.effective.generation, outputSequenceBoundary: result.effective.outputSequenceBoundary, cols: result.effective.cols, rows: result.effective.rows };
+    } catch (error) {
+      pendingResize = next;
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('not attached') && liveConnected) {
+        if (!reattachInFlight) {
+          reattachInFlight = props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48)
+            .then(() => { liveConnected = true; setPresentationError(''); })
+            .finally(() => { reattachInFlight = null; });
+        }
+        await reattachInFlight.catch(() => undefined);
+        if (resizeRetryTimer === null) resizeRetryTimer = window.setTimeout(() => { resizeRetryTimer = null; void drainResize(); }, 16);
+      } else {
+        requestedCols = 0;
+        requestedRows = 0;
+        setPresentationError(message);
+      }
+    } finally {
+      resizeInFlight = false;
+      if (pendingResize && resizeRetryTimer === null) void drainResize();
+    }
+  };
+
   const requestResize = async () => {
     const host = semanticCanvas?.parentElement?.getBoundingClientRect();
     if (!host) return;
     const cols = Math.max(20, Math.min(500, Math.floor(host.width / 9)));
     const rows = Math.max(5, Math.min(200, Math.floor(host.height / 18)));
     viewDimensions = { cols, rows };
-    if (cols === requestedCols && rows === requestedRows) { semanticRenderer?.resize(); return; }
-    requestedCols = cols; requestedRows = rows;
-    try {
-      const result = await props.transport.resizeWithEffectiveGeometry(props.sessionId, cols, rows);
-      geometryDiagnostics = { generation: result.effective.generation, outputSequenceBoundary: result.effective.outputSequenceBoundary, cols: result.effective.cols, rows: result.effective.rows };
-    } catch (error) { requestedCols = 0; requestedRows = 0; setPresentationError(error instanceof Error ? error.message : String(error)); }
+    if (cols === requestedCols && rows === requestedRows && !resizeInFlight) { semanticRenderer?.resize(); return; }
+    pendingResize = { cols, rows };
+    await drainResize();
+    semanticRenderer?.resize();
   };
 
   onMount(() => {
 	if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas);
 	const semanticResizeObserver = semanticCanvas && typeof ResizeObserver !== 'undefined'
-		? new ResizeObserver(() => { void requestResize().then(() => semanticRenderer?.resize()); })
+		? new ResizeObserver(() => { void requestResize(); })
 		: undefined;
 	if (semanticCanvas?.parentElement) semanticResizeObserver?.observe(semanticCanvas.parentElement);
 	const applyPresentation = (value: unknown) => { try { const presentation = validatePresentation(value); latestPresentation = presentation; semanticRenderer?.apply(presentation); setPresentationError(''); } catch (error) { setPresentationError(error instanceof Error ? error.message : String(error)); } };
 	const unsubscribePresentation = props.eventSource.onTerminalPresentation?.(props.sessionId, value => { liveConnected = true; applyPresentation(value); });
+	const unsubscribeLifecycle = props.eventSource.onTerminalLiveAttachmentLifecycle?.(props.sessionId, event => {
+		if (event.state === 'attached') { liveConnected = true; setPresentationError(''); void drainResize(); return; }
+		liveConnected = false;
+		if (event.reason !== 'disposed' && event.reason !== 'session_deleted') {
+			if (!reattachInFlight) {
+				reattachInFlight = props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48)
+					.then(() => { liveConnected = true; setPresentationError(''); })
+					.finally(() => { reattachInFlight = null; });
+			}
+		}
+	});
 	void props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48).then(async () => { liveConnected = true; await requestResize(); }).catch(error => { setPresentationError(error instanceof Error ? error.message : String(error)); });
     const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
       if (event.type !== 'data') return;
@@ -404,6 +449,7 @@ const SingleTerminalPane = (props: {
     });
     onCleanup(() => {
 		unsubscribePresentation?.();
+		unsubscribeLifecycle?.();
 		semanticResizeObserver?.disconnect();
       unsubscribeData();
       unsubscribeGeometry?.();

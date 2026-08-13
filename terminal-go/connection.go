@@ -95,6 +95,18 @@ func (s *Session) ApplyConnectionSize(connectionID string, cols, rows int) (Term
 	return s.applyConnectionSize(connectionID, cols, rows, false)
 }
 
+// ApplyConnectionSizeLatest records the latest desired view size. A transient
+// PTY ordering/ioctl failure keeps the live transport usable; the reconciler
+// retries the latest desired size and the caller receives canonical geometry.
+func (s *Session) ApplyConnectionSizeLatest(connectionID string, cols, rows int) (TerminalGeometry, error) {
+	geometry, err := s.applyConnectionSize(connectionID, cols, rows, false)
+	if err == nil {
+		return geometry, nil
+	}
+	s.UpdateConnectionSize(connectionID, cols, rows)
+	return s.CanonicalGeometry(), nil
+}
+
 // ApplyConnectionSizeForAttach applies the initial live attachment size. The
 // attach path may request one same-size foreground redraw so a client whose
 // retained history is incomplete can receive a fresh post-boundary frame.

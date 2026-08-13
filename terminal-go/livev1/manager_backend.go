@@ -169,7 +169,7 @@ func (b *ManagerBackend) Resize(_ context.Context, attachment Attach, resize Res
 		canonical := session.CanonicalGeometry()
 		return EffectiveGeometry{Generation: canonical.Generation, OutputSequenceBoundary: uint64(canonical.OutputSequenceBoundary), Cols: uint32(canonical.Cols), Rows: uint32(canonical.Rows)}, nil
 	}
-	geometry, err := session.ApplyConnectionSize(attachment.ConnectionID, int(resize.Cols), int(resize.Rows))
+	geometry, err := session.ApplyConnectionSizeLatest(attachment.ConnectionID, int(resize.Cols), int(resize.Rows))
 	if err != nil {
 		return EffectiveGeometry{}, err
 	}
