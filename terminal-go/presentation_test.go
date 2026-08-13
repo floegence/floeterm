@@ -1,0 +1,40 @@
+package terminal
+
+import "testing"
+
+func TestPresentationStorePublishesAtomicLatestAndReliableFIFO(t *testing.T) {
+	store := NewPresentationStore(2)
+	first := SemanticPresentation{Sequence: 1, Geometry: TerminalGeometry{Cols: 80, Rows: 24}, Frame: SemanticFrame{Width: 80, Height: 24}}
+	second := SemanticPresentation{Sequence: 2, Geometry: TerminalGeometry{Cols: 120, Rows: 40}, Frame: SemanticFrame{Width: 120, Height: 40}}
+	if err := store.Publish(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Publish(second); err != nil {
+		t.Fatal(err)
+	}
+	latest, ok := store.Latest()
+	if !ok || latest.Sequence != 2 || latest.Geometry != second.Geometry || latest.Frame.Width != 120 {
+		t.Fatalf("latest=%+v ok=%v", latest, ok)
+	}
+	got, ok := store.Next()
+	if !ok || got.Sequence != 1 || got.Geometry != first.Geometry {
+		t.Fatalf("first=%+v ok=%v", got, ok)
+	}
+	got, ok = store.Next()
+	if !ok || got.Sequence != 2 || got.Geometry != second.Geometry {
+		t.Fatalf("second=%+v ok=%v", got, ok)
+	}
+}
+
+func TestPresentationStoreDoesNotExposeMutableOwnedBuffers(t *testing.T) {
+	store := NewPresentationStore(1)
+	p := SemanticPresentation{Sequence: 1, Frame: SemanticFrame{Rows: []SemanticRow{{Cells: []SemanticCell{{Text: "界"}}}}}}
+	if err := store.Publish(p); err != nil {
+		t.Fatal(err)
+	}
+	p.Frame.Rows[0].Cells[0].Text = "mutated"
+	got, _ := store.Next()
+	if got.Frame.Rows[0].Cells[0].Text != "界" {
+		t.Fatalf("store retained caller buffer: %+v", got)
+	}
+}

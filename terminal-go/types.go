@@ -367,6 +367,9 @@ type Session struct {
 	outputActivityCommandRevision uint64
 	executionContext              TerminalExecutionContextInfo
 	workState                     TerminalWorkStateInfo
+	presentationStore             *PresentationStore
+	controllerState               ControllerState
+	semanticAttachments           map[string]SemanticAttachment
 	contextFrames                 []terminalContextFrame
 	contextSeenFrameIDs           map[string]struct{}
 	contextForegroundRevision     uint64

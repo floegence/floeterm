@@ -567,6 +567,8 @@ func (s *Session) cleanup() {
 	s.historySpool = nil
 	s.isActive = false
 	s.clearForegroundCommandLocked()
+	presentationStore := s.presentationStore
+	s.presentationStore = nil
 
 	for connID := range s.connections {
 		delete(s.connections, connID)
@@ -575,6 +577,9 @@ func (s *Session) cleanup() {
 	s.mu.Unlock()
 	s.historyCommitMu.Unlock()
 	cleanupShellLifecycleBootstraps(bootstraps)
+	if presentationStore != nil {
+		presentationStore.Close()
+	}
 
 	activation.complete(errSessionClosed)
 	for _, subscriber := range liveSubscribers {
