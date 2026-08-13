@@ -114,6 +114,58 @@ func (s *Session) ApplyConnectionSizeForAttach(connectionID string, cols, rows i
 	return s.applyConnectionSize(connectionID, cols, rows, true)
 }
 
+// ApplySemanticControllerSize records the controller viewport and applies that
+// exact geometry. Observer viewports never participate in PTY sizing.
+func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows int, force bool) (TerminalGeometry, error) {
+	if connectionID == "" {
+		return TerminalGeometry{}, fmt.Errorf("connection ID is required")
+	}
+	if err := validateTerminalSize(cols, rows); err != nil {
+		return TerminalGeometry{}, err
+	}
+	if err := s.beginPTYResize(); err != nil {
+		return TerminalGeometry{}, err
+	}
+
+	s.mu.Lock()
+	connection, exists := s.connections[connectionID]
+	if !exists {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return TerminalGeometry{}, fmt.Errorf("terminal connection %q is not attached", connectionID)
+	}
+	previousCols, previousRows := connection.Cols, connection.Rows
+	previousGeneration := s.geometryGeneration
+	connection.Cols, connection.Rows = cols, rows
+	if s.isActive {
+		if err := s.applyPTYSizeLocked(cols, rows, "semantic-controller", force); err != nil {
+			connection.Cols, connection.Rows = previousCols, previousRows
+			s.mu.Unlock()
+			s.endPTYResize()
+			return TerminalGeometry{}, err
+		}
+	} else {
+		s.lastAppliedCols, s.lastAppliedRows = cols, rows
+		if s.geometryGeneration == 0 {
+			s.geometryGeneration = 1
+		} else if previousCols != cols || previousRows != rows {
+			s.geometryGeneration++
+		}
+	}
+	geometry := s.effectiveGeometryLocked()
+	var subscribers []LiveSubscriber
+	if geometry.Generation != previousGeneration {
+		subscribers = s.liveSubscribersLocked()
+	}
+	s.mu.Unlock()
+	s.endPTYResize()
+	if len(subscribers) > 0 {
+		s.broadcastGeometry(geometry, subscribers)
+		s.broadcastPendingPresentations(subscribers)
+	}
+	return geometry, nil
+}
+
 func (s *Session) CanonicalGeometry() TerminalGeometry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -189,6 +241,7 @@ func (s *Session) applyConnectionSize(connectionID string, cols, rows int, force
 	s.endPTYResize()
 	if len(subscribers) > 0 {
 		s.broadcastGeometry(geometry, subscribers)
+		s.broadcastPendingPresentations(subscribers)
 	}
 	return geometry, nil
 }
@@ -300,6 +353,9 @@ func (s *Session) runPTYSizeReconciler() {
 			continue
 		}
 		err := setSize(ptyFile, buildWinSize(cols, rows))
+		if err == nil && s.semanticActor != nil {
+			err = s.semanticActor.Resize(cols, rows)
+		}
 
 		s.mu.Lock()
 		stillCurrent := s.isActive && s.PTY == ptyFile
@@ -319,6 +375,7 @@ func (s *Session) runPTYSizeReconciler() {
 		s.endPTYResize()
 		if len(subscribers) > 0 {
 			s.broadcastGeometry(geometry, subscribers)
+			s.broadcastPendingPresentations(subscribers)
 		}
 
 		if err != nil && stillCurrent {

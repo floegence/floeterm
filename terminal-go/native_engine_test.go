@@ -112,3 +112,74 @@ func TestSessionResizeAndInputUseSameNativeActor(t *testing.T) {
 	}
 	session.cleanup()
 }
+
+func TestSessionResizePublishesPresentationWithCanonicalGeometry(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(20, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPresentationStore(8)
+	actor, err := NewSessionActor(engine, 20, 4, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{
+		config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		PTY:    &os.File{}, isActive: true, semanticActor: actor, presentationStore: store,
+		connections:     map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 20, Rows: 4}},
+		lastAppliedCols: 20, lastAppliedRows: 4, geometryGeneration: 1,
+		setPTYSize: func(*os.File, *pty.Winsize) error { return nil },
+	}
+	defer session.cleanup()
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	store.Next()
+	var presentations []SemanticPresentation
+	session.liveAttachments = map[string]liveAttachment{"view": {generation: 1, subscriber: LiveSubscriber{
+		OnOutput: func(TerminalOutputEvent) bool { return true },
+		OnPresentation: func(p SemanticPresentation) bool {
+			presentations = append(presentations, p)
+			return true
+		},
+	}}}
+	if _, err := session.ApplyConnectionSize("view", 40, 8); err != nil {
+		t.Fatal(err)
+	}
+	if len(presentations) != 1 {
+		t.Fatalf("resize presentation notifications=%d, want 1", len(presentations))
+	}
+	got := presentations[0]
+	if got.Geometry.Cols != 40 || got.Geometry.Rows != 8 || got.Frame.Width != 40 || got.Frame.Height != 8 {
+		t.Fatalf("resize presentation=%+v frame=%dx%d", got.Geometry, got.Frame.Width, got.Frame.Height)
+	}
+}
+
+func TestDetachedNativeOutputKeepsLatestPresentationWithoutBackpressure(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(20, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPresentationStore(2)
+	actor, err := NewSessionActor(engine, 20, 4, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{
+		config:        newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		semanticActor: actor, presentationStore: store,
+		lastAppliedCols: 20, lastAppliedRows: 4, geometryGeneration: 1,
+		ringBuffer: NewTerminalRingBuffer(32),
+	}
+	defer session.cleanup()
+	for index := 0; index < 20; index++ {
+		session.processRawPTYData([]byte("x"))
+	}
+	latest, ok := session.LatestPresentation()
+	if !ok || latest.Sequence != 20 {
+		t.Fatalf("detached latest presentation=%+v ok=%v", latest, ok)
+	}
+	if _, ok := store.Next(); ok {
+		t.Fatal("detached output retained a transport delivery backlog")
+	}
+}

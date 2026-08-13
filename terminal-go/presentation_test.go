@@ -55,3 +55,25 @@ func TestPresentationStoreDoesNotExposeMutableOwnedBuffers(t *testing.T) {
 		t.Fatalf("store retained caller buffer: %+v", got)
 	}
 }
+
+func TestPresentationStoreTakeLatestDropsSupersededFrames(t *testing.T) {
+	store := NewPresentationStore(2)
+	for sequence := uint64(1); sequence <= 2; sequence++ {
+		if err := store.Publish(SemanticPresentation{Sequence: sequence}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest, ok := store.TakeLatest()
+	if !ok || latest.Sequence != 2 {
+		t.Fatalf("latest=%+v ok=%v", latest, ok)
+	}
+	if _, ok := store.Next(); ok {
+		t.Fatal("superseded frame remained queued after latest delivery")
+	}
+	if _, ok := store.TakeLatest(); ok {
+		t.Fatal("latest delivery repeated without a newly published presentation")
+	}
+	if err := store.Publish(SemanticPresentation{Sequence: 3}); err != nil {
+		t.Fatalf("store remained backpressured after latest delivery: %v", err)
+	}
+}

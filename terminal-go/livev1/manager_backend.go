@@ -52,7 +52,7 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		return Attached{}, nil, err
 	}
 	session.EnsureSemanticController(request.ConnectionID, principalID, request.AttachGeneration)
-	attachment, err := session.AttachLiveConnection(
+	attachment, err := session.AttachSemanticLiveConnection(
 		request.ConnectionID,
 		request.AttachGeneration,
 		int(request.Cols),
@@ -105,12 +105,17 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
 		return Attached{}, nil, fmt.Errorf("%w: %v", ErrActivationFailed, err)
 	}
-	geometry, err := session.ApplyConnectionSizeForAttach(request.ConnectionID, int(request.Cols), int(request.Rows))
-	if err != nil {
-		attachment.Detach()
-		return Attached{}, nil, err
+	controller := session.Controller()
+	if controller.AttachmentID == request.ConnectionID && controller.TransportGeneration == request.AttachGeneration {
+		geometry, resizeErr := session.ApplySemanticControllerSize(request.ConnectionID, int(request.Cols), int(request.Rows), true)
+		if resizeErr != nil {
+			attachment.Detach()
+			return Attached{}, nil, resizeErr
+		}
+		attachment.Geometry = geometry
+	} else {
+		attachment.Geometry = session.CanonicalGeometry()
 	}
-	attachment.Geometry = geometry
 	if subscriber.OnPresentation != nil {
 		if p, ok := session.LatestPresentation(); ok {
 			if encoded, encodeErr := terminal.EncodeSemanticPresentation(p); encodeErr == nil {
@@ -169,7 +174,7 @@ func (b *ManagerBackend) Resize(_ context.Context, attachment Attach, resize Res
 		canonical := session.CanonicalGeometry()
 		return EffectiveGeometry{Generation: canonical.Generation, OutputSequenceBoundary: uint64(canonical.OutputSequenceBoundary), Cols: uint32(canonical.Cols), Rows: uint32(canonical.Rows)}, nil
 	}
-	geometry, err := session.ApplyConnectionSizeLatest(attachment.ConnectionID, int(resize.Cols), int(resize.Rows))
+	geometry, err := session.ApplySemanticControllerSize(attachment.ConnectionID, int(resize.Cols), int(resize.Rows), false)
 	if err != nil {
 		return EffectiveGeometry{}, err
 	}

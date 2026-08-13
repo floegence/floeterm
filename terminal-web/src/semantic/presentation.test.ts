@@ -8,7 +8,8 @@ describe('semantic presentation', () => {
   it('replaces the complete canvas and paints semantic colors at CSS/DPR geometry', () => {
     const clearRect=vi.fn(), fillRect=vi.fn(), fillText=vi.fn(), setTransform=vi.fn();
     const context={clearRect,fillRect,fillText,setTransform,font:'',textBaseline:'',fillStyle:''};
-    const canvasMock={width:0,height:0,clientWidth:180,clientHeight:90,style:{},getBoundingClientRect:()=>({width:180,height:90}),getContext:()=>context};
+    const host={clientWidth:180,clientHeight:90};
+    const canvasMock={width:0,height:0,clientWidth:180,clientHeight:90,parentElement:host,style:{},getBoundingClientRect:()=>({width:180,height:90}),getContext:()=>context};
     const canvas=canvasMock as unknown as HTMLCanvasElement;
     new RendererSurface(canvas).apply(validatePresentation(valid()));
     expect(canvas.width).toBe(180); expect(canvas.height).toBe(90);
@@ -17,5 +18,23 @@ describe('semantic presentation', () => {
     expect(fillText).toHaveBeenCalledWith('界',0,73.8);
     canvasMock.clientHeight = 45;
     new RendererSurface(canvas).apply(validatePresentation(valid()));
+  });
+
+  it('measures the pane instead of stale inline canvas dimensions after a host resize', () => {
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:320,clientHeight:160};
+    const canvasMock={width:0,height:0,clientWidth:320,clientHeight:160,parentElement:host,style:{},getBoundingClientRect:()=>({width:180,height:90}),getContext:()=>context};
+    const canvas=canvasMock as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(validatePresentation(valid()));
+    expect(canvas.width).toBe(320);
+    expect(canvas.height).toBe(160);
+    host.clientWidth = 640;
+    host.clientHeight = 300;
+    renderer.resize();
+    expect(canvas.width).toBe(640);
+    expect(canvas.height).toBe(300);
+    expect(canvas.style.width).toBe('100%');
+    expect(canvas.style.height).toBe('100%');
   });
 });

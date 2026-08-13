@@ -891,12 +891,8 @@ func (s *Session) broadcastData(event TerminalOutputEvent, subscribers []LiveSub
 		if subscriber.OnOutput != nil {
 			subscriber.OnOutput(event)
 		}
-		if subscriber.OnPresentation != nil {
-			if presentation, ok := s.LatestPresentation(); ok {
-				subscriber.OnPresentation(presentation)
-			}
-		}
 	}
+	s.broadcastPendingPresentations(subscribers)
 }
 
 func (s *Session) readPTYOutput(
@@ -1564,6 +1560,9 @@ func (s *Session) publishPTYDisplayDataAtGeometry(
 			TimestampMs: timestamp,
 			Geometry:    geometry,
 		}, subscribers)
+		if len(subscribers) == 0 {
+			s.broadcastPendingPresentations(nil)
+		}
 	}
 
 }

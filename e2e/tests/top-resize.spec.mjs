@@ -167,6 +167,25 @@ const waitForAuthoritativeTopFrame = async (page, request, sessionId, geometry) 
   return evidence;
 };
 
+const waitForSemanticTopPresentation = async (page, geometry) => {
+  let evidence = null;
+  await expect.poll(async () => {
+    const state = await readState(page, true);
+    const presentation = await page.evaluate(() => window.__floetermPerfHarness?.getPresentationDiagnostics?.() ?? null);
+    const converged = presentation?.geometry.generation === geometry.generation
+      && presentation.geometry.cols === geometry.cols
+      && presentation.geometry.rows === geometry.rows
+      && presentation.frame.width === geometry.cols
+      && presentation.frame.height === geometry.rows
+      && presentation.sequence === presentation.state.sequence
+      && (state.visibleLines[0] ?? '').startsWith('Processes:')
+      && (state.visibleLines[1] ?? '').startsWith('Load Avg:');
+    if (converged) evidence = { state, presentation };
+    return converged;
+  }).toBe(true);
+  return evidence;
+};
+
 const expectTopClockPixelsAtRightEdge = async (page, geometry) => {
   const surface = page.locator('.terminalPane');
   const box = await surface.boundingBox();
@@ -200,22 +219,18 @@ const expectTopClockPixelsAtRightEdge = async (page, geometry) => {
 const assertTopKeepsAdvancingAndVisible = async (page, request, sessionId, cycles = 3) => {
   let state = await readState(page, true);
   let browserSequence = state.stream.lastSequence;
-  let history = await readHistoryChunks(request, sessionId);
-  let historySequence = history.at(-1)?.sequence ?? 0;
+  let presentationSequence = (await page.evaluate(() => window.__floetermPerfHarness?.getPresentationDiagnostics?.()?.sequence ?? 0));
   for (let cycle = 0; cycle < cycles; cycle += 1) {
     const deadline = Date.now() + 3000;
     let advanced = false;
     while (Date.now() < deadline) {
-      [state, history] = await Promise.all([
-        readState(page, true),
-        readHistoryChunks(request, sessionId),
-      ]);
-      const nextHistorySequence = history.at(-1)?.sequence ?? 0;
+      state = await readState(page, true);
+      const nextPresentationSequence = await page.evaluate(() => window.__floetermPerfHarness?.getPresentationDiagnostics?.()?.sequence ?? 0);
       expect(state.visibleLines[0], `top header disappeared during refresh cycle ${cycle + 1}`).toMatch(/^Processes:/);
       expect(state.visibleLines[1], `top load row disappeared during refresh cycle ${cycle + 1}`).toMatch(/^Load Avg:/);
       expect(state.stream.sequenceGaps).toBe(0);
-      if (nextHistorySequence > historySequence && state.stream.lastSequence > browserSequence) {
-        historySequence = nextHistorySequence;
+      if (nextPresentationSequence > presentationSequence && state.stream.lastSequence > browserSequence) {
+        presentationSequence = nextPresentationSequence;
         browserSequence = state.stream.lastSequence;
         advanced = true;
         break;
@@ -224,42 +239,10 @@ const assertTopKeepsAdvancingAndVisible = async (page, request, sessionId, cycle
     }
     expect(advanced, `top output stalled for 3 seconds during refresh cycle ${cycle + 1}`).toBe(true);
 
-    const authoritative = await waitForAuthoritativeTopFrame(page, request, sessionId, state.geometry);
+    const authoritative = await waitForSemanticTopPresentation(page, state.geometry);
     expect(authoritative.state.visibleLines[0]).toMatch(/^Processes:/);
     await expectTopClockPixelsAtRightEdge(page, state.geometry);
   }
-};
-
-const installPresentationTrace = async page => {
-  await page.addInitScript(() => {
-    const trace = [];
-    const lastVisibility = new WeakMap();
-    const record = node => {
-      if (!(node instanceof HTMLElement) || !node.hasAttribute('data-floeterm-terminal-render-host')) return;
-      const visibility = node.style.visibility;
-      if (lastVisibility.get(node) === visibility) return;
-      lastVisibility.set(node, visibility);
-      const harness = window.__floetermPerfHarness;
-      trace.push({
-        visibility,
-        dimensions: harness?.getSnapshot().state.dimensions ?? null,
-        geometry: harness?.getGeometryDiagnostics() ?? null,
-      });
-    };
-    const observer = new MutationObserver(records => {
-      for (const mutation of records) {
-        if (mutation.type === 'attributes') record(mutation.target);
-        for (const node of mutation.addedNodes) {
-          if (node instanceof HTMLElement) {
-            record(node);
-            node.querySelectorAll?.('[data-floeterm-terminal-render-host]').forEach(record);
-          }
-        }
-      }
-    });
-    observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
-    Object.defineProperty(window, '__floetermPresentationTrace', { value: trace, configurable: true });
-  });
 };
 
 test('converges the visible real macOS top grid across exact grow shrink and rapid resizes', async ({ page, request }) => {
@@ -320,7 +303,7 @@ test('converges the visible real macOS top grid across exact grow shrink and rap
   expect(failures).toEqual([]);
 });
 
-test('keeps replay geometry hidden after top advances while the page is detached', async ({ page, request }) => {
+test('reconnects top from the latest semantic presentation after detached output advances', async ({ page, request }) => {
   test.skip(process.platform !== 'darwin', 'real top refresh coverage requires macOS top');
   test.slow();
   const failures = captureBrowserFailures(page);
@@ -349,26 +332,31 @@ test('keeps replay geometry hidden after top advances while the page is detached
     return (chunks.at(-1)?.sequence ?? 0) - beforeDetachSequence;
   }, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
 
-  await installPresentationTrace(page);
   await page.goto(`/?mode=single&session=${encodeURIComponent(sessionId)}&perf_probe=1`);
   await page.waitForFunction(() => (
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
       && window.__floetermPerfHarness.getTerminalInfo()
   ));
   const refreshed = await readState(page, true);
-  const trace = await page.evaluate(() => window.__floetermPresentationTrace ?? []);
-  const visibleTransitions = trace.filter(event => event.visibility !== 'hidden');
-
-  expect(trace.length).toBeGreaterThanOrEqual(2);
-  expect(trace[0]?.visibility).toBe('hidden');
-  expect(visibleTransitions).toHaveLength(1);
-  expect(visibleTransitions[0]?.dimensions).toEqual(refreshed.host);
-  expect(visibleTransitions[0]?.geometry?.cols).toBe(refreshed.host.cols);
-  expect(visibleTransitions[0]?.geometry?.rows).toBe(refreshed.host.rows);
-  expect(refreshed.visibleLines[0]).toMatch(/^Processes:/);
-  expect(refreshed.visibleLines[1]).toMatch(/^Load Avg:/);
-  await waitForAuthoritativeTopFrame(page, request, sessionId, refreshed.geometry);
-  await expectTopClockPixelsAtRightEdge(page, refreshed.geometry);
+  const semanticSurface = await page.evaluate(() => {
+    const pane = document.querySelector('.terminalPane');
+    const canvas = document.querySelector('.semanticTerminalSurface');
+    if (!(pane instanceof HTMLElement) || !(canvas instanceof HTMLCanvasElement)) return null;
+    return {
+      canvases: document.querySelectorAll('.terminalPane canvas').length,
+      errors: document.querySelectorAll('.terminalRendererError').length,
+      pane: { width: pane.clientWidth, height: pane.clientHeight },
+      canvas: { width: canvas.getBoundingClientRect().width, height: canvas.getBoundingClientRect().height },
+    };
+  });
+  expect(semanticSurface).toMatchObject({ canvases: 1, errors: 0 });
+  expect(semanticSurface.canvas).toEqual(semanticSurface.pane);
+  expect(refreshed.geometry.cols).toBe(refreshed.host.cols);
+  expect(refreshed.geometry.rows).toBe(refreshed.host.rows);
+  const reconnected = await waitForSemanticTopPresentation(page, refreshed.geometry);
+  expect(reconnected.state.visibleLines[0]).toMatch(/^Processes:/);
+  expect(reconnected.state.visibleLines[1]).toMatch(/^Load Avg:/);
+  await expectTopClockPixelsAtRightEdge(page, reconnected.state.geometry);
   await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
 
   const beforePostRefreshResize = refreshed.geometry.generation;

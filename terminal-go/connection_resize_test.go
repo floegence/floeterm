@@ -220,6 +220,58 @@ func TestConnectionResizeRetriesAfterFailure(t *testing.T) {
 	}
 }
 
+func TestConnectionResizeReconcilerResizesActorAndPublishesPresentation(t *testing.T) {
+	engine := &resizeRecordingEngine{}
+	store := NewPresentationStore(8)
+	actor, err := NewSessionActor(engine, 80, 24, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	store.Next()
+	var presentations []SemanticPresentation
+	session := &Session{
+		ID: "resize-reconciler-actor", PTY: &os.File{}, isActive: true,
+		connections:     map[string]*ConnectionInfo{"view": {ConnID: "view", Cols: 120, Rows: 40}},
+		lastAppliedCols: 80, lastAppliedRows: 24, geometryGeneration: 1,
+		semanticActor: actor, presentationStore: store,
+		setPTYSize: func(*os.File, *pty.Winsize) error { return nil },
+		config:     newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+	}
+	session.liveAttachments = map[string]liveAttachment{"view": {generation: 1, subscriber: LiveSubscriber{
+		OnOutput:       func(TerminalOutputEvent) bool { return true },
+		OnPresentation: func(p SemanticPresentation) bool { presentations = append(presentations, p); return true },
+	}}}
+	session.schedulePTYSizeReconcileLocked("test")
+	waitForResizeIdle(t, session)
+	if engine.resizeCalls != 1 {
+		t.Fatalf("actor resize calls=%d, want 1", engine.resizeCalls)
+	}
+	if len(presentations) != 1 {
+		t.Fatalf("presentation notifications=%d, want 1", len(presentations))
+	}
+	if got := presentations[0]; got.Geometry.Cols != 120 || got.Geometry.Rows != 40 || got.Frame.Width != 120 || got.Frame.Height != 40 {
+		t.Fatalf("presentation=%+v frame=%dx%d", got.Geometry, got.Frame.Width, got.Frame.Height)
+	}
+}
+
+type resizeRecordingEngine struct{ cols, rows, resizeCalls int }
+
+func (e *resizeRecordingEngine) ApplyOutput([]byte) (TerminalState, error) {
+	return TerminalState{}, nil
+}
+func (e *resizeRecordingEngine) CaptureFrame() (SemanticFrame, error) {
+	return SemanticFrame{Width: e.cols, Height: e.rows, Rows: make([]SemanticRow, e.rows)}, nil
+}
+func (e *resizeRecordingEngine) Resize(cols, rows int) error {
+	e.cols, e.rows, e.resizeCalls = cols, rows, e.resizeCalls+1
+	return nil
+}
+func (e *resizeRecordingEngine) EncodeInput(SemanticInput) ([]byte, error) { return nil, nil }
+func (e *resizeRecordingEngine) Close()                                    {}
+
 func TestConnectionResizeUsesTheMinimumDimensionsAcrossDistinctViews(t *testing.T) {
 	var calls []*pty.Winsize
 	var callsMu sync.Mutex

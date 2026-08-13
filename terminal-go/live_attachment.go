@@ -29,6 +29,30 @@ func (s *Session) broadcastGeometry(geometry TerminalGeometry, subscribers []Liv
 	}
 }
 
+func (s *Session) broadcastPresentation(presentation SemanticPresentation, subscribers []LiveSubscriber) {
+	for _, subscriber := range subscribers {
+		if subscriber.OnPresentation != nil {
+			subscriber.OnPresentation(presentation)
+		}
+	}
+}
+
+func (s *Session) broadcastPendingPresentations(subscribers []LiveSubscriber) {
+	if s == nil {
+		return
+	}
+	s.mu.RLock()
+	store := s.presentationStore
+	s.mu.RUnlock()
+	if store == nil {
+		return
+	}
+	presentation, ok := store.TakeLatest()
+	if ok && len(subscribers) > 0 {
+		s.broadcastPresentation(presentation, subscribers)
+	}
+}
+
 // AttachLiveConnection atomically registers a connection and its subscriber,
 // then returns the exact sequence covered by the initial history snapshot.
 func (s *Session) AttachLiveConnection(

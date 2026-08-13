@@ -44,6 +44,7 @@ type FloetermPerfHarness = {
   getSelectionText(): string;
   hasSelection(): boolean;
   getTerminalInfo(): ReturnType<TerminalManagerActions['getTerminalInfo']>;
+  getPresentationDiagnostics?(): SemanticPresentation | null;
   getSnapshot(): TerminalInstanceSnapshot;
   getFabricDiagnostics(): TerminalFabricDiagnostics;
   forceResize(): void;
@@ -321,10 +322,24 @@ const SingleTerminalPane = (props: {
   let requestedCols = 0;
   let requestedRows = 0;
   let pendingResize: { cols: number; rows: number } | null = null;
+  let inFlightResize: { cols: number; rows: number } | null = null;
   let resizeInFlight = false;
   let resizeRetryTimer: number | null = null;
   let reattachInFlight: Promise<void> | null = null;
   let viewDimensions = { cols: 80, rows: 24 };
+  const measuredDimensions = () => {
+    const host = semanticCanvas?.parentElement?.getBoundingClientRect();
+    if (!host) return viewDimensions;
+    return {
+      cols: Math.max(20, Math.min(500, Math.floor(host.width / 9))),
+      rows: Math.max(5, Math.min(200, Math.floor(host.height / 18))),
+    };
+  };
+  const attachCurrentView = () => {
+    const dimensions = measuredDimensions();
+    viewDimensions = dimensions;
+    return props.transport.attachWithHistoryBoundary(props.sessionId, dimensions.cols, dimensions.rows);
+  };
   const perfWindow = window as FloetermPerfWindow;
   const perfParams = new URLSearchParams(window.location.search);
   const perfHarness: FloetermPerfHarness | null = (
@@ -337,6 +352,7 @@ const SingleTerminalPane = (props: {
       getVisibleLines: () => latestPresentation?.frame.rows.map(row => row.cells.map(cell => cell.text).join('').trimEnd()) ?? [],
       getSelectionText: () => '', hasSelection: () => false,
       getTerminalInfo: () => latestPresentation ? ({ rows: latestPresentation.frame.height, cols: latestPresentation.frame.width, bufferLength: latestPresentation.frame.height }) : null,
+      getPresentationDiagnostics: () => latestPresentation,
       getSnapshot: () => ({ ...initialTerminalSnapshot, state: { ...initialTerminalSnapshot.state, dimensions: viewDimensions }, connection: { ...initialTerminalSnapshot.connection, isConnected: liveConnected || latestPresentation !== null, state: (liveConnected || latestPresentation !== null) ? 'connected' : 'connecting' } }),
       getFabricDiagnostics: () => getTerminalFabricDiagnostics(),
       forceResize: () => { void requestResize(); },
@@ -361,17 +377,18 @@ const SingleTerminalPane = (props: {
     resizeInFlight = true;
     const next = pendingResize;
     pendingResize = null;
-    requestedCols = next.cols;
-    requestedRows = next.rows;
+    inFlightResize = next;
     try {
       const result = await props.transport.resizeWithEffectiveGeometry(props.sessionId, next.cols, next.rows);
+      requestedCols = next.cols;
+      requestedRows = next.rows;
       geometryDiagnostics = { generation: result.effective.generation, outputSequenceBoundary: result.effective.outputSequenceBoundary, cols: result.effective.cols, rows: result.effective.rows };
     } catch (error) {
-      pendingResize = next;
+      pendingResize ??= next;
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('not attached') && liveConnected) {
         if (!reattachInFlight) {
-          reattachInFlight = props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48)
+          reattachInFlight = attachCurrentView()
             .then(() => { liveConnected = true; setPresentationError(''); })
             .finally(() => { reattachInFlight = null; });
         }
@@ -383,18 +400,25 @@ const SingleTerminalPane = (props: {
         setPresentationError(message);
       }
     } finally {
+      inFlightResize = null;
       resizeInFlight = false;
       if (pendingResize && resizeRetryTimer === null) void drainResize();
     }
   };
 
   const requestResize = async () => {
-    const host = semanticCanvas?.parentElement?.getBoundingClientRect();
-    if (!host) return;
-    const cols = Math.max(20, Math.min(500, Math.floor(host.width / 9)));
-    const rows = Math.max(5, Math.min(200, Math.floor(host.height / 18)));
+    if (!semanticCanvas?.parentElement) return;
+    const { cols, rows } = measuredDimensions();
     viewDimensions = { cols, rows };
-    if (cols === requestedCols && rows === requestedRows && !resizeInFlight) { semanticRenderer?.resize(); return; }
+    // Keep the visible surface aligned with the browser immediately. PTY
+    // admission may lag behind a drag, but the local canvas must never retain
+    // the previous window's CSS/backing dimensions while it is in flight.
+    semanticRenderer?.resize();
+    if (inFlightResize?.cols === cols && inFlightResize.rows === rows) {
+      pendingResize = null;
+      return;
+    }
+    if (!resizeInFlight && cols === requestedCols && rows === requestedRows) return;
     pendingResize = { cols, rows };
     await drainResize();
     semanticRenderer?.resize();
@@ -413,13 +437,13 @@ const SingleTerminalPane = (props: {
 		liveConnected = false;
 		if (event.reason !== 'disposed' && event.reason !== 'session_deleted') {
 			if (!reattachInFlight) {
-				reattachInFlight = props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48)
+				reattachInFlight = attachCurrentView()
 					.then(() => { liveConnected = true; setPresentationError(''); })
 					.finally(() => { reattachInFlight = null; });
 			}
 		}
 	});
-	void props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48).then(async () => { liveConnected = true; await requestResize(); }).catch(error => { setPresentationError(error instanceof Error ? error.message : String(error)); });
+	void attachCurrentView().then(async () => { liveConnected = true; await requestResize(); }).catch(error => { setPresentationError(error instanceof Error ? error.message : String(error)); });
     const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
       if (event.type !== 'data') return;
       const sequence = Number(event.sequence ?? 0);

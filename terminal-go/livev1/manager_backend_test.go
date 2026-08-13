@@ -92,12 +92,16 @@ func TestManagerBackendObserverResizeDoesNotChangeCanonicalGeometry(t *testing.T
 		t.Fatal(err)
 	}
 	defer detachFirst()
+	controllerGeometry := session.CanonicalGeometry()
 	_, detachSecond, err := backend.Attach(context.Background(), Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: session.ID, ConnectionID: "second"}, Subscriber{OnOutput: func(OutputRecord) bool { return true }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer detachSecond()
 	before := session.CanonicalGeometry()
+	if before != controllerGeometry {
+		t.Fatalf("observer attach changed canonical geometry: controller=%+v after=%+v", controllerGeometry, before)
+	}
 	got, err := backend.Resize(context.Background(), Attach{AttachGeneration: 1, SessionID: session.ID, ConnectionID: "second"}, Resize{Sequence: 1, Cols: 60, Rows: 20})
 	if err != nil {
 		t.Fatal(err)
@@ -105,5 +109,9 @@ func TestManagerBackendObserverResizeDoesNotChangeCanonicalGeometry(t *testing.T
 	after := session.CanonicalGeometry()
 	if after != before || int(got.Cols) != before.Cols || int(got.Rows) != before.Rows {
 		t.Fatalf("observer changed canonical geometry: before=%+v after=%+v ack=%+v", before, after, got)
+	}
+	detachSecond()
+	if afterDetach := session.CanonicalGeometry(); afterDetach != before {
+		t.Fatalf("observer detach changed canonical geometry: before=%+v after=%+v", before, afterDetach)
 	}
 }

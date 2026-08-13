@@ -147,6 +147,21 @@ func (s *PresentationStore) Next() (SemanticPresentation, bool) {
 	return clonePresentation(p), true
 }
 
+// TakeLatest returns the newest immutable presentation and advances the
+// delivery cursor past older frames. Live views render a complete snapshot,
+// so replaying every intermediate frame would let a slow transport stall the
+// PTY actor without improving what the user sees.
+func (s *PresentationStore) TakeLatest() (SemanticPresentation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.queue) == 0 {
+		return SemanticPresentation{}, false
+	}
+	p := clonePresentation(s.latest)
+	s.queue = nil
+	return p, true
+}
+
 func (s *PresentationStore) Latest() (SemanticPresentation, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

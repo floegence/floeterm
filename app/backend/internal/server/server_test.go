@@ -285,6 +285,7 @@ type liveTestConnection struct {
 }
 
 func newLiveTestConnection(conn *websocket.Conn) *liveTestConnection {
+	conn.SetReadLimit(livev1.MaxFramePayloadBytes + livev1.HeaderSize)
 	return &liveTestConnection{
 		conn:    conn,
 		decoder: livev1.NewDecoder(),

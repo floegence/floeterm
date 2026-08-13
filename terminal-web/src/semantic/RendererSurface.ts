@@ -15,14 +15,19 @@ export class RendererSurface {
   private render(presentation: SemanticPresentation): void {
     const context = this.canvas.getContext('2d');
     if (!context) throw new Error('2D terminal renderer unavailable');
-    const bounds = this.canvas.getBoundingClientRect();
-    const cssWidth = Math.max(1, bounds.width || this.canvas.clientWidth || presentation.frame.width * 9);
-    const cssHeight = Math.max(1, bounds.height || this.canvas.clientHeight || presentation.frame.height * 18);
+    // The canvas owns its backing store, but its containing pane owns the
+    // layout bounds. Reading the canvas rect after writing inline dimensions
+    // would make a resize self-referential and preserve the old viewport.
+    const host = this.canvas.parentElement;
+    const cssWidth = Math.max(1, host?.clientWidth || this.canvas.clientWidth || presentation.frame.width * 9);
+    const cssHeight = Math.max(1, host?.clientHeight || this.canvas.clientHeight || presentation.frame.height * 18);
     const dpr = Math.max(1, globalThis.devicePixelRatio || 1);
     this.canvas.width = Math.round(cssWidth * dpr);
     this.canvas.height = Math.round(cssHeight * dpr);
-    this.canvas.style.width = `${cssWidth}px`;
-    this.canvas.style.height = `${cssHeight}px`;
+    // Layout remains percentage-based so the browser can resize the visible
+    // surface before ResizeObserver schedules the next backing-store update.
+    this.canvas.style.width = '100%';
+    this.canvas.style.height = '100%';
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     const cellWidth = cssWidth / presentation.frame.width;
     const cellHeight = cssHeight / presentation.frame.height;
