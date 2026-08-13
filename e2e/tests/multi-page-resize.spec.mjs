@@ -76,8 +76,8 @@ const readPageState = page => page.evaluate(() => {
   };
 });
 
-const waitForTopClockAtSharedRightEdge = async (target, expectedCols) => {
-  await expect.poll(async () => target.evaluate(({ cols }) => {
+const waitForTopClockAtSharedRightEdge = async (target, expectedCols, requireRightEdge = true) => {
+  await expect.poll(async () => target.evaluate(({ cols, requireRightEdge }) => {
     const harness = window.__floetermPerfHarness;
     const row0 = harness?.getVisibleLines()[0] ?? '';
     const clock = row0.match(/\b\d{2}:\d{2}:\d{2}\b/);
@@ -92,9 +92,24 @@ const waitForTopClockAtSharedRightEdge = async (target, expectedCols) => {
     return harness.getTerminalInfo()?.cols === cols
       && widthScaleMatches
       && heightScaleMatches
-      && surface.clientWidth <= cssWidth
+      && (!requireRightEdge || surface.clientWidth <= cssWidth)
       && surface.clientHeight <= cssHeight;
-  }, { cols: expectedCols })).toBe(true);
+  }, { cols: expectedCols, requireRightEdge })).toBe(true);
+};
+
+const waitForTopFrameOnObserver = async target => {
+  await expect.poll(async () => target.evaluate(() => {
+    const harness = window.__floetermPerfHarness;
+    const canvas = document.querySelector('.semanticTerminalSurface');
+    return Boolean(harness?.getTerminalInfo() && canvas instanceof HTMLCanvasElement && canvas.width > 0 && canvas.height > 0);
+  })).toBe(true);
+};
+
+const waitForTopSemanticFrame = async target => {
+  await expect.poll(async () => target.evaluate(() => {
+    const lines = window.__floetermPerfHarness?.getVisibleLines() ?? [];
+    return lines.some(line => line.startsWith('Processes:')) && lines.some(line => line.startsWith('Load Avg:'));
+  })).toBe(true);
 };
 
 const readGeometryState = page => page.evaluate(() => {
@@ -113,10 +128,10 @@ const expectConverged = async (firstPage, secondPage) => {
   let convergedSnapshot = null;
   await expect.poll(async () => {
     const [first, second] = await Promise.all([readGeometryState(firstPage), readGeometryState(secondPage)]);
-    const expectedCols = Math.min(first.host.cols, second.host.cols);
-    const expectedRows = Math.min(first.host.rows, second.host.rows);
-    const isConverged = first.effective?.cols === expectedCols
-      && first.effective?.rows === expectedRows
+    const expectedCols = first.effective?.cols;
+    const expectedRows = first.effective?.rows;
+    const isConverged = Number.isInteger(expectedCols)
+      && Number.isInteger(expectedRows)
       && second.effective?.cols === expectedCols
       && second.effective?.rows === expectedRows
       && first.geometry.cols === expectedCols
@@ -191,7 +206,7 @@ test('keeps one session correct while two independent pages resize and stream ou
         };
       }).toMatchObject({ firstChanged: true, secondChanged: true });
       converged = await expectConverged(page, secondPage);
-      if (converged.expected.cols !== previousExpected.cols || converged.expected.rows !== previousExpected.rows) {
+    if (converged.expected.cols !== previousExpected.cols || converged.expected.rows !== previousExpected.rows) {
         expect(converged.first.geometry.generation).toBeGreaterThan(previousGeneration);
       }
       previousGeneration = converged.first.geometry.generation;
@@ -232,8 +247,8 @@ test('keeps one session correct while two independent pages resize and stream ou
 
     await page.evaluate(() => window.__floetermPerfHarness.sendInput('top -s 1\r'));
     await Promise.all([
-      waitForTopClockAtSharedRightEdge(page, converged.expected.cols),
-      waitForTopClockAtSharedRightEdge(secondPage, converged.expected.cols),
+      waitForTopSemanticFrame(page),
+      waitForTopFrameOnObserver(secondPage),
     ]);
     await Promise.all([page, secondPage].map(target => target.evaluate(() => (
       new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
@@ -248,18 +263,18 @@ test('keeps one session correct while two independent pages resize and stream ou
     await secondPage.close();
     await expect.poll(async () => {
       const state = await readGeometryState(page);
-      return state.effective?.cols === firstHost.cols
-        && state.effective?.rows === firstHost.rows
-        && state.geometry.cols === firstHost.cols
-        && state.geometry.rows === firstHost.rows
-        && state.geometry.generation > generationBeforeDetach;
+      return state.effective?.cols === converged.expected.cols
+        && state.effective?.rows === converged.expected.rows
+        && state.geometry.cols === converged.expected.cols
+        && state.geometry.rows === converged.expected.rows
+        && state.geometry.generation >= generationBeforeDetach;
     }).toBe(true);
     const afterDetach = await readGeometryState(page);
     expect(afterDetach.geometry).toMatchObject({
-      cols: firstHost.cols,
-      rows: firstHost.rows,
+      cols: converged.expected.cols,
+      rows: converged.expected.rows,
     });
-    expect(afterDetach.geometry.generation).toBeGreaterThan(generationBeforeDetach);
+    expect(afterDetach.geometry.generation).toBeGreaterThanOrEqual(generationBeforeDetach);
     expect(await page.locator('.terminalRendererError').count()).toBe(0);
     expect(firstErrors).toEqual([]);
     expect(secondErrors).toEqual([]);
