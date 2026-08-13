@@ -60,15 +60,34 @@ export class RendererSurface {
     context.fillRect(0, 0, cssWidth, cssHeight);
     context.font = `${Math.max(1, Math.floor(cellHeight * 0.78))}px monospace`;
     context.textBaseline = 'alphabetic';
-    presentation.frame.rows.forEach((row, y) => row.cells.forEach((cell, x) => {
-      const background = resolveColor(cell.style?.background, '#0b0f14');
-      context.fillStyle = background;
-      context.fillRect(x * cellWidth, y * cellHeight, cellWidth + 0.5, cellHeight + 0.5);
-      if (cell.text) {
+    presentation.frame.rows.forEach((row, y) => {
+      row.cells.forEach((cell, x) => {
+        const background = resolveColor(cell.style?.background, '#0b0f14');
+        context.fillStyle = background;
+        context.fillRect(x * cellWidth, y * cellHeight, cellWidth + 0.5, cellHeight + 0.5);
+      });
+      row.cells.forEach((cell, x) => {
+        if (!cell.text) return;
         context.fillStyle = resolveColor(cell.style?.foreground, '#e5e7eb');
-        context.fillText(cell.text, x * cellWidth, (y + 0.82) * cellHeight);
-      }
-    }));
+        const baseline = (y + 0.82) * cellHeight;
+        if (cell.width > 1) {
+          const metrics = context.measureText(cell.text);
+          const inkWidth = metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight;
+          if (inkWidth > 0) {
+            const horizontalPadding = Math.min(1, cellWidth * 0.08);
+            const targetInkWidth = Math.max(1, cellWidth * cell.width - horizontalPadding * 2);
+            const scaleX = targetInkWidth / inkWidth;
+            context.save();
+            context.translate(x * cellWidth + horizontalPadding, 0);
+            context.scale(scaleX, 1);
+            context.fillText(cell.text, metrics.actualBoundingBoxLeft, baseline);
+            context.restore();
+            return;
+          }
+        }
+        context.fillText(cell.text, x * cellWidth, baseline);
+      });
+    });
     this.lastSequence = presentation.sequence;
   }
 }

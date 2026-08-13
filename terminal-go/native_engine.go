@@ -19,6 +19,19 @@ func semanticColor(color nativevt.Color) string {
 	}
 }
 
+func semanticCellWidth(ghosttyWide int) (uint8, error) {
+	switch ghosttyWide {
+	case 0:
+		return 1, nil
+	case 1:
+		return 2, nil
+	case 2, 3:
+		return 0, nil
+	default:
+		return 0, fmt.Errorf("invalid Ghostty cell wide value: %d", ghosttyWide)
+	}
+}
+
 type nativeSemanticEngine struct{ engine *nativevt.Engine }
 
 func NewNativeSemanticEngine(cols, rows int) (SemanticEngine, error) {
@@ -48,7 +61,11 @@ func (e *nativeSemanticEngine) CaptureFrame() (SemanticFrame, error) {
 	for y := range f.Rows {
 		out.Rows[y].Cells = make([]SemanticCell, len(f.Rows[y].Cells))
 		for x, c := range f.Rows[y].Cells {
-			out.Rows[y].Cells[x] = SemanticCell{Text: c.Text, Hyperlink: c.Hyperlink, Width: uint8(c.Width), Style: SemanticStyle{Foreground: semanticColor(c.Foreground), Background: semanticColor(c.Background), Bold: c.Bold, Italic: c.Italic}}
+			width, widthErr := semanticCellWidth(c.Width)
+			if widthErr != nil {
+				return SemanticFrame{}, widthErr
+			}
+			out.Rows[y].Cells[x] = SemanticCell{Text: c.Text, Hyperlink: c.Hyperlink, Width: width, Style: SemanticStyle{Foreground: semanticColor(c.Foreground), Background: semanticColor(c.Background), Bold: c.Bold, Italic: c.Italic}}
 		}
 	}
 	return out, nil

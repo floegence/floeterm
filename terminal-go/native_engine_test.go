@@ -27,6 +27,9 @@ func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 	if !ok || p.Frame.BufferKind != "alternate" || p.Frame.Rows[0].Cells[0].Text != "界" || p.Frame.Rows[0].Cells[0].Hyperlink != "https://test" {
 		t.Fatalf("presentation=%+v", p)
 	}
+	if p.Frame.Rows[0].Cells[0].Width != 2 || p.Frame.Rows[0].Cells[1].Width != 0 {
+		t.Fatalf("wide grapheme cells=%+v, want leading width 2 and continuation width 0", p.Frame.Rows[0].Cells[:2])
+	}
 	if err := actor.Resize(30, 6); err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +39,18 @@ func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 	latest, _ := store.Latest()
 	if latest.Geometry.Cols != 30 || latest.Frame.Width != 30 {
 		t.Fatalf("geometry=%+v frame=%dx%d", latest.Geometry, latest.Frame.Width, latest.Frame.Height)
+	}
+}
+
+func TestSemanticCellWidthRejectsUnknownGhosttyWideValue(t *testing.T) {
+	for raw, want := range map[int]uint8{0: 1, 1: 2, 2: 0, 3: 0} {
+		got, err := semanticCellWidth(raw)
+		if err != nil || got != want {
+			t.Fatalf("semanticCellWidth(%d)=(%d, %v), want (%d, nil)", raw, got, err, want)
+		}
+	}
+	if _, err := semanticCellWidth(4); err == nil {
+		t.Fatal("unknown Ghostty wide value was accepted")
 	}
 }
 

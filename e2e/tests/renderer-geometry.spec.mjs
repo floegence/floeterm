@@ -4,105 +4,97 @@ import { PNG } from 'pngjs';
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
 import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
-const TERMINAL_SCROLLBAR_RESERVE_PX = 15;
-
-const inkRows = imageBuffer => {
-  const image = PNG.sync.read(imageBuffer);
-  const colorCounts = new Map();
-  for (let offset = 0; offset < image.data.length; offset += 4) {
-    const key = `${image.data[offset] >> 2}:${image.data[offset + 1] >> 2}:${image.data[offset + 2] >> 2}`;
-    colorCounts.set(key, (colorCounts.get(key) ?? 0) + 1);
+const readRendererGeometry = page => page.evaluate(() => {
+  const harness = window.__floetermPerfHarness;
+  const pane = document.querySelector('.terminalPane');
+  const canvas = document.querySelector('.semanticTerminalSurface');
+  const presentation = harness?.getPresentationDiagnostics?.();
+  if (!harness || !(pane instanceof HTMLElement) || !(canvas instanceof HTMLCanvasElement) || !presentation) {
+    throw new Error('semantic renderer geometry is unavailable');
   }
-  const backgroundKey = [...colorCounts.entries()].sort((left, right) => right[1] - left[1])[0][0];
-  const background = backgroundKey.split(':').map(value => Number(value) * 4 + 2);
-  const occupied = [];
-  const scanWidth = Math.min(image.width, 240);
-  for (let y = 0; y < image.height; y += 1) {
-    let inkPixels = 0;
-    for (let x = 0; x < scanWidth; x += 1) {
-      const offset = (y * image.width + x) * 4;
-      const distance = Math.abs(image.data[offset] - background[0])
-        + Math.abs(image.data[offset + 1] - background[1])
-        + Math.abs(image.data[offset + 2] - background[2]);
-      if (distance > 18) inkPixels += 1;
-    }
-    if (inkPixels >= 3) occupied.push(y);
-  }
-
-  return { width: image.width, height: image.height, occupied };
-};
-
-const readRendererGeometry = page => page.evaluate(scrollbarReservePx => {
-  const target = document.querySelector('.floeterm-beamterm-canvas');
-  const info = window.__floetermPerfHarness.getTerminalInfo();
-  if (!(target instanceof HTMLCanvasElement) || !info) throw new Error('renderer geometry is unavailable');
-  const fontSize = 12;
-  const fontFamily = '"JetBrains Mono", "Berkeley Mono", "SF Mono", Menlo, Monaco, "Cascadia Mono", "Cascadia Code", Consolas, "Roboto Mono", monospace';
-  const metricsCanvas = new OffscreenCanvas(128, 128);
-  const context = metricsCanvas.getContext('2d');
-  if (!context) throw new Error('font metrics context is unavailable');
-  context.font = `${fontSize}px ${fontFamily}`;
-  const metrics = context.measureText('M');
-  const expectedCellWidth = Math.max(1, Math.round(metrics.width));
-  const expectedCellHeight = Math.max(1, Math.round(
-    metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent,
-  ));
+  const paneRect = pane.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
   return {
     dpr: devicePixelRatio,
-    backingWidth: target.width,
-    backingHeight: target.height,
-    cssWidth: target.getBoundingClientRect().width,
-    cssHeight: target.getBoundingClientRect().height,
-    styleWidth: Number.parseFloat(getComputedStyle(target).width),
-    styleHeight: Number.parseFloat(getComputedStyle(target).height),
-    cssTop: target.getBoundingClientRect().top,
-    cssLeft: target.getBoundingClientRect().left,
-    surfaceTop: document.querySelector('.terminalSurface')?.getBoundingClientRect().top ?? 0,
-    surfaceLeft: document.querySelector('.terminalSurface')?.getBoundingClientRect().left ?? 0,
-    logicalWidth: document.querySelector('.terminalSurface')?.clientWidth ?? 0,
-    logicalHeight: document.querySelector('.terminalSurface')?.clientHeight ?? 0,
-    cols: info.cols,
-    rows: info.rows,
-    expectedCellWidth,
-    expectedCellHeight,
-    scrollbarReservePx,
-    expectedCols: Math.floor(
-      (document.querySelector('.terminalSurface')?.clientWidth - scrollbarReservePx) / expectedCellWidth,
-    ),
-    expectedRows: Math.floor((document.querySelector('.terminalSurface')?.clientHeight ?? 0) / expectedCellHeight),
+    backingWidth: canvas.width,
+    backingHeight: canvas.height,
+    cssWidth: canvasRect.width,
+    cssHeight: canvasRect.height,
+    cssTop: canvasRect.top,
+    cssLeft: canvasRect.left,
+    paneWidth: pane.clientWidth,
+    paneHeight: pane.clientHeight,
+    paneTop: paneRect.top + pane.clientTop,
+    paneLeft: paneRect.left + pane.clientLeft,
+    canvases: pane.querySelectorAll('canvas').length,
+    legacyCanvases: pane.querySelectorAll('.floeterm-beamterm-canvas').length,
+    errors: document.querySelectorAll('.terminalRendererError').length,
+    host: harness.getSnapshot().state.dimensions,
+    geometry: harness.getGeometryDiagnostics(),
+    presentation: {
+      sequence: presentation.sequence,
+      cols: presentation.geometry.cols,
+      rows: presentation.geometry.rows,
+      frameWidth: presentation.frame.width,
+      frameHeight: presentation.frame.height,
+    },
   };
-}, TERMINAL_SCROLLBAR_RESERVE_PX);
+});
 
-const expectTypographicGeometry = geometry => {
-  expect(geometry.dpr).toBe(1);
-  expect(geometry.backingWidth).toBeGreaterThanOrEqual(Math.round(geometry.cssWidth));
-  expect(geometry.backingHeight).toBeGreaterThanOrEqual(Math.round(geometry.cssHeight));
-  // Retained backing is clipped by the logical host. Its intrinsic-to-CSS
-  // ratio must stay at DPR so the browser never compresses the GL viewport.
-  expect(geometry.backingWidth / geometry.styleWidth).toBeCloseTo(geometry.dpr, 5);
-  expect(geometry.backingHeight / geometry.styleHeight).toBeCloseTo(geometry.dpr, 5);
-  expect(geometry.styleWidth).toBeGreaterThanOrEqual(geometry.logicalWidth);
-  expect(geometry.styleHeight).toBeGreaterThanOrEqual(geometry.logicalHeight);
-  expect(geometry.cols).toBe(geometry.expectedCols);
-  expect(geometry.rows).toBe(geometry.expectedRows);
-  const gridRight = geometry.cols * geometry.expectedCellWidth;
-  const logicalRight = geometry.logicalWidth - geometry.scrollbarReservePx;
-  expect(gridRight).toBeLessThanOrEqual(logicalRight);
-  expect(gridRight + geometry.expectedCellWidth).toBeGreaterThan(
-    logicalRight,
-  );
-};
+const isConverged = geometry => geometry.canvases === 1
+  && geometry.legacyCanvases === 0
+  && geometry.errors === 0
+  && Math.abs(geometry.cssWidth - geometry.paneWidth) < 1
+  && Math.abs(geometry.cssHeight - geometry.paneHeight) < 1
+  && Math.abs(geometry.cssTop - geometry.paneTop) < 1
+  && Math.abs(geometry.cssLeft - geometry.paneLeft) < 1
+  && geometry.backingWidth === Math.round(geometry.cssWidth * geometry.dpr)
+  && geometry.backingHeight === Math.round(geometry.cssHeight * geometry.dpr)
+  && geometry.host.cols === geometry.geometry.cols
+  && geometry.host.rows === geometry.geometry.rows
+  && geometry.presentation.cols === geometry.geometry.cols
+  && geometry.presentation.rows === geometry.geometry.rows
+  && geometry.presentation.frameWidth === geometry.geometry.cols
+  && geometry.presentation.frameHeight === geometry.geometry.rows;
 
-const rightEdgeInk = (imageBuffer, cellHeight, row) => {
-  const image = PNG.sync.read(imageBuffer);
-  const colorCounts = new Map();
+const dominantBackground = image => {
+  const colors = new Map();
   for (let offset = 0; offset < image.data.length; offset += 4) {
     const key = `${image.data[offset] >> 2}:${image.data[offset + 1] >> 2}:${image.data[offset + 2] >> 2}`;
-    colorCounts.set(key, (colorCounts.get(key) ?? 0) + 1);
+    colors.set(key, (colors.get(key) ?? 0) + 1);
   }
-  const backgroundKey = [...colorCounts.entries()].sort((left, right) => right[1] - left[1])[0][0];
-  const background = backgroundKey.split(':').map(value => Number(value) * 4 + 2);
-  const startX = Math.floor(image.width * 0.9);
+  return [...colors.entries()].sort((left, right) => right[1] - left[1])[0][0]
+    .split(':').map(value => Number(value) * 4 + 2);
+};
+
+const cellInkCounts = (imageBuffer, cellWidth, cellHeight, row, cols) => {
+  const image = PNG.sync.read(imageBuffer);
+  const background = dominantBackground(image);
+  return cols.map(col => {
+    let ink = 0;
+    const startX = Math.max(0, Math.floor(col * cellWidth));
+    const endX = Math.min(image.width, Math.ceil((col + 1) * cellWidth));
+    const startY = Math.max(0, Math.floor(row * cellHeight));
+    const endY = Math.min(image.height, Math.ceil((row + 1) * cellHeight));
+    for (let y = startY; y < endY; y += 1) {
+      for (let x = startX; x < endX; x += 1) {
+        const offset = (y * image.width + x) * 4;
+        const distance = Math.abs(image.data[offset] - background[0])
+          + Math.abs(image.data[offset + 1] - background[1])
+          + Math.abs(image.data[offset + 2] - background[2]);
+        if (distance > 18) ink += 1;
+      }
+    }
+    return ink;
+  });
+};
+
+const edgeInk = (imageBuffer, geometry, row) => {
+  const image = PNG.sync.read(imageBuffer);
+  const background = dominantBackground(image);
+  const cellWidth = image.width / geometry.presentation.cols;
+  const cellHeight = image.height / geometry.presentation.rows;
+  const startX = Math.max(0, Math.floor((geometry.presentation.cols - 9) * cellWidth));
   const startY = Math.max(0, Math.floor(row * cellHeight));
   const endY = Math.min(image.height, Math.ceil((row + 1) * cellHeight));
   let ink = 0;
@@ -118,56 +110,7 @@ const rightEdgeInk = (imageBuffer, cellHeight, row) => {
   return ink;
 };
 
-const expectSeparatedRows = (pixels, minimumRows, cellHeight) => {
-  const rows = new Map();
-  for (const y of pixels.occupied) {
-    const row = Math.floor(y / cellHeight);
-    const values = rows.get(row) ?? [];
-    values.push(y);
-    rows.set(row, values);
-  }
-  const lineInk = [...rows.entries()].sort(([left], [right]) => left - right)
-    .map(([row, occupied]) => ({ row, start: occupied[0], end: occupied.at(-1) }));
-  expect(lineInk.length, JSON.stringify({ pixels, cellHeight })).toBeGreaterThanOrEqual(minimumRows);
-};
-
-const cellInkCounts = (imageBuffer, cellWidth, cellHeight, row, cols) => {
-  const image = PNG.sync.read(imageBuffer);
-  const colorCounts = new Map();
-  for (let offset = 0; offset < image.data.length; offset += 4) {
-    const key = `${image.data[offset] >> 2}:${image.data[offset + 1] >> 2}:${image.data[offset + 2] >> 2}`;
-    colorCounts.set(key, (colorCounts.get(key) ?? 0) + 1);
-  }
-  const backgroundKey = [...colorCounts.entries()].sort((left, right) => right[1] - left[1])[0][0];
-  const background = backgroundKey.split(':').map(value => Number(value) * 4 + 2);
-  return cols.map(col => {
-    let ink = 0;
-    const startX = col * cellWidth;
-    const endX = Math.min(image.width, startX + cellWidth);
-    const startY = row * cellHeight;
-    const endY = Math.min(image.height, startY + cellHeight);
-    for (let y = startY; y < endY; y += 1) {
-      for (let x = startX; x < endX; x += 1) {
-        const offset = (y * image.width + x) * 4;
-        const distance = Math.abs(image.data[offset] - background[0])
-          + Math.abs(image.data[offset + 1] - background[1])
-          + Math.abs(image.data[offset + 2] - background[2]);
-        if (distance > 18) ink += 1;
-      }
-    }
-    return ink;
-  });
-};
-
-const screenshotVisibleTerminal = async page => {
-  const surface = page.locator('.terminalSurface');
-  const box = await surface.boundingBox();
-  if (!box) throw new Error('terminal surface has no visible bounds');
-  return page.screenshot({ animations: 'disabled', clip: box });
-};
-
-test('uses typographic cell advance and line-box metrics without glyph overlap', async ({ page }, testInfo) => {
-  const failures = captureBrowserFailures(page);
+const openTerminal = async page => {
   await page.goto('/?mode=single&perf_probe=1');
   await page.waitForFunction(() => (
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
@@ -177,94 +120,61 @@ test('uses typographic cell advance and line-box metrics without glyph overlap',
     .getAttribute('data-single-session-id');
   if (!sessionId) throw new Error('single terminal session id is unavailable');
   await waitForInteractiveShell(page, sessionId);
+};
 
-  const marker = [
-    'MMMMMMMMMMMMMMMMMMMM',
-    'WWWWWWWWWWWWWWWWWWWW',
-    'iiiiiiiiiiiiiiiiiiii',
-    '0123456789ABCDEFGHIJ',
-    '中文宽字符-😀-END',
-  ];
-  const payloadHex = Buffer.from(`\x1b[3J\x1b[2J\x1b[H${marker.join('\n')}\n`).toString('hex');
-  await page.evaluate(hex => {
-    window.__floetermPerfHarness.sendInput(
-      `python3 -c "import os;os.write(1,bytes.fromhex('${hex}'))"\r`,
-    );
-  }, payloadHex);
-  await page.waitForFunction(value => window.__floetermPerfHarness.serialize().includes(value), marker.at(-1));
+test('keeps semantic canvas, PTY geometry, and final edge pixels fitted through browser resizing', async ({ page }, testInfo) => {
+  const failures = captureBrowserFailures(page);
+  await openTerminal(page);
 
-  const canvas = page.locator('.floeterm-beamterm-canvas');
-  await expect(canvas).toBeVisible();
+  for (const [width, height] of [[1024, 720], [780, 520], [1380, 860], [900, 600]]) {
+    await page.setViewportSize({ width, height });
+    await expect.poll(async () => isConverged(await readRendererGeometry(page))).toBe(true);
+  }
+
   const geometry = await readRendererGeometry(page);
-  expectTypographicGeometry(geometry);
-
-  const screenshot = await screenshotVisibleTerminal(page);
-  await testInfo.attach('renderer-geometry.png', { body: screenshot, contentType: 'image/png' });
-  expectSeparatedRows(inkRows(screenshot), marker.length, geometry.expectedCellHeight);
-
-  await page.setViewportSize({ width: 1024, height: 720 });
-  await page.evaluate(() => window.__floetermPerfHarness.forceResize());
-  await expect.poll(() => readRendererGeometry(page)).toMatchObject({
-    logicalWidth: 998,
-    logicalHeight: 592,
-  });
-  const resizedGeometry = await readRendererGeometry(page);
-  expectTypographicGeometry(resizedGeometry);
-  const edgeRow = Math.min(6, resizedGeometry.rows - 1);
+  const edgeRow = Math.min(6, geometry.presentation.rows - 1);
   const edgeMarker = 'EDGE1234';
-  const edgeCol = resizedGeometry.cols - edgeMarker.length + 1;
-  const edgePayloadHex = Buffer.from(
-    `\x1b[${edgeRow + 1};1H\x1b[2K\x1b[${edgeRow + 1};${edgeCol}H${edgeMarker}`,
+  const edgeCol = geometry.presentation.cols - edgeMarker.length + 1;
+  const payloadHex = Buffer.from(
+    `\x1b[3J\x1b[2J\x1b[HSEMANTIC_GEOMETRY\x1b[${edgeRow + 1};${edgeCol}H${edgeMarker}`,
   ).toString('hex');
   await page.evaluate(hex => {
     window.__floetermPerfHarness.sendInput(
       `python3 -c "import os;os.write(1,bytes.fromhex('${hex}'))"\r`,
     );
-  }, edgePayloadHex);
+  }, payloadHex);
   await page.waitForFunction(value => window.__floetermPerfHarness.serialize().includes(value), edgeMarker);
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  const resizedScreenshot = await screenshotVisibleTerminal(page);
-  await testInfo.attach('renderer-geometry-resized.png', { body: resizedScreenshot, contentType: 'image/png' });
-  const resizedPixels = inkRows(resizedScreenshot);
-  expectSeparatedRows(resizedPixels, marker.length, resizedGeometry.expectedCellHeight);
-  expect(resizedPixels.occupied[0]).toBeLessThan(resizedGeometry.expectedCellHeight);
-  expect(resizedGeometry.cssLeft).toBe(resizedGeometry.surfaceLeft);
-  expect(resizedGeometry.cssWidth).toBeGreaterThanOrEqual(resizedGeometry.logicalWidth);
-  expect(resizedGeometry.cssHeight).toBeGreaterThanOrEqual(resizedGeometry.logicalHeight);
-  expect(resizedGeometry.cssTop).toBeCloseTo(resizedGeometry.surfaceTop, 5);
-  expect(rightEdgeInk(resizedScreenshot, resizedGeometry.expectedCellHeight, edgeRow)).toBeGreaterThan(8);
+
+  const screenshot = await page.locator('.semanticTerminalSurface').screenshot({ animations: 'disabled' });
+  await testInfo.attach('semantic-renderer-geometry.png', { body: screenshot, contentType: 'image/png' });
+  expect(edgeInk(screenshot, geometry, edgeRow), JSON.stringify(geometry)).toBeGreaterThan(8);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(failures).toEqual([]);
 });
 
-test('keeps the right halves of adjacent CJK glyphs visible in mixed-width text', async ({ page }, testInfo) => {
+test('keeps both columns of adjacent CJK glyphs visible in the semantic frame', async ({ page }, testInfo) => {
   const failures = captureBrowserFailures(page);
-  await page.goto('/?mode=single&perf_probe=1');
-  await page.waitForFunction(() => (
-    window.__floetermPerfHarness?.getSnapshot().connection.isConnected
-      && window.__floetermPerfHarness.getTerminalInfo()
-  ));
-  const sessionId = await page.locator('[data-testid="demo-runtime-state"]')
-    .getAttribute('data-single-session-id');
-  if (!sessionId) throw new Error('single terminal session id is unavailable');
-  await waitForInteractiveShell(page, sessionId);
+  await openTerminal(page);
 
   const marker = 'A中文B';
-  const payloadHex = Buffer.from(`\x1b[3J\x1b[2J\x1b[H${marker}\n`).toString('hex');
+  const payloadHex = Buffer.from(`\x1b[3J\x1b[2J\x1b[H${marker}`).toString('hex');
   await page.evaluate(hex => {
     window.__floetermPerfHarness.sendInput(
       `python3 -c "import os;os.write(1,bytes.fromhex('${hex}'))"\r`,
     );
   }, payloadHex);
   await page.waitForFunction(value => window.__floetermPerfHarness.serialize().includes(value), marker);
-
-  const canvas = page.locator('.floeterm-beamterm-canvas');
-  await expect(canvas).toBeVisible();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
   const geometry = await readRendererGeometry(page);
-  const screenshot = await canvas.screenshot({ animations: 'disabled' });
-  await testInfo.attach('renderer-adjacent-cjk.png', { body: screenshot, contentType: 'image/png' });
-  const ink = cellInkCounts(screenshot, geometry.expectedCellWidth, geometry.expectedCellHeight, 0, [0, 1, 2, 3, 4, 5]);
+  expect(isConverged(geometry), JSON.stringify(geometry)).toBe(true);
+  const screenshot = await page.locator('.semanticTerminalSurface').screenshot({ animations: 'disabled' });
+  await testInfo.attach('semantic-renderer-adjacent-cjk.png', { body: screenshot, contentType: 'image/png' });
+  const image = PNG.sync.read(screenshot);
+  const cellWidth = image.width / geometry.presentation.cols;
+  const cellHeight = image.height / geometry.presentation.rows;
+  const ink = cellInkCounts(screenshot, cellWidth, cellHeight, 0, [0, 1, 2, 3, 4, 5]);
 
   expect(await page.evaluate(() => window.__floetermPerfHarness.serialize())).toContain(marker);
   expect(ink[2], JSON.stringify({ ink, geometry })).toBeGreaterThan(2);

@@ -2,10 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validatePresentation } from './presentation';
 import { RendererSurface } from './RendererSurface';
 
-const valid = () => ({ sequence: 1, geometry: { generation: 1, cols: 2, rows: 1 }, state: { sequence: 1 }, frame: { width: 2, height: 1, bufferKind: 'normal', rows: [{ cells: [{ text: '界', width: 1, style: { foreground: 'rgb:e5e7eb', background: 'indexed:1' } }, { text: '', width: 2 }] }], cursor: { x: 0, y: 0, visible: true } } });
+const valid = () => ({ sequence: 1, geometry: { generation: 1, cols: 2, rows: 1 }, state: { sequence: 1 }, frame: { width: 2, height: 1, bufferKind: 'normal', rows: [{ cells: [{ text: 'A', width: 1, style: { foreground: 'rgb:e5e7eb', background: 'indexed:1' } }, { text: '', width: 1 }] }], cursor: { x: 0, y: 0, visible: true } } });
 describe('semantic presentation', () => {
   afterEach(() => vi.unstubAllGlobals());
   it('requires atomic geometry and frame shape', () => { expect(validatePresentation(valid())).toEqual(valid()); expect(() => validatePresentation({ ...valid(), frame: { ...valid().frame, width: 3 } })).toThrow(/geometry/); });
+  it('rejects semantic cell widths outside narrow, wide, and continuation values', () => {
+    const invalid = structuredClone(valid());
+    invalid.frame.rows[0].cells[0].width = 3;
+    expect(() => validatePresentation(invalid)).toThrow(/semantic cell/);
+  });
   it('replaces the complete canvas and paints semantic colors at CSS/DPR geometry', () => {
     const clearRect=vi.fn(), fillRect=vi.fn(), fillText=vi.fn(), setTransform=vi.fn();
     const context={clearRect,fillRect,fillText,setTransform,font:'',textBaseline:'',fillStyle:''};
@@ -16,7 +21,7 @@ describe('semantic presentation', () => {
     expect(canvas.width).toBe(180); expect(canvas.height).toBe(90);
     expect(clearRect).toHaveBeenCalledWith(0,0,180,90);
     expect(fillRect).toHaveBeenCalledWith(0,0,90.5,90.5);
-    expect(fillText).toHaveBeenCalledWith('界',0,73.8);
+    expect(fillText).toHaveBeenCalledWith('A',0,73.8);
     canvasMock.clientHeight = 45;
     new RendererSurface(canvas).apply(validatePresentation(valid()));
   });
@@ -91,5 +96,50 @@ describe('semantic presentation', () => {
     animationFrame?.(16);
     expect(fillText).toHaveBeenCalledTimes(1);
     expect(fillText).toHaveBeenCalledWith('three', 0, 73.8);
+  });
+
+  it('stretches a wide grapheme across its two semantic columns without painting its continuation', () => {
+    const fillText = vi.fn();
+    const translate = vi.fn();
+    const scale = vi.fn();
+    const context={
+      clearRect:vi.fn(),fillRect:vi.fn(),fillText,setTransform:vi.fn(),
+      save:vi.fn(),restore:vi.fn(),translate,scale,
+      measureText:vi.fn(() => ({ width: 12, actualBoundingBoxLeft: 1, actualBoundingBoxRight: 7 })),
+      font:'',textBaseline:'',fillStyle:'',
+    };
+    const host={clientWidth:60,clientHeight:20};
+    const canvasMock={width:0,height:0,clientWidth:60,clientHeight:20,parentElement:host,style:{},getContext:()=>context};
+    const presentation = validatePresentation({
+      sequence: 1,
+      geometry: { generation: 1, cols: 6, rows: 1 },
+      state: { sequence: 1 },
+      frame: {
+        width: 6,
+        height: 1,
+        bufferKind: 'normal',
+        rows: [{ cells: [
+          { text: 'A', width: 1 },
+          { text: '中', width: 2 },
+          { text: '', width: 0 },
+          { text: '文', width: 2 },
+          { text: '', width: 0 },
+          { text: 'B', width: 1 },
+        ] }],
+        cursor: { x: 0, y: 0, visible: true },
+      },
+    });
+
+    new RendererSurface(canvasMock as unknown as HTMLCanvasElement).apply(presentation);
+
+    expect(fillText).toHaveBeenCalledTimes(4);
+    expect(translate).toHaveBeenNthCalledWith(1, 10.8, 0);
+    expect(translate).toHaveBeenNthCalledWith(2, 30.8, 0);
+    expect(scale.mock.calls[0][0]).toBeCloseTo(2.3, 5);
+    expect(scale.mock.calls[1][0]).toBeCloseTo(2.3, 5);
+    expect(fillText).toHaveBeenNthCalledWith(2, '中', 1, 16.4);
+    expect(fillText).toHaveBeenNthCalledWith(3, '文', 1, 16.4);
+    expect(Math.max(...context.fillRect.mock.invocationCallOrder))
+      .toBeLessThan(Math.min(...fillText.mock.invocationCallOrder));
   });
 });

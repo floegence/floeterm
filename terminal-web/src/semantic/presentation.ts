@@ -18,7 +18,7 @@ export function validatePresentation(value: unknown): SemanticPresentation {
   for (const row of p.frame.rows) {
     if (!Array.isArray(row.cells) || row.cells.length !== p.frame.width) throw new Error('invalid semantic row width');
     for (const cell of row.cells) {
-      if (typeof cell.text !== 'string' || cell.text.length > 64 || !Number.isInteger(cell.width)) throw new Error('invalid semantic cell');
+      if (typeof cell.text !== 'string' || cell.text.length > 64 || !Number.isInteger(cell.width) || cell.width < 0 || cell.width > 2) throw new Error('invalid semantic cell');
       for (const color of [cell.style?.foreground, cell.style?.background]) {
         if (color !== undefined && !/^(default|indexed:\d{1,3}|rgb:[0-9a-fA-F]{6})$/.test(color)) throw new Error('invalid semantic color');
       }
