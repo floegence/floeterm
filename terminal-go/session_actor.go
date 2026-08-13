@@ -22,18 +22,24 @@ type SemanticInput struct {
 
 // SessionActor is the single mutable owner of PTY admission and the VT engine.
 type SessionActor struct {
-	mu       sync.Mutex
-	engine   SemanticEngine
-	store    *PresentationStore
-	geometry TerminalGeometry
-	sequence uint64
+	mu                 sync.Mutex
+	engine             SemanticEngine
+	store              *PresentationStore
+	geometry           TerminalGeometry
+	sequence           uint64
+	historyViews       map[string]semanticHistoryView
+	nextHistoryTokenID uint64
 }
 
 func NewSessionActor(engine SemanticEngine, cols, rows int, store *PresentationStore) (*SessionActor, error) {
 	if engine == nil || cols <= 0 || rows <= 0 || store == nil {
 		return nil, errors.New("invalid semantic session actor")
 	}
-	return &SessionActor{engine: engine, store: store, geometry: TerminalGeometry{Generation: 1, Cols: cols, Rows: rows}}, nil
+	return &SessionActor{
+		engine: engine, store: store,
+		geometry:     TerminalGeometry{Generation: 1, Cols: cols, Rows: rows},
+		historyViews: make(map[string]semanticHistoryView),
+	}, nil
 }
 
 func (a *SessionActor) PublishInitialPresentation() error {
@@ -47,6 +53,7 @@ func (a *SessionActor) PublishInitialPresentation() error {
 		return err
 	}
 	a.sequence = 1
+	frame.History.Revision = a.sequence
 	return a.store.Publish(SemanticPresentation{Sequence: 1, Geometry: a.geometry, State: TerminalState{Sequence: 1}, Frame: frame})
 }
 
@@ -62,6 +69,7 @@ func (a *SessionActor) ApplyPTYOutput(data []byte) error {
 		return err
 	}
 	a.sequence++
+	frame.History.Revision = a.sequence
 	state.Sequence = a.sequence
 	p := SemanticPresentation{Sequence: a.sequence, Geometry: a.geometry, State: state, Frame: frame}
 	return a.store.Publish(p)
@@ -110,6 +118,7 @@ func (a *SessionActor) resizeToGeometryLocked(geometry TerminalGeometry) (Semant
 		return SemanticPresentation{}, a.rollbackResizeLocked(previousGeometry,
 			fmt.Errorf("semantic frame geometry %dx%d does not match resize %dx%d", frame.Width, frame.Height, geometry.Cols, geometry.Rows))
 	}
+	frame.History.Revision = a.sequence + 1
 	presentation := SemanticPresentation{Sequence: a.sequence + 1, Geometry: geometry, State: TerminalState{Sequence: a.sequence + 1}, Frame: frame}
 	if err := a.store.Publish(presentation); err != nil {
 		return SemanticPresentation{}, a.rollbackResizeLocked(previousGeometry, err)
@@ -139,12 +148,114 @@ func (a *SessionActor) Input(intent SemanticInput, write func([]byte) error) err
 	return write(encoded)
 }
 
+func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHistoryPage, error) {
+	if err := validateSemanticHistoryRequest(request); err != nil {
+		return SemanticHistoryPage{}, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	engine, ok := a.engine.(SemanticHistoryEngine)
+	if !ok {
+		return SemanticHistoryPage{}, errors.New("semantic history is unavailable")
+	}
+	if request.ExpectedRevision != 0 && request.ExpectedRevision != a.sequence {
+		return SemanticHistoryPage{}, ErrSemanticHistoryRevision
+	}
+	totalRows, err := engine.HistoryTotalRows()
+	if err != nil {
+		return SemanticHistoryPage{}, err
+	}
+	if totalRows <= 0 {
+		return SemanticHistoryPage{}, errors.New("semantic history is empty")
+	}
+	maxStart := max(0, totalRows-request.Limit)
+	targetRow := 0
+	switch request.Direction {
+	case HistoryEnd:
+		targetRow = maxStart
+	case HistoryForward, HistoryBackward:
+		view, exists := a.historyViews[request.ViewID]
+		anchor := view.tokens[request.Anchor]
+		if !exists || anchor == nil {
+			return SemanticHistoryPage{}, ErrSemanticHistoryAnchor
+		}
+		row, status, rowErr := engine.HistoryAnchorScreenRow(anchor)
+		if rowErr != nil {
+			return SemanticHistoryPage{}, rowErr
+		}
+		if status != AnchorValid {
+			return SemanticHistoryPage{}, ErrSemanticHistoryAnchor
+		}
+		if request.Direction == HistoryForward {
+			targetRow = min(maxStart, row+request.Limit)
+		} else {
+			targetRow = max(0, row-request.Limit)
+		}
+	}
+
+	rows := []int{targetRow, 0, totalRows - 1, max(0, totalRows-a.geometry.Rows)}
+	tokens := make(map[string]SemanticHistoryAnchor, len(rows))
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		anchor, trackErr := engine.TrackHistoryCell(0, row)
+		if trackErr != nil {
+			closeSemanticHistoryTokens(tokens)
+			return SemanticHistoryPage{}, trackErr
+		}
+		a.nextHistoryTokenID++
+		token := fmt.Sprintf("h-%x", a.nextHistoryTokenID)
+		tokens[token] = anchor
+		ids = append(ids, token)
+	}
+	frame, status, err := engine.ReadHistory(tokens[ids[0]], request.Limit)
+	if err != nil || status != AnchorValid {
+		closeSemanticHistoryTokens(tokens)
+		if err != nil {
+			return SemanticHistoryPage{}, err
+		}
+		return SemanticHistoryPage{}, ErrSemanticHistoryAnchor
+	}
+	if frame.Width != a.geometry.Cols || frame.Height <= 0 || frame.Height > request.Limit {
+		closeSemanticHistoryTokens(tokens)
+		return SemanticHistoryPage{}, errors.New("semantic history page geometry is invalid")
+	}
+	frame.History = SemanticHistorySummary{
+		Revision: a.sequence, TotalRows: totalRows,
+		ScreenStartOffset: max(0, totalRows-a.geometry.Rows),
+	}
+	if previous, exists := a.historyViews[request.ViewID]; exists {
+		closeSemanticHistoryTokens(previous.tokens)
+	}
+	a.historyViews[request.ViewID] = semanticHistoryView{tokens: tokens}
+	return SemanticHistoryPage{
+		Revision: a.sequence, Anchor: ids[0], FirstAvailable: ids[1], LastAvailable: ids[2], ScreenStart: ids[3],
+		Offset: targetRow, TotalRows: totalRows, ScreenStartOffset: rows[3],
+		HasPrevious: targetRow > 0, HasNext: targetRow < maxStart, Frame: frame,
+	}, nil
+}
+
+func (a *SessionActor) ReleaseHistory(viewID string) {
+	if a == nil || viewID == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if view, ok := a.historyViews[viewID]; ok {
+		closeSemanticHistoryTokens(view.tokens)
+		delete(a.historyViews, viewID)
+	}
+}
+
 func (a *SessionActor) Close() {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	for viewID, view := range a.historyViews {
+		closeSemanticHistoryTokens(view.tokens)
+		delete(a.historyViews, viewID)
+	}
 	if a.engine != nil {
 		a.engine.Close()
 		a.engine = nil

@@ -1,6 +1,9 @@
 package terminal
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	ErrControllerEpoch     = errors.New("stale terminal controller epoch")
@@ -27,17 +30,24 @@ func (s *Session) AttachSemanticView(attachmentID, principalID string, generatio
 		return ErrControllerTransport
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.semanticAttachments == nil {
 		s.semanticAttachments = make(map[string]SemanticAttachment)
 	}
 	if current, ok := s.semanticAttachments[attachmentID]; ok && current.TransportGeneration >= generation {
+		s.mu.Unlock()
 		return ErrControllerTransport
 	}
 	if _, ok := s.semanticAttachments[attachmentID]; !ok && len(s.semanticAttachments) >= MaxSemanticAttachments {
+		s.mu.Unlock()
 		return ErrPresentationBackpressure
 	}
+	previous, replaced := s.semanticAttachments[attachmentID]
 	s.semanticAttachments[attachmentID] = SemanticAttachment{PrincipalID: principalID, TransportGeneration: generation}
+	actor := s.semanticActor
+	s.mu.Unlock()
+	if replaced && previous.TransportGeneration != generation && actor != nil {
+		actor.ReleaseHistory(semanticHistoryViewID(attachmentID, previous.TransportGeneration))
+	}
 	return nil
 }
 
@@ -52,16 +62,45 @@ func (s *Session) EnsureSemanticController(attachmentID, principalID string, gen
 
 func (s *Session) LogicalDetachSemanticView(attachmentID string, generation uint64) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	current, ok := s.semanticAttachments[attachmentID]
 	if !ok || current.TransportGeneration != generation {
+		s.mu.Unlock()
 		return false
 	}
 	delete(s.semanticAttachments, attachmentID)
 	if s.controllerState.AttachmentID == attachmentID && s.controllerState.TransportGeneration == generation {
 		s.controllerState = ControllerState{Epoch: s.controllerState.Epoch + 1}
 	}
+	actor := s.semanticActor
+	s.mu.Unlock()
+	if actor != nil {
+		actor.ReleaseHistory(semanticHistoryViewID(attachmentID, generation))
+	}
 	return true
+}
+
+func semanticHistoryViewID(attachmentID string, generation uint64) string {
+	return fmt.Sprintf("%s/%d", attachmentID, generation)
+}
+
+// ReadSemanticHistory validates the current transport and enters the same
+// actor ownership window as PTY output, input, and resize. The request never
+// reads Ghostty concurrently and never exposes native tracked references.
+func (s *Session) ReadSemanticHistory(attachmentID string, generation uint64, request SemanticHistoryRequest) (SemanticHistoryPage, error) {
+	if s == nil || attachmentID == "" || generation == 0 {
+		return SemanticHistoryPage{}, ErrControllerTransport
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attachment, ok := s.semanticAttachments[attachmentID]
+	if !ok || attachment.TransportGeneration != generation {
+		return SemanticHistoryPage{}, ErrControllerTransport
+	}
+	if s.closed || s.semanticActor == nil {
+		return SemanticHistoryPage{}, errSessionClosed
+	}
+	request.ViewID = semanticHistoryViewID(attachmentID, generation)
+	return s.semanticActor.ReadHistory(request)
 }
 
 // Interact atomically validates transport/epoch and permits same-principal takeover.

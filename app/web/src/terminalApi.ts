@@ -1,68 +1,19 @@
 import type {
-	SemanticPresentation,
-  TerminalDataChunk,
-  TerminalHistoryPage,
+  SemanticHistoryPage,
+  SemanticHistoryRequest,
+  SemanticPresentation,
   TerminalID,
   TerminalSessionInfo,
-} from '@floegence/floeterm-terminal-web';
-import { validatePresentation } from '@floegence/floeterm-terminal-web';
+} from '@floegence/floeterm-terminal-web/semantic';
+import { validateHistoryPage, validatePresentation } from '@floegence/floeterm-terminal-web/semantic';
 import {
   StreamKind,
-  createTerminalLiveTransport,
-  type TerminalLiveTransport,
+  createSemanticTerminalLiveTransport,
+  type SemanticTerminalLiveTransport,
 } from '@floegence/floeterm-terminal-web/live';
 import { openBrowserWebSocketByteStream } from './terminalWebSocket';
 
 type ApiSessionInfo = TerminalSessionInfo;
-
-type ApiSessionStats = {
-  history: {
-    totalBytes: number;
-  };
-};
-
-type ApiHistoryChunk = {
-  sequence: number;
-  data: string;
-  timestampMs: number;
-  geometryGeneration?: number;
-  cols?: number;
-  rows?: number;
-};
-
-type ApiHistoryCheckpoint = {
-  formatVersion: 1;
-  engineId: 'floegence-ghostty-web';
-  coveredThroughSequence: number;
-  geometryGeneration: number;
-  parserEpoch: number;
-  cols: number;
-  rows: number;
-  checksumSha256: string;
-  stateDigestSha256: string;
-  bytes: string;
-};
-
-type ApiHistoryPage = Omit<TerminalHistoryPage, 'chunks' | 'checkpoint'> & {
-  chunks: ApiHistoryChunk[];
-  checkpoint?: ApiHistoryCheckpoint;
-};
-
-const decodeBase64 = (input: string): Uint8Array => {
-  const binary = atob(input);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
-  return out;
-};
-
-const encodeBase64 = (input: Uint8Array): string => {
-  let binary = '';
-  const batchBytes = 0x8000;
-  for (let offset = 0; offset < input.byteLength; offset += batchBytes) {
-    binary += String.fromCharCode(...input.subarray(offset, Math.min(input.byteLength, offset + batchBytes)));
-  }
-  return btoa(binary);
-};
 
 const MIN_TERMINAL_COLS = 20;
 const MIN_TERMINAL_ROWS = 5;
@@ -107,72 +58,16 @@ const requestNoContent = async (path: string, init?: RequestInit): Promise<void>
   }
 };
 
-export type AppTerminalTransport = TerminalLiveTransport & {
-  listSessions: NonNullable<TerminalLiveTransport['listSessions']>;
-  createSession: NonNullable<TerminalLiveTransport['createSession']>;
-  deleteSession: NonNullable<TerminalLiveTransport['deleteSession']>;
-  renameSession: NonNullable<TerminalLiveTransport['renameSession']>;
-  getSessionStats: (sessionId: TerminalID) => Promise<ApiSessionStats>;
+export type AppTerminalTransport = SemanticTerminalLiveTransport & {
+  listSessions: NonNullable<SemanticTerminalLiveTransport['listSessions']>;
+  createSession: NonNullable<SemanticTerminalLiveTransport['createSession']>;
+  deleteSession: NonNullable<SemanticTerminalLiveTransport['deleteSession']>;
+  renameSession: NonNullable<SemanticTerminalLiveTransport['renameSession']>;
   getPresentation: (sessionId: TerminalID) => Promise<SemanticPresentation>;
 };
 
 export const createTerminalRuntime = (connId: string) => {
-  const historyPage = async (
-    sessionId: TerminalID,
-    startSequence: number,
-    endSequence: number,
-    historyGeneration: number,
-  ): Promise<TerminalHistoryPage> => {
-    const query = new URLSearchParams({
-      startSeq: String(startSequence),
-      endSeq: String(endSequence),
-      historyGeneration: String(historyGeneration),
-      maxBytes: String(512 * 1024),
-    });
-    const page = await requestJson<ApiHistoryPage>(
-      `/api/sessions/${encodeURIComponent(sessionId)}/history?${query.toString()}`,
-      { method: 'GET' },
-    );
-    return {
-      ...page,
-      ...(page.checkpoint ? {
-        checkpoint: {
-          ...page.checkpoint,
-          bytes: decodeBase64(page.checkpoint.bytes),
-        },
-      } : {}),
-      chunks: page.chunks.map(chunk => ({
-        sequence: chunk.sequence,
-        timestampMs: chunk.timestampMs,
-        data: decodeBase64(chunk.data),
-        geometryGeneration: chunk.geometryGeneration,
-        cols: chunk.cols,
-        rows: chunk.rows,
-      })),
-    } as TerminalHistoryPage;
-  };
-
-  const history = async (sessionId: TerminalID, startSeq: number, endSeq: number): Promise<TerminalDataChunk[]> => {
-    const chunks: TerminalDataChunk[] = [];
-    let cursor = startSeq;
-    let generation = 0;
-    while (endSeq <= 0 || cursor <= endSeq) {
-      const page = await historyPage(sessionId, cursor, endSeq, generation);
-      if (page.historyReset) {
-        generation = page.historyGeneration;
-        cursor = page.firstRetainedSequence || endSeq + 1;
-        chunks.length = 0;
-        continue;
-      }
-      generation = page.historyGeneration;
-      chunks.push(...page.chunks);
-      if (!page.hasMore) break;
-      cursor = page.nextStartSequence;
-    }
-    return chunks;
-  };
-
-  const bundle = createTerminalLiveTransport({
+  const bundle = createSemanticTerminalLiveTransport({
     connectionId: connId,
     openStream: async kind => {
       if (kind !== StreamKind) throw new Error(`unsupported terminal stream kind: ${kind}`);
@@ -181,20 +76,21 @@ export const createTerminalRuntime = (connId: string) => {
       return await openBrowserWebSocketByteStream(url.toString());
     },
     control: {
-      history,
-      historyPage,
       clear: async sessionId => {
         await requestNoContent(`/api/sessions/${encodeURIComponent(sessionId)}/clear`, { method: 'POST' });
       },
-      commitHistoryCheckpoint: async (sessionId, checkpoint) => {
-        await requestNoContent(`/api/sessions/${encodeURIComponent(sessionId)}/checkpoint`, {
+      semanticHistory: async (
+        sessionId: TerminalID,
+        connectionId: string,
+        transportGeneration: number,
+        request: SemanticHistoryRequest,
+      ): Promise<SemanticHistoryPage> => validateHistoryPage(await requestJson<unknown>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/semantic-history`,
+        {
           method: 'POST',
-          body: JSON.stringify({
-            ...checkpoint,
-            bytes: encodeBase64(checkpoint.bytes),
-          }),
-        });
-      },
+          body: JSON.stringify({ connectionId, transportGeneration, ...request }),
+        },
+      )),
       listSessions: async () => await requestJson<ApiSessionInfo[]>('/api/sessions', { method: 'GET' }),
       createSession: async (name, workingDir) => await requestJson<ApiSessionInfo>('/api/sessions', {
         method: 'POST',
@@ -217,10 +113,6 @@ export const createTerminalRuntime = (connId: string) => {
     createSession: bundle.transport.createSession!,
     deleteSession: bundle.transport.deleteSession!,
     renameSession: bundle.transport.renameSession!,
-    getSessionStats: async (sessionId: TerminalID) => await requestJson<ApiSessionStats>(
-      `/api/sessions/${encodeURIComponent(sessionId)}/stats`,
-      { method: 'GET' },
-    ),
 	getPresentation: async (sessionId: TerminalID) => validatePresentation(await requestJson<unknown>(
 		`/api/sessions/${encodeURIComponent(sessionId)}/presentation`, { method: 'GET' },
 	)),

@@ -16,6 +16,40 @@ const waitUntil = async (predicate: () => boolean) => {
 };
 
 describe('semantic resize controller', () => {
+  it('does not settle stale or internally inconsistent canonical geometry', async () => {
+    let size = { cols: 80, rows: 24 };
+    const firstResize = { generation: 2, outputSequenceBoundary: 9, cols: 120, rows: 40 };
+    const resizeResults = [
+      firstResize,
+      { generation: 1, outputSequenceBoundary: 8, cols: 100, rows: 30 },
+      { generation: 2, outputSequenceBoundary: 10, cols: 132, rows: 41 },
+    ];
+    const onGeometry = vi.fn();
+    const onError = vi.fn();
+    const controller = createSemanticResizeController({
+      measure: () => size,
+      repaint: vi.fn(),
+      attach: vi.fn(async next => ({ generation: 1, outputSequenceBoundary: 0, ...next })),
+      resize: vi.fn(async () => resizeResults.shift()!),
+      onConnectionChange: vi.fn(),
+      onGeometry,
+      onError,
+    });
+
+    await controller.requestResize();
+    size = { cols: 120, rows: 40 };
+    await controller.requestResize();
+    size = { cols: 100, rows: 30 };
+    await controller.requestResize();
+    expect(onError).toHaveBeenLastCalledWith('terminal geometry settlement regressed');
+    size = { cols: 132, rows: 41 };
+    await controller.requestResize();
+
+    expect(onGeometry).toHaveBeenCalledTimes(2);
+    expect(onGeometry).toHaveBeenLastCalledWith(firstResize);
+    expect(onError).toHaveBeenLastCalledWith('terminal geometry changed without advancing its generation');
+  });
+
   it('fences a synchronous superseded lifecycle event while one attach is starting', async () => {
     let controller: ReturnType<typeof createSemanticResizeController>;
     const attach = vi.fn(async () => {

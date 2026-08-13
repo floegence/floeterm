@@ -24,9 +24,16 @@ func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
 			rows[y][x] = wireCell{cell.Text, cell.Width, index, cell.Hyperlink}
 		}
 	}
+	graphics := p.Frame.Graphics
+	if graphics.Images == nil {
+		graphics.Images = []SemanticGraphicImage{}
+	}
+	if graphics.Placements == nil {
+		graphics.Placements = []SemanticGraphicPlacement{}
+	}
 	wire := map[string]any{
 		"v": 1, "sequence": p.Sequence, "geometry": p.Geometry, "state": p.State,
-		"frame": map[string]any{"width": p.Frame.Width, "height": p.Frame.Height, "bufferKind": p.Frame.BufferKind, "cursor": p.Frame.Cursor, "styles": styles, "rows": rows},
+		"frame": map[string]any{"width": p.Frame.Width, "height": p.Frame.Height, "bufferKind": p.Frame.BufferKind, "cursor": p.Frame.Cursor, "history": p.Frame.History, "graphics": graphics, "styles": styles, "rows": rows},
 	}
 	data, err := json.Marshal(wire)
 	if err != nil {
@@ -56,12 +63,22 @@ type TerminalState struct {
 }
 
 type SemanticFrame struct {
-	Width      int               `json:"width"`
-	Height     int               `json:"height"`
-	Rows       []SemanticRow     `json:"rows"`
-	Cursor     SemanticCursor    `json:"cursor"`
-	BufferKind string            `json:"bufferKind"`
-	Graphics   []SemanticGraphic `json:"graphics,omitempty"`
+	Width      int                    `json:"width"`
+	Height     int                    `json:"height"`
+	Rows       []SemanticRow          `json:"rows"`
+	Cursor     SemanticCursor         `json:"cursor"`
+	BufferKind string                 `json:"bufferKind"`
+	History    SemanticHistorySummary `json:"history"`
+	Graphics   SemanticGraphics       `json:"graphics"`
+}
+
+// SemanticHistorySummary is captured from the same engine ownership window as
+// the frame. It gives views bounded rail geometry without exposing row IDs or
+// native anchors; page content still requires an attachment-bound opaque token.
+type SemanticHistorySummary struct {
+	Revision          uint64 `json:"revision"`
+	TotalRows         int    `json:"totalRows"`
+	ScreenStartOffset int    `json:"screenStartOffset"`
 }
 
 type SemanticRow struct {
@@ -85,12 +102,41 @@ type SemanticCursor struct {
 	Y       int  `json:"y"`
 	Visible bool `json:"visible"`
 }
-type SemanticGraphic struct {
-	ID         uint64 `json:"id"`
-	Generation uint64 `json:"generation"`
-	Pixels     []byte `json:"pixels"`
-	Row        int    `json:"row"`
-	Column     int    `json:"column"`
+type SemanticGraphicFormat uint8
+
+const (
+	SemanticGraphicRGB SemanticGraphicFormat = iota
+	SemanticGraphicRGBA
+	semanticGraphicPNG
+	SemanticGraphicGrayAlpha
+	SemanticGraphicGray
+)
+
+type SemanticGraphicImage struct {
+	ID         uint32                `json:"id"`
+	Width      uint32                `json:"width"`
+	Height     uint32                `json:"height"`
+	Format     SemanticGraphicFormat `json:"format"`
+	Generation uint64                `json:"generation"`
+	Pixels     []byte                `json:"pixels"`
+}
+
+type SemanticGraphicPlacement struct {
+	ImageID        uint32 `json:"imageId"`
+	PlacementID    uint32 `json:"placementId"`
+	Z              int32  `json:"z"`
+	ViewportColumn int32  `json:"viewportColumn"`
+	ViewportRow    int32  `json:"viewportRow"`
+	GridColumns    uint32 `json:"gridColumns"`
+	GridRows       uint32 `json:"gridRows"`
+	Visible        bool   `json:"visible"`
+	Virtual        bool   `json:"virtual"`
+}
+
+type SemanticGraphics struct {
+	Generation uint64                     `json:"generation"`
+	Images     []SemanticGraphicImage     `json:"images"`
+	Placements []SemanticGraphicPlacement `json:"placements"`
 }
 
 func clonePresentation(in SemanticPresentation) SemanticPresentation {
@@ -99,10 +145,11 @@ func clonePresentation(in SemanticPresentation) SemanticPresentation {
 	for i := range out.Frame.Rows {
 		out.Frame.Rows[i].Cells = append([]SemanticCell(nil), in.Frame.Rows[i].Cells...)
 	}
-	out.Frame.Graphics = append([]SemanticGraphic(nil), in.Frame.Graphics...)
-	for i := range out.Frame.Graphics {
-		out.Frame.Graphics[i].Pixels = append([]byte(nil), in.Frame.Graphics[i].Pixels...)
+	out.Frame.Graphics.Images = append([]SemanticGraphicImage(nil), in.Frame.Graphics.Images...)
+	for i := range out.Frame.Graphics.Images {
+		out.Frame.Graphics.Images[i].Pixels = append([]byte(nil), in.Frame.Graphics.Images[i].Pixels...)
 	}
+	out.Frame.Graphics.Placements = append([]SemanticGraphicPlacement(nil), in.Frame.Graphics.Placements...)
 	return out
 }
 

@@ -4,7 +4,7 @@ import {
   getThemeColors,
   TERMINAL_THEME_DEFINITIONS,
   type TerminalThemeName,
-} from '@floegence/floeterm-terminal-web';
+} from '@floegence/floeterm-terminal-web/semantic';
 
 export function applyTerminalThemeShell(root: HTMLElement, theme: TerminalThemeName): void {
   const definition = getTerminalThemeDefinition(theme);

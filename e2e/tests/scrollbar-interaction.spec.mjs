@@ -23,16 +23,30 @@ const openTerminalWithHistory = async page => {
   await expect(scrollbar).toHaveAttribute('aria-valuemax', /[1-9]\d*/);
   const controlledId = await scrollbar.getAttribute('aria-controls');
   if (!controlledId) throw new Error('terminal scrollbar aria-controls is missing');
+  const rendererOwnership = await page.locator('.terminalPane').evaluateAll(panes => panes.map(pane => {
+    const visibleCanvases = [...pane.querySelectorAll('canvas')].filter(canvas => {
+      const style = getComputedStyle(canvas);
+      const bounds = canvas.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && bounds.width > 0 && bounds.height > 0;
+    });
+    return {
+      visibleCanvasCount: visibleCanvases.length,
+      semanticCanvasCount: visibleCanvases.filter(canvas => canvas.classList.contains('semanticTerminalSurface')).length,
+      legacyCanvasCount: visibleCanvases.filter(canvas => !canvas.classList.contains('semanticTerminalSurface')).length,
+    };
+  }));
+  expect(rendererOwnership).toEqual([{ visibleCanvasCount: 1, semanticCanvasCount: 1, legacyCanvasCount: 0 }]);
   return {
     scrollbar,
-    surface: page.locator('.terminalSurface'),
-    terminal: page.locator(`#${controlledId}`),
+    pane: page.locator('.terminalPane'),
+    surface: page.locator(`#${controlledId}`),
+    terminal: page.locator('#semantic-terminal-input'),
   };
 };
 
 test('uses real mouse, wheel, keyboard, focus, selection, and media preferences', async ({ context, page }) => {
   const failures = captureBrowserFailures(page);
-  const { scrollbar, surface, terminal } = await openTerminalWithHistory(page);
+  const { scrollbar, pane, surface, terminal } = await openTerminalWithHistory(page);
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
     origin: new URL(page.url()).origin,
   });
@@ -43,7 +57,7 @@ test('uses real mouse, wheel, keyboard, focus, selection, and media preferences'
   const rightEdgeX = scrollbarBox.x + scrollbarBox.width / 2;
   const centerY = scrollbarBox.y + scrollbarBox.height / 2;
 
-  await terminal.evaluate(element => {
+  await pane.evaluate(element => {
     window.__floetermRailWheelEvents = 0;
     element.addEventListener('wheel', () => { window.__floetermRailWheelEvents += 1; }, true);
   });
@@ -62,7 +76,7 @@ test('uses real mouse, wheel, keyboard, focus, selection, and media preferences'
   await scrollbar.focus();
   await page.keyboard.press('End');
   await expect(scrollbar).toHaveAttribute('aria-valuenow', String(maximum));
-  const thumb = page.locator('[data-floeterm-scrollbar-thumb]');
+  const thumb = page.locator('[data-semantic-history-thumb]');
   const thumbBox = await thumb.boundingBox();
   if (!thumbBox) throw new Error('terminal scrollbar thumb has no bounding box');
   await page.mouse.move(thumbBox.x + thumbBox.width / 2, thumbBox.y + thumbBox.height / 2);

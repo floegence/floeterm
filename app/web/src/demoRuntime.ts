@@ -1,8 +1,4 @@
 import { batch, createEffect, createMemo, createSignal, onCleanup, type Accessor } from 'solid-js';
-import {
-  resetTerminalFabricDiagnostics,
-  resetTerminalRenderSchedulerStats,
-} from '@floegence/floeterm-terminal-web';
 import { createTerminalRuntime, getOrCreateConnId, type AppTerminalTransport } from './terminalApi';
 
 const SESSION_STORAGE_KEY = 'floeterm_session_id';
@@ -465,9 +461,6 @@ export const createFloetermDemoRuntime = (): FloetermDemoRuntime => {
     const epoch = gridEpoch;
     setGridBusy(true);
     setGridError('');
-    resetTerminalRenderSchedulerStats();
-    resetTerminalFabricDiagnostics();
-
     try {
       batch(() => {
         setGridSessions([]);

@@ -15,17 +15,19 @@ const backendOrigin = env.FLOETERM_BACKEND_ORIGIN ?? 'http://localhost:8080';
 const backendWsOrigin = backendOrigin.replace(/^http/, 'ws');
 const terminalWebSrc = decodeURIComponent(new URL('../../terminal-web/src/index.ts', import.meta.url).pathname);
 const terminalWebLiveSrc = decodeURIComponent(new URL('../../terminal-web/src/entries/live.ts', import.meta.url).pathname);
+const terminalWebSemanticSrc = decodeURIComponent(new URL('../../terminal-web/src/entries/semantic.ts', import.meta.url).pathname);
 
 export default defineConfig({
   plugins: [wasm(), solid()],
   resolve: {
     alias: [
+      { find: '@floegence/floeterm-terminal-web/semantic', replacement: terminalWebSemanticSrc },
       { find: '@floegence/floeterm-terminal-web/live', replacement: terminalWebLiveSrc },
       { find: '@floegence/floeterm-terminal-web', replacement: terminalWebSrc },
     ],
   },
   server: {
-    host: true,
+    host: '127.0.0.1',
     port: parsePort(env.FLOETERM_WEB_PORT, 5173),
     strictPort: env.FLOETERM_WEB_STRICT_PORT !== 'false',
     proxy: {

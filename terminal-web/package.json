@@ -38,6 +38,10 @@
     "./live": {
       "types": "./dist/entries/live.d.ts",
       "import": "./dist/entries/live.js"
+    },
+    "./semantic": {
+      "types": "./dist/entries/semantic.d.ts",
+      "import": "./dist/entries/semantic.js"
     }
   },
   "files": [

@@ -89,6 +89,15 @@ type renameSessionRequest struct {
 	NewName string `json:"newName"`
 }
 
+type semanticHistoryRequest struct {
+	ConnectionID        string                            `json:"connectionId"`
+	TransportGeneration uint64                            `json:"transportGeneration"`
+	ExpectedRevision    uint64                            `json:"expectedRevision,omitempty"`
+	Anchor              string                            `json:"anchor,omitempty"`
+	Direction           terminal.SemanticHistoryDirection `json:"direction"`
+	Limit               int                               `json:"limit"`
+}
+
 type historyChunk struct {
 	Sequence           int64  `json:"sequence"`
 	DataBase64         string `json:"data"`
@@ -429,6 +438,38 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, presentation)
+		return
+
+	case "semantic-history":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var request semanticHistoryRequest
+		if err := readJSON(w, r, &request, maxJSONBodyBytesDefault); err != nil {
+			http.Error(w, "invalid semantic history request", http.StatusBadRequest)
+			return
+		}
+		session, ok := s.manager.GetSession(sessionID)
+		if !ok {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		page, err := session.ReadSemanticHistory(request.ConnectionID, request.TransportGeneration, terminal.SemanticHistoryRequest{
+			ExpectedRevision: request.ExpectedRevision,
+			Anchor:           request.Anchor, Direction: request.Direction, Limit: request.Limit,
+		})
+		if err != nil {
+			status := http.StatusConflict
+			if errors.Is(err, terminal.ErrControllerTransport) {
+				status = http.StatusGone
+			} else if !errors.Is(err, terminal.ErrSemanticHistoryAnchor) && !errors.Is(err, terminal.ErrSemanticHistoryRevision) {
+				status = http.StatusBadRequest
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
 		return
 
 	case "stats":

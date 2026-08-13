@@ -86,6 +86,12 @@ const createHarness = (controlEvents?: TerminalEventSource) => {
       totalBytes: 0,
     })),
     clear: vi.fn(async () => undefined),
+    semanticHistory: vi.fn(async (_sessionId, _connectionId, _generation, request) => ({
+      revision: request.expectedRevision ?? 1,
+      anchor: 'current', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
+      offset: 0, totalRows: 24, screenStartOffset: 0, hasPrevious: false, hasNext: false,
+      frame: { width: 80, height: 24, bufferKind: 'normal', history: { revision: request.expectedRevision ?? 1, totalRows: 24, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: Array.from({ length: 24 }, () => ({ cells: Array.from({ length: 80 }, () => ({ text: ' ', width: 1 })) })), cursor: { x: 0, y: 0, visible: false } },
+    })),
     listSessions: vi.fn(async () => []),
     createSession: vi.fn(async () => ({
       id: 'created',
@@ -406,6 +412,31 @@ describe('terminal live transport', () => {
       { sessionId: 'session', runtimeAttachGeneration: 1, state: 'closed', reason: 'superseded' },
       { sessionId: 'session', runtimeAttachGeneration: 2, state: 'attached' },
     ]);
+  });
+
+  it('binds semantic history to the current attachment generation and rejects a superseded result', async () => {
+    const { transport, streams, control } = createHarness();
+    let settleHistory: ((value: Awaited<ReturnType<typeof control.semanticHistory>>) => void) | undefined;
+    control.semanticHistory.mockImplementationOnce(async () => await new Promise(resolve => { settleHistory = resolve; }));
+    const firstAttach = transport.attachWithHistoryBoundary('session', 80, 24);
+    await waitUntil(() => streams.length === 1);
+    await acknowledgeAttach(streams[0]!);
+    await firstAttach;
+
+    const pending = transport.semanticHistory('session', { direction: 'start', limit: 24 });
+    await waitUntil(() => control.semanticHistory.mock.calls.length === 1);
+    expect(control.semanticHistory.mock.calls[0]!.slice(0, 3)).toEqual(['session', 'connection', 1]);
+
+    const secondAttach = transport.attachWithHistoryBoundary('session', 100, 30);
+    await waitUntil(() => streams.length === 2);
+    await acknowledgeAttach(streams[1]!, 4n, 2n);
+    await secondAttach;
+    settleHistory?.({
+      revision: 1, anchor: 'old', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
+      offset: 0, totalRows: 24, screenStartOffset: 0, hasPrevious: false, hasNext: false,
+      frame: { width: 80, height: 24, bufferKind: 'normal', history: { revision: 1, totalRows: 24, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: [], cursor: { x: 0, y: 0, visible: false } },
+    });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });
 
   it('closes attached streams when the connection epoch changes', async () => {

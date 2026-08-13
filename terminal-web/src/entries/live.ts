@@ -27,7 +27,10 @@ export {
   encodeResize,
   encodeResizeApplied,
 } from '../live/codec.js';
-export { createTerminalLiveTransport } from '../live/transport.js';
+export {
+  createSemanticTerminalLiveTransport,
+  createTerminalLiveTransport,
+} from '../live/transport.js';
 export type {
   ConnectTerminalLiveOptions,
   TerminalByteStream,
@@ -51,6 +54,7 @@ export type {
 } from '../live/codec.js';
 export type {
   CreateTerminalLiveTransportOptions,
+  CreateSemanticTerminalLiveTransportOptions,
   OpenTerminalLiveStream,
   TerminalLiveAttachmentCloseReason,
   TerminalLiveAttachmentLifecycleEvent,
@@ -60,4 +64,7 @@ export type {
   TerminalLiveResizeAppliedResult,
   TerminalLiveTransport,
   TerminalLiveTransportBundle,
+  SemanticTerminalLiveControlPlane,
+  SemanticTerminalLiveTransport,
+  SemanticTerminalLiveTransportBundle,
 } from '../live/transport.js';

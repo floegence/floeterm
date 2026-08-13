@@ -433,10 +433,11 @@ export const decodePresentation = (value: TerminalLiveFrame): unknown => {
     if (!Array.isArray(style) || style.length !== 5) throw new Error('invalid terminal live presentation style');
     return { foreground: style[0], background: style[1], bold: style[2], italic: style[3], underline: style[4] };
   });
+  const graphics = decodePresentationGraphics(wire.frame.graphics);
   return {
     sequence: wire.sequence, geometry: wire.geometry, state: wire.state,
     frame: {
-      width: wire.frame.width, height: wire.frame.height, bufferKind: wire.frame.bufferKind, cursor: wire.frame.cursor,
+      width: wire.frame.width, height: wire.frame.height, bufferKind: wire.frame.bufferKind, cursor: wire.frame.cursor, history: wire.frame.history, graphics,
       rows: wire.frame.rows.map((row: unknown) => {
         if (!Array.isArray(row)) throw new Error('invalid terminal live presentation row');
         return { cells: row.map((cell: unknown) => {
@@ -447,5 +448,29 @@ export const decodePresentation = (value: TerminalLiveFrame): unknown => {
     },
   };
 };
+
+function decodePresentationGraphics(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) throw new Error('invalid terminal live presentation graphics');
+  const graphics = value as any;
+  if (!Array.isArray(graphics.images) || !Array.isArray(graphics.placements)) throw new Error('invalid terminal live presentation graphics');
+  return {
+    generation: graphics.generation,
+    images: graphics.images.map((image: any) => ({ ...image, pixels: decodeBase64Bytes(image?.pixels) })),
+    placements: graphics.placements,
+  };
+}
+
+function decodeBase64Bytes(value: unknown): Uint8Array {
+  if (typeof value !== 'string') throw new Error('invalid terminal live presentation graphic pixels');
+  try {
+    if (typeof globalThis.atob === 'function') {
+      const decoded = globalThis.atob(value);
+      return Uint8Array.from(decoded, character => character.charCodeAt(0));
+    }
+    return Uint8Array.from((globalThis as any).Buffer.from(value, 'base64'));
+  } catch {
+    throw new Error('invalid terminal live presentation graphic pixels');
+  }
+}
 
 export const decodeUtf8 = (value: Uint8Array): string => decoder.decode(value);

@@ -457,14 +457,6 @@ body {
   box-shadow: inset 0 0 32px rgba(71, 215, 172, 0.018);
 }
 
-.terminalSurface {
-  position: absolute;
-  inset: 0;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
 .semanticTerminalSurface {
 	position: absolute;
 	inset: 0;
@@ -486,12 +478,72 @@ body {
   pointer-events: auto;
 }
 
-.terminalPane canvas:not(.semanticTerminalSurface),
-.tileTerminal canvas {
-  display: block;
-  max-height: none;
-  max-width: none;
-  image-rendering: auto;
+.semanticHistoryRail {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 5;
+  width: 14px;
+  outline: none;
+  opacity: 0;
+  pointer-events: auto;
+  touch-action: none;
+  transition: opacity 120ms ease;
+}
+
+.semanticHistoryRail[data-visible='true'],
+.semanticHistoryRail:focus-visible {
+  opacity: 1;
+}
+
+.semanticHistoryThumb {
+  position: absolute;
+  top: var(--semantic-history-start);
+  right: 3px;
+  width: 7px;
+  height: var(--semantic-history-size);
+  min-height: 20px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 70%, transparent);
+  background: color-mix(in srgb, var(--text-muted) 48%, transparent);
+}
+
+.semanticHistoryRail[data-hovered='true'] .semanticHistoryThumb,
+.semanticHistoryRail[data-dragging='true'] .semanticHistoryThumb,
+.semanticHistoryRail:focus-visible .semanticHistoryThumb {
+  background: color-mix(in srgb, var(--text-primary) 58%, transparent);
+}
+
+.semanticHistoryError {
+  position: absolute;
+  right: 18px;
+  bottom: 8px;
+  z-index: 6;
+  max-width: min(480px, calc(100% - 36px));
+  padding: 5px 8px;
+  border: 1px solid var(--danger);
+  color: var(--text-primary);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+@media (pointer: coarse) {
+  .semanticHistoryRail {
+    pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .semanticHistoryRail {
+    transition-duration: 0s;
+  }
+}
+
+@media (forced-colors: active) {
+  .semanticHistoryThumb {
+    border-color: CanvasText;
+    background: CanvasText;
+  }
 }
 
 .terminalRendererError {
@@ -554,45 +606,6 @@ body {
   gap: var(--space-sm);
   padding: var(--space-md);
   padding-bottom: calc(var(--space-md) + env(safe-area-inset-bottom));
-}
-
-.schedulerPanel {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(84px, 1fr));
-  gap: 1px;
-  border: 1px solid var(--line);
-  background: var(--line);
-  flex: 0 0 auto;
-}
-
-.metric {
-  min-width: 0;
-  padding: 8px 10px;
-  background: var(--surface-1);
-}
-
-.metricLabel,
-.metricValue {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.metricLabel {
-  color: var(--text-muted);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.metricValue {
-  color: var(--accent-strong);
-  font-size: 14px;
-  font-weight: 800;
-}
-
-.metricStrong .metricValue {
-  color: var(--warning);
 }
 
 .gridTerminalContainer {
@@ -723,12 +736,6 @@ body {
   animation: blink 1s step-end infinite;
 }
 
-.floeterm-beamterm-canvas {
-  display: block;
-  max-height: 100%;
-  max-width: 100%;
-}
-
 .gridEmpty,
 .loading {
   display: flex;
@@ -762,10 +769,6 @@ body {
 }
 
 @media (max-width: 960px) {
-  .schedulerPanel {
-    grid-template-columns: repeat(4, minmax(92px, 1fr));
-  }
-
   .gridTerminalContainer,
   .gridTerminalContainer[data-count='24'],
   .gridTerminalContainer[data-count='48'],
@@ -819,10 +822,6 @@ body {
   .fabricShell {
     padding: var(--space-sm);
     padding-bottom: calc(var(--space-sm) + env(safe-area-inset-bottom));
-  }
-
-  .schedulerPanel {
-    grid-template-columns: repeat(2, minmax(92px, 1fr));
   }
 
   .gridTerminalContainer,

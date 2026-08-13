@@ -2,7 +2,7 @@
 
 import { render } from 'solid-js/web';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { TERMINAL_THEME_DEFINITIONS } from '@floegence/floeterm-terminal-web';
+import { TERMINAL_THEME_DEFINITIONS } from '@floegence/floeterm-terminal-web/semantic';
 import { applyTerminalThemeShell, ThemeSelector } from './themeCatalog';
 
 afterEach(() => {

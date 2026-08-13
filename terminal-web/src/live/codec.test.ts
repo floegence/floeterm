@@ -7,6 +7,7 @@ import {
   TerminalLiveDecoder,
   TerminalLiveFrameType,
   decodeInput,
+  decodePresentation,
 	decodeGeometryChanged,
 	decodeOutputBatch,
 	decodeResizeApplied,
@@ -154,5 +155,24 @@ describe('terminal/live_v1 codec', () => {
   it('rejects wrong frame types and invalid payloads', () => {
     expect(() => decodeInput({ type: TerminalLiveFrameType.Resize, flags: 0, payload: new Uint8Array() })).toThrow(/type/i);
     expect(() => decodeInput({ type: TerminalLiveFrameType.Input, flags: 0, payload: new Uint8Array(7) })).toThrow(/payload/i);
+  });
+
+  it('decodes Go JSON graphics bytes into an owned semantic inventory', () => {
+    const payload = new TextEncoder().encode(JSON.stringify({
+      v: 1, sequence: 1, geometry: { generation: 1, cols: 1, rows: 1 }, state: { sequence: 1 },
+      frame: {
+        width: 1, height: 1, bufferKind: 'normal', cursor: { x: 0, y: 0, visible: true },
+        history: { revision: 1, totalRows: 1, screenStartOffset: 0 }, styles: [['default', 'default', false, false, false]],
+        rows: [[['', 1, 0, '']]],
+        graphics: {
+          generation: 3,
+          images: [{ id: 7, width: 1, height: 1, format: 0, generation: 2, pixels: 'AQID' }],
+          placements: [{ imageId: 7, placementId: 9, z: 0, viewportColumn: 0, viewportRow: 0, gridColumns: 1, gridRows: 1, visible: true, virtual: false }],
+        },
+      },
+    }));
+    const decoded = decodePresentation({ type: TerminalLiveFrameType.Presentation, flags: 0, payload }) as any;
+    expect(decoded.frame.graphics.images[0].pixels).toEqual(new Uint8Array([1, 2, 3]));
+    expect(decoded.frame.graphics.placements[0]).toMatchObject({ imageId: 7, gridColumns: 1, visible: true });
   });
 });

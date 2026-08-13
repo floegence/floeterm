@@ -16,7 +16,7 @@ const readState = (page, includeTerminalState = false) => page.evaluate(includeS
     visibleLines: includeState ? harness.getVisibleLines() : [],
     connected: harness.getSnapshot().connection.isConnected,
     hasError: harness.getSnapshot().state.hasError,
-    alternate: includeState ? harness.getFabricDiagnostics().sourceGrid : null,
+    alternate: includeState ? harness.getPresentationDiagnostics?.()?.frame.bufferKind ?? null : null,
   };
 }, includeTerminalState);
 

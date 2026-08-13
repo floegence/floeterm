@@ -15,6 +15,7 @@ import type {
   TerminalHistoryCheckpoint,
   TerminalGeometryEvent,
 } from '../types.js';
+import type { SemanticHistoryPage, SemanticHistoryRequest } from '../semantic/presentation.js';
 import {
   connectTerminalLive,
   type ConnectTerminalLiveOptions,
@@ -33,7 +34,27 @@ export type TerminalLiveControlPlane = Readonly<{
     historyGeneration: number,
   ): Promise<TerminalHistoryPage>;
   clear(sessionId: TerminalID): Promise<void>;
+  semanticHistory(
+    sessionId: TerminalID,
+    connectionId: string,
+    transportGeneration: number,
+    request: SemanticHistoryRequest,
+  ): Promise<SemanticHistoryPage>;
   commitHistoryCheckpoint?(sessionId: TerminalID, checkpoint: TerminalHistoryCheckpoint): Promise<void>;
+  listSessions?(): Promise<TerminalSessionInfo[]>;
+  createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
+  deleteSession?(sessionId: TerminalID): Promise<void>;
+  renameSession?(sessionId: TerminalID, newName: string): Promise<void>;
+}>;
+
+export type SemanticTerminalLiveControlPlane = Readonly<{
+  clear(sessionId: TerminalID): Promise<void>;
+  semanticHistory(
+    sessionId: TerminalID,
+    connectionId: string,
+    transportGeneration: number,
+    request: SemanticHistoryRequest,
+  ): Promise<SemanticHistoryPage>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
   createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
   deleteSession?(sessionId: TerminalID): Promise<void>;
@@ -79,6 +100,28 @@ export type TerminalLiveTransport = Omit<TerminalAtomicTransport, 'attachWithHis
     cols: number,
     rows: number,
   ): Promise<TerminalLiveResizeAppliedResult>;
+  semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryPage>;
+  forgetSession(sessionId: string): void;
+  syncConnectionEpoch(key: object | null): void;
+  dispose(): void;
+}>;
+
+export type SemanticTerminalLiveTransport = Readonly<{
+  attach(sessionId: TerminalID, cols: number, rows: number): Promise<void>;
+  attachWithHistoryBoundary(sessionId: TerminalID, cols: number, rows: number): Promise<TerminalLiveAttachResult>;
+  resize(sessionId: TerminalID, cols: number, rows: number): Promise<void>;
+  resizeWithEffectiveGeometry(
+    sessionId: TerminalID,
+    cols: number,
+    rows: number,
+  ): Promise<TerminalLiveResizeAppliedResult>;
+  sendInput(sessionId: TerminalID, input: string): Promise<void>;
+  clear(sessionId: TerminalID): Promise<void>;
+  semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryPage>;
+  listSessions?(): Promise<TerminalSessionInfo[]>;
+  createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
+  deleteSession?(sessionId: TerminalID): Promise<void>;
+  renameSession?(sessionId: TerminalID, newName: string): Promise<void>;
   forgetSession(sessionId: string): void;
   syncConnectionEpoch(key: object | null): void;
   dispose(): void;
@@ -92,8 +135,21 @@ export type CreateTerminalLiveTransportOptions = Readonly<{
   onError?: (sessionId: string, error: Error) => void;
 }>;
 
+export type CreateSemanticTerminalLiveTransportOptions = Readonly<{
+  connectionId: string;
+  openStream: ConnectTerminalLiveOptions['openStream'];
+  control: SemanticTerminalLiveControlPlane;
+  controlEvents?: TerminalEventSource;
+  onError?: (sessionId: string, error: Error) => void;
+}>;
+
 export type TerminalLiveTransportBundle = Readonly<{
   transport: TerminalLiveTransport;
+  eventSource: TerminalLiveEventSource;
+}>;
+
+export type SemanticTerminalLiveTransportBundle = Readonly<{
+  transport: SemanticTerminalLiveTransport;
   eventSource: TerminalLiveEventSource;
 }>;
 
@@ -104,7 +160,9 @@ type LiveEntry = {
 
 const textEncoder = new TextEncoder();
 
-export const createTerminalLiveTransport = (options: CreateTerminalLiveTransportOptions): TerminalLiveTransportBundle => {
+export const createSemanticTerminalLiveTransport = (
+  options: CreateSemanticTerminalLiveTransportOptions,
+): SemanticTerminalLiveTransportBundle => {
   const listeners = new Map<string, Set<(event: TerminalDataEvent) => void>>();
   const deletionListeners = new Map<string, Set<() => void>>();
   const geometryListeners = new Map<string, Set<(event: TerminalGeometryEvent) => void>>();
@@ -261,7 +319,7 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
     return { ...result, runtimeAttachGeneration: entry.generation };
   };
 
-  const transport: TerminalLiveTransport = {
+  const transport: SemanticTerminalLiveTransport = {
     attach: async (sessionId, cols, rows) => {
       await attachWithHistoryBoundary(sessionId, cols, rows);
     },
@@ -275,10 +333,22 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
       if (!entry) throw new Error('terminal live session is not attached');
       await entry.connection.sendInput(textEncoder.encode(String(input ?? '')));
     },
-    history: options.control.history,
-    historyPage: options.control.historyPage,
     clear: options.control.clear,
-    commitHistoryCheckpoint: options.control.commitHistoryCheckpoint,
+    semanticHistory: async (sessionId, request) => {
+      const entry = entries.get(sessionId);
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+        throw new Error('terminal live session is not attached');
+      }
+      const page = await options.control.semanticHistory(
+        sessionId, options.connectionId, entry.generation, request,
+      );
+      if (!isCurrentGeneration(sessionId, entry.generation)) {
+        const error = new Error('terminal semantic history request was superseded');
+        error.name = 'AbortError';
+        throw error;
+      }
+      return page;
+    },
     listSessions: options.control.listSessions,
     createSession: options.control.createSession,
     deleteSession: options.control.deleteSession ? async sessionId => {
@@ -379,6 +449,18 @@ export const createTerminalLiveTransport = (options: CreateTerminalLiveTransport
   };
 
   return { transport, eventSource };
+};
+
+export const createTerminalLiveTransport = (
+  options: CreateTerminalLiveTransportOptions,
+): TerminalLiveTransportBundle => {
+  const semantic = createSemanticTerminalLiveTransport(options);
+  const transport: TerminalLiveTransport = Object.assign(semantic.transport, {
+    history: options.control.history,
+    historyPage: options.control.historyPage,
+    commitHistoryCheckpoint: options.control.commitHistoryCheckpoint,
+  });
+  return { transport, eventSource: semantic.eventSource };
 };
 
 export type OpenTerminalLiveStream = (

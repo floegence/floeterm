@@ -40,6 +40,45 @@ export function createSemanticResizeController(
   let working: Promise<void> | null = null;
   let connectionEpoch = 0;
   let attachEpoch = 0;
+  let latestGeometry: TerminalGeometry | null = null;
+
+  const geometryIssue = (geometry: TerminalGeometry): string => {
+    if (
+      latestGeometry
+      && (
+        geometry.generation < latestGeometry.generation
+        || geometry.outputSequenceBoundary < latestGeometry.outputSequenceBoundary
+      )
+    ) return 'terminal geometry settlement regressed';
+    if (
+      latestGeometry
+      && geometry.generation === latestGeometry.generation
+      && (geometry.cols !== latestGeometry.cols || geometry.rows !== latestGeometry.rows)
+    ) return 'terminal geometry changed without advancing its generation';
+    return '';
+  };
+
+  const acceptGeometry = (geometry: TerminalGeometry): void => {
+    latestGeometry = geometry;
+    applied = { cols: geometry.cols, rows: geometry.rows };
+    if (sameSize(desired, applied)) desired = null;
+    options.onGeometry(geometry);
+  };
+
+  const settleGeometry = (geometry: TerminalGeometry): void => {
+    const issue = geometryIssue(geometry);
+    if (issue) throw new Error(issue);
+    acceptGeometry(geometry);
+  };
+
+  const observeGeometry = (geometry: TerminalGeometry): void => {
+    const issue = geometryIssue(geometry);
+    if (!issue) {
+      acceptGeometry(geometry);
+      return;
+    }
+    if (issue.includes('without advancing')) options.onError(issue);
+  };
 
   const ensureAttached = (): Promise<void> => {
     if (disposed || connected) return Promise.resolve();
@@ -54,10 +93,8 @@ export function createSemanticResizeController(
       .then(geometry => {
         if (disposed || operationEpoch !== attachEpoch) return;
         connected = true;
-        applied = { cols: geometry.cols, rows: geometry.rows };
-        if (sameSize(desired, applied)) desired = null;
         options.onConnectionChange(true);
-        options.onGeometry(geometry);
+        settleGeometry(geometry);
         options.onError('');
       })
       .catch(error => {
@@ -91,8 +128,7 @@ export function createSemanticResizeController(
         const geometry = await options.resize(next);
         if (disposed) return;
         if (!connected || resizeConnectionEpoch !== connectionEpoch) continue;
-        applied = { cols: geometry.cols, rows: geometry.rows };
-        options.onGeometry(geometry);
+        settleGeometry(geometry);
         options.onError('');
       } catch (error) {
         if (disposed) return;
@@ -155,15 +191,14 @@ export function createSemanticResizeController(
       attachEpoch += 1;
       connected = false;
       applied = null;
+      latestGeometry = null;
       options.onConnectionChange(false);
       desired = options.measure();
       void startWork();
     },
     handleGeometry: geometry => {
       if (disposed) return;
-      applied = { cols: geometry.cols, rows: geometry.rows };
-      if (sameSize(desired, applied)) desired = null;
-      options.onGeometry(geometry);
+      observeGeometry(geometry);
     },
     dispose: () => {
       disposed = true;

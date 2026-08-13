@@ -3,11 +3,53 @@
 package terminal
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
 	"github.com/creack/pty"
 )
+
+func TestRealNativePresentationOwnsKittyGraphicsInventory(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	if _, err := engine.ApplyOutput([]byte("\x1b_Ga=T,f=24,s=1,v=1,i=7,q=2;AQID\x1b\\")); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := engine.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame.Graphics.Generation == 0 || len(frame.Graphics.Images) != 1 || len(frame.Graphics.Placements) != 1 {
+		t.Fatalf("graphics inventory = %+v", frame.Graphics)
+	}
+	image := frame.Graphics.Images[0]
+	if image.ID != 7 || image.Width != 1 || image.Height != 1 || image.Format != SemanticGraphicRGB || !bytes.Equal(image.Pixels, []byte{1, 2, 3}) {
+		t.Fatalf("image = %+v pixels=%v", image, image.Pixels)
+	}
+	placement := frame.Graphics.Placements[0]
+	if placement.ImageID != 7 || !placement.Visible || placement.GridColumns != 1 || placement.GridRows != 1 {
+		t.Fatalf("placement = %+v", placement)
+	}
+
+	if _, err := engine.ApplyOutput([]byte("\x1b_Ga=d,d=I,i=7,q=2\x1b\\")); err != nil {
+		t.Fatal(err)
+	}
+	afterDelete, err := engine.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterDelete.Graphics.Images) != 0 || len(afterDelete.Graphics.Placements) != 0 {
+		t.Fatalf("deleted graphics retained: %+v", afterDelete.Graphics)
+	}
+	if !bytes.Equal(frame.Graphics.Images[0].Pixels, []byte{1, 2, 3}) {
+		t.Fatalf("captured pixels alias native memory: %v", frame.Graphics.Images[0].Pixels)
+	}
+}
 
 func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 	engine, err := NewNativeSemanticEngine(20, 4)

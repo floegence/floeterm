@@ -38,6 +38,27 @@ const openMirror = async page => {
   await waitForInteractiveShell(page, sessionId);
 };
 
+const expectUniqueMirrorCanvases = async page => {
+  const ownership = await page.locator('[data-mirror-view]').evaluateAll(panes => panes.map(pane => {
+    const canvases = [...pane.querySelectorAll('canvas')];
+    const visible = canvases.filter(canvas => {
+      const style = getComputedStyle(canvas);
+      const bounds = canvas.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && bounds.width > 0 && bounds.height > 0;
+    });
+    return {
+      canvases: canvases.length,
+      visible: visible.length,
+      semantic: visible.filter(canvas => canvas.classList.contains('semanticTerminalSurface')).length,
+      legacy: visible.filter(canvas => !canvas.classList.contains('semanticTerminalSurface')).length,
+    };
+  }));
+  expect(ownership).toEqual([
+    { canvases: 1, visible: 1, semantic: 1, legacy: 0 },
+    { canvases: 1, visible: 1, semantic: 1, legacy: 0 },
+  ]);
+};
+
 const resetMirrorStreamDiagnostics = page => page.evaluate(() => {
   const views = window.__floetermMirrorHarness.getViews();
   const commonWatermark = Math.max(...views.map(view => view.getStreamDiagnostics().lastSequence));
@@ -68,7 +89,7 @@ const captureMirrorPixels = async (page, mirrorState) => {
     window.__floetermMirrorHarness.getViews().every(view => view.getRenderDiagnostics().count > 0)
   ))).toBe(true);
   return Promise.all(mirrorState.views.map(async view => {
-    const canvas = page.locator(`[data-mirror-view="${view.label}"] .floeterm-beamterm-canvas`);
+    const canvas = page.locator(`[data-mirror-view="${view.label}"] .semanticTerminalSurface`);
     await expect(canvas).toBeVisible();
     const image = PNG.sync.read(await canvas.screenshot({ animations: 'disabled' }));
     const background = await canvas.evaluate(element => {
@@ -124,6 +145,7 @@ test('keeps independent viewport sizes on one shared terminal grid and screen st
   expect(initial?.state.connectedCount).toBe(2);
   expect(initial?.state.errorCount).toBe(0);
   expect(initial?.views).toHaveLength(2);
+  await expectUniqueMirrorCanvases(page);
   const [firstInfo, secondInfo] = initial.views.map(view => view.info);
   expect(firstInfo).not.toBeNull();
   expect(secondInfo).not.toBeNull();
@@ -270,7 +292,7 @@ test('repaints the complete shared screen after one view is hidden, restored, an
   expect(restored.views.every(view => view.serialized.includes(markers.at(-1)))).toBe(true);
   const rendered = await captureMirrorPixels(page, restored);
   await Promise.all(restored.views.map((view, index) => page
-    .locator(`[data-mirror-view="${view.label}"] .floeterm-beamterm-canvas`)
+    .locator(`[data-mirror-view="${view.label}"] .semanticTerminalSurface`)
     .screenshot({ animations: 'disabled', path: testInfo.outputPath(`restored-view-${index + 1}.png`) })));
   const firstInkRows = inkRowRuns(rendered[0]);
   const secondInkRows = inkRowRuns(rendered[1]);
