@@ -168,7 +168,7 @@ const waitForAuthoritativeTopFrame = async (page, request, sessionId, geometry) 
 };
 
 const expectTopClockPixelsAtRightEdge = async (page, geometry) => {
-  const surface = page.locator('.terminalSurface');
+  const surface = page.locator('.terminalPane');
   const box = await surface.boundingBox();
   if (!box) throw new Error('terminal surface has no visible bounds');
   const screenshot = await page.screenshot({ animations: 'disabled', clip: box });
@@ -353,7 +353,7 @@ test('keeps replay geometry hidden after top advances while the page is detached
   await page.goto(`/?mode=single&session=${encodeURIComponent(sessionId)}&perf_probe=1`);
   await page.waitForFunction(() => (
     window.__floetermPerfHarness?.getSnapshot().connection.isConnected
-      && window.__floetermPerfHarness.getSnapshot().loadingState === 'ready'
+      && window.__floetermPerfHarness.getTerminalInfo()
   ));
   const refreshed = await readState(page, true);
   const trace = await page.evaluate(() => window.__floetermPresentationTrace ?? []);

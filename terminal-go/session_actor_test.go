@@ -60,7 +60,7 @@ func TestSessionActorSerializesResizeAndInputIntent(t *testing.T) {
 	if err := actor.Input(SemanticInput{Kind: "text", Text: "x"}, func(data []byte) error { wrote = string(data); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if wrote != "x" || len(engine.calls) != 2 || engine.calls[0] != "resize" || engine.calls[1] != "input" {
+	if wrote != "x" || len(engine.calls) != 3 || engine.calls[0] != "resize" || engine.calls[1] != "capture" || engine.calls[2] != "input" {
 		t.Fatalf("calls=%v wrote=%q", engine.calls, wrote)
 	}
 }

@@ -77,7 +77,12 @@ func (a *SessionActor) Resize(cols, rows int) error {
 	}
 	a.geometry.Generation++
 	a.geometry.Cols, a.geometry.Rows = cols, rows
-	return nil
+	frame, err := a.engine.CaptureFrame()
+	if err != nil {
+		return err
+	}
+	a.sequence++
+	return a.store.Publish(SemanticPresentation{Sequence: a.sequence, Geometry: a.geometry, State: TerminalState{Sequence: a.sequence}, Frame: frame})
 }
 
 func (a *SessionActor) Input(intent SemanticInput, write func([]byte) error) error {
