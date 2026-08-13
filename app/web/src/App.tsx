@@ -315,7 +315,7 @@ const SingleTerminalPane = (props: {
 	let semanticCanvas: HTMLCanvasElement | undefined;
 	let semanticRenderer: RendererSurface | undefined;
 	let inputBridge: HTMLTextAreaElement | undefined;
-  let presentationError = '';
+  const [presentationError, setPresentationError] = createSignal('');
   let liveConnected = false;
   let latestPresentation: SemanticPresentation | null = null;
   let requestedCols = 0;
@@ -363,7 +363,7 @@ const SingleTerminalPane = (props: {
     try {
       const result = await props.transport.resizeWithEffectiveGeometry(props.sessionId, cols, rows);
       geometryDiagnostics = { generation: result.effective.generation, outputSequenceBoundary: result.effective.outputSequenceBoundary, cols: result.effective.cols, rows: result.effective.rows };
-    } catch (error) { requestedCols = 0; requestedRows = 0; presentationError = error instanceof Error ? error.message : String(error); }
+    } catch (error) { requestedCols = 0; requestedRows = 0; setPresentationError(error instanceof Error ? error.message : String(error)); }
   };
 
   onMount(() => {
@@ -372,9 +372,9 @@ const SingleTerminalPane = (props: {
 		? new ResizeObserver(() => { void requestResize().then(() => semanticRenderer?.resize()); })
 		: undefined;
 	if (semanticCanvas?.parentElement) semanticResizeObserver?.observe(semanticCanvas.parentElement);
-	const applyPresentation = (value: unknown) => { try { const presentation = validatePresentation(value); latestPresentation = presentation; semanticRenderer?.apply(presentation); presentationError = ''; } catch (error) { presentationError = error instanceof Error ? error.message : String(error); } };
+	const applyPresentation = (value: unknown) => { try { const presentation = validatePresentation(value); latestPresentation = presentation; semanticRenderer?.apply(presentation); setPresentationError(''); } catch (error) { setPresentationError(error instanceof Error ? error.message : String(error)); } };
 	const unsubscribePresentation = props.eventSource.onTerminalPresentation?.(props.sessionId, value => { liveConnected = true; applyPresentation(value); });
-	void props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48).then(async () => { liveConnected = true; await requestResize(); }).catch(error => { presentationError = error instanceof Error ? error.message : String(error); });
+	void props.transport.attachWithHistoryBoundary(props.sessionId, 199, 48).then(async () => { liveConnected = true; await requestResize(); }).catch(error => { setPresentationError(error instanceof Error ? error.message : String(error)); });
     const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
       if (event.type !== 'data') return;
       const sequence = Number(event.sequence ?? 0);
@@ -482,7 +482,7 @@ const SingleTerminalPane = (props: {
     return parts.join(' :: ');
   });
   const rendererError = createMemo(() => {
-    return presentationError;
+    return presentationError();
   });
 
   return (
