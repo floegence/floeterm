@@ -361,6 +361,49 @@ describe('BeamtermFabricRenderer', () => {
     renderer.dispose();
   });
 
+  it('keeps retained backing allocation separate from the logical css viewport after shrink', async () => {
+    const host = document.createElement('div');
+    Object.defineProperty(host, 'clientWidth', { value: 1200, configurable: true });
+    Object.defineProperty(host, 'clientHeight', { value: 600, configurable: true });
+    document.body.appendChild(host);
+
+    rendererState.resize.mockImplementation((width: number, height: number) => {
+      const canvas = host.querySelector('canvas');
+      if (canvas) {
+        canvas.width = Math.max(canvas.width, width * 2);
+        canvas.height = Math.max(canvas.height, height * 2);
+      }
+    });
+
+    const renderer = new BeamtermFabricRenderer();
+    await renderer.initialize({
+      container: host,
+      logger,
+      fontFamily: 'monospace',
+      fontSize: 12,
+      theme: { background: '#0b0f14', foreground: '#c9d1d9' },
+      getGhosttyCanvas: () => null,
+      focusInputSurface: vi.fn(),
+      forwardWheel: vi.fn(),
+      onRendererError: vi.fn(),
+    });
+
+    renderer.resize(1200, 600);
+    const canvas = host.querySelector<HTMLCanvasElement>('canvas');
+    expect(canvas).not.toBeNull();
+    if (!canvas) return;
+    const retainedBackingWidth = canvas.width;
+    const retainedBackingHeight = canvas.height;
+
+    renderer.resize(640, 320);
+
+    expect(canvas.style.width).toBe('640px');
+    expect(canvas.style.height).toBe('320px');
+    expect(canvas.width).toBeGreaterThanOrEqual(retainedBackingWidth);
+    expect(canvas.height).toBeGreaterThanOrEqual(retainedBackingHeight);
+    renderer.dispose();
+  });
+
   it('does not resize or repaint the surface again for identical css geometry and DPR', async () => {
     const host = document.createElement('div');
     Object.defineProperty(host, 'clientWidth', { value: 800, configurable: true });

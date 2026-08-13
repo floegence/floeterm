@@ -408,7 +408,7 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
       return;
     }
     this.renderer.resize(cssWidth, cssHeight);
-    this.syncCanvasBackingSurface(cssWidth, cssHeight, pixelRatio);
+    this.syncCanvasBackingSurface(cssWidth, cssHeight);
     this.surfaceCoverageKey = '';
     if (this.sourceGridCoverage && this.module) {
       const batch = this.renderer.batch();
@@ -428,14 +428,14 @@ export class BeamtermFabricRenderer implements TerminalFabricRenderer {
     this.surfacePixelRatio = pixelRatio;
   }
 
-  private syncCanvasBackingSurface(cssWidth: number, cssHeight: number, pixelRatio: number): void {
+  private syncCanvasBackingSurface(cssWidth: number, cssHeight: number): void {
     if (!this.canvas) {
       return;
     }
-    const backingWidth = Math.max(cssWidth, this.canvas.width / pixelRatio);
-    const backingHeight = Math.max(cssHeight, this.canvas.height / pixelRatio);
-    this.canvas.style.width = `${backingWidth}px`;
-    this.canvas.style.height = `${backingHeight}px`;
+    // Keep retained pixel allocation independent from the logical CSS viewport.
+    // A retained backing surface must never expand the visible grid and get clipped by its host.
+    this.canvas.style.width = `${cssWidth}px`;
+    this.canvas.style.height = `${cssHeight}px`;
     this.canvas.style.left = '0';
     this.canvas.style.top = '0';
     this.canvas.style.right = 'auto';
