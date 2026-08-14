@@ -125,9 +125,12 @@ describe('TerminalInputBridge', () => {
       inputType: 'insertLineBreak',
     }));
     const controlC = new KeyboardEvent('keydown', {
-      key: 'c', code: 'KeyC', ctrlKey: true, bubbles: true, cancelable: true,
+      key: 'C', code: 'KeyC', ctrlKey: true, bubbles: true, cancelable: true,
     });
     textarea.dispatchEvent(controlC);
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true,
+    }));
     textarea.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'ArrowUp', code: 'ArrowUp', repeat: true, bubbles: true, cancelable: true,
     }));
@@ -141,6 +144,10 @@ describe('TerminalInputBridge', () => {
       {
         kind: 'key', code: 'KeyC', text: 'c', action: 'press',
         modifiers: { shift: false, control: true, alt: false, super: false, capsLock: false, numLock: false },
+      },
+      {
+        kind: 'key', code: 'KeyC', text: 'C', action: 'press',
+        modifiers: { shift: true, control: true, alt: false, super: false, capsLock: false, numLock: false },
       },
       {
         kind: 'key', code: 'ArrowUp', text: '', action: 'repeat',

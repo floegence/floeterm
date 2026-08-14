@@ -714,7 +714,7 @@ const keyIntentFromKeyboardEvent = (
 ): TerminalKeyInputIntent => ({
   kind: 'key',
   code: event.code,
-  text: event.key.length === 1 ? event.key : '',
+  text: terminalIntentTextFromKeyboardEvent(event),
   action,
   modifiers: {
     shift: event.shiftKey,
@@ -725,6 +725,21 @@ const keyIntentFromKeyboardEvent = (
     numLock: event.getModifierState?.('NumLock') ?? false,
   },
 });
+
+const terminalIntentTextFromKeyboardEvent = (event: KeyboardEvent): string => {
+  if (event.key.length !== 1) return '';
+  if (
+    event.ctrlKey
+    && !event.shiftKey
+    && !event.altKey
+    && !event.metaKey
+    && event.key >= 'A'
+    && event.key <= 'Z'
+  ) {
+    return event.key.toLowerCase();
+  }
+  return event.key;
+};
 
 const resolveBridgeForTarget = (
   bridges: Set<TerminalInputBridge>,
