@@ -63,20 +63,6 @@ const expectAnchor = async page => {
   }).toBe(true);
 };
 
-const waitForStableStreamBytes = async page => {
-  let previous = -1;
-  let stableSamples = 0;
-  for (let sample = 0; sample < 50; sample += 1) {
-    const current = await page.evaluate(() => window.__floetermPerfHarness.getStreamDiagnostics().totalBytes);
-    if (current === previous) stableSamples += 1;
-    else stableSamples = 0;
-    if (stableSamples >= 3) return current;
-    previous = current;
-    await page.waitForTimeout(100);
-  }
-  throw new Error('PTY output did not become stable before the composition cancellation check');
-};
-
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     const originalScale = CanvasRenderingContext2D.prototype.scale;
@@ -97,18 +83,26 @@ test('commits IME text exactly once while preedit, cancellation, and candidate E
   await waitForInteractiveShell(page, sessionId);
 
   await page.evaluate(() => window.__floetermPerfHarness.sendInput(
+    `python3 -c "import os,select,termios;old=termios.tcgetattr(0);new=termios.tcgetattr(0);new[3]&=~(termios.ICANON|termios.ECHO);termios.tcsetattr(0,termios.TCSANOW,new);print('CANCEL_READY',flush=True);ready=select.select([0],[],[],1)[0];data=os.read(0,100) if ready else b'';print('CANCEL_BYTES='+(data.hex() or 'NONE'),flush=True);termios.tcsetattr(0,termios.TCSANOW,old)"\r`,
+  ));
+  await page.waitForFunction(() => window.__floetermPerfHarness.getVisibleLines().join('\n').includes('CANCEL_READY'));
+  await dispatchComposition(page, ['qu', 'q'], '');
+  await expect.poll(
+    async () => (await page.evaluate(() => window.__floetermPerfHarness.getVisibleLines().join('\n'))),
+    { timeout: 15_000 },
+  ).toContain('CANCEL_BYTES=NONE');
+  await waitForInteractiveShell(page, sessionId);
+
+  await page.evaluate(() => window.__floetermPerfHarness.sendInput(
     `python3 -c "import sys;print('IME_READY',flush=True);print(sys.stdin.buffer.readline().hex(),flush=True)"\r`,
   ));
   await page.waitForFunction(() => window.__floetermPerfHarness.getVisibleLines().join('\n').includes('IME_READY'));
-  const beforeCancel = await waitForStableStreamBytes(page);
-  await dispatchComposition(page, ['qu', 'q'], '');
-  await page.waitForTimeout(250);
-  expect(await page.evaluate(() => window.__floetermPerfHarness.getStreamDiagnostics().totalBytes)).toBe(beforeCancel);
-
   await dispatchComposition(page, ['zh', 'zhong'], '中文');
   await page.locator('textarea[aria-label="Terminal input"]').press('Enter');
-  await expect.poll(async () => (await page.evaluate(() => window.__floetermPerfHarness.getVisibleLines().join('\n'))))
-    .toContain('e4b8ade69687');
+  await expect.poll(
+    async () => (await page.evaluate(() => window.__floetermPerfHarness.getVisibleLines().join('\n'))),
+    { timeout: 30_000 },
+  ).toContain('e4b8ade69687');
   const output = await page.evaluate(() => window.__floetermPerfHarness.getVisibleLines().join('\n'));
   expect(output).not.toContain('e4b8ade69687e4b8ade69687');
   expect(output).not.toContain('zhong');

@@ -40,13 +40,14 @@ const openTerminalWithHistory = async page => {
     scrollbar,
     pane: page.locator('.terminalPane'),
     surface: page.locator(`#${controlledId}`),
+    canvas: page.locator('.semanticTerminalSurface'),
     terminal: page.locator('#semantic-terminal-input'),
   };
 };
 
 test('uses real mouse, wheel, keyboard, focus, selection, and media preferences', async ({ context, page }) => {
   const failures = captureBrowserFailures(page);
-  const { scrollbar, pane, surface, terminal } = await openTerminalWithHistory(page);
+  const { scrollbar, pane, surface, canvas, terminal } = await openTerminalWithHistory(page);
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
     origin: new URL(page.url()).origin,
   });
@@ -98,11 +99,11 @@ test('uses real mouse, wheel, keyboard, focus, selection, and media preferences'
   await page.keyboard.press('End');
   await expect(scrollbar).toHaveAttribute('aria-valuenow', String(maximum));
 
-  const terminalBox = await terminal.boundingBox();
-  if (!terminalBox) throw new Error('terminal input surface has no bounding box');
-  await page.mouse.move(terminalBox.x + 12, terminalBox.y + 24);
+  const canvasBox = await canvas.boundingBox();
+  if (!canvasBox) throw new Error('semantic terminal canvas has no bounding box');
+  await page.mouse.move(canvasBox.x + 12, canvasBox.y + 24);
   await page.mouse.down();
-  await page.mouse.move(terminalBox.x + 180, terminalBox.y + 24, { steps: 6 });
+  await page.mouse.move(canvasBox.x + 180, canvasBox.y + 24, { steps: 6 });
   await page.mouse.up();
   await expect.poll(() => page.evaluate(() => window.__floetermPerfHarness.hasSelection())).toBe(true);
   expect((await page.evaluate(() => window.__floetermPerfHarness.getSelectionText())).length).toBeGreaterThan(0);
@@ -130,10 +131,10 @@ test('keeps the right-edge scrollbar transparent to a real touchscreen hit test'
   });
   const page = await context.newPage();
   try {
-    const { scrollbar, terminal } = await openTerminalWithHistory(page);
+    const { scrollbar, canvas } = await openTerminalWithHistory(page);
     const scrollbarBox = await scrollbar.boundingBox();
     if (!scrollbarBox) throw new Error('terminal scrollbar has no bounding box');
-    await terminal.evaluate(element => {
+    await canvas.evaluate(element => {
       window.__floetermTouchTarget = '';
       element.addEventListener('pointerdown', event => {
         window.__floetermTouchTarget = event.pointerType;
