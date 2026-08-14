@@ -9,7 +9,7 @@ check: release-workflow-check go-test-race go-vuln web-check e2e-check
 
 .PHONY: release-workflow-check
 release-workflow-check:
-	@node --test .github/workflows/release.test.mjs
+	@node --test .github/workflows/*.test.mjs
 
 .PHONY: go-test-race
 go-test-race:
