@@ -338,6 +338,7 @@ func TestWriterFailureKeepsActivationInLegacyMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = manager.DeleteSession(session.ID) })
 	var capturedArgs, capturedEnv []string
 	session.startPTYProcess = func(cmd *exec.Cmd, _ *pty.Winsize) (*os.File, error) {
 		capturedArgs = append([]string(nil), cmd.Args...)
@@ -370,6 +371,7 @@ func TestPTYStartFailureCleansPrivateBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = manager.DeleteSession(session.ID) })
 	var bootstrapPath string
 	var capturedArgs, capturedEnv []string
 	session.startPTYProcess = func(cmd *exec.Cmd, _ *pty.Winsize) (*os.File, error) {

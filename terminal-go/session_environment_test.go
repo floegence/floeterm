@@ -69,6 +69,7 @@ func capturePTYEnvironment(t *testing.T, config ManagerConfig) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = manager.DeleteSession(session.ID) })
 
 	var capturedEnv []string
 	session.startPTYProcess = func(cmd *exec.Cmd, _ *pty.Winsize) (*os.File, error) {
