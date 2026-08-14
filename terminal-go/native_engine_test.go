@@ -84,6 +84,50 @@ func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 	}
 }
 
+func TestRealNativeActorClearResetsScreenHistoryAndGraphics(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(8, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPresentationStore(4)
+	actor, err := NewSessionActor(engine, 8, 3, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer actor.Close()
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := actor.ApplyPTYOutput([]byte("one\r\ntwo\r\nthree\r\nfour\x1b_Ga=T,f=24,s=1,v=1,i=7,q=2;AQID\x1b\\")); err != nil {
+		t.Fatal(err)
+	}
+	before, ok := store.Latest()
+	if !ok || before.Frame.History.TotalRows <= before.Frame.Height || len(before.Frame.Graphics.Images) != 1 {
+		t.Fatalf("pre-clear presentation=%+v", before)
+	}
+
+	cleared, err := actor.Clear()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.State.ContentEpoch != 1 || cleared.Sequence != before.Sequence+1 {
+		t.Fatalf("clear identity=%+v before=%+v", cleared.State, before.State)
+	}
+	if cleared.Frame.History.TotalRows != cleared.Frame.Height || cleared.Frame.History.ScreenStartOffset != 0 {
+		t.Fatalf("clear history=%+v", cleared.Frame.History)
+	}
+	if len(cleared.Frame.Graphics.Images) != 0 || len(cleared.Frame.Graphics.Placements) != 0 {
+		t.Fatalf("clear graphics=%+v", cleared.Frame.Graphics)
+	}
+	for _, row := range cleared.Frame.Rows {
+		for _, cell := range row.Cells {
+			if cell.Text != "" && cell.Text != " " {
+				t.Fatalf("clear retained cell text %q", cell.Text)
+			}
+		}
+	}
+}
+
 func TestSemanticCellWidthRejectsUnknownGhosttyWideValue(t *testing.T) {
 	for raw, want := range map[int]uint8{0: 1, 1: 2, 2: 0, 3: 0} {
 		got, err := semanticCellWidth(raw)

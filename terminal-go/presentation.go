@@ -80,9 +80,10 @@ type SemanticPresentation struct {
 }
 
 type TerminalState struct {
-	Sequence uint64 `json:"sequence"`
-	Title    string `json:"title,omitempty"`
-	Bell     uint64 `json:"bell,omitempty"`
+	Sequence     uint64 `json:"sequence"`
+	ContentEpoch uint64 `json:"contentEpoch"`
+	Title        string `json:"title,omitempty"`
+	Bell         uint64 `json:"bell,omitempty"`
 }
 
 type SemanticFrame struct {

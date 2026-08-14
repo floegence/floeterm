@@ -40,6 +40,17 @@ moving the live viewport or changing the current Presentation. The browser may
 project a returned page locally, while the authoritative live frame continues to
 arrive through the same semantic transport.
 
+## Semantic clear
+
+Call `Session.ClearSemanticScreen` with the current attachment, principal, and
+transport generation for the user-visible clear action. The single native
+`SessionActor` resets the VT screen, bounded semantic history, graphics, and tracked
+history projections, then publishes one atomic Presentation with a new
+`State.ContentEpoch`. Every live view receives that exact Presentation. Stale
+generations and unauthorized principals have no effect; a reset or capture failure
+fails the session closed rather than returning a forged success. The operation does
+not send Ctrl-L or clear a browser canvas.
+
 The live service sends a bounded reliable FIFO for geometry/lifecycle events and one
 capacity-one latest Presentation slot. It never sends raw PTY bytes to a browser.
 Resize settlement is emitted only after the actor has applied canonical geometry and

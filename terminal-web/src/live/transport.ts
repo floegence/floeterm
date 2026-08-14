@@ -25,10 +25,20 @@ export type SemanticTerminalLiveControlPlane = Readonly<{
     transportGeneration: number,
     request: SemanticHistoryRequest,
   ): Promise<SemanticHistoryPage>;
+  clearSemanticContent?(
+    sessionId: TerminalID,
+    connectionId: string,
+    transportGeneration: number,
+  ): Promise<TerminalSemanticClearResult>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
   createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
   deleteSession?(sessionId: TerminalID): Promise<void>;
   renameSession?(sessionId: TerminalID, newName: string): Promise<void>;
+}>;
+
+export type TerminalSemanticClearResult = Readonly<{
+  presentationSequence: number;
+  contentEpoch: number;
 }>;
 
 export type TerminalLiveAttachResult = Readonly<{
@@ -101,6 +111,7 @@ export type SemanticTerminalLiveTransport = Readonly<{
   ): Promise<TerminalLiveResizeAppliedResult>;
   sendInput(sessionId: TerminalID, input: string): Promise<void>;
   semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryPage>;
+  clearSemanticContent?(sessionId: TerminalID): Promise<TerminalSemanticClearResult>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
   createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
   deleteSession?(sessionId: TerminalID): Promise<void>;
@@ -260,6 +271,25 @@ export const createSemanticTerminalLiveTransport = (
       }
       return page;
     },
+    clearSemanticContent: options.control.clearSemanticContent ? async sessionId => {
+      const entry = entries.get(sessionId);
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+        throw new Error('terminal live session is not attached');
+      }
+      const result = await options.control.clearSemanticContent!(
+        sessionId, options.connectionId, entry.generation,
+      );
+      if (!isCurrentGeneration(sessionId, entry.generation)) {
+        const error = new Error('terminal semantic clear request was superseded');
+        error.name = 'AbortError';
+        throw error;
+      }
+      if (!Number.isSafeInteger(result.presentationSequence) || result.presentationSequence <= 0
+        || !Number.isSafeInteger(result.contentEpoch) || result.contentEpoch <= 0) {
+        throw new Error('invalid terminal semantic clear settlement');
+      }
+      return result;
+    } : undefined,
     listSessions: options.control.listSessions,
     createSession: options.control.createSession,
     deleteSession: options.control.deleteSession ? async sessionId => {

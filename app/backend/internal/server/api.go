@@ -96,6 +96,16 @@ type semanticHistoryRequest struct {
 	Limit               int                               `json:"limit"`
 }
 
+type semanticClearRequest struct {
+	ConnectionID        string `json:"connectionId"`
+	TransportGeneration uint64 `json:"transportGeneration"`
+}
+
+type semanticClearResponse struct {
+	PresentationSequence uint64 `json:"presentationSequence"`
+	ContentEpoch         uint64 `json:"contentEpoch"`
+}
+
 func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
 	return apiSessionInfo{
 		ID:             info.ID,
@@ -323,6 +333,41 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, page)
+		return
+
+	case "semantic-clear":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var request semanticClearRequest
+		if err := readJSON(w, r, &request, maxJSONBodyBytesDefault); err != nil {
+			http.Error(w, "invalid semantic clear request", http.StatusBadRequest)
+			return
+		}
+		session, ok := s.manager.GetSession(sessionID)
+		if !ok {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		presentation, err := session.ClearSemanticScreen(
+			request.ConnectionID, "local", request.TransportGeneration,
+		)
+		if err != nil {
+			status := http.StatusConflict
+			switch {
+			case errors.Is(err, terminal.ErrControllerTransport):
+				status = http.StatusGone
+			case errors.Is(err, terminal.ErrControllerPrincipal):
+				status = http.StatusForbidden
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		writeJSON(w, http.StatusOK, semanticClearResponse{
+			PresentationSequence: presentation.Sequence,
+			ContentEpoch:         presentation.State.ContentEpoch,
+		})
 		return
 
 	default:

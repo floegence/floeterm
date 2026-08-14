@@ -39,7 +39,7 @@ describe('semantic terminal live codec', () => {
       v: 1,
       sequence: 1,
       geometry: { generation: 1, cols: 1, rows: 1 },
-      state: { sequence: 1 },
+      state: { sequence: 1, contentEpoch: 4 },
       frame: {
         width: 1,
         height: 1,
@@ -53,6 +53,7 @@ describe('semantic terminal live codec', () => {
     });
     const decodedFrame = new TerminalLiveDecoder().push(encoded)[0]!;
     const decoded = decodePresentation(decodedFrame) as any;
+    expect(decoded.state.contentEpoch).toBe(4);
     expect(decoded.frame.rows[0].cells[0]).toMatchObject({ text: '中', width: 2 });
     expect(decoded.frame.graphics.images[0].pixels).toEqual(new Uint8Array([1, 2, 3]));
 

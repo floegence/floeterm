@@ -63,8 +63,14 @@ export class RendererSurface {
       return;
     }
     const cursorChanged = !this.latest || !sameCursor(this.latest.frame.cursor, presentation.frame.cursor);
+    const contentChanged = this.latest !== null
+      && (this.latest.state.contentEpoch ?? 0) !== (presentation.state.contentEpoch ?? 0);
     this.latest = presentation;
     this.viewportFrame = null;
+    if (contentChanged) {
+      this.selectionAnchor = null;
+      this.selectionFocus = null;
+    }
     if (cursorChanged) {
       this.cursorBlinkPhaseVisible = true;
       this.syncCursorBlinkTimer();

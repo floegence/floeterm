@@ -2,7 +2,9 @@ package terminal
 
 import (
 	"bytes"
+	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -109,6 +111,96 @@ func TestSemanticHistoryRequiresCurrentAttachmentAndReleasesOnDetach(t *testing.
 	}
 	if _, err := session.ReadSemanticHistory("view", 2, SemanticHistoryRequest{Direction: HistoryStart, Limit: 3}); err != ErrControllerTransport {
 		t.Fatalf("detached history error=%v", err)
+	}
+}
+
+func TestSemanticClearRequiresCurrentTransportAndAtomicallyTransfersSamePrincipalController(t *testing.T) {
+	engine := &fakeSemanticEngine{frame: SemanticFrame{
+		Width: 8, Height: 3, BufferKind: "normal",
+		Rows: make([]SemanticRow, 3), Cursor: SemanticCursor{Shape: "block"},
+		History: SemanticHistorySummary{TotalRows: 3}, Graphics: SemanticGraphics{},
+	}}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	var firstView, secondView []SemanticPresentation
+	session := &Session{
+		semanticActor: actor,
+		semanticAttachments: map[string]SemanticAttachment{
+			"first":  {PrincipalID: "person", TransportGeneration: 1},
+			"second": {PrincipalID: "person", TransportGeneration: 7},
+			"other":  {PrincipalID: "other", TransportGeneration: 3},
+		},
+		controllerState: ControllerState{AttachmentID: "first", PrincipalID: "person", TransportGeneration: 1, Epoch: 4},
+		liveAttachments: map[string]liveAttachment{
+			"first":  {generation: 1, subscriber: LiveSubscriber{OnPresentation: func(p SemanticPresentation) bool { firstView = append(firstView, p); return true }}},
+			"second": {generation: 7, subscriber: LiveSubscriber{OnPresentation: func(p SemanticPresentation) bool { secondView = append(secondView, p); return true }}},
+		},
+		latestPresentationSequence: 1,
+		geometryGeneration:         1,
+		lastAppliedCols:            8,
+		lastAppliedRows:            3,
+	}
+
+	if _, err := session.ClearSemanticScreen("first", "person", 2); !errors.Is(err, ErrControllerTransport) {
+		t.Fatalf("stale clear error=%v", err)
+	}
+	if engine.resetCount != 0 {
+		t.Fatalf("stale clear reset engine %d times", engine.resetCount)
+	}
+	if _, err := session.ClearSemanticScreen("other", "other", 3); !errors.Is(err, ErrControllerPrincipal) {
+		t.Fatalf("cross-principal clear error=%v", err)
+	}
+	if engine.resetCount != 0 {
+		t.Fatalf("cross-principal clear reset engine %d times", engine.resetCount)
+	}
+
+	presentation, err := session.ClearSemanticScreen("second", "person", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.resetCount != 1 || presentation.State.ContentEpoch != 1 || presentation.Sequence != 2 {
+		t.Fatalf("clear presentation=%+v resetCount=%d", presentation, engine.resetCount)
+	}
+	controller := session.Controller()
+	if controller.AttachmentID != "second" || controller.TransportGeneration != 7 || controller.Epoch != 5 {
+		t.Fatalf("controller after clear=%+v", controller)
+	}
+	if len(firstView) != 1 || len(secondView) != 1 || firstView[0].Sequence != 2 || secondView[0].Sequence != 2 {
+		t.Fatalf("clear broadcasts first=%+v second=%+v", firstView, secondView)
+	}
+}
+
+func TestSemanticClearFailureDoesNotTransferControllerAndFailsClosed(t *testing.T) {
+	engine := &fakeSemanticEngine{
+		frame:    SemanticFrame{Width: 8, Height: 3, Rows: make([]SemanticRow, 3)},
+		resetErr: errors.New("reset failed"),
+	}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{
+		config:        newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		semanticActor: actor,
+		semanticAttachments: map[string]SemanticAttachment{
+			"first":  {PrincipalID: "person", TransportGeneration: 1},
+			"second": {PrincipalID: "person", TransportGeneration: 2},
+		},
+		controllerState: ControllerState{AttachmentID: "first", PrincipalID: "person", TransportGeneration: 1, Epoch: 4},
+	}
+	if _, err := session.ClearSemanticScreen("second", "person", 2); err == nil || !strings.Contains(err.Error(), "reset failed") {
+		t.Fatalf("clear error=%v", err)
+	}
+	if controller := session.Controller(); controller.AttachmentID != "first" || controller.Epoch != 4 {
+		t.Fatalf("failed clear transferred controller=%+v", controller)
+	}
+	if !session.closed || !session.outputClosed || engine.resetCount != 0 {
+		t.Fatalf("failed clear state closed=%v outputClosed=%v resetCount=%d", session.closed, session.outputClosed, engine.resetCount)
 	}
 }
 

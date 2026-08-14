@@ -417,7 +417,11 @@ const SemanticTerminalViewport = (props: {
   };
   const handle: SemanticViewportHandle = {
     sendInput: data => { void props.transport.sendInput(mountedSessionId, data); },
-    clear: () => { void props.transport.sendInput(mountedSessionId, '\x0c'); },
+    clear: () => {
+      void props.transport.clearSemanticContent(mountedSessionId).catch(error => {
+        setPresentationError(error instanceof Error ? error.message : String(error));
+      });
+    },
     serialize: () => latestPresentation?.frame.rows
       .map(row => row.cells.map(cell => cell.text).join('')).join('\n') ?? '',
     getVisibleLines: () => latestPresentation?.frame.rows
@@ -628,7 +632,11 @@ const SingleTerminalPane = (props: {
   )
     ? {
       sendInput: data => { void props.transport.sendInput(props.sessionId, data); },
-      clear: () => { void props.transport.sendInput(props.sessionId, '\x0c'); },
+      clear: () => {
+        void props.transport.clearSemanticContent(props.sessionId).catch(error => {
+          setPresentationError(error instanceof Error ? error.message : String(error));
+        });
+      },
       serialize: () => {
 		const frame = historyProjected() ? historyPage()?.frame : latestPresentation?.frame;
 		return frame?.rows.map(row => row.cells.map(cell => cell.text).join('')).join('\n') ?? '';
@@ -838,7 +846,9 @@ const SingleTerminalPane = (props: {
   });
 
   const clearTerminal = () => {
-    void props.transport.sendInput(props.sessionId, '\x0c');
+    void props.transport.clearSemanticContent(props.sessionId).catch(error => {
+      setPresentationError(error instanceof Error ? error.message : String(error));
+    });
   };
 
   const status = () => 'live';

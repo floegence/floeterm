@@ -11,7 +11,7 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 	p := SemanticPresentation{
 		Sequence: 1,
 		Geometry: TerminalGeometry{Generation: 1, Cols: 2, Rows: 1},
-		State:    TerminalState{Sequence: 1},
+		State:    TerminalState{Sequence: 1, ContentEpoch: 4},
 		Frame: SemanticFrame{
 			Width: 2, Height: 1, BufferKind: "normal",
 			Cursor: SemanticCursor{X: 1, Y: 0, Visible: true, Shape: "bar", Blinking: true, Color: "rgb:010203"},
@@ -28,6 +28,7 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 		t.Fatal(err)
 	}
 	var wire struct {
+		State TerminalState `json:"state"`
 		Frame struct {
 			Graphics SemanticGraphics `json:"graphics"`
 			Cursor   SemanticCursor   `json:"cursor"`
@@ -41,6 +42,9 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 	}
 	if wire.Frame.Cursor != p.Frame.Cursor {
 		t.Fatalf("wire cursor = %+v, want %+v", wire.Frame.Cursor, p.Frame.Cursor)
+	}
+	if wire.State.ContentEpoch != 4 {
+		t.Fatalf("wire content epoch = %d, want 4", wire.State.ContentEpoch)
 	}
 	invalidCursor := p
 	invalidCursor.Frame.Cursor.Shape = "unknown"

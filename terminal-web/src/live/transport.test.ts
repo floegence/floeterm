@@ -25,7 +25,7 @@ describe('semantic terminal live transport', () => {
     const bundle = createSemanticTerminalLiveTransport({
       connectionId: 'view',
       openStream: async () => { const stream = new FakeStream(); streams.push(stream); return stream; },
-      control: { semanticHistory: vi.fn() },
+      control: { semanticHistory: vi.fn(), clearSemanticContent: vi.fn(async () => ({ presentationSequence: 2, contentEpoch: 1 })) },
     });
     const attaching = bundle.transport.attachWithPresentation('session', 80, 24);
     await waitUntil(() => streams.length === 1 && streams[0]!.writes.length === 1);
@@ -40,5 +40,37 @@ describe('semantic terminal live transport', () => {
     streams[1]!.push(encodeAttached({ presentationSequence: 2n, geometryGeneration: 2n, cols: 120, rows: 40 }));
     await expect(replacing).resolves.toMatchObject({ runtimeAttachGeneration: 2, cols: 120, rows: 40 });
     expect(streams[0]!.writes).toHaveLength(2);
+
+    await expect(bundle.transport.clearSemanticContent?.('session')).resolves.toEqual({
+      presentationSequence: 2,
+      contentEpoch: 1,
+    });
+  });
+
+  it('rejects a clear settlement from a superseded transport generation', async () => {
+    const streams: FakeStream[] = [];
+    let settleClear: ((value: { presentationSequence: number; contentEpoch: number }) => void) | undefined;
+    const clearSemanticContent = vi.fn(() => new Promise<{ presentationSequence: number; contentEpoch: number }>((resolve) => {
+      settleClear = resolve;
+    }));
+    const bundle = createSemanticTerminalLiveTransport({
+      connectionId: 'view',
+      openStream: async () => { const stream = new FakeStream(); streams.push(stream); return stream; },
+      control: { semanticHistory: vi.fn(), clearSemanticContent },
+    });
+    const firstAttach = bundle.transport.attachWithPresentation('session', 80, 24);
+    await waitUntil(() => streams.length === 1 && streams[0]!.writes.length === 1);
+    streams[0]!.push(encodeAttached({ presentationSequence: 1n, geometryGeneration: 1n, cols: 80, rows: 24 }));
+    await firstAttach;
+
+    const clearing = bundle.transport.clearSemanticContent!('session');
+    expect(clearSemanticContent).toHaveBeenCalledWith('session', 'view', 1);
+    const replacement = bundle.transport.attachWithPresentation('session', 80, 24);
+    await waitUntil(() => streams.length === 2 && streams[1]!.writes.length === 1);
+    streams[1]!.push(encodeAttached({ presentationSequence: 1n, geometryGeneration: 1n, cols: 80, rows: 24 }));
+    await replacement;
+    settleClear?.({ presentationSequence: 2, contentEpoch: 1 });
+
+    await expect(clearing).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

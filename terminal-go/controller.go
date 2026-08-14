@@ -3,6 +3,7 @@ package terminal
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 var (
@@ -16,6 +17,70 @@ type ControllerState struct {
 	PrincipalID         string
 	TransportGeneration uint64
 	Epoch               uint64
+}
+
+// ClearSemanticScreen validates the live attachment and serializes a native
+// reset with PTY output. A same-principal observer may take control as one
+// atomic action; stale transports and cross-principal requests have no effect.
+func (s *Session) ClearSemanticScreen(attachmentID, principalID string, generation uint64) (SemanticPresentation, error) {
+	if s == nil || attachmentID == "" || principalID == "" || generation == 0 {
+		return SemanticPresentation{}, ErrControllerTransport
+	}
+	if err := s.beginPTYResize(); err != nil {
+		return SemanticPresentation{}, err
+	}
+	s.mu.Lock()
+	if s.closed || s.semanticActor == nil {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return SemanticPresentation{}, errSessionClosed
+	}
+	attachment, ok := s.semanticAttachments[attachmentID]
+	if !ok || attachment.TransportGeneration != generation || attachment.PrincipalID != principalID {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return SemanticPresentation{}, ErrControllerTransport
+	}
+	state := s.controllerState
+	if state.AttachmentID != "" && state.PrincipalID != principalID {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return SemanticPresentation{}, ErrControllerPrincipal
+	}
+	nextController := state
+	if state.AttachmentID != attachmentID || state.TransportGeneration != generation {
+		nextController = ControllerState{
+			AttachmentID: attachmentID, PrincipalID: principalID,
+			TransportGeneration: generation, Epoch: state.Epoch + 1,
+		}
+	}
+	presentation, err := s.semanticActor.Clear()
+	if err != nil {
+		if !errors.Is(err, ErrSemanticClearUnavailable) {
+			s.failClosedSemanticMutationLocked("clear", err)
+		}
+		s.mu.Unlock()
+		s.endPTYResize()
+		return SemanticPresentation{}, err
+	}
+	s.controllerState = nextController
+	s.latestPresentationSequence = presentation.Sequence
+	s.LastActive = time.Now()
+	subscribers := s.liveSubscribersLocked()
+	s.mu.Unlock()
+	s.endPTYResize()
+	s.broadcastPresentation(presentation, subscribers)
+	return presentation, nil
+}
+
+func (s *Session) failClosedSemanticMutationLocked(operation string, cause error) {
+	s.closed = true
+	s.outputClosed = true
+	s.resizeQueued = false
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.config.logger.Error("Terminal session failed closed after semantic mutation", "sessionID", s.ID, "operation", operation, "error", cause)
 }
 
 const MaxSemanticAttachments = 64

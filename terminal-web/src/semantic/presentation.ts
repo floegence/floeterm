@@ -16,7 +16,7 @@ export type SemanticGraphics = { generation: number; images: SemanticGraphicImag
 export type SemanticPresentation = {
   sequence: number;
   geometry: { generation: number; cols: number; rows: number };
-  state: { sequence: number; title?: string; bell?: number };
+  state: { sequence: number; contentEpoch?: number; title?: string; bell?: number };
   frame: SemanticFrame;
 };
 
@@ -46,6 +46,9 @@ export function presentationAdvances(
 ): boolean {
   if (!current) return true;
   if (next.sequence <= current.sequence) return false;
+  if ((next.state.contentEpoch ?? 0) < (current.state.contentEpoch ?? 0)) {
+    throw new Error('terminal presentation content epoch regressed');
+  }
   if (next.geometry.generation < current.geometry.generation) {
     throw new Error('terminal presentation geometry generation regressed');
   }
@@ -65,6 +68,7 @@ export function validatePresentation(value: unknown): SemanticPresentation {
   if (typeof value !== 'object' || value === null) throw new Error('invalid terminal presentation');
   const p = value as SemanticPresentation;
   if (!Number.isSafeInteger(p.sequence) || p.sequence <= 0 || p.state?.sequence !== p.sequence) throw new Error('invalid presentation sequence');
+  if (p.state.contentEpoch !== undefined && (!Number.isSafeInteger(p.state.contentEpoch) || p.state.contentEpoch < 0)) throw new Error('invalid presentation content epoch');
   if (!Number.isInteger(p.geometry?.cols) || !Number.isInteger(p.geometry?.rows) || p.geometry.cols < 1 || p.geometry.rows < 1 || p.geometry.cols > MAX_COLS || p.geometry.rows > MAX_ROWS) throw new Error('invalid presentation geometry');
   if (p.frame?.width !== p.geometry.cols || p.frame?.height !== p.geometry.rows || !Array.isArray(p.frame.rows) || p.frame.rows.length !== p.frame.height) throw new Error('presentation frame does not match geometry');
   const cursor = p.frame?.cursor;

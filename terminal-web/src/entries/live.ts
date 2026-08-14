@@ -59,4 +59,5 @@ export type {
   TerminalLiveAttachmentLifecycleEvent,
   TerminalLiveAttachResult,
   TerminalLiveResizeAppliedResult,
+  TerminalSemanticClearResult,
 } from '../live/transport.js';

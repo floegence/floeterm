@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.15.0
+npm install @floegence/floeterm-terminal-web@0.15.1
 ```
 
 ## Exports
@@ -88,7 +88,10 @@ const stop = eventSource.onTerminalPresentation(sessionId, value => {
 ```
 
 The transport carries attach, structured input, canonical resize settlement,
-Presentation, geometry, and lifecycle frames. It does not carry raw PTY output.
+generation-bound semantic clear settlement, Presentation, geometry, and lifecycle
+frames. It does not carry raw PTY output. `clearSemanticContent(sessionId)` invokes
+the native SessionActor clear control through the current transport generation and
+rejects a settlement if that generation was superseded.
 Unknown input is not replayed after a disconnect. A new transport generation does not
 write through an old connection.
 

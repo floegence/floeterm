@@ -6,12 +6,22 @@ import (
 	"sync"
 )
 
+var ErrSemanticClearUnavailable = errors.New("semantic terminal clear is unavailable")
+
 type SemanticEngine interface {
 	ApplyOutput([]byte) (TerminalState, error)
 	CaptureFrame() (SemanticFrame, error)
 	Resize(cols, rows int) error
 	EncodeInput(SemanticInput) ([]byte, error)
 	Close()
+}
+
+// SemanticResetEngine is implemented by engines that can atomically reset
+// their screen, scrollback, graphics, and terminal modes inside the actor.
+// Keeping this optional avoids turning a native-only control into a second VT
+// implementation requirement for metadata-only consumers.
+type SemanticResetEngine interface {
+	Reset() error
 }
 
 type SemanticInput struct {
@@ -27,6 +37,7 @@ type SessionActor struct {
 	store              *PresentationStore
 	geometry           TerminalGeometry
 	sequence           uint64
+	contentEpoch       uint64
 	historyViews       map[string]semanticHistoryView
 	nextHistoryTokenID uint64
 }
@@ -55,7 +66,7 @@ func (a *SessionActor) PublishInitialPresentation() error {
 	a.sequence = 1
 	frame.History.Revision = a.sequence
 	a.geometry.PresentationSequence = a.sequence
-	return a.store.Publish(SemanticPresentation{Sequence: 1, Geometry: a.geometry, State: TerminalState{Sequence: 1}, Frame: frame})
+	return a.store.Publish(SemanticPresentation{Sequence: 1, Geometry: a.geometry, State: TerminalState{Sequence: 1, ContentEpoch: a.contentEpoch}, Frame: frame})
 }
 
 func (a *SessionActor) ApplyPTYOutput(data []byte) (SemanticPresentation, error) {
@@ -72,6 +83,7 @@ func (a *SessionActor) ApplyPTYOutput(data []byte) (SemanticPresentation, error)
 	a.sequence++
 	frame.History.Revision = a.sequence
 	state.Sequence = a.sequence
+	state.ContentEpoch = a.contentEpoch
 	geometry := a.geometry
 	geometry.PresentationSequence = a.sequence
 	p := SemanticPresentation{Sequence: a.sequence, Geometry: geometry, State: state, Frame: frame}
@@ -128,12 +140,59 @@ func (a *SessionActor) resizeToGeometryLocked(geometry TerminalGeometry) (Semant
 	nextSequence := a.sequence + 1
 	geometry.PresentationSequence = nextSequence
 	frame.History.Revision = nextSequence
-	presentation := SemanticPresentation{Sequence: nextSequence, Geometry: geometry, State: TerminalState{Sequence: nextSequence}, Frame: frame}
+	presentation := SemanticPresentation{Sequence: nextSequence, Geometry: geometry, State: TerminalState{Sequence: nextSequence, ContentEpoch: a.contentEpoch}, Frame: frame}
 	if err := a.store.Publish(presentation); err != nil {
 		return SemanticPresentation{}, a.rollbackResizeLocked(previousGeometry, err)
 	}
 	a.geometry = geometry
 	a.sequence++
+	return presentation, nil
+}
+
+// Clear resets all engine-owned terminal content and publishes the resulting
+// blank state as one actor cut. Native history anchors are invalid after the
+// reset, so every view projection is released before the new epoch is visible.
+func (a *SessionActor) Clear() (SemanticPresentation, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	engine, ok := a.engine.(SemanticResetEngine)
+	if !ok {
+		return SemanticPresentation{}, ErrSemanticClearUnavailable
+	}
+	if err := engine.Reset(); err != nil {
+		return SemanticPresentation{}, fmt.Errorf("reset semantic terminal: %w", err)
+	}
+	for viewID, view := range a.historyViews {
+		closeSemanticHistoryTokens(view.tokens)
+		delete(a.historyViews, viewID)
+	}
+	frame, err := a.engine.CaptureFrame()
+	if err != nil {
+		return SemanticPresentation{}, fmt.Errorf("capture cleared semantic terminal: %w", err)
+	}
+	if frame.Width != a.geometry.Cols || frame.Height != a.geometry.Rows {
+		return SemanticPresentation{}, fmt.Errorf(
+			"cleared semantic frame geometry %dx%d does not match canonical geometry %dx%d",
+			frame.Width, frame.Height, a.geometry.Cols, a.geometry.Rows,
+		)
+	}
+	nextSequence := a.sequence + 1
+	nextEpoch := a.contentEpoch + 1
+	geometry := a.geometry
+	geometry.PresentationSequence = nextSequence
+	frame.History.Revision = nextSequence
+	presentation := SemanticPresentation{
+		Sequence: nextSequence,
+		Geometry: geometry,
+		State:    TerminalState{Sequence: nextSequence, ContentEpoch: nextEpoch},
+		Frame:    frame,
+	}
+	if err := a.store.Publish(presentation); err != nil {
+		return SemanticPresentation{}, err
+	}
+	a.sequence = nextSequence
+	a.contentEpoch = nextEpoch
+	a.geometry = geometry
 	return presentation, nil
 }
 

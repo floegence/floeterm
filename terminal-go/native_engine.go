@@ -163,6 +163,7 @@ func (e *nativeSemanticEngine) ReadHistory(anchor SemanticHistoryAnchor, limit i
 	semantic, err := semanticFrameFromNative(frame)
 	return semantic, AnchorStatus(status), err
 }
+func (e *nativeSemanticEngine) Reset() error          { return e.engine.Reset() }
 func (e *nativeSemanticEngine) Resize(c, r int) error { return e.engine.Resize(uint16(c), uint16(r)) }
 func (e *nativeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 	return e.engine.EncodeText(i.Text)

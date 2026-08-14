@@ -14,6 +14,8 @@ type fakeSemanticEngine struct {
 	calls      []string
 	captureErr error
 	resizeErr  error
+	resetErr   error
+	resetCount int
 }
 
 type fakeHistoryAnchor struct {
@@ -96,7 +98,33 @@ func (e *fakeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 	}
 	return []byte(i.Text), nil
 }
+func (e *fakeSemanticEngine) Reset() error {
+	if e.resetErr != nil {
+		return e.resetErr
+	}
+	e.calls = append(e.calls, "reset")
+	e.resetCount++
+	e.output = nil
+	e.frame.Rows = make([]SemanticRow, e.frame.Height)
+	for row := range e.frame.Rows {
+		e.frame.Rows[row].Cells = make([]SemanticCell, e.frame.Width)
+		for column := range e.frame.Rows[row].Cells {
+			e.frame.Rows[row].Cells[column] = SemanticCell{Text: "", Width: 1}
+		}
+	}
+	e.frame.History.TotalRows = e.frame.Height
+	e.frame.History.ScreenStartOffset = 0
+	return nil
+}
 func (e *fakeSemanticEngine) Close() { e.calls = append(e.calls, "close") }
+
+func (e *fakeSemanticHistoryEngine) Reset() error {
+	if err := e.fakeSemanticEngine.Reset(); err != nil {
+		return err
+	}
+	e.totalRows = e.frame.Height
+	return nil
+}
 
 func TestSessionActorAppliesOutputBeforeCapturingAtomicPresentation(t *testing.T) {
 	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24, Rows: []SemanticRow{{Cells: []SemanticCell{{Text: "界"}}}}}}
@@ -118,6 +146,54 @@ func TestSessionActorAppliesOutputBeforeCapturingAtomicPresentation(t *testing.T
 	}
 	if produced.Sequence != p.Sequence || produced.Geometry.PresentationSequence != produced.Sequence {
 		t.Fatalf("actor cut=%+v stored=%+v", produced, p)
+	}
+}
+
+func TestSessionActorClearResetsScreenHistoryAndPublishesOneAtomicCut(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 8}
+	engine.frame = SemanticFrame{
+		Width: 8, Height: 3, BufferKind: "normal",
+		Rows:     []SemanticRow{{Cells: []SemanticCell{{Text: "old", Width: 1}}}},
+		Cursor:   SemanticCursor{Visible: true, Shape: "block"},
+		History:  SemanticHistorySummary{TotalRows: 8, ScreenStartOffset: 5},
+		Graphics: SemanticGraphics{},
+	}
+	store := NewPresentationStore(2)
+	actor, err := NewSessionActor(engine, 8, 3, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view/1", Direction: HistoryStart, Limit: 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	presentation, err := actor.Clear()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine.resetCount != 1 {
+		t.Fatalf("native reset count=%d, want 1", engine.resetCount)
+	}
+	if presentation.Sequence != 2 || presentation.State.Sequence != 2 || presentation.State.ContentEpoch != 1 {
+		t.Fatalf("clear presentation identity=%+v", presentation)
+	}
+	if presentation.Frame.History.TotalRows != 3 || presentation.Frame.History.ScreenStartOffset != 0 {
+		t.Fatalf("clear history summary=%+v", presentation.Frame.History)
+	}
+	if got := presentation.Frame.Rows[0].Cells[0].Text; got != "" {
+		t.Fatalf("clear retained screen text %q", got)
+	}
+	for _, anchor := range engine.anchors {
+		if !anchor.closed {
+			t.Fatal("clear retained a native history anchor")
+		}
+	}
+	stored, ok := store.Latest()
+	if !ok || stored.Sequence != presentation.Sequence || stored.State.ContentEpoch != 1 {
+		t.Fatalf("stored clear presentation=%+v", stored)
 	}
 }
 

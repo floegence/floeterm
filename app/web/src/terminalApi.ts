@@ -9,6 +9,7 @@ import {
   StreamKind,
   createSemanticTerminalLiveTransport,
   type SemanticTerminalLiveTransport,
+  type TerminalSemanticClearResult,
 } from '@floegence/floeterm-terminal-web/live';
 import { openBrowserWebSocketByteStream } from './terminalWebSocket';
 
@@ -62,6 +63,7 @@ export type AppTerminalTransport = SemanticTerminalLiveTransport & {
   createSession: NonNullable<SemanticTerminalLiveTransport['createSession']>;
   deleteSession: NonNullable<SemanticTerminalLiveTransport['deleteSession']>;
   renameSession: NonNullable<SemanticTerminalLiveTransport['renameSession']>;
+  clearSemanticContent: NonNullable<SemanticTerminalLiveTransport['clearSemanticContent']>;
   getPresentation: (sessionId: TerminalID) => Promise<SemanticPresentation>;
 };
 
@@ -87,6 +89,17 @@ export const createTerminalRuntime = (connId: string) => {
           body: JSON.stringify({ connectionId, transportGeneration, ...request }),
         },
       )),
+      clearSemanticContent: async (
+        sessionId: TerminalID,
+        connectionId: string,
+        transportGeneration: number,
+      ): Promise<TerminalSemanticClearResult> => await requestJson<TerminalSemanticClearResult>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/semantic-clear`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ connectionId, transportGeneration }),
+        },
+      ),
       listSessions: async () => await requestJson<ApiSessionInfo[]>('/api/sessions', { method: 'GET' }),
       createSession: async (name, workingDir) => await requestJson<ApiSessionInfo>('/api/sessions', {
         method: 'POST',
@@ -109,6 +122,7 @@ export const createTerminalRuntime = (connId: string) => {
     createSession: bundle.transport.createSession!,
     deleteSession: bundle.transport.deleteSession!,
     renameSession: bundle.transport.renameSession!,
+	clearSemanticContent: bundle.transport.clearSemanticContent!,
 	getPresentation: async (sessionId: TerminalID) => validatePresentation(await requestJson<unknown>(
 		`/api/sessions/${encodeURIComponent(sessionId)}/presentation`, { method: 'GET' },
 	)),

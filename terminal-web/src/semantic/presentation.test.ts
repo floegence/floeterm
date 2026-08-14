@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { presentationAdvances, validateHistoryPage, validatePresentation } from './presentation';
-import type { SemanticPresentation } from './presentation';
+import type { SemanticFrame, SemanticPresentation } from './presentation';
 import { RendererSurface } from './RendererSurface';
 import { getThemeColors } from '../utils/config';
 
@@ -27,8 +27,16 @@ describe('semantic presentation', () => {
     expect(presentationAdvances(current, next(7, 4))).toBe(false);
     expect(() => presentationAdvances(current, next(9, 3))).toThrow(/generation regressed/);
     expect(presentationAdvances(current, next(9, 5))).toBe(true);
+    expect(() => presentationAdvances(
+      { ...current, state: { sequence: 8, contentEpoch: 2 } },
+      { ...next(9, 5), state: { sequence: 9, contentEpoch: 1 } },
+    )).toThrow(/content epoch regressed/);
   });
   it('requires atomic geometry and frame shape', () => { expect(validatePresentation(valid())).toEqual(valid()); expect(() => validatePresentation({ ...valid(), frame: { ...valid().frame, width: 3 } })).toThrow(/geometry/); });
+  it('validates a monotonic semantic content epoch', () => {
+    expect(validatePresentation({ ...valid(), state: { sequence: 1, contentEpoch: 0 } }).state.contentEpoch).toBe(0);
+    expect(() => validatePresentation({ ...valid(), state: { sequence: 1, contentEpoch: -1 } })).toThrow(/content epoch/);
+  });
   it('accepts only the terminal 256-color indexed range', () => {
     const highest = structuredClone(valid());
     highest.frame.rows[0]!.cells[0]!.style!.foreground = 'indexed:255';
@@ -610,6 +618,39 @@ describe('semantic presentation', () => {
     expect(renderer.hasSelection()).toBe(true);
     expect(renderer.getSelectionText()).toBe('AB');
     expect(fillRect).toHaveBeenCalledWith(0, 0, 9.5, 18.5);
+  });
+
+  it('drops selection and a readonly history projection when content epoch advances', () => {
+    const fillText = vi.fn();
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText,setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:180,clientHeight:90};
+    const canvas={
+      width:0,height:0,clientWidth:180,clientHeight:90,parentElement:host,style:{},
+      getBoundingClientRect:()=>({ left: 0, top: 0, width: 180, height: 90 }),
+      getContext:()=>context,
+    } as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    const initial = structuredClone(valid());
+    initial.state.contentEpoch = 0;
+    initial.frame.rows[0]!.cells[1]!.text = 'B';
+    renderer.apply(validatePresentation(initial));
+    renderer.beginSelection(1, 10);
+    renderer.endSelection(179, 10);
+    const history = structuredClone(initial.frame);
+    history.rows[0]!.cells[0]!.text = 'H';
+    renderer.project(history);
+
+    const cleared = structuredClone(initial);
+    cleared.sequence = 2;
+    cleared.state = { sequence: 2, contentEpoch: 1 };
+    cleared.frame.history.revision = 2;
+    cleared.frame.rows[0]!.cells[0]!.text = '';
+    cleared.frame.rows[0]!.cells[1]!.text = '';
+    renderer.apply(validatePresentation(cleared));
+
+    expect(renderer.hasSelection()).toBe(false);
+    expect(renderer.getSelectionText()).toBe('');
+    expect((renderer as unknown as { viewportFrame: SemanticFrame | null }).viewportFrame).toBeNull();
   });
 
   it('keeps wide graphemes at their natural aspect ratio and never paints their continuation', () => {

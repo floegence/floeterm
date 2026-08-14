@@ -123,6 +123,28 @@ func waitPresentationContaining(t *testing.T, ctx context.Context, connection *l
 	}
 }
 
+func waitPresentationContentEpoch(t *testing.T, ctx context.Context, connection *liveTestConnection, epoch uint64) uint64 {
+	t.Helper()
+	for {
+		frame := readLiveFrame(t, ctx, connection)
+		if frame.Type != livev1.FramePresentation {
+			continue
+		}
+		var presentation struct {
+			Sequence uint64 `json:"sequence"`
+			State    struct {
+				ContentEpoch uint64 `json:"contentEpoch"`
+			} `json:"state"`
+		}
+		if err := json.Unmarshal(frame.Payload, &presentation); err != nil {
+			t.Fatalf("decode semantic presentation: %v", err)
+		}
+		if presentation.State.ContentEpoch == epoch {
+			return presentation.Sequence
+		}
+	}
+}
+
 func waitForInitialPresentation(t *testing.T, ctx context.Context, session *terminal.Session) {
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)
@@ -207,6 +229,75 @@ func TestServerKeepsTwoSemanticViewsOnOneSessionUsable(t *testing.T) {
 	}
 	waitPresentationContaining(t, ctx, first, []byte("MULTI_VIEW"))
 	waitPresentationContaining(t, ctx, second, []byte("MULTI_VIEW"))
+}
+
+func TestServerSemanticClearPublishesOneContentEpochToEveryViewAndRejectsStaleTransport(t *testing.T) {
+	srv, httpSrv := newTestServer(t)
+	session := createTestSession(t, httpSrv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	productSession, ok := srv.manager.GetSession(session.ID)
+	if !ok {
+		t.Fatal("session disappeared")
+	}
+	if _, ready := productSession.LatestPresentation(); !ready {
+		t.Skip("semantic product E2E requires -tags floeterm_native")
+	}
+	first := attachLive(t, ctx, httpSrv.URL, session.ID, "first")
+	waitForInitialPresentation(t, ctx, productSession)
+	second := attachLive(t, ctx, httpSrv.URL, session.ID, "second")
+	input, _ := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("printf CLEAR_ME\\r")})
+	if err := first.conn.Write(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	waitPresentationContaining(t, ctx, first, []byte("CLEAR_ME"))
+	waitPresentationContaining(t, ctx, second, []byte("CLEAR_ME"))
+
+	response, err := http.Post(
+		httpSrv.URL+"/api/sessions/"+session.ID+"/semantic-clear",
+		"application/json",
+		strings.NewReader(`{"connectionId":"second","transportGeneration":1}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("semantic clear status=%d", response.StatusCode)
+	}
+	var settlement semanticClearResponse
+	if err := json.NewDecoder(response.Body).Decode(&settlement); err != nil {
+		t.Fatal(err)
+	}
+	if settlement.ContentEpoch != 1 || settlement.PresentationSequence == 0 {
+		t.Fatalf("semantic clear settlement=%+v", settlement)
+	}
+	if got := waitPresentationContentEpoch(t, ctx, first, 1); got != settlement.PresentationSequence {
+		t.Fatalf("first view clear sequence=%d settlement=%d", got, settlement.PresentationSequence)
+	}
+	if got := waitPresentationContentEpoch(t, ctx, second, 1); got != settlement.PresentationSequence {
+		t.Fatalf("second view clear sequence=%d settlement=%d", got, settlement.PresentationSequence)
+	}
+
+	before, _ := productSession.LatestPresentation()
+	stale, err := http.Post(
+		httpSrv.URL+"/api/sessions/"+session.ID+"/semantic-clear",
+		"application/json",
+		strings.NewReader(`{"connectionId":"second","transportGeneration":2}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stale.Body.Close()
+	if stale.StatusCode != http.StatusGone {
+		t.Fatalf("stale semantic clear status=%d", stale.StatusCode)
+	}
+	after, _ := productSession.LatestPresentation()
+	// The shell may emit ordinary bytes concurrently, so presentation sequence
+	// can advance independently. A stale clear must not advance the reset epoch.
+	if after.State.ContentEpoch != before.State.ContentEpoch {
+		t.Fatalf("stale semantic clear changed presentation: before=%+v after=%+v", before.State, after.State)
+	}
 }
 
 func TestServerRejectsRemovedRawHistoryEndpoints(t *testing.T) {

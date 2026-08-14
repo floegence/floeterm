@@ -32,8 +32,12 @@ keeping its palette, canvas backing store, selection, crop/pad, and IME anchor l
 
 Key contracts:
 
-- PTY output, structured input, resize, and semantic history are serialized by the
+- PTY output, structured input, resize, semantic clear, and semantic history are serialized by the
   session actor.
+- User-visible clear is a generation-bound `Session.ClearSemanticScreen` operation:
+  the native VT owner resets screen, bounded semantic history, graphics, and view
+  projections, then publishes one new `contentEpoch` to every attached view. It never
+  sends Ctrl-L or clears only a browser canvas.
 - A Presentation contains matching state, geometry, frame, cursor, and graphics.
 - Live transport uses a bounded reliable FIFO plus one latest-Presentation slot.
 - Only the current controller changes PTY geometry or sends input; observers remain
@@ -53,8 +57,8 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.10.0
-npm install @floegence/floeterm-terminal-web@0.15.0
+go get github.com/floegence/floeterm/terminal-go@v0.10.1
+npm install @floegence/floeterm-terminal-web@0.15.1
 ```
 
 ## Browser Integration
@@ -115,7 +119,8 @@ if err := manager.ActivateSession(session.ID, 120, 40); err != nil {
 
 Use `livev1.NewService` with the manager backend for the bidirectional semantic live
 stream. The reference server in [`app/backend`](./app/backend) shows attach, input,
-resize, presentation, lifecycle, and semantic-history endpoints.
+resize, generation-bound semantic clear, presentation, lifecycle, and
+semantic-history endpoints.
 
 ## Reference App
 

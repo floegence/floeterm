@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const expectedVersion = '0.15.0';
+const expectedVersion = '0.15.1';
 const expectedExports = ['.', './live', './semantic', './sessions'];
 const forbiddenContent = [
   '@floegence/ghostty-web',
