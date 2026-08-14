@@ -14,6 +14,11 @@ const kittyCommand = bytes => {
   return `python3 -c "import os;os.write(1,bytes.fromhex('${hex}'))"\r`;
 };
 
+const holdBinaryTerminalState = bytes => {
+  const hex = Buffer.from(bytes, 'binary').toString('hex');
+  return `python3 -c "import os,time;os.write(1,bytes.fromhex('${hex}'));time.sleep(30)"\r`;
+};
+
 const readPixel = (image, x, y) => {
   const offset = (Math.max(0, Math.min(image.height - 1, y)) * image.width
     + Math.max(0, Math.min(image.width - 1, x))) * 4;
@@ -179,7 +184,7 @@ test('keeps semantic graphics intact while repainting theme-owned colors', async
   if (!sessionId) throw new Error('single terminal session id is unavailable');
   await waitForInteractiveShell(page, sessionId);
   await page.evaluate(command => window.__floetermPerfHarness.sendInput(command),
-    kittyCommand('\x1b_Ga=T,f=24,s=1,v=1,i=17,q=2;/wAA\x1b\\'));
+    holdBinaryTerminalState('\x1b_Ga=T,f=24,s=1,v=1,i=17,q=2;/wAA\x1b\\'));
   await page.waitForFunction(() => {
     const graphics = window.__floetermPerfHarness?.getPresentationDiagnostics?.()?.frame.graphics;
     return graphics?.images.some(image => image.id === 17)
@@ -211,6 +216,8 @@ test('keeps semantic graphics intact while repainting theme-owned colors', async
       .toBe(before.sequence);
   }
 
+  await page.evaluate(() => window.__floetermPerfHarness.sendInput('\x03'));
+  await waitForInteractiveShell(page, sessionId);
   await page.evaluate(command => window.__floetermPerfHarness.sendInput(command),
     kittyCommand('\x1b_Ga=d,d=I,i=17,q=2\x1b\\'));
   await expect(page.locator('.terminalRendererError')).toHaveCount(0);
