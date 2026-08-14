@@ -7,6 +7,15 @@ export const SEMANTIC_CELL_HEIGHT_CSS_PX = 18;
 export const SEMANTIC_TERMINAL_FONT_FAMILY = '"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans Mono CJK SC", monospace';
 
 export type SemanticTerminalPalette = TerminalThemeColors;
+export type SemanticTerminalTypography = Readonly<{
+  fontSizeCssPx: number;
+  fontFamily: string;
+  lineHeightCssPx?: number;
+}>;
+export type SemanticTerminalCellMetrics = Readonly<{
+  cellWidthCssPx: number;
+  cellHeightCssPx: number;
+}>;
 
 const PALETTE_KEYS = [
   'background', 'foreground', 'cursor', 'cursorAccent', 'selectionBackground', 'selectionForeground',
@@ -26,6 +35,16 @@ export class RendererSurface {
   private cursorBlinkTimer: ReturnType<typeof setTimeout> | null = null;
   private cursorBlinkPhaseVisible = true;
   private palette: SemanticTerminalPalette = Object.freeze(getThemeColors('dark'));
+  private typography: Required<SemanticTerminalTypography> = Object.freeze({
+    fontSizeCssPx: 14,
+    fontFamily: SEMANTIC_TERMINAL_FONT_FAMILY,
+    lineHeightCssPx: SEMANTIC_CELL_HEIGHT_CSS_PX,
+  });
+  private cellMetrics: SemanticTerminalCellMetrics = Object.freeze({
+    cellWidthCssPx: SEMANTIC_CELL_WIDTH_CSS_PX,
+    cellHeightCssPx: SEMANTIC_CELL_HEIGHT_CSS_PX,
+  });
+  private typographyConfigured = false;
   private dprMediaQuery: MediaQueryList | null = null;
   private readonly fontSet: FontFaceSet | undefined;
   private disposed = false;
@@ -42,7 +61,13 @@ export class RendererSurface {
     this.resize();
   };
   private readonly fontLoadingDoneHandler = (): void => {
-    if (!this.disposed && !this.failed) this.scheduleRender();
+    if (this.disposed || this.failed) return;
+    try {
+      if (this.typographyConfigured) this.refreshCellMetrics();
+      this.scheduleRender();
+    } catch (error) {
+      this.fail(error);
+    }
   };
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -83,6 +108,32 @@ export class RendererSurface {
     this.renderGeneration += 1;
     this.canvas.style.background = this.palette.background;
     this.scheduleRender();
+  }
+  setTypography(typography: SemanticTerminalTypography): SemanticTerminalCellMetrics {
+    if (this.failed) return this.getCellMetrics();
+    const fontSizeCssPx = Number(typography.fontSizeCssPx);
+    const fontFamily = String(typography.fontFamily ?? '').trim();
+    const lineHeightCssPx = typography.lineHeightCssPx === undefined
+      ? Math.ceil(fontSizeCssPx * 1.5)
+      : Number(typography.lineHeightCssPx);
+    if (!Number.isFinite(fontSizeCssPx) || fontSizeCssPx < 6 || fontSizeCssPx > 96) {
+      throw new Error('semantic terminal font size must be between 6 and 96 CSS pixels');
+    }
+    if (!fontFamily || fontFamily.length > 1024 || /[\r\n\0]/u.test(fontFamily)) {
+      throw new Error('semantic terminal font family is invalid');
+    }
+    if (!Number.isFinite(lineHeightCssPx) || lineHeightCssPx < fontSizeCssPx || lineHeightCssPx > 192) {
+      throw new Error('semantic terminal line height is invalid');
+    }
+    this.typography = Object.freeze({ fontSizeCssPx, fontFamily, lineHeightCssPx });
+    this.typographyConfigured = true;
+    const metrics = this.refreshCellMetrics();
+    this.cursorBlinkPhaseVisible = true;
+    this.scheduleRender();
+    return metrics;
+  }
+  getCellMetrics(): SemanticTerminalCellMetrics {
+    return { ...this.cellMetrics };
   }
   project(frame: SemanticFrame | null): void {
     if (frame && this.latest && (frame.width !== this.latest.frame.width || frame.height !== this.latest.frame.height)) {
@@ -139,14 +190,15 @@ export class RendererSurface {
     if (bounds.width <= 0 || bounds.height <= 0) return null;
     const cursorX = Math.max(0, Math.min(frame.width - 1, frame.cursor.x));
     const cursorY = Math.max(0, Math.min(frame.height - 1, frame.cursor.y));
-    const width = Math.min(SEMANTIC_CELL_WIDTH_CSS_PX, bounds.width);
-    const height = Math.min(SEMANTIC_CELL_HEIGHT_CSS_PX, bounds.height);
+    const { cellWidthCssPx, cellHeightCssPx } = this.cellMetrics;
+    const width = Math.min(cellWidthCssPx, bounds.width);
+    const height = Math.min(cellHeightCssPx, bounds.height);
     const left = Math.max(bounds.left, Math.min(
-      bounds.left + cursorX * SEMANTIC_CELL_WIDTH_CSS_PX,
+      bounds.left + cursorX * cellWidthCssPx,
       bounds.left + bounds.width - width,
     ));
     const top = Math.max(bounds.top, Math.min(
-      bounds.top + cursorY * SEMANTIC_CELL_HEIGHT_CSS_PX,
+      bounds.top + cursorY * cellHeightCssPx,
       bounds.top + bounds.height - height,
     ));
     return { left, top, width, height };
@@ -212,12 +264,11 @@ export class RendererSurface {
     // The engine grid is authoritative. A view may be larger or smaller than
     // that grid, so preserve one CSS cell metric and crop/pad locally instead
     // of stretching the shared frame to fit an observer viewport.
-    const cellWidth = SEMANTIC_CELL_WIDTH_CSS_PX;
-    const cellHeight = SEMANTIC_CELL_HEIGHT_CSS_PX;
+    const { cellWidthCssPx: cellWidth, cellHeightCssPx: cellHeight } = this.cellMetrics;
     context.clearRect(0, 0, cssWidth, cssHeight);
     context.fillStyle = palette.background;
     context.fillRect(0, 0, cssWidth, cssHeight);
-    context.font = `${Math.max(1, Math.floor(cellHeight * 0.78))}px ${SEMANTIC_TERMINAL_FONT_FAMILY}`;
+    context.font = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
     context.textBaseline = 'alphabetic';
     frame.rows.forEach((row, y) => {
       row.cells.forEach((cell, x) => {
@@ -314,14 +365,15 @@ export class RendererSurface {
       ? palette.selectionBackground
       : resolveColor(cell?.style?.background, palette.background, palette);
     context.fillStyle = background;
-    context.fillRect(x * SEMANTIC_CELL_WIDTH_CSS_PX, y * SEMANTIC_CELL_HEIGHT_CSS_PX, SEMANTIC_CELL_WIDTH_CSS_PX + 0.5, SEMANTIC_CELL_HEIGHT_CSS_PX + 0.5);
+    const { cellWidthCssPx, cellHeightCssPx } = this.cellMetrics;
+    context.fillRect(x * cellWidthCssPx, y * cellHeightCssPx, cellWidthCssPx + 0.5, cellHeightCssPx + 0.5);
     if (cell?.text) {
       const foreground = this.isCellSelected(y, x)
         ? palette.selectionForeground
         : resolveColor(cell.style?.foreground, palette.foreground, palette);
-      this.paintCellText(context, cell, x, y, SEMANTIC_CELL_WIDTH_CSS_PX, SEMANTIC_CELL_HEIGHT_CSS_PX, foreground);
+      this.paintCellText(context, cell, x, y, cellWidthCssPx, cellHeightCssPx, foreground);
     }
-    this.paintCursor(context, frame, frame.cursor, SEMANTIC_CELL_WIDTH_CSS_PX, SEMANTIC_CELL_HEIGHT_CSS_PX, palette);
+    this.paintCursor(context, frame, frame.cursor, cellWidthCssPx, cellHeightCssPx, palette);
   }
 
   private async paintGraphics(context: CanvasRenderingContext2D, frame: SemanticFrame, cellWidth: number, cellHeight: number, renderGeneration: number, palette: SemanticTerminalPalette): Promise<void> {
@@ -397,6 +449,26 @@ export class RendererSurface {
     return this.context;
   }
 
+  private refreshCellMetrics(): SemanticTerminalCellMetrics {
+    const context = this.getContext();
+    context.font = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
+    const measuredWidth = typeof context.measureText === 'function'
+      ? context.measureText('M').width
+      : this.typography.fontSizeCssPx * (SEMANTIC_CELL_WIDTH_CSS_PX / 14);
+    const effectiveWidth = Number.isFinite(measuredWidth) && measuredWidth > 0
+      ? measuredWidth
+      : this.typography.fontSizeCssPx * (SEMANTIC_CELL_WIDTH_CSS_PX / 14);
+    const cellWidthCssPx = Math.max(1, Math.min(128, Math.ceil(effectiveWidth)));
+    const cellHeightCssPx = Math.max(1, Math.min(192, Math.ceil(this.typography.lineHeightCssPx)));
+    if (
+      cellWidthCssPx !== this.cellMetrics.cellWidthCssPx
+      || cellHeightCssPx !== this.cellMetrics.cellHeightCssPx
+    ) {
+      this.cellMetrics = Object.freeze({ cellWidthCssPx, cellHeightCssPx });
+    }
+    return { ...this.cellMetrics };
+  }
+
   private syncCursorBlinkTimer(): void {
     this.clearCursorBlinkTimer();
     const cursor = this.currentFrame()?.cursor;
@@ -463,8 +535,8 @@ export class RendererSurface {
     const bounds = this.canvas.getBoundingClientRect();
     if (bounds.width <= 0 || bounds.height <= 0) return null;
     return {
-      col: Math.max(0, Math.min(frame.width - 1, Math.floor((clientX - bounds.left) / SEMANTIC_CELL_WIDTH_CSS_PX))),
-      row: Math.max(0, Math.min(frame.height - 1, Math.floor((clientY - bounds.top) / SEMANTIC_CELL_HEIGHT_CSS_PX))),
+      col: Math.max(0, Math.min(frame.width - 1, Math.floor((clientX - bounds.left) / this.cellMetrics.cellWidthCssPx))),
+      row: Math.max(0, Math.min(frame.height - 1, Math.floor((clientY - bounds.top) / this.cellMetrics.cellHeightCssPx))),
     };
   }
 

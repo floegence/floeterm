@@ -86,6 +86,11 @@ describe('semantic terminal browser surface', () => {
     host.append(canvas, input);
     document.body.append(host);
     const renderer = new RendererSurface(canvas);
+    const metrics = renderer.setTypography({
+      fontSizeCssPx: 16,
+      fontFamily: 'monospace',
+      lineHeightCssPx: 24,
+    });
     renderer.apply(presentation());
     await nextPaint();
 
@@ -105,6 +110,8 @@ describe('semantic terminal browser surface', () => {
     expect(cursor).not.toBeNull();
     expect(Math.abs(anchor.left - cursor!.left)).toBeLessThanOrEqual(1);
     expect(Math.abs(anchor.top - cursor!.top)).toBeLessThanOrEqual(1);
+    expect(cursor).toMatchObject({ width: metrics.cellWidthCssPx, height: metrics.cellHeightCssPx });
+    expect(host.querySelectorAll('canvas')).toHaveLength(1);
 
     input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
     input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, data: 'zhong', inputType: 'insertCompositionText', isComposing: true }));

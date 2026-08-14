@@ -717,6 +717,34 @@ describe('semantic presentation', () => {
     expect(renderer.getCursorClientRect()).toEqual({ left: 109, top: 200, width: 9, height: 18 });
   });
 
+  it('uses one view-local typography contract for glyphs, cell metrics, and cursor anchors', () => {
+    const context = {
+      clearRect: vi.fn(), fillRect: vi.fn(), fillText: vi.fn(), setTransform: vi.fn(),
+      measureText: vi.fn(() => ({ width: 9.2 })),
+      font: '', textBaseline: '', fillStyle: '',
+    };
+    const host = { clientWidth: 120, clientHeight: 48 };
+    const canvas = {
+      width: 0, height: 0, clientWidth: 120, clientHeight: 48, parentElement: host, style: {},
+      getBoundingClientRect: () => ({ left: 100, top: 200, right: 220, bottom: 248, width: 120, height: 48 }),
+      getContext: () => context,
+    } as unknown as HTMLCanvasElement;
+    const value = structuredClone(valid());
+    value.frame.cursor = { x: 1, y: 0, visible: true, shape: 'bar', blinking: false };
+    const renderer = new RendererSurface(canvas);
+
+    expect(renderer.setTypography({
+      fontSizeCssPx: 16,
+      fontFamily: '"Test Mono", monospace',
+      lineHeightCssPx: 24,
+    })).toEqual({ cellWidthCssPx: 10, cellHeightCssPx: 24 });
+    renderer.apply(validatePresentation(value));
+
+    expect(renderer.getCellMetrics()).toEqual({ cellWidthCssPx: 10, cellHeightCssPx: 24 });
+    expect(context.font).toBe('16px "Test Mono", monospace');
+    expect(renderer.getCursorClientRect()).toEqual({ left: 110, top: 200, width: 10, height: 24 });
+  });
+
   it('repaints after web fonts settle and removes the listener on dispose', async () => {
     let readyFonts!: () => void;
     const ready = new Promise<void>(resolve => { readyFonts = resolve; });
@@ -743,6 +771,7 @@ describe('semantic presentation', () => {
     await Promise.resolve();
     expect(context.fillText).toHaveBeenCalled();
     expect(listeners).toHaveLength(1);
+    expect(renderer.getCellMetrics()).toEqual({ cellWidthCssPx: 9, cellHeightCssPx: 18 });
 
     renderer.dispose();
     expect(listeners).toHaveLength(0);

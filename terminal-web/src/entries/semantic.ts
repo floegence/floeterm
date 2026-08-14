@@ -16,7 +16,11 @@ export {
   TERMINAL_THEME_DEFINITIONS,
   TERMINAL_THEME_NAMES,
 } from '../utils/config.js';
-export type { SemanticTerminalPalette } from '../semantic/RendererSurface.js';
+export type {
+  SemanticTerminalCellMetrics,
+  SemanticTerminalPalette,
+  SemanticTerminalTypography,
+} from '../semantic/RendererSurface.js';
 export type {
   SemanticCell,
   SemanticFrame,

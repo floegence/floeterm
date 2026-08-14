@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.15.1
+npm install @floegence/floeterm-terminal-web@0.15.2
 ```
 
 ## Exports
@@ -33,6 +33,10 @@ import {
 
 const renderer = new RendererSurface(canvas, error => showInlineError(error));
 renderer.setPalette(getThemeColors('tokyoNight'));
+const metrics = renderer.setTypography({
+  fontSizeCssPx: 14,
+  fontFamily: '"JetBrains Mono", monospace',
+});
 renderer.apply(validatePresentation(payload));
 ```
 
@@ -40,6 +44,12 @@ renderer.apply(validatePresentation(payload));
 rejects sequence or geometry regressions, follows host CSS bounds, tracks DPR changes,
 fills every backing pixel before painting cells/graphics/cursor, and never stretches
 the authoritative cell grid to an observer viewport.
+
+Typography is view-local. `setTypography()` returns the exact CSS cell metrics used
+for glyphs, graphics, selection hit-testing, cursor painting, and IME anchoring.
+Use the same metrics to calculate desired columns and rows before sending a canonical
+resize request. Font changes repaint the latest Presentation without replacing the
+canvas or creating terminal state in the browser.
 
 Themes are view-local. Changing the palette repaints the latest Presentation without
 requesting output, resizing the PTY, or affecting another view. Explicit ANSI/RGB
