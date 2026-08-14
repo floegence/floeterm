@@ -91,7 +91,6 @@ type renameSessionRequest struct {
 type semanticHistoryRequest struct {
 	ConnectionID        string                            `json:"connectionId"`
 	TransportGeneration uint64                            `json:"transportGeneration"`
-	ExpectedRevision    uint64                            `json:"expectedRevision,omitempty"`
 	Anchor              string                            `json:"anchor,omitempty"`
 	Direction           terminal.SemanticHistoryDirection `json:"direction"`
 	Limit               int                               `json:"limit"`
@@ -311,14 +310,13 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		page, err := session.ReadSemanticHistory(request.ConnectionID, request.TransportGeneration, terminal.SemanticHistoryRequest{
-			ExpectedRevision: request.ExpectedRevision,
-			Anchor:           request.Anchor, Direction: request.Direction, Limit: request.Limit,
+			Anchor: request.Anchor, Direction: request.Direction, Limit: request.Limit,
 		})
 		if err != nil {
 			status := http.StatusConflict
 			if errors.Is(err, terminal.ErrControllerTransport) {
 				status = http.StatusGone
-			} else if !errors.Is(err, terminal.ErrSemanticHistoryAnchor) && !errors.Is(err, terminal.ErrSemanticHistoryRevision) {
+			} else if !errors.Is(err, terminal.ErrSemanticHistoryAnchor) {
 				status = http.StatusBadRequest
 			}
 			http.Error(w, err.Error(), status)

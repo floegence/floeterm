@@ -434,7 +434,6 @@ const SemanticTerminalViewport = (props: {
 			const presentation = latestPresentation;
 			if (!presentation) throw new Error('terminal presentation is unavailable');
 			const request: SemanticHistoryRequest = {
-				expectedRevision: presentation.sequence,
 				direction,
 				limit: limit ?? presentation.frame.height,
 				...(anchor ? { anchor } : {}),
@@ -650,7 +649,6 @@ const SingleTerminalPane = (props: {
 				const presentation = latestPresentation;
 				if (!presentation) throw new Error('terminal presentation is unavailable');
 				const request: SemanticHistoryRequest = {
-					expectedRevision: presentation.sequence,
 					direction,
 					limit: limit ?? presentation.frame.height,
 					...(anchor ? { anchor } : {}),
@@ -702,7 +700,6 @@ const SingleTerminalPane = (props: {
 		setHistoryBusy(true);
 		try {
 			const page = await props.transport.semanticHistory(props.sessionId, {
-				expectedRevision: latestPresentation.sequence,
 				...(direction === 'forward' || direction === 'backward' ? { anchor: current!.anchor } : {}),
 				direction,
 				limit: latestPresentation.frame.height,

@@ -251,6 +251,32 @@ func TestSessionActorReadsOwnedSemanticHistoryWithoutMovingPresentation(t *testi
 	}
 }
 
+func TestSessionActorReadsHistoryAtCurrentCutAfterPresentationAdvances(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 12}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := actor.ApplyPTYOutput([]byte("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := actor.ApplyPTYOutput([]byte("second")); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view-a", Direction: HistoryEnd, Limit: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Revision != first.Sequence+1 {
+		t.Fatalf("history revision=%d, want current actor cut %d", page.Revision, first.Sequence+1)
+	}
+}
+
 func TestSessionActorReleasesSupersededHistoryAnchorsAndRejectsStaleTokens(t *testing.T) {
 	engine := &fakeSemanticHistoryEngine{totalRows: 9}
 	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))

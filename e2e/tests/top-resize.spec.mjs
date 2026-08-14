@@ -82,16 +82,11 @@ const waitForConvergence = async (page, previousGeneration) => {
 };
 
 const semanticHistoryContains = async (page, marker) => page.evaluate(async expected => {
-  try {
-    const history = await window.__floetermPerfHarness?.readSemanticHistory('end');
-    return history?.frame.rows
-      .map(row => row.cells.map(cell => cell.text).join(''))
-      .join('\n')
-      .includes(expected) ?? false;
-  } catch (error) {
-    if (/semantic history revision is stale/.test(String(error))) return false;
-    throw error;
-  }
+  const history = await window.__floetermPerfHarness?.readSemanticHistory('end');
+  return history?.frame.rows
+    .map(row => row.cells.map(cell => cell.text).join(''))
+    .join('\n')
+    .includes(expected) ?? false;
 }, marker);
 
 const waitForAuthoritativeTopFrame = async (page, geometry) => {

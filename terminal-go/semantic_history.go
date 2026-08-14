@@ -8,8 +8,7 @@ import (
 const MaxSemanticHistoryRows = 200
 
 var (
-	ErrSemanticHistoryAnchor   = errors.New("semantic history anchor is invalid")
-	ErrSemanticHistoryRevision = errors.New("semantic history revision is stale")
+	ErrSemanticHistoryAnchor = errors.New("semantic history anchor is invalid")
 )
 
 type SemanticHistoryDirection string
@@ -42,11 +41,10 @@ type SemanticHistoryEngine interface {
 }
 
 type SemanticHistoryRequest struct {
-	ViewID           string                   `json:"-"`
-	ExpectedRevision uint64                   `json:"expectedRevision,omitempty"`
-	Anchor           string                   `json:"anchor,omitempty"`
-	Direction        SemanticHistoryDirection `json:"direction"`
-	Limit            int                      `json:"limit"`
+	ViewID    string                   `json:"-"`
+	Anchor    string                   `json:"anchor,omitempty"`
+	Direction SemanticHistoryDirection `json:"direction"`
+	Limit     int                      `json:"limit"`
 }
 
 // SemanticHistoryPage is a temporary, Go-owned projection. Anchor strings are

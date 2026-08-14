@@ -22,7 +22,6 @@ export type SemanticPresentation = {
 
 export type SemanticHistoryDirection = 'start' | 'end' | 'forward' | 'backward';
 export type SemanticHistoryRequest = Readonly<{
-  expectedRevision?: number;
   anchor?: string;
   direction: SemanticHistoryDirection;
   limit: number;

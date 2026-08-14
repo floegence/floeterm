@@ -167,9 +167,6 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 	if !ok {
 		return SemanticHistoryPage{}, errors.New("semantic history is unavailable")
 	}
-	if request.ExpectedRevision != 0 && request.ExpectedRevision != a.sequence {
-		return SemanticHistoryPage{}, ErrSemanticHistoryRevision
-	}
 	totalRows, err := engine.HistoryTotalRows()
 	if err != nil {
 		return SemanticHistoryPage{}, err
