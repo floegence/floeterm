@@ -161,7 +161,7 @@ describe('terminal/live_v1 codec', () => {
     const payload = new TextEncoder().encode(JSON.stringify({
       v: 1, sequence: 1, geometry: { generation: 1, cols: 1, rows: 1 }, state: { sequence: 1 },
       frame: {
-        width: 1, height: 1, bufferKind: 'normal', cursor: { x: 0, y: 0, visible: true },
+        width: 1, height: 1, bufferKind: 'normal', cursor: { x: 0, y: 0, visible: true, shape: 'block', blinking: false },
         history: { revision: 1, totalRows: 1, screenStartOffset: 0 }, styles: [['default', 'default', false, false, false]],
         rows: [[['', 1, 0, '']]],
         graphics: {
@@ -172,6 +172,7 @@ describe('terminal/live_v1 codec', () => {
       },
     }));
     const decoded = decodePresentation({ type: TerminalLiveFrameType.Presentation, flags: 0, payload }) as any;
+    expect(decoded.frame.cursor).toEqual({ x: 0, y: 0, visible: true, shape: 'block', blinking: false });
     expect(decoded.frame.graphics.images[0].pixels).toEqual(new Uint8Array([1, 2, 3]));
     expect(decoded.frame.graphics.placements[0]).toMatchObject({ imageId: 7, gridColumns: 1, visible: true });
   });

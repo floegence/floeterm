@@ -60,6 +60,9 @@ func TestReadonlyHistoryUsesIndependentTrackedAnchorsWithoutMovingViewport(t *te
 	if got := historyRowText(bravoPage.Rows[0]); got != "bravo" {
 		t.Fatalf("bravo row=%q", got)
 	}
+	if alphaPage.Cursor.Visible || bravoPage.Cursor.Visible {
+		t.Fatalf("readonly history exposed live cursor: alpha=%+v bravo=%+v", alphaPage.Cursor, bravoPage.Cursor)
+	}
 	if before != after {
 		t.Fatalf("readonly query moved shared viewport: before=%v after=%v", before, after)
 	}

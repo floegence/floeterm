@@ -3,10 +3,15 @@ package terminal
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
 	"sync"
 )
 
 func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
+	if err := validateSemanticPresentationCursor(p); err != nil {
+		return nil, err
+	}
 	type wireCell [4]any
 	type wireStyle [5]any
 	styles := make([]wireStyle, 0, 16)
@@ -43,6 +48,24 @@ func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
 		return nil, ErrPresentationBackpressure
 	}
 	return data, nil
+}
+
+var semanticRGBPattern = regexp.MustCompile(`^rgb:[0-9a-fA-F]{6}$`)
+
+func validateSemanticPresentationCursor(p SemanticPresentation) error {
+	cursor := p.Frame.Cursor
+	if p.Frame.Width <= 0 || p.Frame.Height <= 0 || cursor.X < 0 || cursor.X >= p.Frame.Width || cursor.Y < 0 || cursor.Y >= p.Frame.Height {
+		return errors.New("semantic cursor is outside the frame")
+	}
+	switch cursor.Shape {
+	case "bar", "block", "underline", "hollow":
+	default:
+		return fmt.Errorf("invalid semantic cursor shape %q", cursor.Shape)
+	}
+	if cursor.Color != "" && !semanticRGBPattern.MatchString(cursor.Color) {
+		return errors.New("invalid semantic cursor color")
+	}
+	return nil
 }
 
 var ErrPresentationBackpressure = errors.New("presentation reliable FIFO is full")
@@ -98,9 +121,13 @@ type SemanticStyle struct {
 	Underline  bool   `json:"underline,omitempty"`
 }
 type SemanticCursor struct {
-	X       int  `json:"x"`
-	Y       int  `json:"y"`
-	Visible bool `json:"visible"`
+	X        int    `json:"x"`
+	Y        int    `json:"y"`
+	Visible  bool   `json:"visible"`
+	Shape    string `json:"shape"`
+	Blinking bool   `json:"blinking"`
+	WideTail bool   `json:"wideTail,omitempty"`
+	Color    string `json:"color,omitempty"`
 }
 type SemanticGraphicFormat uint8
 

@@ -1,5 +1,20 @@
 import { expect, test } from '@playwright/test';
+import { PNG } from 'pngjs';
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
+
+const visiblePixelSample = buffer => {
+  const image = PNG.sync.read(buffer);
+  const points = [[0, 0], [image.width - 1, 0], [0, image.height - 1], [image.width - 1, image.height - 1], [Math.floor(image.width / 2), Math.floor(image.height / 2)]];
+  const pixels = points.map(([x, y]) => {
+    const offset = (Math.max(0, y) * image.width + Math.max(0, x)) * 4;
+    return [...image.data.subarray(offset, offset + 4)];
+  });
+  return {
+    pixels,
+    ok: pixels.every(pixel => pixel[3] === 255)
+      && !pixels.every(pixel => pixel[0] > 245 && pixel[1] > 245 && pixel[2] > 245),
+  };
+};
 
 test('keeps the semantic live session and surface geometry through repeated window resizes', async ({ page, request }) => {
   const response = await request.post('/api/sessions', { data: { name: `resize-stress-${Date.now()}`, workingDir: '' } });
@@ -59,6 +74,37 @@ test('keeps the semantic live session and surface geometry through repeated wind
   for (let i = 0; i < 60; i += 1) {
     const viewport = { width: 800 + (i % 5) * 137, height: 500 + (i % 4) * 113 };
     await page.setViewportSize(viewport);
+    const visibleFrames = await page.evaluate(() => new Promise(resolve => {
+      const samples = [];
+      const sample = () => requestAnimationFrame(() => setTimeout(() => {
+        const pane = document.querySelector('.terminalPane');
+        const canvas = document.querySelector('.semanticTerminalSurface');
+        const presentation = window.__floetermPerfHarness?.getPresentationDiagnostics?.();
+        if (!(pane instanceof HTMLElement) || !(canvas instanceof HTMLCanvasElement) || !presentation) {
+          samples.push({ ok: false, reason: 'surface unavailable' });
+        } else {
+          const rect = canvas.getBoundingClientRect();
+          const dpr = devicePixelRatio || 1;
+          samples.push({
+            ok: Math.abs(rect.width - pane.clientWidth) < 1
+              && Math.abs(rect.height - pane.clientHeight) < 1
+              && canvas.width === Math.round(rect.width * dpr)
+              && canvas.height === Math.round(rect.height * dpr),
+            pane: { width: pane.clientWidth, height: pane.clientHeight },
+            canvas: { width: rect.width, height: rect.height, backingWidth: canvas.width, backingHeight: canvas.height },
+            sequence: presentation.sequence,
+            generation: presentation.geometry.generation,
+          });
+        }
+        if (samples.length === 3) resolve(samples);
+        else sample();
+      }, 0));
+      sample();
+    }));
+    expect(visibleFrames.every(sample => sample.ok), `resize ${i + 1} exposed an uncommitted canvas geometry: ${JSON.stringify(visibleFrames)}`).toBe(true);
+    expect(visibleFrames.every((sample, index) => index === 0 || (sample.sequence >= visibleFrames[index - 1].sequence && sample.generation >= visibleFrames[index - 1].generation)), `resize ${i + 1} regressed a visible Presentation: ${JSON.stringify(visibleFrames)}`).toBe(true);
+    const pixels = visiblePixelSample(await page.locator('.semanticTerminalSurface').screenshot({ animations: 'disabled' }));
+    expect(pixels.ok, `resize ${i + 1} exposed a transparent/white canvas: ${JSON.stringify(pixels)}`).toBe(true);
     const immediateSurface = await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => {
       const pane = document.querySelector('.terminalPane');
       const canvas = document.querySelector('.semanticTerminalSurface');

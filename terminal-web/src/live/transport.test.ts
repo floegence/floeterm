@@ -90,7 +90,7 @@ const createHarness = (controlEvents?: TerminalEventSource) => {
       revision: request.expectedRevision ?? 1,
       anchor: 'current', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
       offset: 0, totalRows: 24, screenStartOffset: 0, hasPrevious: false, hasNext: false,
-      frame: { width: 80, height: 24, bufferKind: 'normal', history: { revision: request.expectedRevision ?? 1, totalRows: 24, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: Array.from({ length: 24 }, () => ({ cells: Array.from({ length: 80 }, () => ({ text: ' ', width: 1 })) })), cursor: { x: 0, y: 0, visible: false } },
+      frame: { width: 80, height: 24, bufferKind: 'normal', history: { revision: request.expectedRevision ?? 1, totalRows: 24, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: Array.from({ length: 24 }, () => ({ cells: Array.from({ length: 80 }, () => ({ text: ' ', width: 1 })) })), cursor: { x: 0, y: 0, visible: false, shape: 'block' as const, blinking: false } },
     })),
     listSessions: vi.fn(async () => []),
     createSession: vi.fn(async () => ({
@@ -434,7 +434,7 @@ describe('terminal live transport', () => {
     settleHistory?.({
       revision: 1, anchor: 'old', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
       offset: 0, totalRows: 24, screenStartOffset: 0, hasPrevious: false, hasNext: false,
-      frame: { width: 80, height: 24, bufferKind: 'normal', history: { revision: 1, totalRows: 24, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: [], cursor: { x: 0, y: 0, visible: false } },
+      frame: { width: 80, height: 24, bufferKind: 'normal', history: { revision: 1, totalRows: 24, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: [], cursor: { x: 0, y: 0, visible: false, shape: 'block' as const, blinking: false } },
     });
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });

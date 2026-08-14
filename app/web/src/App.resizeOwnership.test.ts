@@ -8,7 +8,8 @@ const stylesSource = readFileSync(new URL('./styles.css', import.meta.url), 'utf
 
 describe('reference app resize ownership', () => {
   it('gives semantic mode one canvas and one resize observer without legacy renderer mounting', () => {
-    expect(appSource).not.toContain("addEventListener('resize'");
+    expect(appSource.match(/addEventListener\('resize'/g)).toHaveLength(2);
+    expect(appSource.match(/removeEventListener\('resize'/g)).toHaveLength(2);
     expect(appSource).not.toContain("addEventListener('orientationchange'");
     expect(appSource).not.toContain('visualViewport');
     expect(appSource).not.toContain('scheduleResize');

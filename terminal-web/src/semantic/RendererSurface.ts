@@ -11,10 +11,22 @@ export class RendererSurface {
   private selectionFocus: { row: number; col: number } | null = null;
   private renderGeneration = 0;
   private failed = false;
+  private context: CanvasRenderingContext2D | null | undefined;
+  private cursorBlinkTimer: ReturnType<typeof setTimeout> | null = null;
+  private cursorBlinkPhaseVisible = true;
+  private readonly graphicBitmaps = new Map<string, ImageBitmap>();
+  private readonly visibilityHandler = (): void => {
+    if (this.failed) return;
+    this.cursorBlinkPhaseVisible = true;
+    this.syncCursorBlinkTimer();
+    this.scheduleRender();
+  };
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly onError: (error: Error) => void = () => {},
-  ) {}
+  ) {
+    globalThis.document?.addEventListener('visibilitychange', this.visibilityHandler);
+  }
   apply(presentation: SemanticPresentation): void {
     if (this.failed) return;
     try {
@@ -23,8 +35,13 @@ export class RendererSurface {
       this.fail(error);
       return;
     }
+    const cursorChanged = !this.latest || !sameCursor(this.latest.frame.cursor, presentation.frame.cursor);
     this.latest = presentation;
     this.viewportFrame = null;
+    if (cursorChanged) {
+      this.cursorBlinkPhaseVisible = true;
+      this.syncCursorBlinkTimer();
+    }
     this.scheduleRender();
   }
   project(frame: SemanticFrame | null): void {
@@ -33,6 +50,7 @@ export class RendererSurface {
     }
     this.viewportFrame = frame;
     this.clearSelection();
+    this.syncCursorBlinkTimer();
     this.scheduleRender();
   }
   beginSelection(clientX: number, clientY: number): void {
@@ -76,11 +94,13 @@ export class RendererSurface {
   }
   resize(): void {
     if (this.failed) return;
-    // ResizeObserver runs after layout. Update the backing store immediately
-    // from the host content box so the browser never stretches an old bitmap
-    // across the new pane while the full paint waits for the next frame.
-    this.renderGeneration += 1;
-    this.syncBackingStore();
+    // Never assign width/height here: that clears the visible bitmap before
+    // the browser reaches the next paint. The RAF below changes the backing,
+    // fills every pixel, and draws the latest immutable Presentation in one
+    // JavaScript task, so no empty backing can be composited between them.
+    this.canvas.style.width = '100%';
+    this.canvas.style.height = '100%';
+    this.canvas.style.background = '#0b0f14';
     this.scheduleRender();
   }
   dispose(): void {
@@ -89,6 +109,9 @@ export class RendererSurface {
       globalThis.cancelAnimationFrame(this.animationFrame);
     }
     this.animationFrame = null;
+    this.clearCursorBlinkTimer();
+    this.clearGraphicBitmaps();
+    globalThis.document?.removeEventListener('visibilitychange', this.visibilityHandler);
     this.latest = null;
     this.viewportFrame = null;
     this.selectionAnchor = null;
@@ -117,8 +140,7 @@ export class RendererSurface {
   private render(presentation: SemanticPresentation): void {
     const renderGeneration = ++this.renderGeneration;
     const frame = this.viewportFrame ?? presentation.frame;
-    const context = this.canvas.getContext('2d');
-    if (!context) throw new Error('2D terminal renderer unavailable');
+    const context = this.getContext();
     // The canvas owns its backing store, but its containing pane owns the
     // layout bounds. Reading the canvas rect after writing inline dimensions
     // would make a resize self-referential and preserve the old viewport.
@@ -144,37 +166,121 @@ export class RendererSurface {
       });
       row.cells.forEach((cell, x) => {
         if (!cell.text) return;
-        context.fillStyle = this.isCellSelected(y, x)
+        const foreground = this.isCellSelected(y, x)
           ? '#ffffff'
           : resolveColor(cell.style?.foreground, '#e5e7eb');
-        const baseline = (y + 0.82) * cellHeight;
-        if (cell.width > 1) {
-          const metrics = context.measureText(cell.text);
-          const inkWidth = metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight;
-          if (inkWidth > 0) {
-            const horizontalPadding = Math.min(1, cellWidth * 0.08);
-            const targetInkWidth = Math.max(1, cellWidth * cell.width - horizontalPadding * 2);
-            const scaleX = targetInkWidth / inkWidth;
-            context.save();
-            context.translate(x * cellWidth + horizontalPadding, 0);
-            context.scale(scaleX, 1);
-            context.fillText(cell.text, metrics.actualBoundingBoxLeft, baseline);
-            context.restore();
-            return;
-          }
-        }
-        context.fillText(cell.text, x * cellWidth, baseline);
+        this.paintCellText(context, cell, x, y, cellWidth, cellHeight, foreground);
       });
     });
+    this.paintCursor(context, frame, frame.cursor, cellWidth, cellHeight);
     void this.paintGraphics(context, frame, cellWidth, cellHeight, renderGeneration)
       .catch(error => this.fail(error));
   }
 
+  private paintCursor(
+    context: CanvasRenderingContext2D,
+    frame: SemanticFrame,
+    cursor: SemanticFrame['cursor'],
+    cellWidth: number,
+    cellHeight: number,
+  ): void {
+    if (!cursor.visible || (cursor.blinking && !this.cursorBlinkPhaseVisible)) return;
+    const x = Math.max(0, Math.min(frame.width - 1, cursor.x));
+    const y = Math.max(0, Math.min(frame.height - 1, cursor.y));
+    const foreground = resolveColor(cursor.color, '#e5e7eb');
+    context.fillStyle = foreground;
+    if (cursor.shape === 'bar') {
+      context.fillRect(x * cellWidth, y * cellHeight, Math.max(2, Math.round(cellWidth * 0.16)), cellHeight);
+    } else if (cursor.shape === 'underline') {
+      context.fillRect(x * cellWidth, (y + 1) * cellHeight - 2, cellWidth, 2);
+    } else if (cursor.shape === 'hollow') {
+      const thickness = Math.max(1, Math.round(Math.min(cellWidth, cellHeight) * 0.1));
+      context.fillRect(x * cellWidth, y * cellHeight, cellWidth, thickness);
+      context.fillRect(x * cellWidth, (y + 1) * cellHeight - thickness, cellWidth, thickness);
+      context.fillRect(x * cellWidth, y * cellHeight, thickness, cellHeight);
+      context.fillRect((x + 1) * cellWidth - thickness, y * cellHeight, thickness, cellHeight);
+    } else {
+      const cell = frame.rows[y]?.cells[x];
+      const inverseForeground = this.isCellSelected(y, x)
+        ? '#315c3d'
+        : resolveColor(cell?.style?.background, '#0b0f14');
+      context.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+      if (cell?.text) {
+        this.paintCellText(context, cell, x, y, cellWidth, cellHeight, inverseForeground);
+      }
+    }
+  }
+
+  private paintCellText(
+    context: CanvasRenderingContext2D,
+    cell: SemanticFrame['rows'][number]['cells'][number],
+    x: number,
+    y: number,
+    cellWidth: number,
+    cellHeight: number,
+    color: string,
+  ): void {
+    context.fillStyle = color;
+    const baseline = (y + 0.82) * cellHeight;
+    if (cell.width > 1) {
+      const metrics = context.measureText(cell.text);
+      const inkWidth = metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight;
+      if (inkWidth > 0) {
+        const horizontalPadding = Math.min(1, cellWidth * 0.08);
+        const targetInkWidth = Math.max(1, cellWidth * cell.width - horizontalPadding * 2);
+        const scaleX = targetInkWidth / inkWidth;
+        context.save();
+        context.translate(x * cellWidth + horizontalPadding, 0);
+        context.scale(scaleX, 1);
+        context.fillText(cell.text, metrics.actualBoundingBoxLeft, baseline);
+        context.restore();
+        return;
+      }
+    }
+    context.fillText(cell.text, x * cellWidth, baseline);
+  }
+
+  private repaintCursorCell(): void {
+    const frame = this.currentFrame();
+    if (!frame || !frame.cursor.visible) return;
+    if (frame.graphics.placements.some(placement => placement.visible)) {
+      this.scheduleRender();
+      return;
+    }
+    const x = Math.max(0, Math.min(frame.width - 1, frame.cursor.x));
+    const y = Math.max(0, Math.min(frame.height - 1, frame.cursor.y));
+    const cell = frame.rows[y]?.cells[x];
+    const context = this.getContext();
+    const background = this.isCellSelected(y, x)
+      ? '#315c3d'
+      : resolveColor(cell?.style?.background, '#0b0f14');
+    context.fillStyle = background;
+    context.fillRect(x * SEMANTIC_CELL_WIDTH_CSS_PX, y * SEMANTIC_CELL_HEIGHT_CSS_PX, SEMANTIC_CELL_WIDTH_CSS_PX + 0.5, SEMANTIC_CELL_HEIGHT_CSS_PX + 0.5);
+    if (cell?.text) {
+      const foreground = this.isCellSelected(y, x)
+        ? '#ffffff'
+        : resolveColor(cell.style?.foreground, '#e5e7eb');
+      this.paintCellText(context, cell, x, y, SEMANTIC_CELL_WIDTH_CSS_PX, SEMANTIC_CELL_HEIGHT_CSS_PX, foreground);
+    }
+    this.paintCursor(context, frame, frame.cursor, SEMANTIC_CELL_WIDTH_CSS_PX, SEMANTIC_CELL_HEIGHT_CSS_PX);
+  }
+
   private async paintGraphics(context: CanvasRenderingContext2D, frame: SemanticFrame, cellWidth: number, cellHeight: number, renderGeneration: number): Promise<void> {
-    if (frame.graphics.images.length === 0 || frame.graphics.placements.length === 0) return;
+    if (frame.graphics.images.length === 0 || frame.graphics.placements.length === 0) {
+      this.clearGraphicBitmaps();
+      return;
+    }
+    const requestedKeys = new Set<string>();
     const bitmaps = new Map<number, ImageBitmap>();
-    try {
-      await Promise.all(frame.graphics.images.map(async image => {
+    const pending: Array<Promise<{ id: number; key: string; bitmap: ImageBitmap }>> = [];
+    for (const image of frame.graphics.images) {
+      const key = `${image.id}:${image.generation}:${image.format}:${image.width}x${image.height}`;
+      requestedKeys.add(key);
+      const cached = this.graphicBitmaps.get(key);
+      if (cached) {
+        bitmaps.set(image.id, cached);
+      } else {
+        pending.push((async () => {
         const imageData = context.createImageData(image.width, image.height);
         const target = imageData.data;
         for (let source = 0, destination = 0; source < image.pixels.length; destination += 4) {
@@ -188,26 +294,82 @@ export class RendererSurface {
             const gray = image.pixels[source++]!; target[destination] = gray; target[destination + 1] = gray; target[destination + 2] = gray; target[destination + 3] = 255;
           }
         }
-        bitmaps.set(image.id, await createImageBitmap(imageData));
-      }));
-      if (renderGeneration !== this.renderGeneration) return;
-      for (const placement of [...frame.graphics.placements].sort((left, right) => left.z - right.z)) {
-        if (!placement.visible) continue;
-        const bitmap = bitmaps.get(placement.imageId);
-        if (!bitmap) continue;
-        context.drawImage(bitmap, placement.viewportColumn * cellWidth, placement.viewportRow * cellHeight, placement.gridColumns * cellWidth, placement.gridRows * cellHeight);
+          return { id: image.id, key, bitmap: await createImageBitmap(imageData) };
+        })());
       }
-    } finally {
-      for (const bitmap of bitmaps.values()) bitmap.close();
     }
+    const created = pending.length > 0 ? await Promise.all(pending) : [];
+    if (renderGeneration !== this.renderGeneration) {
+      for (const item of created) item.bitmap.close();
+      return;
+    }
+    for (const item of created) {
+      this.graphicBitmaps.get(item.key)?.close();
+      this.graphicBitmaps.set(item.key, item.bitmap);
+      bitmaps.set(item.id, item.bitmap);
+    }
+    for (const [key, bitmap] of this.graphicBitmaps) {
+      if (!requestedKeys.has(key)) {
+        bitmap.close();
+        this.graphicBitmaps.delete(key);
+      }
+    }
+    for (const placement of [...frame.graphics.placements].sort((left, right) => left.z - right.z)) {
+      if (!placement.visible) continue;
+      const bitmap = bitmaps.get(placement.imageId);
+      if (!bitmap) continue;
+      context.drawImage(bitmap, placement.viewportColumn * cellWidth, placement.viewportRow * cellHeight, placement.gridColumns * cellWidth, placement.gridRows * cellHeight);
+    }
+    this.paintCursor(context, frame, frame.cursor, cellWidth, cellHeight);
   }
 
   private fail(cause: unknown): void {
     if (this.failed) return;
     this.failed = true;
     this.renderGeneration += 1;
+    this.clearCursorBlinkTimer();
     const error = cause instanceof Error ? cause : new Error(String(cause));
     this.onError(error);
+  }
+
+  private getContext(): CanvasRenderingContext2D {
+    if (this.context === undefined) this.context = this.canvas.getContext('2d');
+    if (!this.context) throw new Error('2D terminal renderer unavailable');
+    return this.context;
+  }
+
+  private syncCursorBlinkTimer(): void {
+    this.clearCursorBlinkTimer();
+    const cursor = this.currentFrame()?.cursor;
+    if (!cursor?.visible || !cursor.blinking || globalThis.document?.hidden) {
+      this.cursorBlinkPhaseVisible = true;
+      return;
+    }
+    this.cursorBlinkTimer = globalThis.setTimeout(() => {
+      this.cursorBlinkTimer = null;
+      const current = this.currentFrame()?.cursor;
+      if (!current?.visible || !current.blinking || globalThis.document?.hidden) {
+        this.cursorBlinkPhaseVisible = true;
+        return;
+      }
+      this.cursorBlinkPhaseVisible = !this.cursorBlinkPhaseVisible;
+      try {
+        this.repaintCursorCell();
+      } catch (error) {
+        this.fail(error);
+      }
+      if (!this.failed) this.syncCursorBlinkTimer();
+    }, 600);
+  }
+
+  private clearCursorBlinkTimer(): void {
+    if (this.cursorBlinkTimer !== null) globalThis.clearTimeout(this.cursorBlinkTimer);
+    this.cursorBlinkTimer = null;
+  }
+
+  private clearGraphicBitmaps(): void {
+    for (const bitmap of this.graphicBitmaps.values()) bitmap.close();
+    this.graphicBitmaps.clear();
   }
 
   private currentFrame(): SemanticFrame | null {
@@ -271,4 +433,14 @@ function resolveColor(value: string | undefined, fallback: string): string {
     return ANSI16[index] ?? fallback;
   }
   return fallback;
+}
+
+function sameCursor(left: SemanticFrame['cursor'], right: SemanticFrame['cursor']): boolean {
+  return left.x === right.x
+    && left.y === right.y
+    && left.visible === right.visible
+    && left.shape === right.shape
+    && left.blinking === right.blinking
+    && left.wideTail === right.wideTail
+    && left.color === right.color;
 }

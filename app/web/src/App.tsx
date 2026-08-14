@@ -352,6 +352,8 @@ const SemanticTerminalViewport = (props: {
       ? undefined
       : new ResizeObserver(() => { void requestResize(); });
     if (canvas.parentElement) resizeObserver?.observe(canvas.parentElement);
+    const handleWindowResize = () => { void requestResize(); };
+    window.addEventListener('resize', handleWindowResize);
     const unsubscribePresentation = props.eventSource.onTerminalPresentation?.(mountedSessionId, value => {
       try {
         const presentation = validatePresentation(value);
@@ -402,6 +404,7 @@ const SemanticTerminalViewport = (props: {
       unsubscribeGeometry?.();
       unsubscribeData();
       resizeObserver?.disconnect();
+      window.removeEventListener('resize', handleWindowResize);
       semanticResize.dispose();
       renderer?.dispose();
       props.transport.forgetSession(mountedSessionId);
@@ -661,13 +664,15 @@ const SingleTerminalPane = (props: {
 	};
 
   onMount(() => {
-	if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas, error => {
-		setPresentationError(error.message);
-	});
-	const semanticResizeObserver = semanticCanvas && typeof ResizeObserver !== 'undefined'
-		? new ResizeObserver(() => { void requestResize(); })
-		: undefined;
-	if (semanticCanvas?.parentElement) semanticResizeObserver?.observe(semanticCanvas.parentElement);
+		if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas, error => {
+			setPresentationError(error.message);
+		});
+		const semanticResizeObserver = semanticCanvas && typeof ResizeObserver !== 'undefined'
+			? new ResizeObserver(() => { void requestResize(); })
+			: undefined;
+		if (semanticCanvas?.parentElement) semanticResizeObserver?.observe(semanticCanvas.parentElement);
+		const handleWindowResize = () => { void requestResize(); };
+		window.addEventListener('resize', handleWindowResize);
 		const applyPresentation = (value: unknown) => {
 			try {
 				const presentation = validatePresentation(value);
@@ -726,6 +731,7 @@ const SingleTerminalPane = (props: {
 		unsubscribePresentation?.();
 		unsubscribeLifecycle?.();
 		semanticResizeObserver?.disconnect();
+		window.removeEventListener('resize', handleWindowResize);
 		semanticResize.dispose();
 		semanticRenderer?.dispose();
       unsubscribeData();

@@ -3,9 +3,9 @@ import { presentationAdvances, validateHistoryPage, validatePresentation } from 
 import type { SemanticPresentation } from './presentation';
 import { RendererSurface } from './RendererSurface';
 
-const valid = (): SemanticPresentation => ({ sequence: 1, geometry: { generation: 1, cols: 2, rows: 1 }, state: { sequence: 1 }, frame: { width: 2, height: 1, bufferKind: 'normal', history: { revision: 1, totalRows: 1, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: [{ cells: [{ text: 'A', width: 1, style: { foreground: 'rgb:e5e7eb', background: 'indexed:1' } }, { text: '', width: 1 }] }], cursor: { x: 0, y: 0, visible: true } } });
+const valid = (): SemanticPresentation => ({ sequence: 1, geometry: { generation: 1, cols: 2, rows: 1 }, state: { sequence: 1 }, frame: { width: 2, height: 1, bufferKind: 'normal', history: { revision: 1, totalRows: 1, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: [{ cells: [{ text: 'A', width: 1, style: { foreground: 'rgb:e5e7eb', background: 'indexed:1' } }, { text: '', width: 1 }] }], cursor: { x: 0, y: 0, visible: true, shape: 'block', blinking: false } } });
 describe('semantic presentation', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
   it('rejects duplicate or regressing presentation cuts before they replace latest state', () => {
     const current = validatePresentation({
       ...valid(),
@@ -28,6 +28,78 @@ describe('semantic presentation', () => {
     expect(presentationAdvances(current, next(9, 5))).toBe(true);
   });
   it('requires atomic geometry and frame shape', () => { expect(validatePresentation(valid())).toEqual(valid()); expect(() => validatePresentation({ ...valid(), frame: { ...valid().frame, width: 3 } })).toThrow(/geometry/); });
+  it('requires a bounded cursor contract and paints each supported visible shape', () => {
+    const context = { clearRect: vi.fn(), fillRect: vi.fn(), fillText: vi.fn(), setTransform: vi.fn(), font: '', textBaseline: '', fillStyle: '' };
+    const host = { clientWidth: 180, clientHeight: 90 };
+    const canvas = { width: 0, height: 0, clientWidth: 180, clientHeight: 90, parentElement: host, style: {}, getContext: () => context } as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    for (const [index, [shape, expected]] of ([
+      ['block', [9, 0, 9, 18]],
+      ['bar', [9, 0, 2, 18]],
+      ['underline', [9, 16, 9, 2]],
+    ] as const).entries()) {
+      const presentation = structuredClone(valid());
+      presentation.frame.cursor = { x: 1, y: 0, visible: true, shape, blinking: true };
+      presentation.sequence += index + 1;
+      presentation.state.sequence = presentation.sequence;
+      presentation.frame.history.revision = presentation.sequence;
+      renderer.apply(validatePresentation(presentation));
+      expect(context.fillRect).toHaveBeenLastCalledWith(...expected);
+    }
+    const hidden = structuredClone(valid());
+    hidden.frame.cursor = { x: 1, y: 0, visible: false, shape: 'block', blinking: false };
+    hidden.sequence = 10;
+    hidden.state.sequence = 10;
+    hidden.frame.history.revision = 10;
+    expect(validatePresentation(hidden).frame.cursor.visible).toBe(false);
+    expect(() => validatePresentation({ ...hidden, frame: { ...hidden.frame, cursor: { ...hidden.frame.cursor, shape: 'invalid' } } })).toThrow(/cursor/);
+  });
+  it('blinks from the current immutable Presentation with one disposable view timer', () => {
+    vi.useFakeTimers();
+    const context = { clearRect: vi.fn(), fillRect: vi.fn(), fillText: vi.fn(), setTransform: vi.fn(), font: '', textBaseline: '', fillStyle: '' };
+    const host = { clientWidth: 180, clientHeight: 90 };
+    const canvas = { width: 0, height: 0, clientWidth: 180, clientHeight: 90, parentElement: host, style: {}, getContext: () => context } as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    const presentation = structuredClone(valid());
+    presentation.frame.cursor.blinking = true;
+    renderer.apply(validatePresentation(presentation));
+    expect(context.fillRect).toHaveBeenLastCalledWith(0, 0, 9, 18);
+    expect(vi.getTimerCount()).toBe(1);
+
+    context.clearRect.mockClear();
+    context.fillRect.mockClear();
+    vi.advanceTimersByTime(600);
+    expect(context.clearRect).not.toHaveBeenCalled();
+    expect(context.fillRect).toHaveBeenCalledWith(0, 0, 9.5, 18.5);
+    expect(vi.getTimerCount()).toBe(1);
+
+    context.clearRect.mockClear();
+    context.fillRect.mockClear();
+    vi.advanceTimersByTime(600);
+    expect(context.clearRect).not.toHaveBeenCalled();
+    expect(context.fillRect).toHaveBeenLastCalledWith(0, 0, 9, 18);
+    renderer.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('cancels cursor work when the renderer fails closed', () => {
+    vi.useFakeTimers();
+    const onError = vi.fn();
+    const context = {
+      clearRect: vi.fn(), fillRect: vi.fn(() => { throw new Error('paint failed'); }),
+      fillText: vi.fn(), setTransform: vi.fn(), font: '', textBaseline: '', fillStyle: '',
+    };
+    const host = { clientWidth: 180, clientHeight: 90 };
+    const canvas = { width: 0, height: 0, clientWidth: 180, clientHeight: 90, parentElement: host, style: {}, getContext: () => context } as unknown as HTMLCanvasElement;
+    const presentation = structuredClone(valid());
+    presentation.frame.cursor.blinking = true;
+    const renderer = new RendererSurface(canvas, onError);
+
+    renderer.apply(validatePresentation(presentation));
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'paint failed' }));
+    expect(vi.getTimerCount()).toBe(0);
+    renderer.dispose();
+  });
   it('validates bounded semantic history pages without raw replay fields', () => {
     const page = {
       revision: 4, anchor: 'page', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
@@ -85,12 +157,24 @@ describe('semantic presentation', () => {
       placements: [{ imageId: 7, placementId: 9, z: 0, viewportColumn: 1, viewportRow: 0, gridColumns: 1, gridRows: 1, visible: true, virtual: false }],
     };
 
-    new RendererSurface(canvas).apply(validatePresentation(presentation));
+    const firstRenderer = new RendererSurface(canvas);
+    firstRenderer.apply(validatePresentation(presentation));
 
     await vi.waitFor(() => expect(context.drawImage).toHaveBeenCalledWith(bitmap, 9, 0, 9, 18));
     expect(canvas.getContext).toHaveBeenCalledTimes(1);
     expect(Array.from(imageData.data)).toEqual([1, 2, 3, 255]);
-    expect(bitmap.close).toHaveBeenCalledTimes(1);
+    expect(Math.max(...context.fillRect.mock.invocationCallOrder)).toBeGreaterThan(context.drawImage.mock.invocationCallOrder[0]);
+
+    host.clientWidth = 240;
+    firstRenderer.dispose();
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(validatePresentation(presentation));
+    await vi.waitFor(() => expect(context.drawImage).toHaveBeenCalledTimes(2));
+    renderer.resize();
+    expect(context.drawImage).toHaveBeenCalledTimes(3);
+    expect(createImageBitmap).toHaveBeenCalledTimes(2);
+    renderer.dispose();
+    expect(bitmap.close).toHaveBeenCalledTimes(2);
   });
   it('fails closed once when an asynchronous graphic decode fails', async () => {
     const createImageBitmap = vi.fn(async () => { throw new Error('bitmap decode failed'); });
@@ -174,7 +258,7 @@ describe('semantic presentation', () => {
     expect(heightWrites).toHaveBeenCalledTimes(1);
   });
 
-  it('updates backing geometry synchronously before a coalesced resize paint', () => {
+  it('keeps the complete old backing until a coalesced resize paint commits', () => {
     let animationFrame: FrameRequestCallback | undefined;
     vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
       animationFrame = callback;
@@ -186,13 +270,60 @@ describe('semantic presentation', () => {
     const renderer = new RendererSurface(canvasMock as unknown as HTMLCanvasElement);
     renderer.apply(validatePresentation(valid()));
     animationFrame?.(16);
+    context.fillRect.mockClear();
+    context.fillText.mockClear();
     host.clientWidth = 640;
     host.clientHeight = 300;
 
     renderer.resize();
 
+    expect(canvasMock.width).toBe(320);
+    expect(canvasMock.height).toBe(160);
+    expect(context.fillRect).not.toHaveBeenCalled();
+    expect(context.fillText).not.toHaveBeenCalled();
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(2);
+
+    animationFrame?.(32);
     expect(canvasMock.width).toBe(640);
     expect(canvasMock.height).toBe(300);
+    expect(context.fillRect).toHaveBeenCalledWith(0, 0, 640, 300);
+    expect(context.fillText).toHaveBeenCalledWith('A', 0, 14.76);
+  });
+
+  it('atomically repaints every DPR backing resize without recreating the context', () => {
+    vi.stubGlobal('devicePixelRatio', 2);
+    let animationFrame: FrameRequestCallback | undefined;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      animationFrame = callback;
+      return 73;
+    }));
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:240,clientHeight:120};
+    const getContext=vi.fn(() => context);
+    const canvasMock={width:0,height:0,clientWidth:240,clientHeight:120,parentElement:host,style:{},getContext};
+    const renderer = new RendererSurface(canvasMock as unknown as HTMLCanvasElement);
+    renderer.apply(validatePresentation(valid()));
+    animationFrame?.(16);
+    context.fillRect.mockClear();
+    context.fillText.mockClear();
+    host.clientWidth = 360;
+    host.clientHeight = 180;
+
+    renderer.resize();
+
+    expect(canvasMock.width).toBe(480);
+    expect(canvasMock.height).toBe(240);
+    expect(context.fillRect).not.toHaveBeenCalled();
+    expect(context.fillText).not.toHaveBeenCalled();
+
+    animationFrame?.(32);
+    expect(canvasMock.width).toBe(720);
+    expect(canvasMock.height).toBe(360);
+    expect(context.setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 0, 0);
+    expect(context.fillRect).toHaveBeenCalledWith(0, 0, 360, 180);
+    expect(context.fillText).toHaveBeenCalledWith('A', 0, 14.76);
+    expect(getContext).toHaveBeenCalledTimes(1);
   });
 
   it('paints only the latest complete presentation once per browser frame', () => {
@@ -213,6 +344,7 @@ describe('semantic presentation', () => {
       state: { sequence },
       frame: {
         ...valid().frame,
+        cursor: { ...valid().frame.cursor, visible: false },
         history: { ...valid().frame.history, revision: sequence },
         rows: [{ cells: [{ ...valid().frame.rows[0].cells[0], text }, valid().frame.rows[0].cells[1]] }],
       },
@@ -297,7 +429,7 @@ describe('semantic presentation', () => {
           { text: '', width: 0 },
           { text: 'B', width: 1 },
         ] }],
-        cursor: { x: 0, y: 0, visible: true },
+        cursor: { x: 0, y: 0, visible: false, shape: 'block', blinking: false },
       },
     });
 

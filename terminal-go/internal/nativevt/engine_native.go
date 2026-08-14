@@ -8,6 +8,19 @@ package nativevt
 #include "generated/adapter.h"
 int floeterm_native_history_total_rows(NativeEngine *engine, size_t *rows);
 int floeterm_native_anchor_screen_row(NativeAnchor *anchor, uint32_t *row);
+typedef struct {
+  uint16_t x;
+  uint16_t y;
+  uint8_t visible;
+  uint8_t blinking;
+  uint8_t shape;
+  uint8_t wide_tail;
+  uint8_t color_has_value;
+  uint8_t color_r;
+  uint8_t color_g;
+  uint8_t color_b;
+} FloetermCursorInfo;
+int floeterm_native_cursor_info(NativeEngine *engine, FloetermCursorInfo *out);
 */
 import "C"
 
@@ -49,12 +62,20 @@ type Graphics struct {
 	Placements []GraphicPlacement
 }
 type Frame struct {
-	Width, Height    int
-	Rows             []Row
-	CursorX, CursorY int
-	CursorVisible    bool
-	Alternate        bool
-	Graphics         Graphics
+	Width, Height int
+	Rows          []Row
+	Cursor        Cursor
+	Alternate     bool
+	Graphics      Graphics
+}
+type Cursor struct {
+	X, Y       int
+	Visible    bool
+	Blinking   bool
+	Shape      string
+	WideTail   bool
+	Color      Color
+	ColorValue bool
 }
 type Result struct {
 	Title     string
@@ -137,16 +158,32 @@ func (e *Engine) Capture() (Frame, error) {
 		return Frame{}, errors.New("capture native frame")
 	}
 	defer C.native_frame_free(&out)
-	return frameFromNative(&out)
+	var cursor C.FloetermCursorInfo
+	if C.floeterm_native_cursor_info(e.handle, &cursor) == 0 {
+		return Frame{}, errors.New("capture native cursor")
+	}
+	return frameFromNative(&out, &cursor)
 }
 
-func frameFromNative(out *C.NativeFrame) (Frame, error) {
+func frameFromNative(out *C.NativeFrame, cursor *C.FloetermCursorInfo) (Frame, error) {
 	if out == nil || out.width == 0 || out.height == 0 || out.cells == nil {
 		return Frame{}, errors.New("invalid native frame")
 	}
 	data := C.GoBytes(unsafe.Pointer(out.data), C.int(out.data_len))
 	cells := unsafe.Slice((*C.NativeCell)(unsafe.Pointer(out.cells)), int(out.width)*int(out.height))
-	f := Frame{Width: int(out.width), Height: int(out.height), Rows: make([]Row, int(out.height)), CursorX: int(out.cursor_x), CursorY: int(out.cursor_y), CursorVisible: out.cursor_visible != 0, Alternate: int(out.active_screen) != 0}
+	nativeCursor := Cursor{Shape: "block"}
+	if cursor != nil {
+		shape, ok := cursorShape(int(cursor.shape))
+		if !ok {
+			return Frame{}, errors.New("invalid native cursor shape")
+		}
+		nativeCursor = Cursor{
+			X: int(cursor.x), Y: int(cursor.y), Visible: cursor.visible != 0, Blinking: cursor.blinking != 0,
+			Shape: shape, WideTail: cursor.wide_tail != 0, ColorValue: cursor.color_has_value != 0,
+			Color: Color{Kind: 2, R: uint8(cursor.color_r), G: uint8(cursor.color_g), B: uint8(cursor.color_b)},
+		}
+	}
+	f := Frame{Width: int(out.width), Height: int(out.height), Rows: make([]Row, int(out.height)), Cursor: nativeCursor, Alternate: int(out.active_screen) != 0}
 	f.Graphics.Generation = uint64(out.graphics_generation)
 	for _, source := range unsafe.Slice((*C.NativeImage)(unsafe.Pointer(out.images)), int(out.images_len)) {
 		f.Graphics.Images = append(f.Graphics.Images, GraphicImage{
@@ -181,6 +218,21 @@ func frameFromNative(out *C.NativeFrame) (Frame, error) {
 		}
 	}
 	return f, nil
+}
+
+func cursorShape(value int) (string, bool) {
+	switch value {
+	case 0:
+		return "bar", true
+	case 1:
+		return "block", true
+	case 2:
+		return "underline", true
+	case 3:
+		return "hollow", true
+	default:
+		return "", false
+	}
 }
 
 func (e *Engine) TrackHistoryCell(x uint16, y uint32) (*Anchor, error) {
@@ -253,7 +305,7 @@ func (e *Engine) ReadHistory(anchor *Anchor, limit uint16) (Frame, AnchorStatus,
 		return Frame{}, AnchorInvalid, errors.New("read native history")
 	}
 	defer C.native_frame_free(&out)
-	frame, err := frameFromNative(&out)
+	frame, err := frameFromNative(&out, nil)
 	if err != nil {
 		return Frame{}, AnchorInvalid, err
 	}

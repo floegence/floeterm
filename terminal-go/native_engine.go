@@ -81,7 +81,14 @@ func (e *nativeSemanticEngine) CaptureFrame() (SemanticFrame, error) {
 }
 
 func semanticFrameFromNative(f nativevt.Frame) (SemanticFrame, error) {
-	out := SemanticFrame{Width: f.Width, Height: f.Height, BufferKind: "normal", Cursor: SemanticCursor{X: f.CursorX, Y: f.CursorY, Visible: f.CursorVisible}, Rows: make([]SemanticRow, len(f.Rows))}
+	if f.Cursor.Shape == "" {
+		return SemanticFrame{}, errors.New("native cursor shape is missing")
+	}
+	cursor := SemanticCursor{X: f.Cursor.X, Y: f.Cursor.Y, Visible: f.Cursor.Visible, Shape: f.Cursor.Shape, Blinking: f.Cursor.Blinking, WideTail: f.Cursor.WideTail}
+	if f.Cursor.ColorValue {
+		cursor.Color = semanticColor(f.Cursor.Color)
+	}
+	out := SemanticFrame{Width: f.Width, Height: f.Height, BufferKind: "normal", Cursor: cursor, Rows: make([]SemanticRow, len(f.Rows))}
 	if f.Alternate {
 		out.BufferKind = "alternate"
 	}

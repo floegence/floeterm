@@ -14,7 +14,8 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 		State:    TerminalState{Sequence: 1},
 		Frame: SemanticFrame{
 			Width: 2, Height: 1, BufferKind: "normal",
-			Rows: []SemanticRow{{Cells: []SemanticCell{{Width: 1}, {Width: 1}}}},
+			Cursor: SemanticCursor{X: 1, Y: 0, Visible: true, Shape: "bar", Blinking: true, Color: "rgb:010203"},
+			Rows:   []SemanticRow{{Cells: []SemanticCell{{Width: 1}, {Width: 1}}}},
 			Graphics: SemanticGraphics{
 				Generation: 3,
 				Images:     []SemanticGraphicImage{{ID: 7, Width: 1, Height: 1, Format: SemanticGraphicRGB, Generation: 2, Pixels: []byte{1, 2, 3}}},
@@ -29,6 +30,7 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 	var wire struct {
 		Frame struct {
 			Graphics SemanticGraphics `json:"graphics"`
+			Cursor   SemanticCursor   `json:"cursor"`
 		} `json:"frame"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -36,6 +38,14 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 	}
 	if wire.Frame.Graphics.Generation != 3 || len(wire.Frame.Graphics.Images) != 1 || !bytes.Equal(wire.Frame.Graphics.Images[0].Pixels, []byte{1, 2, 3}) || len(wire.Frame.Graphics.Placements) != 1 {
 		t.Fatalf("wire graphics = %+v", wire.Frame.Graphics)
+	}
+	if wire.Frame.Cursor != p.Frame.Cursor {
+		t.Fatalf("wire cursor = %+v, want %+v", wire.Frame.Cursor, p.Frame.Cursor)
+	}
+	invalidCursor := p
+	invalidCursor.Frame.Cursor.Shape = "unknown"
+	if _, err := EncodeSemanticPresentation(invalidCursor); err == nil {
+		t.Fatal("invalid semantic cursor was encoded")
 	}
 
 	p.Frame.Graphics.Images[0].Pixels = make([]byte, 256*1024)
@@ -45,7 +55,7 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 }
 
 func TestSemanticPresentationWireFitsMaximumProductViewport(t *testing.T) {
-	p := SemanticPresentation{Sequence: 1, Geometry: TerminalGeometry{Generation: 1, Cols: 199, Rows: 48}, State: TerminalState{Sequence: 1}, Frame: SemanticFrame{Width: 199, Height: 48, BufferKind: "normal", Rows: make([]SemanticRow, 48)}}
+	p := SemanticPresentation{Sequence: 1, Geometry: TerminalGeometry{Generation: 1, Cols: 199, Rows: 48}, State: TerminalState{Sequence: 1}, Frame: SemanticFrame{Width: 199, Height: 48, BufferKind: "normal", Cursor: SemanticCursor{Shape: "block"}, Rows: make([]SemanticRow, 48)}}
 	for y := range p.Frame.Rows {
 		p.Frame.Rows[y].Cells = make([]SemanticCell, 199)
 		for x := range p.Frame.Rows[y].Cells {
@@ -68,7 +78,8 @@ func TestSemanticPresentationWireNormalizesEmptyGraphicsInventory(t *testing.T) 
 		State:    TerminalState{Sequence: 1},
 		Frame: SemanticFrame{
 			Width: 1, Height: 1, BufferKind: "normal",
-			Rows: []SemanticRow{{Cells: []SemanticCell{{Width: 1}}}},
+			Cursor: SemanticCursor{Shape: "block"},
+			Rows:   []SemanticRow{{Cells: []SemanticCell{{Width: 1}}}},
 		},
 	}
 	data, err := EncodeSemanticPresentation(p)

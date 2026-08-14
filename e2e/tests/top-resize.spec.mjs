@@ -21,13 +21,15 @@ const readState = (page, includeTerminalState = false) => page.evaluate(includeS
 }, includeTerminalState);
 
 const setTerminalHostSize = async (page, width, height) => {
-  await page.evaluate(({ width: nextWidth, height: nextHeight }) => {
+  return await page.evaluate(({ width: nextWidth, height: nextHeight }) => {
     const host = document.querySelector('.terminalContainer');
     if (!(host instanceof HTMLElement)) throw new Error('terminal host is unavailable');
     host.style.flex = 'none';
     host.style.width = `${nextWidth}px`;
     host.style.height = `${nextHeight}px`;
+    const startedAt = performance.now();
     window.__floetermPerfHarness.forceResize();
+    return performance.now() - startedAt;
   }, { width, height });
 };
 
@@ -432,23 +434,24 @@ test('keeps real macOS top correct across repeated terminal resizes', async ({ p
   ];
   const performanceVector = [...vector, ...vector.slice().reverse().slice(1), vector[1]];
   const resizeSamples = [];
+  const dispatchSamples = [];
   let state = await readState(page);
   let generation = state.geometry.generation;
   for (const [width, height] of performanceVector) {
     const startedAt = performance.now();
-    await setTerminalHostSize(page, width, height);
+    dispatchSamples.push(await setTerminalHostSize(page, width, height));
     state = await waitForConvergence(page, generation);
     resizeSamples.push(performance.now() - startedAt);
     generation = state.geometry.generation;
   }
   expect(resizeSamples).toHaveLength(20);
-  for (const sample of resizeSamples) {
-    expect(sample).toBeLessThan(150);
-  }
   await testInfo.attach('top-resize-performance.json', {
-    body: Buffer.from(JSON.stringify({ thresholdMs: 150, samplesMs: resizeSamples }, null, 2)),
+    body: Buffer.from(JSON.stringify({ thresholdMs: 150, samplesMs: resizeSamples, dispatchMs: dispatchSamples }, null, 2)),
     contentType: 'application/json',
   });
+  for (const [index, sample] of resizeSamples.entries()) {
+    expect(sample, `resize sample ${index + 1}: ${JSON.stringify({ resizeSamples, dispatchSamples })}`).toBeLessThan(150);
+  }
   for (const [width, height] of vector.slice().reverse()) {
     await setTerminalHostSize(page, width, height);
   }
