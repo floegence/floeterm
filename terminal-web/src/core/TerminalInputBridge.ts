@@ -190,7 +190,7 @@ export const resolveTerminalInputElement = (inputHost: HTMLElement): HTMLTextAre
   return inputElement instanceof HTMLTextAreaElement ? inputElement : null;
 };
 
-type terminal_input_bridge_options = {
+export type TerminalInputBridgeOptions = {
   inputHost: HTMLElement;
   inputElement: HTMLTextAreaElement;
   onData: (data: string) => void;
@@ -215,6 +215,7 @@ export class TerminalInputBridge {
   ) => Promise<TerminalCopySelectionResult> | TerminalCopySelectionResult;
   private readonly syncInputGeometry: () => void;
   private isComposing = false;
+  private pendingCompositionCommit: string | null = null;
   private ignoreNextInput = false;
   private suppressionToken: input_suppression_token | null = null;
   private ephemeralStateResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -243,6 +244,12 @@ export class TerminalInputBridge {
   };
 
   private readonly focusListener = () => {
+    this.resetCompositionState();
+    this.clearInputValue();
+  };
+
+  private readonly blurListener = () => {
+    this.resetCompositionState();
     this.clearInputValue();
   };
 
@@ -256,7 +263,7 @@ export class TerminalInputBridge {
 
   private inputFocusClaimTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(options: terminal_input_bridge_options) {
+  constructor(options: TerminalInputBridgeOptions) {
     this.inputHost = options.inputHost;
     this.inputElement = options.inputElement;
     this.onData = options.onData;
@@ -280,6 +287,10 @@ export class TerminalInputBridge {
     focusTerminalElement(this.inputElement, options);
   }
 
+  syncGeometry(): void {
+    this.syncInputGeometry();
+  }
+
   dispose(): void {
     this.clearEphemeralStateResetTimer();
     this.clearInputFocusClaimTimer();
@@ -293,6 +304,7 @@ export class TerminalInputBridge {
     this.inputElement.removeEventListener('compositionstart', this.compositionStartListener);
     this.inputElement.removeEventListener('compositionend', this.compositionEndListener as EventListener);
     this.inputElement.removeEventListener('focus', this.focusListener);
+    this.inputElement.removeEventListener('blur', this.blurListener);
     this.inputHost.removeEventListener('focusin', this.inputHostFocusInListener);
     this.inputHost.removeEventListener('pointerdown', this.inputHostPointerDownListener, true);
   }
@@ -307,6 +319,7 @@ export class TerminalInputBridge {
     this.inputElement.addEventListener('compositionstart', this.compositionStartListener);
     this.inputElement.addEventListener('compositionend', this.compositionEndListener as EventListener);
     this.inputElement.addEventListener('focus', this.focusListener);
+    this.inputElement.addEventListener('blur', this.blurListener);
     this.inputHost.addEventListener('focusin', this.inputHostFocusInListener);
     this.inputHost.addEventListener('pointerdown', this.inputHostPointerDownListener, true);
   }
@@ -341,7 +354,11 @@ export class TerminalInputBridge {
 
   private handleKeydown(event: KeyboardEvent): void {
     this.syncInputGeometry();
+    if (event.defaultPrevented) {
+      return;
+    }
     if (this.isComposing || event.isComposing || event.keyCode === 229) {
+      event.stopPropagation();
       return;
     }
 
@@ -367,6 +384,10 @@ export class TerminalInputBridge {
   private handleBeforeInput(event: InputEvent): void {
     this.syncInputGeometry();
     if (this.isComposing || event.isComposing) {
+      return;
+    }
+
+    if (this.consumeCompositionCommitBeforeInput(event)) {
       return;
     }
 
@@ -406,6 +427,15 @@ export class TerminalInputBridge {
 
     const value = this.inputElement.value;
 
+    if (this.pendingCompositionCommit !== null) {
+      const pending = this.pendingCompositionCommit;
+      this.pendingCompositionCommit = null;
+      if (value === pending || value.length === 0) {
+        this.clearInputValue();
+        return;
+      }
+    }
+
     if (this.suppressionToken && matchesInputSuppression(this.suppressionToken, value)) {
       this.clearEphemeralStateResetTimer();
       this.suppressionToken = null;
@@ -431,22 +461,49 @@ export class TerminalInputBridge {
     this.syncInputGeometry();
     this.clearEphemeralStateResetTimer();
     this.isComposing = true;
+    this.pendingCompositionCommit = null;
     this.suppressionToken = null;
     this.ignoreNextInput = false;
   }
 
   private handleCompositionEnd(event: CompositionEvent): void {
     this.syncInputGeometry();
+    if (!this.isComposing) {
+      this.pendingCompositionCommit = null;
+      this.clearInputValue();
+      return;
+    }
     this.isComposing = false;
 
     const data = String(event.data ?? this.inputElement.value ?? '');
     if (data.length > 0) {
       this.emitData(data);
+      this.pendingCompositionCommit = data;
+    } else {
+      this.pendingCompositionCommit = null;
+    }
+    this.clearInputValue();
+  }
+
+  private consumeCompositionCommitBeforeInput(event: InputEvent): boolean {
+    if (this.pendingCompositionCommit === null) {
+      return false;
     }
 
-    this.ignoreNextInput = true;
-    this.scheduleEphemeralStateReset();
-    this.clearInputValue();
+    const data = String(event.data ?? '');
+    const isCommitEvent = event.inputType === 'insertText'
+      || event.inputType === 'insertReplacementText'
+      || event.inputType === 'insertCompositionText'
+      || event.inputType === 'insertFromComposition';
+    if (isCommitEvent && data === this.pendingCompositionCommit) {
+      this.pendingCompositionCommit = null;
+      this.ignoreNextInput = true;
+      consumeBrowserInputEvent(event);
+      return true;
+    }
+
+    this.pendingCompositionCommit = null;
+    return false;
   }
 
   containsTarget(target: Node): boolean {
@@ -550,6 +607,14 @@ export class TerminalInputBridge {
     } catch {
       this.logger.debug('[TerminalInputBridge] Failed to reset selection range');
     }
+  }
+
+  private resetCompositionState(): void {
+    this.clearEphemeralStateResetTimer();
+    this.isComposing = false;
+    this.pendingCompositionCommit = null;
+    this.ignoreNextInput = false;
+    this.suppressionToken = null;
   }
 
   private emitData(data: string): void {

@@ -2,7 +2,10 @@ export {
   RendererSurface,
   SEMANTIC_CELL_HEIGHT_CSS_PX,
   SEMANTIC_CELL_WIDTH_CSS_PX,
+  SEMANTIC_TERMINAL_FONT_FAMILY,
 } from '../semantic/RendererSurface.js';
+export { TerminalInputBridge } from '../core/TerminalInputBridge.js';
+export type { TerminalInputBridgeOptions } from '../core/TerminalInputBridge.js';
 export { presentationAdvances, validateHistoryPage, validatePresentation } from '../semantic/presentation.js';
 export {
   getTerminalThemeDefinition,

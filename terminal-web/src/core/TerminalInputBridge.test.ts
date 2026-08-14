@@ -140,6 +140,95 @@ describe('TerminalInputBridge', () => {
     expect(textarea.value).toBe('');
   });
 
+  it('keeps IME preedit local and commits the selected Unicode text exactly once', () => {
+    const { inputHost, textarea, onData } = setup();
+    const forwardedKeys: string[] = [];
+    inputHost.addEventListener('keydown', event => forwardedKeys.push(event.key));
+
+    textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    textarea.value = 'zh';
+    textarea.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: 'zh' }));
+    textarea.dispatchEvent(createInputEvent('beforeinput', {
+      data: 'zh', inputType: 'insertCompositionText', isComposing: true,
+    }));
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true, bubbles: true, cancelable: true,
+    }));
+    textarea.value = '中';
+    textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中' }));
+    textarea.dispatchEvent(createInputEvent('beforeinput', { data: '中', inputType: 'insertText' }));
+    textarea.value = '中';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(forwardedKeys).toEqual([]);
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenLastCalledWith('中');
+    expect(textarea.value).toBe('');
+  });
+
+  it('handles cancellation, consecutive compositions, and following ASCII without timeout guesses', () => {
+    const { textarea, onData } = setup();
+
+    textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    textarea.value = 'qu';
+    textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '' }));
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    for (const value of ['你', '好']) {
+      textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      textarea.value = value;
+      textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: value }));
+      textarea.dispatchEvent(createInputEvent('beforeinput', { data: value, inputType: 'insertText' }));
+      textarea.value = value;
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    textarea.dispatchEvent(createInputEvent('beforeinput', { data: 'A', inputType: 'insertText' }));
+    textarea.value = 'A';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(onData.mock.calls.map(([value]) => value)).toEqual(['你', '好', 'A']);
+    expect(textarea.value).toBe('');
+  });
+
+  it('cancels preedit on blur and accepts ordinary input after focus returns', () => {
+    const { textarea, onData } = setup();
+
+    textarea.focus();
+    textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    textarea.value = 'zhong';
+    textarea.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: 'zhong' }));
+    textarea.blur();
+    textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中' }));
+    textarea.focus();
+    textarea.dispatchEvent(createInputEvent('beforeinput', { data: 'A', inputType: 'insertText' }));
+    textarea.value = 'A';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(onData.mock.calls.map(([value]) => value)).toEqual(['A']);
+    expect(textarea.value).toBe('');
+  });
+
+  it('exposes deterministic cursor-anchor synchronization to semantic callers', () => {
+    const syncInputGeometry = vi.fn();
+    const container = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    container.appendChild(textarea);
+    document.body.appendChild(container);
+    const bridge = new TerminalInputBridge({
+      inputHost: container,
+      inputElement: textarea,
+      onData: vi.fn(),
+      syncInputGeometry,
+    });
+
+    bridge.syncGeometry();
+    bridge.focus();
+
+    expect(syncInputGeometry).toHaveBeenCalledTimes(2);
+    bridge.dispose();
+  });
+
   it('focuses the hidden textarea when requested', () => {
     const { bridge, textarea } = setup();
     const focusCalls: Array<FocusOptions | undefined> = [];

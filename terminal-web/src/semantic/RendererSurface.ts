@@ -4,6 +4,7 @@ import type { TerminalThemeColors } from '../types.js';
 
 export const SEMANTIC_CELL_WIDTH_CSS_PX = 9;
 export const SEMANTIC_CELL_HEIGHT_CSS_PX = 18;
+export const SEMANTIC_TERMINAL_FONT_FAMILY = '"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans Mono CJK SC", monospace';
 
 export type SemanticTerminalPalette = TerminalThemeColors;
 
@@ -26,6 +27,8 @@ export class RendererSurface {
   private cursorBlinkPhaseVisible = true;
   private palette: SemanticTerminalPalette = Object.freeze(getThemeColors('dark'));
   private dprMediaQuery: MediaQueryList | null = null;
+  private readonly fontSet: FontFaceSet | undefined;
+  private disposed = false;
   private readonly graphicBitmaps = new Map<string, ImageBitmap>();
   private readonly visibilityHandler = (): void => {
     if (this.failed) return;
@@ -38,11 +41,17 @@ export class RendererSurface {
     this.bindDprChangeListener();
     this.resize();
   };
+  private readonly fontLoadingDoneHandler = (): void => {
+    if (!this.disposed && !this.failed) this.scheduleRender();
+  };
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly onError: (error: Error) => void = () => {},
   ) {
     globalThis.document?.addEventListener('visibilitychange', this.visibilityHandler);
+    this.fontSet = globalThis.document?.fonts;
+    this.fontSet?.addEventListener?.('loadingdone', this.fontLoadingDoneHandler);
+    void this.fontSet?.ready.then(() => this.fontLoadingDoneHandler());
     this.bindDprChangeListener();
   }
   apply(presentation: SemanticPresentation): void {
@@ -117,6 +126,25 @@ export class RendererSurface {
     }
     return lines.join('\n').replace(/\n+$/, '');
   }
+  getCursorClientRect(): Readonly<{ left: number; top: number; width: number; height: number }> | null {
+    const frame = this.latest?.frame;
+    if (!frame) return null;
+    const bounds = this.canvas.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return null;
+    const cursorX = Math.max(0, Math.min(frame.width - 1, frame.cursor.x));
+    const cursorY = Math.max(0, Math.min(frame.height - 1, frame.cursor.y));
+    const width = Math.min(SEMANTIC_CELL_WIDTH_CSS_PX, bounds.width);
+    const height = Math.min(SEMANTIC_CELL_HEIGHT_CSS_PX, bounds.height);
+    const left = Math.max(bounds.left, Math.min(
+      bounds.left + cursorX * SEMANTIC_CELL_WIDTH_CSS_PX,
+      bounds.left + bounds.width - width,
+    ));
+    const top = Math.max(bounds.top, Math.min(
+      bounds.top + cursorY * SEMANTIC_CELL_HEIGHT_CSS_PX,
+      bounds.top + bounds.height - height,
+    ));
+    return { left, top, width, height };
+  }
   resize(): void {
     if (this.failed) return;
     // Never assign width/height here: that clears the visible bitmap before
@@ -129,6 +157,7 @@ export class RendererSurface {
     this.scheduleRender();
   }
   dispose(): void {
+    this.disposed = true;
     this.renderGeneration += 1;
     if (this.animationFrame !== null && typeof globalThis.cancelAnimationFrame === 'function') {
       globalThis.cancelAnimationFrame(this.animationFrame);
@@ -137,6 +166,7 @@ export class RendererSurface {
     this.clearCursorBlinkTimer();
     this.clearGraphicBitmaps();
     this.unbindDprChangeListener();
+    this.fontSet?.removeEventListener?.('loadingdone', this.fontLoadingDoneHandler);
     globalThis.document?.removeEventListener('visibilitychange', this.visibilityHandler);
     this.latest = null;
     this.viewportFrame = null;
@@ -181,7 +211,7 @@ export class RendererSurface {
     context.clearRect(0, 0, cssWidth, cssHeight);
     context.fillStyle = palette.background;
     context.fillRect(0, 0, cssWidth, cssHeight);
-    context.font = `${Math.max(1, Math.floor(cellHeight * 0.78))}px monospace`;
+    context.font = `${Math.max(1, Math.floor(cellHeight * 0.78))}px ${SEMANTIC_TERMINAL_FONT_FAMILY}`;
     context.textBaseline = 'alphabetic';
     frame.rows.forEach((row, y) => {
       row.cells.forEach((cell, x) => {
@@ -192,7 +222,7 @@ export class RendererSurface {
         context.fillRect(x * cellWidth, y * cellHeight, cellWidth + 0.5, cellHeight + 0.5);
       });
       row.cells.forEach((cell, x) => {
-        if (!cell.text) return;
+        if (!cell.text || cell.width === 0) return;
         const foreground = this.isCellSelected(y, x)
           ? palette.selectionForeground
           : resolveColor(cell.style?.foreground, palette.foreground, palette);
@@ -249,18 +279,15 @@ export class RendererSurface {
     const baseline = (y + 0.82) * cellHeight;
     if (cell.width > 1) {
       const metrics = context.measureText(cell.text);
-      const inkWidth = metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight;
-      if (inkWidth > 0) {
-        const horizontalPadding = Math.min(1, cellWidth * 0.08);
-        const targetInkWidth = Math.max(1, cellWidth * cell.width - horizontalPadding * 2);
-        const scaleX = targetInkWidth / inkWidth;
-        context.save();
-        context.translate(x * cellWidth + horizontalPadding, 0);
-        context.scale(scaleX, 1);
-        context.fillText(cell.text, metrics.actualBoundingBoxLeft, baseline);
-        context.restore();
-        return;
-      }
+      const spanWidth = cellWidth * cell.width;
+      const textX = x * cellWidth + Math.max(0, (spanWidth - metrics.width) / 2);
+      context.save();
+      context.beginPath();
+      context.rect(x * cellWidth, y * cellHeight, spanWidth, cellHeight);
+      context.clip();
+      context.fillText(cell.text, textX, baseline);
+      context.restore();
+      return;
     }
     context.fillText(cell.text, x * cellWidth, baseline);
   }

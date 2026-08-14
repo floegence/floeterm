@@ -57,4 +57,13 @@ describe('reference app resize ownership', () => {
     expect(appSource.match(/setPalette\(palette\)/g)).toHaveLength(2);
     expect(appSource.match(/<SemanticTerminalViewport[\s\S]*?themeName=\{props\.themeName\}/g)).toHaveLength(2);
   });
+
+  it('uses the shared composition-aware input bridge and cursor-anchored editable element', () => {
+    expect(appSource).toContain('new TerminalInputBridge({');
+    expect(appSource).toContain('renderer()?.getCursorClientRect()');
+    expect(appSource).not.toContain('onInput={event =>');
+    expect(stylesSource).toMatch(/\.terminalInputBridge\s*\{[^}]*position:\s*fixed;/);
+    expect(stylesSource).not.toMatch(/\.terminalInputBridge\s*\{[^}]*inset:\s*0;/);
+    expect(stylesSource).toMatch(/\.semanticTerminalSurface\s*\{[^}]*pointer-events:\s*auto;/);
+  });
 });

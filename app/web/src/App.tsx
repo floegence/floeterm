@@ -3,6 +3,8 @@ import {
   RendererSurface,
   SEMANTIC_CELL_HEIGHT_CSS_PX,
   SEMANTIC_CELL_WIDTH_CSS_PX,
+  SEMANTIC_TERMINAL_FONT_FAMILY,
+  TerminalInputBridge,
   getThemeColors,
   isTerminalThemeName,
   presentationAdvances,
@@ -138,7 +140,7 @@ const createThemeName = () => {
 };
 
 const terminalKeyInput = (event: KeyboardEvent): string | null => {
-  if (event.isComposing) return null;
+  if (event.isComposing || event.keyCode === 229) return null;
   if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.length === 1) {
     const code = event.key.toUpperCase().charCodeAt(0);
     if (code >= 64 && code <= 95) return String.fromCharCode(code - 64);
@@ -166,53 +168,122 @@ const SemanticTerminalSurface = (props: {
   inputId?: string;
   canvasLabel?: string;
   onCanvas(node: HTMLCanvasElement): void;
-  onInputBridge(node: HTMLTextAreaElement): void;
+  onInputBridge?(node: HTMLTextAreaElement): void;
+  onInputController?(controller: TerminalInputBridge | null): void;
   renderer(): RendererSurface | undefined;
   sendInput(value: string): void;
-}) => (
-  <>
-    <canvas id={props.canvasId} class="semanticTerminalSurface" ref={props.onCanvas} aria-label={props.canvasLabel ?? 'Semantic terminal surface'} />
-    <textarea
-      id={props.inputId}
-      class="terminalInputBridge"
-      ref={props.onInputBridge}
-      aria-label="Terminal input"
-      spellcheck={false}
-      onPointerDown={event => {
-        if (event.button !== 0) return;
-        event.currentTarget.setPointerCapture(event.pointerId);
-        props.renderer()?.beginSelection(event.clientX, event.clientY);
-      }}
-      onPointerMove={event => {
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-          props.renderer()?.updateSelection(event.clientX, event.clientY);
+}) => {
+  let canvas: HTMLCanvasElement | undefined;
+  let input: HTMLTextAreaElement | undefined;
+  let inputController: TerminalInputBridge | undefined;
+
+  const syncInputGeometry = () => {
+    if (!canvas || !input) return;
+    const canvasBounds = canvas.getBoundingClientRect();
+    const rect = props.renderer()?.getCursorClientRect() ?? {
+      left: canvasBounds.left,
+      top: canvasBounds.top,
+      width: Math.min(SEMANTIC_CELL_WIDTH_CSS_PX, Math.max(1, canvasBounds.width)),
+      height: Math.min(SEMANTIC_CELL_HEIGHT_CSS_PX, Math.max(1, canvasBounds.height)),
+    };
+    input.style.left = `${rect.left}px`;
+    input.style.top = `${rect.top}px`;
+    input.style.width = `${rect.width}px`;
+    input.style.height = `${rect.height}px`;
+    input.style.lineHeight = `${rect.height}px`;
+    input.style.font = `${Math.max(1, Math.floor(rect.height * 0.78))}px ${SEMANTIC_TERMINAL_FONT_FAMILY}`;
+  };
+
+  onMount(() => {
+    if (!canvas || !input) throw new Error('semantic terminal input surface is required');
+    inputController = new TerminalInputBridge({
+      inputHost: canvas,
+      inputElement: input,
+      onData: props.sendInput,
+      syncInputGeometry,
+      hasSelection: () => props.renderer()?.hasSelection() ?? false,
+      copySelection: async (source, clipboardData) => {
+        const text = props.renderer()?.getSelectionText() ?? '';
+        if (!text) return { copied: false, reason: 'empty_selection', source };
+        if (clipboardData) {
+          clipboardData.setData('text/plain', text);
+          return { copied: true, textLength: text.length, source };
         }
-      }}
-      onPointerUp={event => {
-        props.renderer()?.endSelection(event.clientX, event.clientY);
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-      }}
-      onKeyDown={event => {
-        const value = terminalKeyInput(event);
-        if (value === null) return;
-        event.preventDefault();
-        props.sendInput(value);
-      }}
-      onPaste={event => {
-        const value = event.clipboardData?.getData('text/plain') ?? '';
-        if (!value) return;
-        event.preventDefault();
-        props.sendInput(value);
-      }}
-      onInput={event => {
-        const value = event.currentTarget.value;
-        if (!value) return;
-        props.sendInput(value);
-        event.currentTarget.value = '';
-      }}
-    />
-  </>
-);
+        if (!navigator.clipboard?.writeText) return { copied: false, reason: 'clipboard_unavailable', source };
+        await navigator.clipboard.writeText(text);
+        return { copied: true, textLength: text.length, source };
+      },
+    });
+    props.onInputController?.(inputController);
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? undefined
+      : new ResizeObserver(syncInputGeometry);
+    resizeObserver?.observe(canvas);
+    const fonts = document.fonts;
+    const handleLayoutChange = () => syncInputGeometry();
+    window.addEventListener('scroll', handleLayoutChange, true);
+    fonts?.addEventListener?.('loadingdone', handleLayoutChange);
+    void fonts?.ready.then(handleLayoutChange);
+    syncInputGeometry();
+    onCleanup(() => {
+      props.onInputController?.(null);
+      inputController?.dispose();
+      inputController = undefined;
+      resizeObserver?.disconnect();
+      window.removeEventListener('scroll', handleLayoutChange, true);
+      fonts?.removeEventListener?.('loadingdone', handleLayoutChange);
+    });
+  });
+
+  return (
+    <>
+      <canvas
+        id={props.canvasId}
+        class="semanticTerminalSurface"
+        ref={node => { canvas = node; props.onCanvas(node); }}
+        aria-label={props.canvasLabel ?? 'Semantic terminal surface'}
+        onPointerDown={event => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          inputController?.focus();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          props.renderer()?.beginSelection(event.clientX, event.clientY);
+        }}
+        onPointerMove={event => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            props.renderer()?.updateSelection(event.clientX, event.clientY);
+          }
+        }}
+        onPointerUp={event => {
+          props.renderer()?.endSelection(event.clientX, event.clientY);
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onKeyDown={event => {
+          const value = terminalKeyInput(event);
+          if (value === null) return;
+          event.preventDefault();
+          props.sendInput(value);
+        }}
+      />
+      <textarea
+        id={props.inputId}
+        class="terminalInputBridge"
+        ref={node => { input = node; props.onInputBridge?.(node); }}
+        aria-label="Terminal input"
+        spellcheck={false}
+        autocapitalize="off"
+        autocomplete="off"
+        onPaste={event => {
+          const value = event.clipboardData?.getData('text/plain') ?? '';
+          if (!value) return;
+          event.preventDefault();
+          props.sendInput(value);
+          event.currentTarget.value = '';
+        }}
+      />
+    </>
+  );
+};
 
 type SemanticViewportHandle = Readonly<{
   sendInput(data: string): void;
@@ -262,7 +333,7 @@ const SemanticTerminalViewport = (props: {
     tail: '',
   });
   let canvas: HTMLCanvasElement | undefined;
-  let inputBridge: HTMLTextAreaElement | undefined;
+  let inputController: TerminalInputBridge | undefined;
   let renderer: RendererSurface | undefined;
   let latestPresentation: SemanticPresentation | null = null;
   let geometryDiagnostics = { generation: 0, outputSequenceBoundary: 0, cols: 0, rows: 0 };
@@ -285,7 +356,7 @@ const SemanticTerminalViewport = (props: {
   };
   const semanticResize = createSemanticResizeController({
     measure,
-    repaint: () => renderer?.resize(),
+    repaint: () => { renderer?.resize(); inputController?.syncGeometry(); },
     attach: async dimensions => {
       const attached = await props.transport.attachWithHistoryBoundary(
         mountedSessionId, dimensions.cols, dimensions.rows,
@@ -308,6 +379,7 @@ const SemanticTerminalViewport = (props: {
   const requestResize = async () => {
     if (!canvas?.parentElement) return;
     await semanticResize.requestResize();
+    inputController?.syncGeometry();
   };
   const handle: SemanticViewportHandle = {
     sendInput: data => { void props.transport.sendInput(mountedSessionId, data); },
@@ -367,6 +439,7 @@ const SemanticTerminalViewport = (props: {
         if (!presentationAdvances(latestPresentation, presentation)) return;
         latestPresentation = presentation;
         renderer?.apply(presentation);
+        inputController?.syncGeometry();
         renderDiagnostics.count += 1;
         renderDiagnostics.lastRenderAtMs = performance.now();
         setPresentationError('');
@@ -423,7 +496,7 @@ const SemanticTerminalViewport = (props: {
       <SemanticTerminalSurface
         canvasLabel={props.canvasLabel}
         onCanvas={node => { canvas = node; }}
-        onInputBridge={node => { inputBridge = node; }}
+        onInputController={controller => { inputController = controller ?? undefined; }}
         renderer={() => renderer}
         sendInput={value => { void props.transport.sendInput(mountedSessionId, value); }}
       />
@@ -465,7 +538,7 @@ const SingleTerminalPane = (props: {
   let geometryDiagnostics = { generation: 0, outputSequenceBoundary: 0, cols: 0, rows: 0 };
 	let semanticCanvas: HTMLCanvasElement | undefined;
 	let semanticRenderer: RendererSurface | undefined;
-	let inputBridge: HTMLTextAreaElement | undefined;
+	let inputController: TerminalInputBridge | undefined;
   const [presentationError, setPresentationError] = createSignal('');
 	const [historyError, setHistoryError] = createSignal('');
 	const [historyPage, setHistoryPage] = createSignal<SemanticHistoryPage | null>(null);
@@ -499,7 +572,7 @@ const SingleTerminalPane = (props: {
       viewDimensions = dimensions;
       return dimensions;
     },
-    repaint: () => { semanticRenderer?.resize(); },
+    repaint: () => { semanticRenderer?.resize(); inputController?.syncGeometry(); },
     attach: async dimensions => {
       attachRequestCount += 1;
       recordResizeDiagnostic({ action: 'attach-requested', dimensions: { ...dimensions } });
@@ -583,6 +656,7 @@ const SingleTerminalPane = (props: {
 	setHistoryProjected(false);
 	semanticRenderer?.project(null);
     await semanticResize.requestResize();
+    inputController?.syncGeometry();
   };
 
 	const showLatestPresentation = () => {
@@ -694,6 +768,7 @@ const SingleTerminalPane = (props: {
 			setHistoryBusy(false);
 			setHistoryProjected(false);
 			semanticRenderer?.apply(presentation);
+			inputController?.syncGeometry();
 			setPresentationError('');
 		} catch (error) {
 			setPresentationError(error instanceof Error ? error.message : String(error));
@@ -796,7 +871,7 @@ const SingleTerminalPane = (props: {
             canvasId="semantic-terminal-surface"
             inputId="semantic-terminal-input"
             onCanvas={node => { semanticCanvas = node; }}
-            onInputBridge={node => { inputBridge = node; }}
+            onInputController={controller => { inputController = controller ?? undefined; }}
             renderer={() => semanticRenderer}
             sendInput={value => { void props.transport.sendInput(props.sessionId, value); }}
           />
@@ -827,7 +902,7 @@ const SingleTerminalPane = (props: {
 			onPointerUp={event => {
 				if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
 				setHistoryDragging(false);
-				inputBridge?.focus({ preventScroll: true });
+				inputController?.focus({ preventScroll: true });
 			}}
 			onKeyDown={event => {
 				switch (event.key) {

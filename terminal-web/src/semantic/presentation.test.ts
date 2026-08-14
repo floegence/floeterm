@@ -612,13 +612,12 @@ describe('semantic presentation', () => {
     expect(fillRect).toHaveBeenCalledWith(0, 0, 9.5, 18.5);
   });
 
-  it('stretches a wide grapheme across its two semantic columns without painting its continuation', () => {
+  it('keeps wide graphemes at their natural aspect ratio and never paints their continuation', () => {
     const fillText = vi.fn();
-    const translate = vi.fn();
     const scale = vi.fn();
     const context={
       clearRect:vi.fn(),fillRect:vi.fn(),fillText,setTransform:vi.fn(),
-      save:vi.fn(),restore:vi.fn(),translate,scale,
+      save:vi.fn(),restore:vi.fn(),beginPath:vi.fn(),rect:vi.fn(),clip:vi.fn(),scale,
       measureText:vi.fn(() => ({ width: 12, actualBoundingBoxLeft: 1, actualBoundingBoxRight: 7 })),
       font:'',textBaseline:'',fillStyle:'',
     };
@@ -649,13 +648,62 @@ describe('semantic presentation', () => {
     new RendererSurface(canvasMock as unknown as HTMLCanvasElement).apply(presentation);
 
     expect(fillText).toHaveBeenCalledTimes(4);
-    expect(translate).toHaveBeenNthCalledWith(1, 9.72, 0);
-    expect(translate).toHaveBeenNthCalledWith(2, 27.72, 0);
-    expect(scale.mock.calls[0][0]).toBeCloseTo(2.07, 5);
-    expect(scale.mock.calls[1][0]).toBeCloseTo(2.07, 5);
-    expect(fillText).toHaveBeenNthCalledWith(2, '中', 1, 14.76);
-    expect(fillText).toHaveBeenNthCalledWith(3, '文', 1, 14.76);
+    expect(scale).not.toHaveBeenCalled();
+    expect(fillText).toHaveBeenNthCalledWith(1, 'A', 0, 14.76);
+    expect(fillText).toHaveBeenNthCalledWith(2, '中', 12, 14.76);
+    expect(fillText).toHaveBeenNthCalledWith(3, '文', 30, 14.76);
+    expect(fillText).toHaveBeenNthCalledWith(4, 'B', 45, 14.76);
+    expect(context.rect).toHaveBeenNthCalledWith(1, 9, 0, 18, 18);
+    expect(context.rect).toHaveBeenNthCalledWith(2, 27, 0, 18, 18);
+    expect(context.font).toContain('PingFang SC');
     expect(Math.max(...context.fillRect.mock.invocationCallOrder))
       .toBeLessThan(Math.min(...fillText.mock.invocationCallOrder));
+  });
+
+  it('maps the authoritative cursor to a clamped CSS client rect without DPR scaling', () => {
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:18,clientHeight:18};
+    const canvas={
+      width:36,height:36,clientWidth:18,clientHeight:18,parentElement:host,style:{},
+      getBoundingClientRect:()=>({left:100,top:200,right:118,bottom:218,width:18,height:18}),
+      getContext:()=>context,
+    } as unknown as HTMLCanvasElement;
+    const presentation = structuredClone(valid());
+    presentation.frame.cursor = { x: 1, y: 0, visible: true, shape: 'bar', blinking: false };
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(validatePresentation(presentation));
+
+    expect(renderer.getCursorClientRect()).toEqual({ left: 109, top: 200, width: 9, height: 18 });
+  });
+
+  it('repaints after web fonts settle and removes the listener on dispose', async () => {
+    let readyFonts!: () => void;
+    const ready = new Promise<void>(resolve => { readyFonts = resolve; });
+    const listeners = new Set<EventListenerOrEventListenerObject>();
+    const fontSet = {
+      ready,
+      addEventListener: vi.fn((_type: string, listener: EventListenerOrEventListenerObject) => listeners.add(listener)),
+      removeEventListener: vi.fn((_type: string, listener: EventListenerOrEventListenerObject) => listeners.delete(listener)),
+    } as unknown as FontFaceSet;
+    vi.stubGlobal('document', {
+      fonts: fontSet,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:18,clientHeight:18};
+    const canvas={width:0,height:0,clientWidth:18,clientHeight:18,parentElement:host,style:{},getContext:()=>context} as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(validatePresentation(valid()));
+    context.fillText.mockClear();
+
+    readyFonts();
+    await ready;
+    await Promise.resolve();
+    expect(context.fillText).toHaveBeenCalled();
+    expect(listeners).toHaveLength(1);
+
+    renderer.dispose();
+    expect(listeners).toHaveLength(0);
   });
 });
