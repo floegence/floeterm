@@ -4,6 +4,11 @@ import { PNG } from 'pngjs';
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
 import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
+const holdTerminalState = bytes => {
+  const hex = Buffer.from(bytes, 'utf8').toString('hex');
+  return `python3 -c "import os,time;os.write(1,bytes.fromhex('${hex}'));time.sleep(30)"\r`;
+};
+
 const readMirror = page => page.evaluate(() => {
   const harness = window.__floetermMirrorHarness;
   if (!harness) return null;
@@ -36,6 +41,7 @@ const openMirror = async page => {
   const sessionId = await page.locator('[data-testid="mirror-runtime-state"]').getAttribute('data-session-id');
   if (!sessionId) throw new Error('mirror session id is unavailable');
   await waitForInteractiveShell(page, sessionId);
+  return sessionId;
 };
 
 const expectUniqueMirrorCanvases = async page => {
@@ -321,13 +327,13 @@ test('repaints the complete shared screen after one view is hidden, restored, an
 
 test('restores the latest semantic screen at its canonical geometry after reconnect', async ({ page }) => {
   const consoleErrors = captureBrowserFailures(page);
-  await openMirror(page);
+  const sessionId = await openMirror(page);
 
-  await page.evaluate(() => {
+  await page.evaluate(command => {
     window.__floetermMirrorHarness.getViews()[0].sendInput(
-      "printf '\\033[2J\\033[HGEOMETRY_HISTORY_BASE\\033[2B\\033[8CBASE_DELTA\\n'\r",
+      command,
     );
-  });
+  }, holdTerminalState('\x1b[2J\x1b[HGEOMETRY_HISTORY_BASE\x1b[2B\x1b[8CBASE_DELTA\n'));
   await page.waitForFunction(() => (
     window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes('BASE_DELTA'))
   ));
@@ -341,11 +347,13 @@ test('restores the latest semantic screen at its canonical geometry after reconn
     return state.views.every(view => view.geometry.generation > previousGeneration);
   }).toBe(true);
 
-  await page.evaluate(() => {
+  await page.evaluate(() => window.__floetermMirrorHarness.getViews()[0].sendInput('\x03'));
+  await waitForInteractiveShell(page, sessionId);
+  await page.evaluate(command => {
     window.__floetermMirrorHarness.getViews()[1].sendInput(
-      "printf '\\033[3A\\033[12CGEOMETRY_HISTORY_RESIZED\\n'\r",
+      command,
     );
-  });
+  }, holdTerminalState('\x1b[3A\x1b[12CGEOMETRY_HISTORY_RESIZED\n'));
   await page.waitForFunction(() => (
     window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes('GEOMETRY_HISTORY_RESIZED'))
   ));
