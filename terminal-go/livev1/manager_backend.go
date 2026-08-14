@@ -76,6 +76,16 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 				encoded, err := terminal.EncodeSemanticPresentation(p)
 				return err == nil && subscriber.OnPresentation(encoded)
 			},
+			OnController: func(state terminal.ControllerState) bool {
+				if subscriber.OnController == nil {
+					return false
+				}
+				return subscriber.OnController(EffectiveController{
+					Epoch: state.Epoch,
+					IsController: state.AttachmentID == request.ConnectionID &&
+						state.TransportGeneration == request.AttachGeneration,
+				})
+			},
 			OnSessionClosed: subscriber.OnSessionClosed,
 			OnSuperseded:    subscriber.OnSuperseded,
 		},
@@ -103,15 +113,59 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 	} else {
 		attachment.Geometry = session.CanonicalGeometry()
 	}
+	controller = session.Controller()
 	return Attached{
 			PresentationSequence: attachment.Geometry.PresentationSequence,
 			GeometryGeneration:   attachment.Geometry.Generation,
+			ControllerEpoch:      controller.Epoch,
 			Cols:                 uint32(attachment.Geometry.Cols),
 			Rows:                 uint32(attachment.Geometry.Rows),
+			IsController:         controller.AttachmentID == request.ConnectionID && controller.TransportGeneration == request.AttachGeneration,
 		}, func() {
 			attachment.Detach()
 			session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
 		}, nil
+}
+
+func (b *ManagerBackend) Activate(_ context.Context, attachment Attach, activate Activate) (Activated, error) {
+	if b == nil || b.manager == nil {
+		return Activated{}, errors.New("terminal manager is required")
+	}
+	session, ok := b.manager.GetSession(attachment.SessionID)
+	if !ok || session == nil {
+		return Activated{}, ErrSessionNotFound
+	}
+	presentation, controller, err := session.ActivateSemanticView(
+		attachment.ConnectionID, "local", attachment.AttachGeneration,
+		activate.ControllerEpoch, int(activate.Cols), int(activate.Rows),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, terminal.ErrControllerEpoch):
+			var mismatch *terminal.ControllerEpochMismatchError
+			if errors.As(err, &mismatch) {
+				current := mismatch.Current
+				return Activated{}, &ControllerEpochMismatchError{Controller: EffectiveController{
+					Epoch: current.Epoch,
+					IsController: current.AttachmentID == attachment.ConnectionID &&
+						current.TransportGeneration == attachment.AttachGeneration,
+				}}
+			}
+			return Activated{}, fmt.Errorf("%w: %v", ErrControllerEpoch, err)
+		case errors.Is(err, terminal.ErrControllerTransport):
+			return Activated{}, fmt.Errorf("%w: %v", ErrControllerTransport, err)
+		case errors.Is(err, terminal.ErrControllerPrincipal):
+			return Activated{}, fmt.Errorf("%w: %v", ErrControllerPrincipal, err)
+		default:
+			return Activated{}, err
+		}
+	}
+	return Activated{
+		Sequence: activate.Sequence, ControllerEpoch: controller.Epoch,
+		GeometryGeneration:   presentation.Geometry.Generation,
+		PresentationSequence: presentation.Sequence,
+		Cols:                 uint32(presentation.Geometry.Cols), Rows: uint32(presentation.Geometry.Rows),
+	}, nil
 }
 
 func (b *ManagerBackend) WriteInput(_ context.Context, attachment Attach, input Input) error {
@@ -141,21 +195,11 @@ func (b *ManagerBackend) writeSemanticInput(attachment Attach, input terminal.Se
 	if !ok || session == nil {
 		return ErrSessionNotFound
 	}
-	state := session.Controller()
-	if state.AttachmentID == "" {
-		state.Epoch = 0
-	}
 	generation, ok := session.SemanticAttachmentGeneration(attachment.ConnectionID)
-	if !ok {
-		return nil
+	if !ok || generation != attachment.AttachGeneration {
+		return terminal.ErrControllerTransport
 	}
-	if err := session.InteractSemantic(attachment.ConnectionID, "local", generation, state.Epoch, input); err != nil {
-		if errors.Is(err, terminal.ErrControllerEpoch) || errors.Is(err, terminal.ErrControllerTransport) || errors.Is(err, terminal.ErrControllerPrincipal) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return session.InteractSemanticView(attachment.ConnectionID, "local", attachment.AttachGeneration, input)
 }
 
 func (b *ManagerBackend) Resize(_ context.Context, attachment Attach, resize Resize) (EffectiveGeometry, error) {
@@ -167,7 +211,16 @@ func (b *ManagerBackend) Resize(_ context.Context, attachment Attach, resize Res
 		return EffectiveGeometry{}, ErrSessionNotFound
 	}
 	state := session.Controller()
-	if state.AttachmentID != attachment.ConnectionID {
+	generation, attached := session.SemanticAttachmentGeneration(attachment.ConnectionID)
+	if !attached || generation != attachment.AttachGeneration {
+		return EffectiveGeometry{}, terminal.ErrControllerTransport
+	}
+	if state.AttachmentID != attachment.ConnectionID || state.TransportGeneration != attachment.AttachGeneration {
+		if err := session.RecordSemanticViewSize(
+			attachment.ConnectionID, attachment.AttachGeneration, int(resize.Cols), int(resize.Rows),
+		); err != nil {
+			return EffectiveGeometry{}, err
+		}
 		canonical := session.CanonicalGeometry()
 		return EffectiveGeometry{Generation: canonical.Generation, PresentationSequence: canonical.PresentationSequence, Cols: uint32(canonical.Cols), Rows: uint32(canonical.Rows)}, nil
 	}

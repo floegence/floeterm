@@ -15,6 +15,7 @@ import {
   type ConnectTerminalLiveOptions,
   type TerminalByteStream,
   type TerminalLiveConnection,
+  type TerminalLiveActivationResult,
   type TerminalLiveResizeResult,
 } from './client.js';
 import { StreamKind } from './codec.js';
@@ -48,10 +49,22 @@ export type TerminalLiveAttachResult = Readonly<{
   cols: number;
   rows: number;
   runtimeAttachGeneration: number;
+  controllerEpoch: number;
+  isController: boolean;
 }>;
 
 export type TerminalLiveResizeAppliedResult = TerminalLiveResizeResult & Readonly<{
   runtimeAttachGeneration: number;
+}>;
+
+export type TerminalLiveActivationAppliedResult = TerminalLiveActivationResult & Readonly<{
+  runtimeAttachGeneration: number;
+}>;
+
+export type TerminalControllerEvent = Readonly<{
+  sessionId: TerminalID;
+  epoch: number;
+  isController: boolean;
 }>;
 
 export type TerminalLiveAttachmentCloseReason =
@@ -74,6 +87,7 @@ export type TerminalLiveAttachmentLifecycleEvent = Readonly<{
 export type SemanticTerminalLiveEventSource = Readonly<{
   onTerminalPresentation(sessionId: TerminalID, handler: (presentation: unknown) => void): () => void;
   onTerminalGeometry(sessionId: TerminalID, handler: (event: TerminalGeometryEvent) => void): () => void;
+  onTerminalController(sessionId: TerminalID, handler: (event: TerminalControllerEvent) => void): () => void;
   onTerminalLiveAttachmentLifecycle(
     sessionId: TerminalID,
     handler: (event: TerminalLiveAttachmentLifecycleEvent) => void,
@@ -110,6 +124,7 @@ export type SemanticTerminalLiveTransport = Readonly<{
     cols: number,
     rows: number,
   ): Promise<TerminalLiveResizeAppliedResult>;
+  activate(sessionId: TerminalID, cols: number, rows: number): Promise<TerminalLiveActivationAppliedResult>;
   sendInput(sessionId: TerminalID, input: string): Promise<void>;
   sendInputIntent(sessionId: TerminalID, input: TerminalKeyInputIntent): Promise<void>;
   semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryPage>;
@@ -151,6 +166,7 @@ export const createSemanticTerminalLiveTransport = (
 ): SemanticTerminalLiveTransportBundle => {
   const deletionListeners = new Map<string, Set<() => void>>();
   const geometryListeners = new Map<string, Set<(event: TerminalGeometryEvent) => void>>();
+  const controllerListeners = new Map<string, Set<(event: TerminalControllerEvent) => void>>();
   const presentationListeners = new Map<string, Set<(presentation: unknown) => void>>();
   const lifecycleListeners = new Map<string, Set<(event: TerminalLiveAttachmentLifecycleEvent) => void>>();
   const entries = new Map<string, LiveEntry>();
@@ -167,6 +183,9 @@ export const createSemanticTerminalLiveTransport = (
   };
   const emitPresentation = (sessionId: string, presentation: unknown): void => {
     for (const listener of presentationListeners.get(sessionId) ?? []) listener(presentation);
+  };
+  const emitController = (sessionId: string, controller: Omit<TerminalControllerEvent, 'sessionId'>): void => {
+    for (const listener of controllerListeners.get(sessionId) ?? []) listener({ sessionId, ...controller });
   };
   const emitLifecycle = (event: TerminalLiveAttachmentLifecycleEvent): void => {
     for (const listener of lifecycleListeners.get(event.sessionId) ?? []) listener(event);
@@ -203,6 +222,9 @@ export const createSemanticTerminalLiveTransport = (
       },
       onGeometry: geometry => {
         if (isCurrentGeneration(sessionId, generation)) emitGeometry(sessionId, geometry);
+      },
+      onController: controller => {
+        if (isCurrentGeneration(sessionId, generation)) emitController(sessionId, controller);
       },
       onClosed: reason => {
         if (!isCurrentGeneration(sessionId, generation)) return;
@@ -248,11 +270,30 @@ export const createSemanticTerminalLiveTransport = (
     return { ...result, runtimeAttachGeneration: entry.generation };
   };
 
+  const activate = async (
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ): Promise<TerminalLiveActivationAppliedResult> => {
+    const entry = entries.get(sessionId);
+    if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+      throw new Error('terminal live session is not attached');
+    }
+    const result = await entry.connection.activateWithEffectiveGeometry(cols, rows);
+    if (!isCurrentGeneration(sessionId, entry.generation)) {
+      const error = new Error('terminal live activation was superseded');
+      error.name = 'AbortError';
+      throw error;
+    }
+    return { ...result, runtimeAttachGeneration: entry.generation };
+  };
+
   const transport: SemanticTerminalLiveTransport = {
     attach: async (sessionId, cols, rows) => { await attachWithPresentation(sessionId, cols, rows); },
     attachWithPresentation,
     resize: async (sessionId, cols, rows) => { await resizeWithEffectiveGeometry(sessionId, cols, rows); },
     resizeWithEffectiveGeometry,
+    activate,
     sendInput: async (sessionId, input) => {
       const entry = entries.get(sessionId);
       if (!entry || !isCurrentGeneration(sessionId, entry.generation)) throw new Error('terminal live session is not attached');
@@ -333,6 +374,7 @@ export const createSemanticTerminalLiveTransport = (
       disposed = true;
       deletionListeners.clear();
       geometryListeners.clear();
+      controllerListeners.clear();
       presentationListeners.clear();
       lifecycleListeners.clear();
     },
@@ -341,6 +383,7 @@ export const createSemanticTerminalLiveTransport = (
   const eventSource: SemanticTerminalLiveEventSource = {
     onTerminalPresentation: (sessionId, handler) => subscribe(presentationListeners, sessionId, handler),
     onTerminalGeometry: (sessionId, handler) => subscribe(geometryListeners, sessionId, handler),
+    onTerminalController: (sessionId, handler) => subscribe(controllerListeners, sessionId, handler),
     onTerminalLiveAttachmentLifecycle: (sessionId, handler) => subscribe(lifecycleListeners, sessionId, handler),
     onSessionDeleted: (sessionId, handler) => subscribe(deletionListeners, sessionId, handler),
     onTerminalNameUpdate: options.controlEvents?.onTerminalNameUpdate,

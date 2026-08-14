@@ -33,13 +33,17 @@ const (
 	FrameResize      FrameType = 0x03
 	FrameDetach      FrameType = 0x04
 	FrameInputIntent FrameType = 0x05
+	FrameActivate    FrameType = 0x06
 
-	FrameAttached        FrameType = 0x81
-	FrameResizeApplied   FrameType = 0x83
-	FrameSessionClosed   FrameType = 0x84
-	FrameGeometryChanged FrameType = 0x85
-	FramePresentation    FrameType = 0x86
-	FrameError           FrameType = 0xff
+	FrameAttached           FrameType = 0x81
+	FrameResizeApplied      FrameType = 0x83
+	FrameSessionClosed      FrameType = 0x84
+	FrameGeometryChanged    FrameType = 0x85
+	FramePresentation       FrameType = 0x86
+	FrameActivated          FrameType = 0x87
+	FrameControllerChanged  FrameType = 0x88
+	FrameActivationRejected FrameType = 0x89
+	FrameError              FrameType = 0xff
 )
 
 type Frame struct {
@@ -96,11 +100,20 @@ type Resize struct {
 	Rows     uint32
 }
 
+type Activate struct {
+	Sequence        uint64
+	ControllerEpoch uint64
+	Cols            uint32
+	Rows            uint32
+}
+
 type Attached struct {
 	PresentationSequence uint64
 	GeometryGeneration   uint64
+	ControllerEpoch      uint64
 	Cols                 uint32
 	Rows                 uint32
+	IsController         bool
 }
 
 type ResizeApplied struct {
@@ -118,6 +131,25 @@ type EffectiveGeometry struct {
 	Rows                 uint32
 }
 
+type Activated struct {
+	Sequence             uint64
+	ControllerEpoch      uint64
+	GeometryGeneration   uint64
+	PresentationSequence uint64
+	Cols                 uint32
+	Rows                 uint32
+}
+
+type EffectiveController struct {
+	Epoch        uint64
+	IsController bool
+}
+
+type ActivationRejected struct {
+	Sequence   uint64
+	Controller EffectiveController
+}
+
 type ProtocolError struct {
 	Code    uint16
 	Message string
@@ -125,8 +157,9 @@ type ProtocolError struct {
 
 func validFrameType(frameType FrameType) bool {
 	switch frameType {
-	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent,
-		FrameAttached, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation, FrameError:
+	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent, FrameActivate,
+		FrameAttached, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation,
+		FrameActivated, FrameControllerChanged, FrameActivationRejected, FrameError:
 		return true
 	default:
 		return false
@@ -410,15 +443,47 @@ func DecodeResize(frame Frame) (Resize, error) {
 	return value, nil
 }
 
-func EncodeAttached(value Attached) ([]byte, error) {
-	if value.PresentationSequence == 0 || value.GeometryGeneration == 0 || value.Cols == 0 || value.Rows == 0 {
+func EncodeActivate(value Activate) ([]byte, error) {
+	if value.Sequence == 0 || value.ControllerEpoch == 0 || value.Cols == 0 || value.Rows == 0 {
 		return nil, ErrInvalidPayload
 	}
 	payload := make([]byte, 24)
-	binary.BigEndian.PutUint64(payload[:8], value.PresentationSequence)
-	binary.BigEndian.PutUint64(payload[8:16], value.GeometryGeneration)
+	binary.BigEndian.PutUint64(payload[:8], value.Sequence)
+	binary.BigEndian.PutUint64(payload[8:16], value.ControllerEpoch)
 	binary.BigEndian.PutUint32(payload[16:20], value.Cols)
 	binary.BigEndian.PutUint32(payload[20:24], value.Rows)
+	return EncodeFrame(Frame{Type: FrameActivate, Payload: payload})
+}
+
+func DecodeActivate(frame Frame) (Activate, error) {
+	if frame.Type != FrameActivate || len(frame.Payload) != 24 {
+		return Activate{}, ErrInvalidPayload
+	}
+	value := Activate{
+		Sequence:        binary.BigEndian.Uint64(frame.Payload[:8]),
+		ControllerEpoch: binary.BigEndian.Uint64(frame.Payload[8:16]),
+		Cols:            binary.BigEndian.Uint32(frame.Payload[16:20]),
+		Rows:            binary.BigEndian.Uint32(frame.Payload[20:24]),
+	}
+	if value.Sequence == 0 || value.ControllerEpoch == 0 || value.Cols == 0 || value.Rows == 0 {
+		return Activate{}, ErrInvalidPayload
+	}
+	return value, nil
+}
+
+func EncodeAttached(value Attached) ([]byte, error) {
+	if value.PresentationSequence == 0 || value.GeometryGeneration == 0 || value.ControllerEpoch == 0 || value.Cols == 0 || value.Rows == 0 {
+		return nil, ErrInvalidPayload
+	}
+	payload := make([]byte, 40)
+	binary.BigEndian.PutUint64(payload[:8], value.PresentationSequence)
+	binary.BigEndian.PutUint64(payload[8:16], value.GeometryGeneration)
+	binary.BigEndian.PutUint64(payload[16:24], value.ControllerEpoch)
+	binary.BigEndian.PutUint32(payload[24:28], value.Cols)
+	binary.BigEndian.PutUint32(payload[28:32], value.Rows)
+	if value.IsController {
+		payload[32] = 1
+	}
 	return EncodeFrame(Frame{Type: FrameAttached, Payload: payload})
 }
 
@@ -426,18 +491,122 @@ func DecodeAttached(frame Frame) (Attached, error) {
 	if frame.Type != FrameAttached {
 		return Attached{}, ErrUnexpectedFrameType
 	}
-	if len(frame.Payload) != 24 {
+	if len(frame.Payload) != 40 || frame.Payload[32] > 1 {
 		return Attached{}, ErrInvalidPayload
+	}
+	for _, reserved := range frame.Payload[33:40] {
+		if reserved != 0 {
+			return Attached{}, ErrInvalidPayload
+		}
 	}
 	value := Attached{
 		PresentationSequence: binary.BigEndian.Uint64(frame.Payload[:8]),
 		GeometryGeneration:   binary.BigEndian.Uint64(frame.Payload[8:16]),
-		Cols:                 binary.BigEndian.Uint32(frame.Payload[16:20]),
-		Rows:                 binary.BigEndian.Uint32(frame.Payload[20:24]),
+		ControllerEpoch:      binary.BigEndian.Uint64(frame.Payload[16:24]),
+		Cols:                 binary.BigEndian.Uint32(frame.Payload[24:28]),
+		Rows:                 binary.BigEndian.Uint32(frame.Payload[28:32]),
+		IsController:         frame.Payload[32] == 1,
 	}
 	if value.PresentationSequence == 0 ||
-		value.GeometryGeneration == 0 || value.Cols == 0 || value.Rows == 0 {
+		value.GeometryGeneration == 0 || value.ControllerEpoch == 0 || value.Cols == 0 || value.Rows == 0 {
 		return Attached{}, ErrInvalidPayload
+	}
+	return value, nil
+}
+
+func EncodeActivated(value Activated) ([]byte, error) {
+	if value.Sequence == 0 || value.ControllerEpoch == 0 || value.GeometryGeneration == 0 ||
+		value.PresentationSequence == 0 || value.Cols == 0 || value.Rows == 0 {
+		return nil, ErrInvalidPayload
+	}
+	payload := make([]byte, 40)
+	binary.BigEndian.PutUint64(payload[:8], value.Sequence)
+	binary.BigEndian.PutUint64(payload[8:16], value.ControllerEpoch)
+	binary.BigEndian.PutUint64(payload[16:24], value.GeometryGeneration)
+	binary.BigEndian.PutUint64(payload[24:32], value.PresentationSequence)
+	binary.BigEndian.PutUint32(payload[32:36], value.Cols)
+	binary.BigEndian.PutUint32(payload[36:40], value.Rows)
+	return EncodeFrame(Frame{Type: FrameActivated, Payload: payload})
+}
+
+func DecodeActivated(frame Frame) (Activated, error) {
+	if frame.Type != FrameActivated || len(frame.Payload) != 40 {
+		return Activated{}, ErrInvalidPayload
+	}
+	value := Activated{
+		Sequence:             binary.BigEndian.Uint64(frame.Payload[:8]),
+		ControllerEpoch:      binary.BigEndian.Uint64(frame.Payload[8:16]),
+		GeometryGeneration:   binary.BigEndian.Uint64(frame.Payload[16:24]),
+		PresentationSequence: binary.BigEndian.Uint64(frame.Payload[24:32]),
+		Cols:                 binary.BigEndian.Uint32(frame.Payload[32:36]),
+		Rows:                 binary.BigEndian.Uint32(frame.Payload[36:40]),
+	}
+	if value.Sequence == 0 || value.ControllerEpoch == 0 || value.GeometryGeneration == 0 ||
+		value.PresentationSequence == 0 || value.Cols == 0 || value.Rows == 0 {
+		return Activated{}, ErrInvalidPayload
+	}
+	return value, nil
+}
+
+func EncodeControllerChanged(value EffectiveController) ([]byte, error) {
+	if value.Epoch == 0 {
+		return nil, ErrInvalidPayload
+	}
+	payload := make([]byte, 16)
+	binary.BigEndian.PutUint64(payload[:8], value.Epoch)
+	if value.IsController {
+		payload[8] = 1
+	}
+	return EncodeFrame(Frame{Type: FrameControllerChanged, Payload: payload})
+}
+
+func DecodeControllerChanged(frame Frame) (EffectiveController, error) {
+	if frame.Type != FrameControllerChanged || len(frame.Payload) != 16 || frame.Payload[8] > 1 {
+		return EffectiveController{}, ErrInvalidPayload
+	}
+	for _, reserved := range frame.Payload[9:16] {
+		if reserved != 0 {
+			return EffectiveController{}, ErrInvalidPayload
+		}
+	}
+	value := EffectiveController{Epoch: binary.BigEndian.Uint64(frame.Payload[:8]), IsController: frame.Payload[8] == 1}
+	if value.Epoch == 0 {
+		return EffectiveController{}, ErrInvalidPayload
+	}
+	return value, nil
+}
+
+func EncodeActivationRejected(value ActivationRejected) ([]byte, error) {
+	if value.Sequence == 0 || value.Controller.Epoch == 0 {
+		return nil, ErrInvalidPayload
+	}
+	payload := make([]byte, 24)
+	binary.BigEndian.PutUint64(payload[:8], value.Sequence)
+	binary.BigEndian.PutUint64(payload[8:16], value.Controller.Epoch)
+	if value.Controller.IsController {
+		payload[16] = 1
+	}
+	return EncodeFrame(Frame{Type: FrameActivationRejected, Payload: payload})
+}
+
+func DecodeActivationRejected(frame Frame) (ActivationRejected, error) {
+	if frame.Type != FrameActivationRejected || len(frame.Payload) != 24 || frame.Payload[16] > 1 {
+		return ActivationRejected{}, ErrInvalidPayload
+	}
+	for _, reserved := range frame.Payload[17:24] {
+		if reserved != 0 {
+			return ActivationRejected{}, ErrInvalidPayload
+		}
+	}
+	value := ActivationRejected{
+		Sequence: binary.BigEndian.Uint64(frame.Payload[:8]),
+		Controller: EffectiveController{
+			Epoch:        binary.BigEndian.Uint64(frame.Payload[8:16]),
+			IsController: frame.Payload[16] == 1,
+		},
+	}
+	if value.Sequence == 0 || value.Controller.Epoch == 0 {
+		return ActivationRejected{}, ErrInvalidPayload
 	}
 	return value, nil
 }

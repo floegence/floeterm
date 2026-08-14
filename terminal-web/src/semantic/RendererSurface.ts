@@ -17,6 +17,8 @@ export type SemanticTerminalCellMetrics = Readonly<{
   cellHeightCssPx: number;
 }>;
 
+const SELECTION_DRAG_THRESHOLD_CSS_PX = 3;
+
 const PALETTE_KEYS = [
   'background', 'foreground', 'cursor', 'cursorAccent', 'selectionBackground', 'selectionForeground',
   'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
@@ -29,6 +31,12 @@ export class RendererSurface {
   private animationFrame: number | null = null;
   private selectionAnchor: { row: number; col: number } | null = null;
   private selectionFocus: { row: number; col: number } | null = null;
+  private selectionGesture: {
+    clientX: number;
+    clientY: number;
+    anchor: { row: number; col: number };
+    active: boolean;
+  } | null = null;
   private renderGeneration = 0;
   private failed = false;
   private context: CanvasRenderingContext2D | null | undefined;
@@ -48,6 +56,7 @@ export class RendererSurface {
   private dprMediaQuery: MediaQueryList | null = null;
   private readonly fontSet: FontFaceSet | undefined;
   private disposed = false;
+  private viewVisible = true;
   private readonly graphicBitmaps = new Map<string, ImageBitmap>();
   private readonly visibilityHandler = (): void => {
     if (this.failed) return;
@@ -73,6 +82,8 @@ export class RendererSurface {
     private readonly canvas: HTMLCanvasElement,
     private readonly onError: (error: Error) => void = () => {},
   ) {
+    this.canvas.style.visibility = 'hidden';
+    this.canvas.style.background = this.palette.background;
     globalThis.document?.addEventListener('visibilitychange', this.visibilityHandler);
     this.fontSet = globalThis.document?.fonts;
     this.fontSet?.addEventListener?.('loadingdone', this.fontLoadingDoneHandler);
@@ -95,6 +106,7 @@ export class RendererSurface {
     if (contentChanged) {
       this.selectionAnchor = null;
       this.selectionFocus = null;
+      this.selectionGesture = null;
     }
     if (cursorChanged) {
       this.cursorBlinkPhaseVisible = true;
@@ -147,22 +159,37 @@ export class RendererSurface {
   beginSelection(clientX: number, clientY: number): void {
     const point = this.pointFromClient(clientX, clientY);
     if (!point) return;
-    this.selectionAnchor = point;
-    this.selectionFocus = point;
+    const hadSelection = this.selectionAnchor !== null || this.selectionFocus !== null;
+    this.selectionAnchor = null;
+    this.selectionFocus = null;
+    this.selectionGesture = { clientX, clientY, anchor: point, active: false };
+    if (!hadSelection) return;
     this.scheduleRender();
   }
   updateSelection(clientX: number, clientY: number): void {
-    if (!this.selectionAnchor) return;
+    const gesture = this.selectionGesture;
+    if (!gesture) return;
     const point = this.pointFromClient(clientX, clientY);
     if (!point) return;
+    if (!gesture.active) {
+      const deltaX = clientX - gesture.clientX;
+      const deltaY = clientY - gesture.clientY;
+      if ((deltaX * deltaX) + (deltaY * deltaY) < SELECTION_DRAG_THRESHOLD_CSS_PX ** 2) return;
+      gesture.active = true;
+      this.selectionAnchor = gesture.anchor;
+    }
     this.selectionFocus = point;
     this.scheduleRender();
   }
   endSelection(clientX: number, clientY: number): void {
+    if (!this.selectionGesture) return;
     this.updateSelection(clientX, clientY);
+    this.selectionGesture = null;
   }
   clearSelection(): void {
-    if (!this.selectionAnchor && !this.selectionFocus) return;
+    const changed = this.selectionAnchor !== null || this.selectionFocus !== null;
+    this.selectionGesture = null;
+    if (!changed) return;
     this.selectionAnchor = null;
     this.selectionFocus = null;
     this.scheduleRender();
@@ -212,7 +239,30 @@ export class RendererSurface {
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
     this.canvas.style.background = this.palette.background;
+    const viewport = this.measureViewport();
+    if (!this.viewVisible || !viewport
+      || this.canvas.width !== Math.round(viewport.cssWidth * viewport.dpr)
+      || this.canvas.height !== Math.round(viewport.cssHeight * viewport.dpr)) {
+      this.canvas.style.visibility = 'hidden';
+    }
     this.scheduleRender();
+  }
+  setVisible(visible: boolean): void {
+    if (this.disposed || this.failed) return;
+    this.viewVisible = visible;
+    if (!visible || !this.latest) {
+      this.canvas.style.visibility = 'hidden';
+      return;
+    }
+    if (this.animationFrame !== null && typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(this.animationFrame);
+      this.animationFrame = null;
+    }
+    try {
+      this.render(this.latest);
+    } catch (error) {
+      this.fail(error);
+    }
   }
   dispose(): void {
     this.disposed = true;
@@ -230,6 +280,8 @@ export class RendererSurface {
     this.viewportFrame = null;
     this.selectionAnchor = null;
     this.selectionFocus = null;
+    this.selectionGesture = null;
+    this.canvas.style.visibility = 'hidden';
   }
   private scheduleRender(): void {
     if (this.failed || !this.latest || this.animationFrame !== null) return;
@@ -252,6 +304,11 @@ export class RendererSurface {
     });
   }
   private render(presentation: SemanticPresentation): void {
+    const viewport = this.measureViewport();
+    if (!this.viewVisible || !viewport) {
+      this.canvas.style.visibility = 'hidden';
+      return;
+    }
     const renderGeneration = ++this.renderGeneration;
     const frame = this.viewportFrame ?? presentation.frame;
     const palette = this.palette;
@@ -259,15 +316,18 @@ export class RendererSurface {
     // The canvas owns its backing store, but its containing pane owns the
     // layout bounds. Reading the canvas rect after writing inline dimensions
     // would make a resize self-referential and preserve the old viewport.
-    const { cssWidth, cssHeight, dpr } = this.syncBackingStore(presentation);
+    const { dpr } = this.syncBackingStore(viewport);
+    // Fill the exact integer backing extent before applying the CSS-pixel DPR
+    // transform. A fractional CSS*dpr edge would otherwise leave the last
+    // physical pixel only partially covered and expose transparency.
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.fillStyle = palette.background;
+    context.fillRect(0, 0, this.canvas.width, this.canvas.height);
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     // The engine grid is authoritative. A view may be larger or smaller than
     // that grid, so preserve one CSS cell metric and crop/pad locally instead
     // of stretching the shared frame to fit an observer viewport.
     const { cellWidthCssPx: cellWidth, cellHeightCssPx: cellHeight } = this.cellMetrics;
-    context.clearRect(0, 0, cssWidth, cssHeight);
-    context.fillStyle = palette.background;
-    context.fillRect(0, 0, cssWidth, cssHeight);
     context.font = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
     context.textBaseline = 'alphabetic';
     frame.rows.forEach((row, y) => {
@@ -289,6 +349,7 @@ export class RendererSurface {
     this.paintCursor(context, frame, frame.cursor, cellWidth, cellHeight, palette);
     void this.paintGraphics(context, frame, cellWidth, cellHeight, renderGeneration, palette)
       .catch(error => this.fail(error));
+    this.canvas.style.visibility = 'visible';
   }
 
   private paintCursor(
@@ -558,11 +619,17 @@ export class RendererSurface {
     return true;
   }
 
-  private syncBackingStore(presentation = this.latest): { cssWidth: number; cssHeight: number; dpr: number } {
+  private measureViewport(): { cssWidth: number; cssHeight: number; dpr: number } | null {
     const host = this.canvas.parentElement;
-    const cssWidth = Math.max(1, host?.clientWidth || this.canvas.clientWidth || (presentation?.frame.width ?? 1) * 9);
-    const cssHeight = Math.max(1, host?.clientHeight || this.canvas.clientHeight || (presentation?.frame.height ?? 1) * 18);
+    const cssWidth = host?.clientWidth || this.canvas.clientWidth || 0;
+    const cssHeight = host?.clientHeight || this.canvas.clientHeight || 0;
+    if (cssWidth <= 0 || cssHeight <= 0) return null;
     const dpr = Math.max(1, globalThis.devicePixelRatio || 1);
+    return { cssWidth, cssHeight, dpr };
+  }
+
+  private syncBackingStore(viewport: { cssWidth: number; cssHeight: number; dpr: number }): { cssWidth: number; cssHeight: number; dpr: number } {
+    const { cssWidth, cssHeight, dpr } = viewport;
     const backingWidth = Math.round(cssWidth * dpr);
     const backingHeight = Math.round(cssHeight * dpr);
     // Backing assignments clear old pixels. Deduplicate exact observer repeats

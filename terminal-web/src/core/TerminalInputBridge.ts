@@ -457,9 +457,9 @@ export class TerminalInputBridge {
     if (this.ignoreNextInput) {
       this.clearEphemeralStateResetTimer();
       this.ignoreNextInput = false;
-      this.scheduleEphemeralStateReset();
-      consumeBrowserInputEvent(event);
-      return;
+      // A cancelled beforeinput normally suppresses its matching input event.
+      // If another beforeinput arrives first, the old dedupe token is stale;
+      // it must never consume the next physical key or composition commit.
     }
 
     const data = mapBeforeInputToTerminalData(event);

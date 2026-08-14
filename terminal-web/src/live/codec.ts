@@ -10,11 +10,15 @@ export enum TerminalLiveFrameType {
   Resize = 0x03,
   Detach = 0x04,
   InputIntent = 0x05,
+  Activate = 0x06,
   Attached = 0x81,
   ResizeApplied = 0x83,
   SessionClosed = 0x84,
   GeometryChanged = 0x85,
   Presentation = 0x86,
+  Activated = 0x87,
+  ControllerChanged = 0x88,
+  ActivationRejected = 0x89,
   Error = 0xff,
 }
 
@@ -41,11 +45,19 @@ export type InputIntent = Readonly<{
   modifiers: number;
 }>;
 export type Resize = Readonly<{ sequence: bigint; cols: number; rows: number }>;
-export type Attached = Readonly<{
-	presentationSequence: bigint;
-	geometryGeneration: bigint;
+export type Activate = Readonly<{
+  sequence: bigint;
+  controllerEpoch: bigint;
   cols: number;
   rows: number;
+}>;
+export type Attached = Readonly<{
+  presentationSequence: bigint;
+  geometryGeneration: bigint;
+  controllerEpoch: bigint;
+  cols: number;
+  rows: number;
+  isController: boolean;
 }>;
 export type ResizeApplied = Readonly<{
   sequence: bigint;
@@ -59,6 +71,20 @@ export type GeometryChanged = Readonly<{
   presentationSequence: bigint;
   cols: number;
   rows: number;
+}>;
+export type Activated = Readonly<{
+  sequence: bigint;
+  controllerEpoch: bigint;
+  geometryGeneration: bigint;
+  presentationSequence: bigint;
+  cols: number;
+  rows: number;
+}>;
+export type ControllerChanged = Readonly<{ epoch: bigint; isController: boolean }>;
+export type ActivationRejected = Readonly<{
+  sequence: bigint;
+  controllerEpoch: bigint;
+  isController: boolean;
 }>;
 export type Presentation = Readonly<{ value: unknown }>;
 export type ProtocolError = Readonly<{ code: number; message: string }>;
@@ -299,35 +325,161 @@ export const decodeResize = (value: TerminalLiveFrame): Resize => {
   return { sequence, cols, rows };
 };
 
-export const encodeAttached = (value: Attached): Uint8Array => {
-	assertPositiveUint64(value.presentationSequence, 'presentationSequence');
-  assertPositiveUint64(value.geometryGeneration, 'geometryGeneration');
+export const encodeActivate = (value: Activate): Uint8Array => {
+  assertPositiveUint64(value.sequence, 'sequence');
+  assertPositiveUint64(value.controllerEpoch, 'controllerEpoch');
   assertPositiveUint32(value.cols, 'cols');
   assertPositiveUint32(value.rows, 'rows');
-	const payload = new Uint8Array(24);
-	const view = new DataView(payload.buffer);
-	view.setBigUint64(0, value.presentationSequence, false);
-	view.setBigUint64(8, value.geometryGeneration, false);
-	view.setUint32(16, value.cols, false);
-	view.setUint32(20, value.rows, false);
+  const payload = new Uint8Array(24);
+  const view = new DataView(payload.buffer);
+  view.setBigUint64(0, value.sequence, false);
+  view.setBigUint64(8, value.controllerEpoch, false);
+  view.setUint32(16, value.cols, false);
+  view.setUint32(20, value.rows, false);
+  return frame(TerminalLiveFrameType.Activate, payload);
+};
+
+export const decodeActivate = (value: TerminalLiveFrame): Activate => {
+  if (value.type !== TerminalLiveFrameType.Activate || value.payload.byteLength !== 24) {
+    throw new Error('invalid terminal live activate payload');
+  }
+  const view = new DataView(value.payload.buffer, value.payload.byteOffset);
+  const result = {
+    sequence: view.getBigUint64(0, false),
+    controllerEpoch: view.getBigUint64(8, false),
+    cols: view.getUint32(16, false),
+    rows: view.getUint32(20, false),
+  };
+  assertPositiveUint64(result.sequence, 'sequence');
+  assertPositiveUint64(result.controllerEpoch, 'controllerEpoch');
+  assertPositiveUint32(result.cols, 'cols');
+  assertPositiveUint32(result.rows, 'rows');
+  return result;
+};
+
+export const encodeAttached = (value: Attached): Uint8Array => {
+  assertPositiveUint64(value.presentationSequence, 'presentationSequence');
+  assertPositiveUint64(value.geometryGeneration, 'geometryGeneration');
+  assertPositiveUint64(value.controllerEpoch, 'controllerEpoch');
+  assertPositiveUint32(value.cols, 'cols');
+  assertPositiveUint32(value.rows, 'rows');
+  const payload = new Uint8Array(40);
+  const view = new DataView(payload.buffer);
+  view.setBigUint64(0, value.presentationSequence, false);
+  view.setBigUint64(8, value.geometryGeneration, false);
+  view.setBigUint64(16, value.controllerEpoch, false);
+  view.setUint32(24, value.cols, false);
+  view.setUint32(28, value.rows, false);
+  payload[32] = value.isController ? 1 : 0;
   return frame(TerminalLiveFrameType.Attached, payload);
 };
 
 export const decodeAttached = (value: TerminalLiveFrame): Attached => {
   if (value.type !== TerminalLiveFrameType.Attached) throw new Error('unexpected terminal live frame type');
-	if (value.payload.byteLength !== 24) throw new Error('invalid terminal live attached payload');
+  if (value.payload.byteLength !== 40 || value.payload[32]! > 1
+    || value.payload.subarray(33).some(byte => byte !== 0)) {
+    throw new Error('invalid terminal live attached payload');
+  }
   const view = new DataView(value.payload.buffer, value.payload.byteOffset);
-	const attached = {
-		presentationSequence: view.getBigUint64(0, false),
-		geometryGeneration: view.getBigUint64(8, false),
-		cols: view.getUint32(16, false),
-		rows: view.getUint32(20, false),
-	};
-	assertPositiveUint64(attached.presentationSequence, 'presentationSequence');
+  const attached = {
+    presentationSequence: view.getBigUint64(0, false),
+    geometryGeneration: view.getBigUint64(8, false),
+    controllerEpoch: view.getBigUint64(16, false),
+    cols: view.getUint32(24, false),
+    rows: view.getUint32(28, false),
+    isController: value.payload[32] === 1,
+  };
+  assertPositiveUint64(attached.presentationSequence, 'presentationSequence');
   assertPositiveUint64(attached.geometryGeneration, 'geometryGeneration');
+  assertPositiveUint64(attached.controllerEpoch, 'controllerEpoch');
   assertPositiveUint32(attached.cols, 'cols');
   assertPositiveUint32(attached.rows, 'rows');
   return attached;
+};
+
+export const encodeActivated = (value: Activated): Uint8Array => {
+  assertPositiveUint64(value.sequence, 'sequence');
+  assertPositiveUint64(value.controllerEpoch, 'controllerEpoch');
+  assertPositiveUint64(value.geometryGeneration, 'geometryGeneration');
+  assertPositiveUint64(value.presentationSequence, 'presentationSequence');
+  assertPositiveUint32(value.cols, 'cols');
+  assertPositiveUint32(value.rows, 'rows');
+  const payload = new Uint8Array(40);
+  const view = new DataView(payload.buffer);
+  view.setBigUint64(0, value.sequence, false);
+  view.setBigUint64(8, value.controllerEpoch, false);
+  view.setBigUint64(16, value.geometryGeneration, false);
+  view.setBigUint64(24, value.presentationSequence, false);
+  view.setUint32(32, value.cols, false);
+  view.setUint32(36, value.rows, false);
+  return frame(TerminalLiveFrameType.Activated, payload);
+};
+
+export const decodeActivated = (value: TerminalLiveFrame): Activated => {
+  if (value.type !== TerminalLiveFrameType.Activated || value.payload.byteLength !== 40) {
+    throw new Error('invalid terminal live activated payload');
+  }
+  const view = new DataView(value.payload.buffer, value.payload.byteOffset);
+  const result = {
+    sequence: view.getBigUint64(0, false),
+    controllerEpoch: view.getBigUint64(8, false),
+    geometryGeneration: view.getBigUint64(16, false),
+    presentationSequence: view.getBigUint64(24, false),
+    cols: view.getUint32(32, false),
+    rows: view.getUint32(36, false),
+  };
+  assertPositiveUint64(result.sequence, 'sequence');
+  assertPositiveUint64(result.controllerEpoch, 'controllerEpoch');
+  assertPositiveUint64(result.geometryGeneration, 'geometryGeneration');
+  assertPositiveUint64(result.presentationSequence, 'presentationSequence');
+  assertPositiveUint32(result.cols, 'cols');
+  assertPositiveUint32(result.rows, 'rows');
+  return result;
+};
+
+export const encodeControllerChanged = (value: ControllerChanged): Uint8Array => {
+  assertPositiveUint64(value.epoch, 'controllerEpoch');
+  const payload = new Uint8Array(16);
+  new DataView(payload.buffer).setBigUint64(0, value.epoch, false);
+  payload[8] = value.isController ? 1 : 0;
+  return frame(TerminalLiveFrameType.ControllerChanged, payload);
+};
+
+export const decodeControllerChanged = (value: TerminalLiveFrame): ControllerChanged => {
+  if (value.type !== TerminalLiveFrameType.ControllerChanged || value.payload.byteLength !== 16
+    || value.payload[8]! > 1 || value.payload.subarray(9).some(byte => byte !== 0)) {
+    throw new Error('invalid terminal live controller payload');
+  }
+  const epoch = new DataView(value.payload.buffer, value.payload.byteOffset).getBigUint64(0, false);
+  assertPositiveUint64(epoch, 'controllerEpoch');
+  return { epoch, isController: value.payload[8] === 1 };
+};
+
+export const encodeActivationRejected = (value: ActivationRejected): Uint8Array => {
+  assertPositiveUint64(value.sequence, 'activation sequence');
+  assertPositiveUint64(value.controllerEpoch, 'controllerEpoch');
+  const payload = new Uint8Array(24);
+  const view = new DataView(payload.buffer);
+  view.setBigUint64(0, value.sequence, false);
+  view.setBigUint64(8, value.controllerEpoch, false);
+  payload[16] = value.isController ? 1 : 0;
+  return frame(TerminalLiveFrameType.ActivationRejected, payload);
+};
+
+export const decodeActivationRejected = (value: TerminalLiveFrame): ActivationRejected => {
+  if (value.type !== TerminalLiveFrameType.ActivationRejected || value.payload.byteLength !== 24
+    || (value.payload[16] ?? 2) > 1 || value.payload.slice(17).some(byte => byte !== 0)) {
+    throw new Error('invalid terminal live activation rejection');
+  }
+  const view = new DataView(value.payload.buffer, value.payload.byteOffset, value.payload.byteLength);
+  const result = {
+    sequence: view.getBigUint64(0, false),
+    controllerEpoch: view.getBigUint64(8, false),
+    isController: value.payload[16] === 1,
+  };
+  assertPositiveUint64(result.sequence, 'activation sequence');
+  assertPositiveUint64(result.controllerEpoch, 'controllerEpoch');
+  return result;
 };
 
 export const encodeResizeApplied = (value: ResizeApplied): Uint8Array => {

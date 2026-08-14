@@ -68,4 +68,15 @@ describe('reference app resize ownership', () => {
     expect(stylesSource).not.toMatch(/\.terminalInputBridge\s*\{[^}]*inset:\s*0;/);
     expect(stylesSource).toMatch(/\.semanticTerminalSurface\s*\{[^}]*pointer-events:\s*auto;/);
   });
+
+  it('settles explicit view activation before focus can emit terminal input', () => {
+    const pointerDown = appSource.slice(
+      appSource.indexOf('onPointerDown={event => {'),
+      appSource.indexOf('onPointerMove={event => {'),
+    );
+    expect(pointerDown).toContain('props.activate?.();');
+    expect(pointerDown.indexOf('props.activate?.();')).toBeLessThan(pointerDown.indexOf('inputController?.focus();'));
+    expect(appSource).toContain('props.transport.activate(mountedSessionId, dimensions.cols, dimensions.rows)');
+    expect(appSource).toContain('if (activationPending || !connected()) return;');
+  });
 });

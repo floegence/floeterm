@@ -65,6 +65,15 @@ describe('TerminalInputBridge', () => {
     expect(targetListener).not.toHaveBeenCalled();
   });
 
+  it('does not consume the next beforeinput when cancellation suppresses the matching input event', () => {
+    const { textarea, onData } = setup();
+
+    textarea.dispatchEvent(createInputEvent('beforeinput', { data: 'a', inputType: 'insertText' }));
+    textarea.dispatchEvent(createInputEvent('beforeinput', { data: 'b', inputType: 'insertText' }));
+
+    expect(onData.mock.calls.map(([value]) => value)).toEqual(['a', 'b']);
+  });
+
   it('falls back to input value when beforeinput is unavailable', () => {
     const { textarea, onData } = setup();
 

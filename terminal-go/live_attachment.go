@@ -30,6 +30,14 @@ func (s *Session) broadcastGeometry(geometry TerminalGeometry, subscribers []Liv
 	}
 }
 
+func (s *Session) broadcastController(controller ControllerState, subscribers []LiveSubscriber) {
+	for _, subscriber := range subscribers {
+		if subscriber.OnController != nil {
+			subscriber.OnController(controller)
+		}
+	}
+}
+
 func (s *Session) broadcastPresentation(presentation SemanticPresentation, _ []LiveSubscriber) {
 	if s == nil || presentation.Sequence == 0 {
 		return

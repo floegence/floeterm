@@ -40,7 +40,7 @@ func TestSemanticCodecRoundTrip(t *testing.T) {
 		t.Fatalf("input intent = %+v, err = %v", intent, err)
 	}
 
-	attachedBytes, err := EncodeAttached(Attached{PresentationSequence: 9, GeometryGeneration: 3, Cols: 100, Rows: 30})
+	attachedBytes, err := EncodeAttached(Attached{PresentationSequence: 9, GeometryGeneration: 3, ControllerEpoch: 4, Cols: 100, Rows: 30, IsController: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,9 +111,15 @@ func TestTerminalLiveV1VectorsMatchCodec(t *testing.T) {
 	encoded["input"], _ = EncodeInput(Input{Sequence: 1, Data: []byte("abc")})
 	encoded["input_intent"], _ = EncodeInputIntent(InputIntent{Sequence: 2, Code: "ArrowUp", Action: KeyActionRepeat, Modifiers: KeyModifierShift | KeyModifierControl})
 	encoded["resize"], _ = EncodeResize(Resize{Sequence: 7, Cols: 80, Rows: 24})
-	encoded["attached"], _ = EncodeAttached(Attached{PresentationSequence: 42, GeometryGeneration: 3, Cols: 80, Rows: 24})
+	encoded["activate"], _ = EncodeActivate(Activate{Sequence: 1, ControllerEpoch: 1, Cols: 80, Rows: 24})
+	encoded["attached"], _ = EncodeAttached(Attached{PresentationSequence: 42, GeometryGeneration: 3, ControllerEpoch: 1, Cols: 80, Rows: 24, IsController: true})
 	encoded["resize_applied"], _ = EncodeResizeApplied(ResizeApplied{Sequence: 7, GeometryGeneration: 5, PresentationSequence: 42, Cols: 80, Rows: 24})
 	encoded["geometry_changed"], _ = EncodeGeometryChanged(EffectiveGeometry{Generation: 5, PresentationSequence: 42, Cols: 80, Rows: 24})
+	encoded["activated"], _ = EncodeActivated(Activated{Sequence: 1, ControllerEpoch: 2, GeometryGeneration: 5, PresentationSequence: 42, Cols: 80, Rows: 24})
+	encoded["controller_changed"], _ = EncodeControllerChanged(EffectiveController{Epoch: 2, IsController: true})
+	encoded["activation_rejected"], _ = EncodeActivationRejected(ActivationRejected{
+		Sequence: 1, Controller: EffectiveController{Epoch: 2, IsController: true},
+	})
 	if len(contract.Vectors) != len(encoded) {
 		t.Fatalf("vector count = %d, want %d", len(contract.Vectors), len(encoded))
 	}

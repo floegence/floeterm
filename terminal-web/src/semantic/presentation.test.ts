@@ -229,7 +229,8 @@ describe('semantic presentation', () => {
     new RendererSurface(canvas).apply(validatePresentation(valid()));
     expect(canvas.width).toBe(180); expect(canvas.height).toBe(90);
     expect(canvas.style.background).toBe('#0b0f14');
-    expect(clearRect).toHaveBeenCalledWith(0,0,180,90);
+    expect(clearRect).not.toHaveBeenCalled();
+    expect(fillRect).toHaveBeenNthCalledWith(1,0,0,180,90);
     expect(fillRect).toHaveBeenCalledWith(0,0,9.5,18.5);
     expect(fillText).toHaveBeenCalledWith('A',0,14.76);
     canvasMock.clientHeight = 45;
@@ -500,7 +501,7 @@ describe('semantic presentation', () => {
     expect(canvasMock.width).toBe(720);
     expect(canvasMock.height).toBe(360);
     expect(context.setTransform).toHaveBeenLastCalledWith(2, 0, 0, 2, 0, 0);
-    expect(context.fillRect).toHaveBeenCalledWith(0, 0, 360, 180);
+    expect(context.fillRect).toHaveBeenNthCalledWith(1, 0, 0, 720, 360);
     expect(context.fillText).toHaveBeenCalledWith('A', 0, 14.76);
     expect(getContext).toHaveBeenCalledTimes(1);
   });
@@ -618,6 +619,31 @@ describe('semantic presentation', () => {
     expect(renderer.hasSelection()).toBe(true);
     expect(renderer.getSelectionText()).toBe('AB');
     expect(fillRect).toHaveBeenCalledWith(0, 0, 9.5, 18.5);
+  });
+
+  it('does not turn a click into a selection but keeps an intentional single-cell drag', () => {
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:180,clientHeight:90};
+    const canvas={
+      width:0,height:0,clientWidth:180,clientHeight:90,parentElement:host,style:{},
+      getBoundingClientRect:()=>({ left: 0, top: 0, width: 180, height: 90 }),
+      getContext:()=>context,
+    } as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    const value = structuredClone(valid());
+    value.frame.rows[0]!.cells[1]!.text = 'B';
+    renderer.apply(validatePresentation(value));
+
+    renderer.beginSelection(2, 9);
+    renderer.endSelection(2, 9);
+    expect(renderer.hasSelection()).toBe(false);
+    expect(renderer.getSelectionText()).toBe('');
+
+    renderer.beginSelection(2, 9);
+    renderer.updateSelection(7, 12);
+    renderer.endSelection(7, 12);
+    expect(renderer.hasSelection()).toBe(true);
+    expect(renderer.getSelectionText()).toBe('A');
   });
 
   it('drops selection and a readonly history projection when content epoch advances', () => {

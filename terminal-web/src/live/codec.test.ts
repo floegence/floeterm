@@ -4,11 +4,15 @@ import {
   TerminalLiveDecoder,
   TerminalLiveFrameType,
   decodeAttach,
+  decodeActivate,
+  decodeActivationRejected,
   decodeInput,
   decodeInputIntent,
   decodePresentation,
   decodeResize,
   encodeAttach,
+  encodeActivate,
+  encodeActivationRejected,
   encodeInput,
   encodeInputIntent,
   encodeResize,
@@ -37,6 +41,7 @@ describe('semantic terminal live codec', () => {
         modifiers: 0x03,
       }),
       encodeResize({ sequence: 2n, cols: 120, rows: 40 }),
+      encodeActivate({ sequence: 3n, controllerEpoch: 4n, cols: 140, rows: 50 }),
     ].flatMap(encoded => decoder.push(encoded));
     expect(decodeAttach(frames[0]!)).toMatchObject({ attachGeneration: 2n, cols: 80, rows: 24 });
     expect(new TextDecoder().decode(decodeInput(frames[1]!).data)).toBe('中');
@@ -48,6 +53,7 @@ describe('semantic terminal live codec', () => {
       modifiers: 0x03,
     });
     expect(decodeResize(frames[3]!)).toEqual({ sequence: 2n, cols: 120, rows: 40 });
+    expect(decodeActivate(frames[4]!)).toEqual({ sequence: 3n, controllerEpoch: 4n, cols: 140, rows: 50 });
   });
 
   it('rejects malformed structured key intent payloads', () => {
@@ -55,6 +61,19 @@ describe('semantic terminal live codec', () => {
     const frame = new TerminalLiveDecoder().push(encoded)[0]!;
     frame.payload[9] = 0xff;
     expect(() => decodeInputIntent(frame)).toThrow(/input intent/i);
+  });
+
+  it('round trips a recoverable stale activation settlement', () => {
+    const frame = new TerminalLiveDecoder().push(encodeActivationRejected({
+      sequence: 7n,
+      controllerEpoch: 11n,
+      isController: false,
+    }))[0]!;
+    expect(decodeActivationRejected(frame)).toEqual({
+      sequence: 7n,
+      controllerEpoch: 11n,
+      isController: false,
+    });
   });
 
   it('decodes an owned semantic presentation and rejects the removed raw frame type', () => {

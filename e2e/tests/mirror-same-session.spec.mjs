@@ -98,7 +98,25 @@ const expectMirrorGeometryConverged = async page => {
       && view.geometry.rows === canonical.rows
       && view.geometry.cols === canonical.cols
     ));
-  }).toBe(true);
+  }, { intervals: [10, 20, 50], timeout: 5_000 }).toBe(true);
+};
+
+const expectControllerGeometryForView = async (page, viewIndex) => {
+  let settled = null;
+  await expect.poll(async () => {
+    const state = await readMirror(page);
+    const target = state?.views[viewIndex];
+    if (!state || !target || state.state.connectedCount !== 2 || state.state.errorCount !== 0) return false;
+    const converged = state.views.every(view => (
+      view.geometry.cols === target.viewport.cols
+      && view.geometry.rows === target.viewport.rows
+      && view.info?.cols === target.viewport.cols
+      && view.info?.rows === target.viewport.rows
+    ));
+    if (converged) settled = state;
+    return converged;
+  }, { intervals: [10, 20, 50], timeout: 5_000 }).toBe(true);
+  return settled;
 };
 
 const captureMirrorPixels = async (page, mirrorState) => {
@@ -271,6 +289,52 @@ test('keeps observer viewport changes from resizing the controller-owned PTY', a
   const diagnostics = JSON.stringify({ expectedRows, expectedCols, sizeState }, null, 2);
   expect(Number(match[1]), diagnostics).toBe(expectedRows);
   expect(Number(match[2]), diagnostics).toBe(expectedCols);
+  expect(consoleErrors).toEqual([]);
+});
+
+test('atomically transfers controller geometry across rapid same-session view activation', async ({ page }) => {
+  test.slow();
+  const consoleErrors = captureBrowserFailures(page);
+  await openMirror(page);
+  const canvases = page.locator('[data-mirror-view] .semanticTerminalSurface');
+  await expect(canvases).toHaveCount(2);
+  const initial = await readMirror(page);
+  expect(initial.views[0].viewport).not.toEqual(initial.views[1].viewport);
+
+  // Two connections intentionally submit activation intents before either UI
+  // waits for settlement. A stale epoch is a command conflict, never a reason
+  // to detach or reconnect the live stream.
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    await canvases.nth(iteration % 2).click({ position: { x: 8, y: 8 } });
+  }
+  await canvases.nth(1).click({ position: { x: 8, y: 8 } });
+  await expectControllerGeometryForView(page, 1);
+
+  for (let iteration = 8; iteration < 20; iteration += 1) {
+    const viewIndex = iteration % 2;
+    await canvases.nth(viewIndex).click({ position: { x: 8, y: 8 } });
+    await expectControllerGeometryForView(page, viewIndex);
+    expect(await page.evaluate(index => window.__floetermMirrorHarness.getViews()[index].hasSelection(), viewIndex)).toBe(false);
+  }
+
+  const finalViewIndex = 1;
+  const beforeInput = await expectControllerGeometryForView(page, finalViewIndex);
+  const expected = beforeInput.views[finalViewIndex].viewport;
+  const marker = 'MIRROR_ACTIVATION_STTY';
+  await canvases.nth(finalViewIndex).click({ position: { x: 8, y: 8 } });
+  await page.keyboard.type(`python3 -c "import os;s=os.get_terminal_size(0);print('${marker}',s.lines,s.columns)"`);
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(value => (
+    window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes(value))
+  ), marker), { intervals: [10, 20, 50], timeout: 5_000 }).toBe(true);
+  const afterInput = await readMirror(page);
+  const match = afterInput.views[0].serialized.match(new RegExp(`${marker} (\\d+) (\\d+)`));
+  expect(match).not.toBeNull();
+  expect(Number(match[1])).toBe(expected.rows);
+  expect(Number(match[2])).toBe(expected.cols);
+  expect(afterInput.state).toMatchObject({ connectedCount: 2, errorCount: 0 });
+  expect(await readRuntime(page)).toMatchObject({ connection_count: 2, live_attachment_count: 2 });
+  expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(consoleErrors).toEqual([]);
 });
 

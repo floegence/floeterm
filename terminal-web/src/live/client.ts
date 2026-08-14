@@ -4,20 +4,26 @@ import {
   TerminalLiveDecoder,
   TerminalLiveFrameType,
   decodeAttached,
+  decodeActivated,
+  decodeActivationRejected,
+  decodeControllerChanged,
   decodeGeometryChanged,
   decodePresentation,
   decodeProtocolError,
   decodeResizeApplied,
   encodeAttach,
+  encodeActivate,
   encodeInput,
   encodeInputIntent,
   encodeResize,
   type Attached,
+  type Activated,
   type InputIntent,
   type TerminalLiveFrame,
 } from './codec.js';
 
 export const MAX_QUEUED_INPUT_BYTES = 8 * 1024 * 1024;
+const MAX_ACTIVATION_EPOCH_RETRIES = 2;
 
 export enum TerminalLiveErrorCode {
   ProtocolViolation = 1,
@@ -26,6 +32,9 @@ export enum TerminalLiveErrorCode {
   ActivationFailed = 4,
   SlowConsumer = 5,
   Internal = 6,
+  ControllerEpoch = 7,
+  ControllerTransport = 8,
+  ControllerPrincipal = 9,
 }
 
 export class TerminalLiveServerError extends Error {
@@ -62,7 +71,11 @@ export type TerminalLiveAttached = Readonly<{
   geometryGeneration: number;
   cols: number;
   rows: number;
+  controllerEpoch: number;
+  isController: boolean;
 }>;
+
+export type TerminalLiveController = Readonly<{ epoch: number; isController: boolean }>;
 
 export type TerminalLiveGeometry = Readonly<{
   generation: number;
@@ -79,12 +92,20 @@ export type TerminalLiveResizeResult = Readonly<{
   effective: TerminalLiveGeometry;
 }>;
 
+export type TerminalLiveActivationResult = Readonly<{
+  requested: Readonly<{ cols: number; rows: number }>;
+  effective: TerminalLiveGeometry;
+  controller: TerminalLiveController;
+}>;
+
 export type TerminalLiveConnection = Readonly<{
   attached: TerminalLiveAttached;
+  controller: TerminalLiveController;
   sendInput(data: Uint8Array): Promise<void>;
   sendInputIntent(intent: Omit<InputIntent, 'sequence'>): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
   resizeWithEffectiveGeometry(cols: number, rows: number): Promise<TerminalLiveResizeResult>;
+  activateWithEffectiveGeometry(cols: number, rows: number): Promise<TerminalLiveActivationResult>;
   close(): Promise<void>;
 }>;
 
@@ -93,6 +114,7 @@ export type ConnectTerminalLiveOptions = Readonly<{
   attach: TerminalLiveAttachRequest;
   onPresentation?: (presentation: unknown) => void;
   onGeometry?: (geometry: TerminalLiveGeometry) => void;
+  onController?: (controller: TerminalLiveController) => void;
   onClosed?: (reason: TerminalLiveCloseReason) => void;
   onError?: (error: Error) => void;
   signal?: AbortSignal;
@@ -124,6 +146,7 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
   readonly attached: TerminalLiveAttached;
   private inputSequence = 0n;
   private resizeSequence = 0n;
+  private activationSequence = 0n;
   private queuedInputBytes = 0;
   private writeTail: Promise<void> = Promise.resolve();
   private readonly resizeWaiters = new Map<bigint, {
@@ -131,7 +154,14 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     resolve: (result: TerminalLiveResizeResult) => void;
     reject: (error: Error) => void;
   }>();
+  private readonly activationWaiters = new Map<bigint, {
+    requested: TerminalLiveActivationResult['requested'];
+    epochRetries: number;
+    resolve: (result: TerminalLiveActivationResult) => void;
+    reject: (error: Error) => void;
+  }>();
   private geometry: TerminalLiveGeometry;
+  private controllerState: TerminalLiveController;
   private closed = false;
   private failed = false;
 
@@ -141,6 +171,7 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     attached: Attached,
     private readonly onPresentation: ((presentation: unknown) => void) | undefined,
     private readonly onGeometry: ((geometry: TerminalLiveGeometry) => void) | undefined,
+    private readonly onController: ((controller: TerminalLiveController) => void) | undefined,
     private readonly onClosed: ((reason: TerminalLiveCloseReason) => void) | undefined,
     private readonly onError: ((error: Error) => void) | undefined,
   ) {
@@ -149,6 +180,8 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
       geometryGeneration: toSafeNumber(attached.geometryGeneration, 'geometryGeneration'),
       cols: attached.cols,
       rows: attached.rows,
+      controllerEpoch: toSafeNumber(attached.controllerEpoch, 'controllerEpoch'),
+      isController: attached.isController,
     };
     this.geometry = {
       generation: this.attached.geometryGeneration,
@@ -156,8 +189,12 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
       cols: this.attached.cols,
       rows: this.attached.rows,
     };
+    this.controllerState = { epoch: this.attached.controllerEpoch, isController: this.attached.isController };
     this.onGeometry?.(this.geometry);
+    this.onController?.(this.controllerState);
   }
+
+  get controller(): TerminalLiveController { return { ...this.controllerState }; }
 
   start(): void {
     void this.readLoop();
@@ -228,11 +265,44 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     return await applied;
   }
 
+  async activateWithEffectiveGeometry(cols: number, rows: number): Promise<TerminalLiveActivationResult> {
+    if (this.closed) throw new Error('terminal live connection is closed');
+    return await new Promise<TerminalLiveActivationResult>((resolve, reject) => {
+      const waiter = { requested: { cols, rows }, epochRetries: 0, resolve, reject };
+      this.writeActivation(waiter).catch(reject);
+    });
+  }
+
+  private async writeActivation(waiter: {
+    requested: TerminalLiveActivationResult['requested'];
+    epochRetries: number;
+    resolve: (result: TerminalLiveActivationResult) => void;
+    reject: (error: Error) => void;
+  }): Promise<void> {
+    if (this.closed) throw new Error('terminal live connection is closed');
+    this.activationSequence += 1n;
+    const sequence = this.activationSequence;
+    this.activationWaiters.set(sequence, waiter);
+    try {
+      const controllerEpoch = BigInt(this.controllerState.epoch);
+      await this.enqueueWrite(() => this.stream.write(encodeActivate({
+        sequence,
+        controllerEpoch,
+        cols: waiter.requested.cols,
+        rows: waiter.requested.rows,
+      })));
+    } catch (error) {
+      this.activationWaiters.delete(sequence);
+      throw error;
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     const error = new Error('terminal live connection is closed');
     this.rejectResizeWaiters(error);
+    this.rejectActivationWaiters(error);
     await this.stream.close();
   }
 
@@ -248,7 +318,9 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
         const frame = await this.reader.read();
         if (frame == null) {
           this.closed = true;
-          this.rejectResizeWaiters(new Error('terminal live stream ended'));
+          const error = new Error('terminal live stream ended');
+          this.rejectResizeWaiters(error);
+          this.rejectActivationWaiters(error);
           this.onClosed?.('stream_ended');
           return;
         }
@@ -268,6 +340,48 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
             waiter.resolve({ requested: waiter.requested, effective: geometry });
             break;
           }
+          case TerminalLiveFrameType.Activated: {
+            const activated = decodeActivated(frame);
+            const waiter = this.activationWaiters.get(activated.sequence);
+            if (!waiter) throw new Error('unexpected terminal live activation acknowledgement');
+            const geometry = geometryFromActivated(activated);
+            this.applyGeometry(geometry);
+            this.applyController({
+              epoch: toSafeNumber(activated.controllerEpoch, 'controllerEpoch'),
+              isController: true,
+            });
+            this.activationWaiters.delete(activated.sequence);
+            waiter.resolve({ requested: waiter.requested, effective: geometry, controller: this.controller });
+            break;
+          }
+          case TerminalLiveFrameType.ControllerChanged: {
+            const controller = decodeControllerChanged(frame);
+            this.applyController({
+              epoch: toSafeNumber(controller.epoch, 'controllerEpoch'),
+              isController: controller.isController,
+            });
+            break;
+          }
+          case TerminalLiveFrameType.ActivationRejected: {
+            const rejected = decodeActivationRejected(frame);
+            const waiter = this.activationWaiters.get(rejected.sequence);
+            if (!waiter) throw new Error('unexpected terminal live activation rejection');
+            this.activationWaiters.delete(rejected.sequence);
+            this.applyController({
+              epoch: toSafeNumber(rejected.controllerEpoch, 'controllerEpoch'),
+              isController: rejected.isController,
+            });
+            if (waiter.epochRetries >= MAX_ACTIVATION_EPOCH_RETRIES) {
+              waiter.reject(new TerminalLiveServerError(
+                TerminalLiveErrorCode.ControllerEpoch,
+                'terminal view activation could not settle on the current controller epoch',
+              ));
+              break;
+            }
+            waiter.epochRetries += 1;
+            void this.writeActivation(waiter).catch(waiter.reject);
+            break;
+          }
           case TerminalLiveFrameType.Presentation:
             this.onPresentation?.(decodePresentation(frame));
             break;
@@ -284,7 +398,11 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
           case TerminalLiveFrameType.SessionClosed:
             if (frame.payload.byteLength !== 0) throw new Error('invalid terminal live session closed payload');
             this.closed = true;
-            this.rejectResizeWaiters(new Error('terminal session closed'));
+            {
+              const error = new Error('terminal session closed');
+              this.rejectResizeWaiters(error);
+              this.rejectActivationWaiters(error);
+            }
             this.onClosed?.('session_closed');
             await this.stream.close();
             return;
@@ -307,6 +425,11 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     this.resizeWaiters.clear();
   }
 
+  private rejectActivationWaiters(error: Error): void {
+    for (const waiter of this.activationWaiters.values()) waiter.reject(error);
+    this.activationWaiters.clear();
+  }
+
   private applyGeometry(next: TerminalLiveGeometry): void {
     if (next.generation < this.geometry.generation) return;
     if (next.generation === this.geometry.generation) {
@@ -322,11 +445,24 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     this.onGeometry?.(next);
   }
 
+  private applyController(next: TerminalLiveController): void {
+    if (next.epoch < this.controllerState.epoch) return;
+    if (next.epoch === this.controllerState.epoch) {
+      if (next.isController !== this.controllerState.isController) {
+        throw new Error('terminal controller ownership changed without advancing its epoch');
+      }
+      return;
+    }
+    this.controllerState = next;
+    this.onController?.(next);
+  }
+
   private async fail(error: Error): Promise<void> {
     if (this.failed) return;
     this.failed = true;
     this.closed = true;
     this.rejectResizeWaiters(error);
+    this.rejectActivationWaiters(error);
     this.onError?.(error);
     try {
       if (this.stream.reset) await this.stream.reset(error);
@@ -364,6 +500,7 @@ export const connectTerminalLive = async (options: ConnectTerminalLiveOptions): 
       decodeAttached(first),
       options.onPresentation,
       options.onGeometry,
+      options.onController,
       options.onClosed,
       options.onError,
     );
@@ -383,3 +520,10 @@ export const connectTerminalLive = async (options: ConnectTerminalLiveOptions): 
     throw error;
   }
 };
+
+const geometryFromActivated = (value: Activated): TerminalLiveGeometry => ({
+  generation: toSafeNumber(value.geometryGeneration, 'geometryGeneration'),
+  presentationSequence: toSafeNumber(value.presentationSequence, 'presentationSequence'),
+  cols: value.cols,
+  rows: value.rows,
+});

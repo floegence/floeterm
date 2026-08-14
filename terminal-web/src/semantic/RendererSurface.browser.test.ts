@@ -127,4 +127,85 @@ describe('semantic terminal browser surface', () => {
     bridge.dispose();
     renderer.dispose();
   });
+
+  it('never exposes a stale backing store while keep-mounted views become visible', async () => {
+    const originalDpr = Object.getOwnPropertyDescriptor(globalThis, 'devicePixelRatio');
+    const views = Array.from({ length: 3 }, () => {
+      const host = document.createElement('div');
+      host.style.cssText = 'display:none;position:relative;width:0;height:0';
+      const canvas = document.createElement('canvas');
+      host.append(canvas);
+      document.body.append(host);
+      const renderer = new RendererSurface(canvas);
+      renderer.setVisible(false);
+      renderer.apply(presentation());
+      return { host, canvas, renderer };
+    });
+    await nextPaint();
+    const metrics = views.map(view => view.renderer.getCellMetrics());
+    const background = hexToRgb(getThemeColors('dark').background);
+
+    try {
+      for (let iteration = 0; iteration < 50; iteration += 1) {
+        const dpr = [1, 1.5, 2][iteration % 3]!;
+        Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, value: dpr });
+        const activeIndex = iteration % views.length;
+        views.forEach((view, index) => {
+          const active = index === activeIndex;
+          view.host.style.display = active ? 'block' : 'none';
+          view.host.style.width = active ? `${360 + iteration}px` : '0';
+          view.host.style.height = active ? `${180 + iteration}px` : '0';
+          view.renderer.setVisible(active);
+        });
+        const active = views[activeIndex]!;
+        const bounds = active.host.getBoundingClientRect();
+        const canvasBounds = active.canvas.getBoundingClientRect();
+        expect(active.canvas.style.visibility).toBe('visible');
+        expect(canvasBounds.width).toBe(bounds.width);
+        expect(canvasBounds.height).toBe(bounds.height);
+        expect(active.canvas.width).toBe(Math.round(bounds.width * dpr));
+        expect(active.canvas.height).toBe(Math.round(bounds.height * dpr));
+        expect(active.renderer.getCellMetrics()).toEqual(metrics[activeIndex]);
+        const pixel = active.canvas.getContext('2d')!.getImageData(
+          active.canvas.width - 1, active.canvas.height - 1, 1, 1,
+        ).data;
+        expect(Array.from(pixel)).toEqual([...background, 255]);
+        for (const [index, view] of views.entries()) {
+          if (index !== activeIndex) expect(view.canvas.style.visibility).toBe('hidden');
+        }
+      }
+    } finally {
+      if (originalDpr) Object.defineProperty(globalThis, 'devicePixelRatio', originalDpr);
+      else delete (globalThis as { devicePixelRatio?: number }).devicePixelRatio;
+    }
+
+    views.forEach(view => view.renderer.dispose());
+  });
+
+  it('paints no selection for a click and preserves an intentional one-cell drag', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(presentation());
+    await nextPaint();
+
+    const bounds = canvas.getBoundingClientRect();
+    renderer.beginSelection(bounds.left + 2, bounds.top + 4);
+    renderer.endSelection(bounds.left + 2, bounds.top + 4);
+    await nextPaint();
+    expect(renderer.getSelectionText()).toBe('');
+
+    renderer.beginSelection(bounds.left + 2, bounds.top + 4);
+    renderer.updateSelection(bounds.left + 7, bounds.top + 9);
+    renderer.endSelection(bounds.left + 7, bounds.top + 9);
+    await nextPaint();
+    expect(renderer.getSelectionText()).toBe('A');
+    const pixel = canvas.getContext('2d')!.getImageData(1, 1, 1, 1).data;
+    expect(Array.from(pixel.slice(0, 3))).toEqual(hexToRgb(getThemeColors('dark').selectionBackground));
+
+    renderer.dispose();
+  });
 });

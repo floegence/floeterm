@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.15.4
+npm install @floegence/floeterm-terminal-web@0.15.5
 ```
 
 ## Exports
@@ -50,6 +50,12 @@ for glyphs, graphics, selection hit-testing, cursor painting, and IME anchoring.
 Use the same metrics to calculate desired columns and rows before sending a canonical
 resize request. Font changes repaint the latest Presentation without replacing the
 canvas or creating terminal state in the browser.
+
+For keep-mounted panes, call `renderer.setVisible(false)` before hiding the host.
+After the active host has its real content-box bounds, call `renderer.setVisible(true)`.
+The visible call synchronously commits the current DPR backing, full background, and
+latest Presentation before exposing the same canvas, so an old bitmap is never
+stretched by CSS during a tab or Workbench switch.
 
 Themes are view-local. Changing the palette repaints the latest Presentation without
 requesting output, resizing the PTY, or affecting another view. Explicit ANSI/RGB
@@ -98,11 +104,21 @@ await transport.attach(sessionId, cols, rows);
 const stop = eventSource.onTerminalPresentation(sessionId, value => {
   renderer.apply(validatePresentation(value));
 });
+
+// Only a real user activation may transfer controller ownership and PTY size.
+await transport.activate(sessionId, desiredCols, desiredRows);
 ```
 
 The transport carries attach, structured input, canonical resize settlement,
-generation-bound semantic clear settlement, Presentation, geometry, and lifecycle
-frames. It does not carry raw PTY output. `clearSemanticContent(sessionId)` invokes
+explicit same-principal view activation, controller ownership events, generation-bound
+semantic clear settlement, Presentation, geometry, and lifecycle frames. Observer
+resize reports its local viewport but cannot change canonical PTY geometry. A real
+activation validates attachment, principal, transport generation, and controller epoch,
+then transfers ownership, applies geometry, and captures the matching Presentation in
+one actor ordering window. A racing stale epoch has zero effect and is resettled a
+bounded number of times without detaching or reconnecting the stream.
+
+The transport does not carry raw PTY output. `clearSemanticContent(sessionId)` invokes
 the native SessionActor clear control through the current transport generation and
 rejects a settlement if that generation was superseded.
 Unknown input is not replayed after a disconnect. A new transport generation does not

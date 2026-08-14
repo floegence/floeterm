@@ -307,6 +307,147 @@ func TestSemanticClearFailureDoesNotTransferControllerAndFailsClosed(t *testing.
 	}
 }
 
+func TestSemanticViewActivationAtomicallyTransfersControllerAndAppliesViewport(t *testing.T) {
+	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24}}
+	session, _, _ := newSemanticResizeTestSession(t, engine)
+	if _, err := session.ApplySemanticControllerSize("view", 46, 16, false); err != nil {
+		t.Fatalf("establish Activity geometry: %v", err)
+	}
+	if err := session.AttachSemanticView("activity", "person", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachSemanticView("workbench", "person", 7); err != nil {
+		t.Fatal(err)
+	}
+	session.EnsureSemanticController("activity", "person", 1)
+	session.RegisterSemanticView("activity", 46, 16)
+	session.RegisterSemanticView("workbench", 120, 40)
+
+	presentation, controller, err := session.ActivateSemanticView(
+		"workbench", "person", 7, 1, 120, 40,
+	)
+	if err != nil {
+		t.Fatalf("activate Workbench: %v", err)
+	}
+	if controller.AttachmentID != "workbench" || controller.TransportGeneration != 7 || controller.Epoch != 2 {
+		t.Fatalf("controller after activation=%+v", controller)
+	}
+	geometry := session.CanonicalGeometry()
+	if geometry.Cols != 120 || geometry.Rows != 40 {
+		t.Fatalf("canonical geometry=%+v", geometry)
+	}
+	if presentation.Geometry != geometry || presentation.Frame.Width != 120 || presentation.Frame.Height != 40 {
+		t.Fatalf("activation presentation=%+v frame=%dx%d canonical=%+v", presentation.Geometry, presentation.Frame.Width, presentation.Frame.Height, geometry)
+	}
+
+	before := session.Controller()
+	beforeGeometry := session.CanonicalGeometry()
+	if _, _, err := session.ActivateSemanticView("workbench", "person", 6, 2, 80, 24); !errors.Is(err, ErrControllerTransport) {
+		t.Fatalf("stale transport error=%v", err)
+	}
+	if _, _, err := session.ActivateSemanticView("activity", "person", 1, 1, 46, 16); !errors.Is(err, ErrControllerEpoch) {
+		t.Fatalf("stale epoch error=%v", err)
+	}
+	if err := session.AttachSemanticView("other", "other", 9); err != nil {
+		t.Fatal(err)
+	}
+	session.RegisterSemanticView("other", 80, 24)
+	if _, _, err := session.ActivateSemanticView("other", "other", 9, 2, 80, 24); !errors.Is(err, ErrControllerPrincipal) {
+		t.Fatalf("cross-principal error=%v", err)
+	}
+	if session.Controller() != before || session.CanonicalGeometry() != beforeGeometry {
+		t.Fatalf("rejected activation mutated state: controller=%+v geometry=%+v", session.Controller(), session.CanonicalGeometry())
+	}
+}
+
+func TestSemanticViewActivationFailureRollsBackGeometryWithoutTransferringController(t *testing.T) {
+	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24}}
+	session, _, _ := newSemanticResizeTestSession(t, engine)
+	if err := session.AttachSemanticView("activity", "person", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachSemanticView("workbench", "person", 7); err != nil {
+		t.Fatal(err)
+	}
+	session.EnsureSemanticController("activity", "person", 1)
+	session.RegisterSemanticView("activity", 80, 24)
+	session.RegisterSemanticView("workbench", 120, 40)
+	beforeController := session.Controller()
+	beforeGeometry := session.CanonicalGeometry()
+	engine.captureErr = errors.New("capture failed")
+
+	if _, _, err := session.ActivateSemanticView("workbench", "person", 7, beforeController.Epoch, 120, 40); err == nil || !strings.Contains(err.Error(), "capture failed") {
+		t.Fatalf("activation error=%v", err)
+	}
+	if controller := session.Controller(); controller != beforeController {
+		t.Fatalf("failed activation transferred controller: before=%+v after=%+v", beforeController, controller)
+	}
+	if geometry := session.CanonicalGeometry(); geometry != beforeGeometry {
+		t.Fatalf("failed activation changed canonical geometry: before=%+v after=%+v", beforeGeometry, geometry)
+	}
+	if engine.frame.Width != beforeGeometry.Cols || engine.frame.Height != beforeGeometry.Rows {
+		t.Fatalf("failed activation left engine at %dx%d", engine.frame.Width, engine.frame.Height)
+	}
+}
+
+func TestSemanticViewInputActivatesRecordedViewportBeforePTYWrite(t *testing.T) {
+	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24}}
+	session, presentations, _ := newSemanticResizeTestSession(t, engine)
+	if err := session.AttachSemanticView("activity", "person", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachSemanticView("workbench", "person", 7); err != nil {
+		t.Fatal(err)
+	}
+	session.EnsureSemanticController("activity", "person", 1)
+	session.RegisterSemanticView("activity", 46, 16)
+	session.RegisterSemanticView("workbench", 120, 40)
+	engine.calls = nil
+	var written []byte
+	var writeGeometry [2]int
+	session.writePTY = func(data []byte) (int, error) {
+		written = append(written, data...)
+		writeGeometry = [2]int{engine.frame.Width, engine.frame.Height}
+		return len(data), nil
+	}
+
+	if err := session.InteractSemanticView(
+		"workbench", "person", 7, SemanticInput{Kind: "bytes", Data: []byte("x")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if string(written) != "x" || writeGeometry != [2]int{120, 40} {
+		t.Fatalf("write=%q geometry-at-write=%v", written, writeGeometry)
+	}
+	if got := engine.calls; len(got) < 3 || got[0] != "resize" || got[1] != "capture" || got[2] != "input" {
+		t.Fatalf("actor order=%v", got)
+	}
+	controller := session.Controller()
+	if controller.AttachmentID != "workbench" || controller.TransportGeneration != 7 || controller.Epoch != 2 {
+		t.Fatalf("controller=%+v", controller)
+	}
+	geometry := session.CanonicalGeometry()
+	if geometry.Cols != 120 || geometry.Rows != 40 || len(*presentations) != 1 || (*presentations)[0].Geometry != geometry {
+		t.Fatalf("geometry=%+v presentations=%+v", geometry, *presentations)
+	}
+
+	before := session.Controller()
+	beforeGeometry := session.CanonicalGeometry()
+	if err := session.InteractSemanticView("activity", "person", 2, SemanticInput{Kind: "bytes", Data: []byte("stale")}); !errors.Is(err, ErrControllerTransport) {
+		t.Fatalf("stale transport error=%v", err)
+	}
+	if err := session.AttachSemanticView("other", "other", 9); err != nil {
+		t.Fatal(err)
+	}
+	session.RegisterSemanticView("other", 80, 24)
+	if err := session.InteractSemanticView("other", "other", 9, SemanticInput{Kind: "bytes", Data: []byte("foreign")}); !errors.Is(err, ErrControllerPrincipal) {
+		t.Fatalf("cross-principal error=%v", err)
+	}
+	if session.Controller() != before || session.CanonicalGeometry() != beforeGeometry || string(written) != "x" {
+		t.Fatalf("rejected input mutated state controller=%+v geometry=%+v write=%q", session.Controller(), session.CanonicalGeometry(), written)
+	}
+}
+
 func TestSemanticHistorySerializesWithPTYOutput(t *testing.T) {
 	engine := &blockingSemanticHistoryEngine{
 		fakeSemanticHistoryEngine: fakeSemanticHistoryEngine{totalRows: 8},

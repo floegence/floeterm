@@ -11,24 +11,31 @@ import (
 const (
 	maxReliableServerEvents = 256
 
-	ErrorCodeProtocolViolation uint16 = 1
-	ErrorCodePermissionDenied  uint16 = 2
-	ErrorCodeSessionNotFound   uint16 = 3
-	ErrorCodeActivationFailed  uint16 = 4
-	ErrorCodeSlowConsumer      uint16 = 5
-	ErrorCodeInternal          uint16 = 6
+	ErrorCodeProtocolViolation   uint16 = 1
+	ErrorCodePermissionDenied    uint16 = 2
+	ErrorCodeSessionNotFound     uint16 = 3
+	ErrorCodeActivationFailed    uint16 = 4
+	ErrorCodeSlowConsumer        uint16 = 5
+	ErrorCodeInternal            uint16 = 6
+	ErrorCodeControllerEpoch     uint16 = 7
+	ErrorCodeControllerTransport uint16 = 8
+	ErrorCodeControllerPrincipal uint16 = 9
 )
 
 var (
-	ErrProtocolViolation = errors.New("terminal live protocol violation")
-	ErrPermissionDenied  = errors.New("terminal live permission denied")
-	ErrSessionNotFound   = errors.New("terminal live session not found")
-	ErrActivationFailed  = errors.New("terminal live activation failed")
-	ErrSlowConsumer      = errors.New("terminal live slow consumer")
+	ErrProtocolViolation   = errors.New("terminal live protocol violation")
+	ErrPermissionDenied    = errors.New("terminal live permission denied")
+	ErrSessionNotFound     = errors.New("terminal live session not found")
+	ErrActivationFailed    = errors.New("terminal live activation failed")
+	ErrSlowConsumer        = errors.New("terminal live slow consumer")
+	ErrControllerEpoch     = errors.New("terminal live stale controller epoch")
+	ErrControllerTransport = errors.New("terminal live stale controller transport")
+	ErrControllerPrincipal = errors.New("terminal live controller principal mismatch")
 )
 
 type Subscriber struct {
 	OnGeometry      func(EffectiveGeometry) bool
+	OnController    func(EffectiveController) bool
 	OnPresentation  func([]byte) bool
 	OnSessionClosed func()
 	OnSuperseded    func()
@@ -44,13 +51,28 @@ type InputIntentBackend interface {
 	WriteInputIntent(ctx context.Context, attachment Attach, input InputIntent) error
 }
 
+type ActivationBackend interface {
+	Activate(ctx context.Context, attachment Attach, activate Activate) (Activated, error)
+}
+
+// ControllerEpochMismatchError is a recoverable command conflict. The stale
+// activation has no effect; the connection remains live and receives the
+// authoritative epoch needed to settle its still-current user intent.
+type ControllerEpochMismatchError struct {
+	Controller EffectiveController
+}
+
+func (e *ControllerEpochMismatchError) Error() string { return ErrControllerEpoch.Error() }
+func (e *ControllerEpochMismatchError) Unwrap() error { return ErrControllerEpoch }
+
 type Service struct{ backend Backend }
 
 func NewService(backend Backend) *Service { return &Service{backend: backend} }
 
 type serverEvent struct {
-	kind     FrameType
-	geometry EffectiveGeometry
+	kind       FrameType
+	geometry   EffectiveGeometry
+	controller EffectiveController
 }
 
 func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error {
@@ -93,6 +115,7 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 	var preAttachMu sync.Mutex
 	attachedWritten := false
 	var pendingGeometry *EffectiveGeometry
+	var pendingController *EffectiveController
 	var pendingPresentation []byte
 
 	failConnection := func() {
@@ -137,9 +160,21 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 		}
 		return true
 	}
+	queueController := func(controller EffectiveController) bool {
+		preAttachMu.Lock()
+		if !attachedWritten {
+			copyController := controller
+			pendingController = &copyController
+			preAttachMu.Unlock()
+			return true
+		}
+		preAttachMu.Unlock()
+		return enqueueReliable(serverEvent{kind: FrameControllerChanged, controller: controller})
+	}
 
 	attached, detach, err := s.backend.Attach(ctx, attachment, Subscriber{
 		OnGeometry:     queueGeometry,
+		OnController:   queueController,
 		OnPresentation: queuePresentation,
 		OnSessionClosed: func() {
 			enqueueReliable(serverEvent{kind: FrameSessionClosed})
@@ -175,11 +210,16 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 	preAttachMu.Lock()
 	attachedWritten = true
 	geometry := pendingGeometry
+	controller := pendingController
 	presentation := pendingPresentation
 	pendingGeometry = nil
+	pendingController = nil
 	pendingPresentation = nil
 	preAttachMu.Unlock()
 	if geometry != nil && geometry.Generation > attached.GeometryGeneration && !queueGeometry(*geometry) {
+		return ErrSlowConsumer
+	}
+	if controller != nil && controller.Epoch > attached.ControllerEpoch && !queueController(*controller) {
 		return ErrSlowConsumer
 	}
 	if len(presentation) > 0 && !queuePresentation(presentation) {
@@ -193,6 +233,7 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 
 	var lastInputSequence uint64
 	var lastResizeSequence uint64
+	var lastActivationSequence uint64
 	for {
 		frame, readErr := ReadFrame(stream)
 		if readErr != nil {
@@ -251,6 +292,50 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 				return err
 			}
 			lastResizeSequence = resize.Sequence
+		case FrameActivate:
+			activate, decodeErr := DecodeActivate(frame)
+			if decodeErr != nil || activate.Sequence <= lastActivationSequence {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "invalid activation sequence", ErrProtocolViolation)
+			}
+			backend, ok := s.backend.(ActivationBackend)
+			if !ok {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeActivationFailed, "terminal view activation is unavailable", ErrActivationFailed)
+			}
+			activated, activateErr := backend.Activate(ctx, attachment, activate)
+			if activateErr != nil {
+				var mismatch *ControllerEpochMismatchError
+				if errors.As(activateErr, &mismatch) && mismatch.Controller.Epoch > 0 {
+					rejected, encodeErr := EncodeActivationRejected(ActivationRejected{
+						Sequence: activate.Sequence, Controller: mismatch.Controller,
+					})
+					if encodeErr != nil {
+						return encodeErr
+					}
+					if err := writeBytes(rejected); err != nil {
+						return err
+					}
+					lastActivationSequence = activate.Sequence
+					continue
+				}
+				code, message := ErrorCodeInternal, "terminal view activation failed"
+				switch {
+				case errors.Is(activateErr, ErrControllerEpoch):
+					code, message = ErrorCodeControllerEpoch, "stale terminal controller epoch"
+				case errors.Is(activateErr, ErrControllerTransport):
+					code, message = ErrorCodeControllerTransport, "stale terminal transport generation"
+				case errors.Is(activateErr, ErrControllerPrincipal):
+					code, message = ErrorCodeControllerPrincipal, "terminal controller belongs to another principal"
+				}
+				return s.protocolFailureLocked(stream, &writeMu, uint16(code), message, activateErr)
+			}
+			ack, encodeErr := EncodeActivated(activated)
+			if encodeErr != nil {
+				return encodeErr
+			}
+			if err := writeBytes(ack); err != nil {
+				return err
+			}
+			lastActivationSequence = activate.Sequence
 		case FrameDetach:
 			if len(frame.Payload) != 0 {
 				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "invalid detach frame", ErrProtocolViolation)
@@ -312,6 +397,15 @@ func (s *Service) writeReliableServerEvent(
 	switch event.kind {
 	case FrameGeometryChanged:
 		encoded, err := EncodeGeometryChanged(event.geometry)
+		if err != nil {
+			return err
+		}
+		writeMu.Lock()
+		err = writeAll(stream, encoded)
+		writeMu.Unlock()
+		return err
+	case FrameControllerChanged:
+		encoded, err := EncodeControllerChanged(event.controller)
 		if err != nil {
 			return err
 		}

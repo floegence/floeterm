@@ -117,21 +117,42 @@ func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows in
 	}
 
 	s.mu.Lock()
-	if s.closed {
+	geometry, presentation, hasPresentation, subscribers, err := s.applySemanticControllerSizeLocked(
+		connectionID, cols, rows, force,
+	)
+	if err != nil {
 		s.mu.Unlock()
 		s.endPTYResize()
-		return TerminalGeometry{}, errSessionClosed
+		return TerminalGeometry{}, err
+	}
+	s.mu.Unlock()
+	s.endPTYResize()
+	if len(subscribers) > 0 {
+		s.broadcastGeometry(geometry, subscribers)
+	}
+	if hasPresentation {
+		s.broadcastPresentation(presentation, subscribers)
+	}
+	return geometry, nil
+}
+
+func (s *Session) applySemanticControllerSizeLocked(
+	connectionID string,
+	cols int,
+	rows int,
+	force bool,
+) (TerminalGeometry, SemanticPresentation, bool, []LiveSubscriber, error) {
+	if s.closed {
+		return TerminalGeometry{}, SemanticPresentation{}, false, nil, errSessionClosed
 	}
 	connection, exists := s.connections[connectionID]
 	if !exists {
-		s.mu.Unlock()
-		s.endPTYResize()
-		return TerminalGeometry{}, fmt.Errorf("terminal connection %q is not attached", connectionID)
+		return TerminalGeometry{}, SemanticPresentation{}, false, nil,
+			fmt.Errorf("terminal connection %q is not attached", connectionID)
 	}
 	if s.semanticActor == nil {
-		s.mu.Unlock()
-		s.endPTYResize()
-		return TerminalGeometry{}, errors.New("semantic session actor is unavailable")
+		return TerminalGeometry{}, SemanticPresentation{}, false, nil,
+			errors.New("semantic session actor is unavailable")
 	}
 	previousCols, previousRows := connection.Cols, connection.Rows
 	previousGeneration := s.geometryGeneration
@@ -143,9 +164,7 @@ func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows in
 		presentation, hasPresentation, err = s.applyPTYSizeLocked(cols, rows, "semantic-controller", force)
 		if err != nil {
 			connection.Cols, connection.Rows = previousCols, previousRows
-			s.mu.Unlock()
-			s.endPTYResize()
-			return TerminalGeometry{}, err
+			return TerminalGeometry{}, SemanticPresentation{}, false, nil, err
 		}
 	} else {
 		s.lastAppliedCols, s.lastAppliedRows = cols, rows
@@ -160,15 +179,7 @@ func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows in
 	if geometry.Generation != previousGeneration {
 		subscribers = s.liveSubscribersLocked()
 	}
-	s.mu.Unlock()
-	s.endPTYResize()
-	if len(subscribers) > 0 {
-		s.broadcastGeometry(geometry, subscribers)
-	}
-	if hasPresentation {
-		s.broadcastPresentation(presentation, subscribers)
-	}
-	return geometry, nil
+	return geometry, presentation, hasPresentation, subscribers, nil
 }
 
 func (s *Session) CanonicalGeometry() TerminalGeometry {

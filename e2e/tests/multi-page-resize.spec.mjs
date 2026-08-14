@@ -232,16 +232,26 @@ test('keeps one session correct while two independent pages resize and stream ou
     await secondPage.close();
     await expect.poll(async () => {
       const state = await readGeometryState(page);
-      return state.effective?.cols === converged.expected.cols
-        && state.effective?.rows === converged.expected.rows
-        && state.geometry.cols === converged.expected.cols
-        && state.geometry.rows === converged.expected.rows
-        && state.geometry.generation >= generationBeforeDetach;
-    }).toBe(true);
+      return {
+        effective: state.effective && {
+          cols: state.effective.cols,
+          rows: state.effective.rows,
+        },
+        geometry: {
+          cols: state.geometry.cols,
+          rows: state.geometry.rows,
+        },
+        generationSettled: state.geometry.generation >= generationBeforeDetach,
+      };
+    }).toEqual({
+      effective: firstHost,
+      geometry: firstHost,
+      generationSettled: true,
+    });
     const afterDetach = await readGeometryState(page);
     expect(afterDetach.geometry).toMatchObject({
-      cols: converged.expected.cols,
-      rows: converged.expected.rows,
+      cols: firstHost.cols,
+      rows: firstHost.rows,
     });
     expect(afterDetach.geometry.generation).toBeGreaterThanOrEqual(generationBeforeDetach);
     expect(await page.locator('.terminalRendererError').count()).toBe(0);

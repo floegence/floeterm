@@ -201,6 +201,7 @@ type TerminalGeometry struct {
 // LiveSubscriber receives semantic state for one attached connection.
 type LiveSubscriber struct {
 	OnGeometry      func(TerminalGeometry) bool
+	OnController    func(ControllerState) bool
 	OnPresentation  func(SemanticPresentation) bool
 	OnSessionClosed func()
 	OnSuperseded    func()

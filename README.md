@@ -57,8 +57,8 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.10.3
-npm install @floegence/floeterm-terminal-web@0.15.4
+go get github.com/floegence/floeterm/terminal-go@v0.10.4
+npm install @floegence/floeterm-terminal-web@0.15.5
 ```
 
 ## Browser Integration
@@ -91,6 +91,9 @@ const unsubscribe = bundle.eventSource.onTerminalPresentation(sessionId, value =
   renderer.apply(validatePresentation(value));
 });
 
+// Invoke only for a real pointer/keyboard activation, before its input write.
+await bundle.transport.activate(sessionId, desiredCols, desiredRows);
+
 const input = new TerminalInputBridge({
   inputHost,
   inputElement,
@@ -103,7 +106,10 @@ const input = new TerminalInputBridge({
 `RendererSurface` is the only canvas writer. Host bounds determine CSS size; the
 renderer updates DPR backing, fills the full background, and paints the latest
 Presentation in one scheduled draw. Theme changes repaint the same Presentation and
-never mutate the PTY or transport sequence.
+never mutate the PTY or transport sequence. Keep-mounted panes call
+`renderer.setVisible(false)` while hidden and `renderer.setVisible(true)` only after
+their active host bounds are committed; the canvas remains hidden until its current
+DPR backing and latest Presentation are painted without CSS stretching.
 
 ## Go Integration
 

@@ -187,6 +187,7 @@ const SemanticTerminalSurface = (props: {
   onInputBridge?(node: HTMLTextAreaElement): void;
   onInputController?(controller: TerminalInputBridge | null): void;
   renderer(): RendererSurface | undefined;
+  activate?(): void;
   sendInput(value: string): void;
   sendInputIntent(value: TerminalKeyInputIntent): void;
 }) => {
@@ -263,6 +264,7 @@ const SemanticTerminalSurface = (props: {
         onPointerDown={event => {
           if (event.button !== 0) return;
           event.preventDefault();
+          props.activate?.();
           inputController?.focus();
           event.currentTarget.setPointerCapture(event.pointerId);
           props.renderer()?.beginSelection(event.clientX, event.clientY);
@@ -349,6 +351,8 @@ const SemanticTerminalViewport = (props: {
   let streamDiagnostics = createPresentationDiagnostics();
   let streamDiagnosticsAfterSequence = 0;
   let renderDiagnostics = { count: 0, lastRenderAtMs: 0 };
+  let isController = false;
+  let activationPending = false;
   const [connected, setConnected] = createSignal(false);
   const [presentationError, setPresentationError] = createSignal('');
 
@@ -387,6 +391,15 @@ const SemanticTerminalViewport = (props: {
     if (!canvas?.parentElement) return;
     await semanticResize.requestResize();
     inputController?.syncGeometry();
+  };
+  const activateView = () => {
+    if (activationPending || !connected()) return;
+    const dimensions = measure();
+    if (isController && geometryDiagnostics.cols === dimensions.cols && geometryDiagnostics.rows === dimensions.rows) return;
+    activationPending = true;
+    void props.transport.activate(mountedSessionId, dimensions.cols, dimensions.rows)
+      .catch(error => setPresentationError(error instanceof Error ? error.message : String(error)))
+      .finally(() => { activationPending = false; });
   };
   const handle: SemanticViewportHandle = {
     sendInput: data => { void props.transport.sendInput(mountedSessionId, data); },
@@ -480,6 +493,9 @@ const SemanticTerminalViewport = (props: {
         rows: event.rows,
       });
     });
+    const unsubscribeController = props.eventSource.onTerminalController?.(mountedSessionId, event => {
+      isController = event.isController;
+    });
     props.onHandle?.(handle);
     void requestResize();
     onCleanup(() => {
@@ -487,6 +503,7 @@ const SemanticTerminalViewport = (props: {
       unsubscribePresentation?.();
       unsubscribeLifecycle?.();
       unsubscribeGeometry?.();
+      unsubscribeController?.();
       resizeObserver?.disconnect();
       window.removeEventListener('resize', handleWindowResize);
       semanticResize.dispose();
@@ -502,6 +519,7 @@ const SemanticTerminalViewport = (props: {
         onCanvas={node => { canvas = node; }}
         onInputController={controller => { inputController = controller ?? undefined; }}
         renderer={() => renderer}
+        activate={activateView}
         sendInput={value => { void props.transport.sendInput(mountedSessionId, value); }}
         sendInputIntent={value => { void props.transport.sendInputIntent(mountedSessionId, value); }}
       />
@@ -548,6 +566,8 @@ const SingleTerminalPane = (props: {
   const resizeDiagnostics: unknown[] = [];
   let attachRequestCount = 0;
   let lifecycleCloseCount = 0;
+  let isController = false;
+  let activationPending = false;
   const recordResizeDiagnostic = (value: unknown) => {
     resizeDiagnostics.push(value);
     if (resizeDiagnostics.length > 64) resizeDiagnostics.shift();
@@ -665,6 +685,15 @@ const SingleTerminalPane = (props: {
 	semanticRenderer?.project(null);
     await semanticResize.requestResize();
     inputController?.syncGeometry();
+  };
+  const activateView = () => {
+    if (activationPending || !liveConnected) return;
+    const dimensions = measuredDimensions();
+    if (isController && geometryDiagnostics.cols === dimensions.cols && geometryDiagnostics.rows === dimensions.rows) return;
+    activationPending = true;
+    void props.transport.activate(props.sessionId, dimensions.cols, dimensions.rows)
+      .catch(error => setPresentationError(error instanceof Error ? error.message : String(error)))
+      .finally(() => { activationPending = false; });
   };
 
 	const showLatestPresentation = () => {
@@ -798,6 +827,9 @@ const SingleTerminalPane = (props: {
         rows: event.rows,
       });
     });
+    const unsubscribeController = props.eventSource.onTerminalController?.(props.sessionId, event => {
+      isController = event.isController;
+    });
     onCleanup(() => {
 		historyRequestEpoch += 1;
 		unsubscribePresentation?.();
@@ -807,6 +839,7 @@ const SingleTerminalPane = (props: {
 		semanticResize.dispose();
 		semanticRenderer?.dispose();
       unsubscribeGeometry?.();
+      unsubscribeController?.();
     });
   });
 
@@ -863,6 +896,7 @@ const SingleTerminalPane = (props: {
             onCanvas={node => { semanticCanvas = node; }}
             onInputController={controller => { inputController = controller ?? undefined; }}
             renderer={() => semanticRenderer}
+            activate={activateView}
             sendInput={value => { void props.transport.sendInput(props.sessionId, value); }}
             sendInputIntent={value => { void props.transport.sendInputIntent(props.sessionId, value); }}
           />
