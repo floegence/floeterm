@@ -218,10 +218,17 @@ func (s *Session) InteractSemantic(attachmentID, principalID string, transportGe
 			return nil
 		})
 	} else {
-		if input.Kind != "text" {
+		var data []byte
+		switch input.Kind {
+		case "bytes":
+			data = input.Data
+		case "text":
+			data = []byte(input.Text)
+		default:
 			err = errors.New("structured terminal input requires the semantic actor")
-		} else {
-			err = writeTerminalInput(write, []byte(input.Text))
+		}
+		if err == nil {
+			err = writeTerminalInput(write, data)
 			inputCommitted = err == nil
 		}
 	}
