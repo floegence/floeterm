@@ -52,7 +52,11 @@ test('updates the existing canvas backing for DPR-only changes at fixed CSS geom
       const state = await readSurface(page);
       return state.dpr === dpr
         && state.backing.width === Math.round(state.css.width * dpr)
-        && state.backing.height === Math.round(state.css.height * dpr);
+        && state.backing.height === Math.round(state.css.height * dpr)
+        && state.geometry.cols === state.presentation.cols
+        && state.geometry.rows === state.presentation.rows
+        && state.presentation.width === state.presentation.cols
+        && state.presentation.height === state.presentation.rows;
     }, { message: `semantic canvas did not settle at DPR ${dpr}` }).toBe(true);
     const state = await readSurface(page);
     expect(state.identity).toBe('stable');

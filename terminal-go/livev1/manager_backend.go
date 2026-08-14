@@ -115,7 +115,7 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 }
 
 func (b *ManagerBackend) WriteInput(_ context.Context, attachment Attach, input Input) error {
-	return b.writeSemanticInput(attachment, terminal.SemanticInput{Kind: "text", Text: string(input.Data)})
+	return b.writeSemanticInput(attachment, terminal.SemanticInput{Kind: "bytes", Data: input.Data})
 }
 
 func (b *ManagerBackend) WriteInputIntent(_ context.Context, attachment Attach, input InputIntent) error {

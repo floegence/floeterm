@@ -167,6 +167,8 @@ func (e *nativeSemanticEngine) Reset() error          { return e.engine.Reset() 
 func (e *nativeSemanticEngine) Resize(c, r int) error { return e.engine.Resize(uint16(c), uint16(r)) }
 func (e *nativeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 	switch i.Kind {
+	case "bytes":
+		return append([]byte(nil), i.Data...), nil
 	case "text":
 		return e.engine.EncodeText(i.Text)
 	case "key":

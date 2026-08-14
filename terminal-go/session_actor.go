@@ -27,6 +27,7 @@ type SemanticResetEngine interface {
 
 type SemanticInput struct {
 	Kind, Text, Code, Action string
+	Data                     []byte
 	Modifiers                uint16
 	Focused                  bool
 	X, Y                     float32
@@ -235,6 +236,10 @@ func (a *SessionActor) Input(intent SemanticInput, write func([]byte) error) err
 
 func validateSemanticInput(intent SemanticInput) error {
 	switch intent.Kind {
+	case "bytes":
+		if len(intent.Data) == 0 {
+			return errors.New("semantic byte input is empty")
+		}
 	case "text":
 		if intent.Text == "" || !utf8.ValidString(intent.Text) {
 			return errors.New("semantic text input is empty")

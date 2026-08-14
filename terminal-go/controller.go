@@ -170,7 +170,7 @@ func (s *Session) ReadSemanticHistory(attachmentID string, generation uint64, re
 
 // Interact atomically validates transport/epoch and permits same-principal takeover.
 func (s *Session) Interact(attachmentID, principalID string, transportGeneration, epoch uint64, input []byte) error {
-	return s.InteractSemantic(attachmentID, principalID, transportGeneration, epoch, SemanticInput{Kind: "text", Text: string(input)})
+	return s.InteractSemantic(attachmentID, principalID, transportGeneration, epoch, SemanticInput{Kind: "bytes", Data: input})
 }
 
 // InteractSemantic admits one structured input through the current attachment

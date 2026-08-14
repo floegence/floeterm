@@ -68,6 +68,31 @@ func TestStructuredKeyInputUsesActorEncoderAndRejectsStaleTransport(t *testing.T
 	}
 }
 
+func TestFramedByteInputPreservesSplitUTF8ThroughActor(t *testing.T) {
+	engine := &fakeSemanticEngine{}
+	actor, _ := NewSessionActor(engine, 80, 24, NewPresentationStore(1))
+	var wrote []byte
+	session := &Session{config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}), PTY: &os.File{}, semanticActor: actor, writePTY: func(data []byte) (int, error) {
+		wrote = append(wrote, data...)
+		return len(data), nil
+	}}
+	if err := session.AttachSemanticView("view", "principal", 1); err != nil {
+		t.Fatal(err)
+	}
+	for index, fragment := range [][]byte{{0xf0, 0x9f}, {0x98, 0x80}} {
+		epoch := uint64(0)
+		if index > 0 {
+			epoch = session.Controller().Epoch
+		}
+		if err := session.Interact("view", "principal", 1, epoch, fragment); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !bytes.Equal(wrote, []byte("😀")) {
+		t.Fatalf("split UTF-8 bytes = %x", wrote)
+	}
+}
+
 func TestFailedStructuredInputDoesNotTransferController(t *testing.T) {
 	engine := &fakeSemanticEngine{}
 	actor, _ := NewSessionActor(engine, 80, 24, NewPresentationStore(1))
