@@ -65,6 +65,25 @@ func TestSemanticResizeAcknowledgesExactActorPresentation(t *testing.T) {
 	}
 }
 
+func TestSemanticSameSizeForcePublishesExactActorPresentation(t *testing.T) {
+	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24}}
+	session, presentations, _ := newSemanticResizeTestSession(t, engine)
+	geometry, err := session.ApplySemanticControllerSize("view", 80, 24, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Generation != 1 || geometry.PresentationSequence != 2 || geometry.Cols != 80 || geometry.Rows != 24 {
+		t.Fatalf("geometry=%+v", geometry)
+	}
+	if len(*presentations) != 1 {
+		t.Fatalf("presentations=%d, want 1", len(*presentations))
+	}
+	produced := (*presentations)[0]
+	if produced.Sequence != geometry.PresentationSequence || produced.Geometry != geometry || produced.Frame.Width != 80 || produced.Frame.Height != 24 {
+		t.Fatalf("presentation=%+v geometry=%+v", produced, geometry)
+	}
+}
+
 func TestSemanticResizeCaptureFailureRollsBackWithoutAcknowledgement(t *testing.T) {
 	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24}}
 	session, presentations, kernelSizes := newSemanticResizeTestSession(t, engine)

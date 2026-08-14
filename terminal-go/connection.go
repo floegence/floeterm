@@ -164,9 +164,9 @@ func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows in
 	s.endPTYResize()
 	if len(subscribers) > 0 {
 		s.broadcastGeometry(geometry, subscribers)
-		if hasPresentation {
-			s.broadcastPresentation(presentation, subscribers)
-		}
+	}
+	if hasPresentation {
+		s.broadcastPresentation(presentation, subscribers)
 	}
 	return geometry, nil
 }

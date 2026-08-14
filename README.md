@@ -57,7 +57,7 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.10.2
+go get github.com/floegence/floeterm/terminal-go@v0.10.3
 npm install @floegence/floeterm-terminal-web@0.15.4
 ```
 
