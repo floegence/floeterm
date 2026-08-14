@@ -8,7 +8,7 @@ if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
 if (!stateDir) throw new Error('FLOETERM_E2E_STATE_DIR is required');
 const stateArg = stateDir ? ` -state-dir ${JSON.stringify(stateDir)}` : '';
 const goRun = process.env.FLOETERM_E2E_GO_RUN?.trim() || 'go run -tags floeterm_native';
-const headed = Boolean(process.env.CI) || process.env.FLOETERM_E2E_HEADED === '1';
+const headed = process.env.FLOETERM_E2E_HEADED === '1';
 const chromiumArgs = process.env.CI || !headed
   ? ['--enable-unsafe-swiftshader', '--use-angle=swiftshader']
   : [];

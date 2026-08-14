@@ -2,6 +2,9 @@ import { expect, test } from '@playwright/test';
 
 import { captureBrowserFailures } from '../support/browserFailures.mjs';
 import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
+import { topContractForPlatform } from '../support/topProcess.mjs';
+
+const topContract = topContractForPlatform(process.platform);
 
 const createSession = async request => {
   const response = await request.post('/api/sessions', {
@@ -62,40 +65,12 @@ const readPageState = page => page.evaluate(() => {
   };
 });
 
-const waitForTopClockAtSharedRightEdge = async (target, expectedCols, requireRightEdge = true) => {
-  await expect.poll(async () => target.evaluate(({ cols, requireRightEdge }) => {
-    const harness = window.__floetermPerfHarness;
-    const row0 = harness?.getVisibleLines()[0] ?? '';
-    const clock = row0.match(/\b\d{2}:\d{2}:\d{2}\b/);
-    if (!clock || !row0.startsWith('Processes:')) return false;
-    const canvas = document.querySelector('.semanticTerminalSurface');
-    const surface = document.querySelector('.terminalPane');
-    if (!(canvas instanceof HTMLCanvasElement) || !(surface instanceof HTMLElement)) return false;
-    const cssWidth = Number.parseFloat(getComputedStyle(canvas).width);
-    const cssHeight = Number.parseFloat(getComputedStyle(canvas).height);
-    const widthScaleMatches = Math.abs(canvas.width / cssWidth - devicePixelRatio) < 0.01;
-    const heightScaleMatches = Math.abs(canvas.height / cssHeight - devicePixelRatio) < 0.01;
-    return harness.getTerminalInfo()?.cols === cols
-      && widthScaleMatches
-      && heightScaleMatches
-      && (!requireRightEdge || surface.clientWidth <= cssWidth)
-      && surface.clientHeight <= cssHeight;
-  }, { cols: expectedCols, requireRightEdge })).toBe(true);
-};
-
-const waitForTopFrameOnObserver = async target => {
-  await expect.poll(async () => target.evaluate(() => {
-    const harness = window.__floetermPerfHarness;
-    const canvas = document.querySelector('.semanticTerminalSurface');
-    return Boolean(harness?.getTerminalInfo() && canvas instanceof HTMLCanvasElement && canvas.width > 0 && canvas.height > 0);
-  })).toBe(true);
-};
-
 const waitForTopSemanticFrame = async target => {
-  await expect.poll(async () => target.evaluate(() => {
+  await expect.poll(async () => target.evaluate(contract => {
     const lines = window.__floetermPerfHarness?.getVisibleLines() ?? [];
-    return lines.some(line => line.startsWith('Processes:')) && lines.some(line => line.startsWith('Load Avg:'));
-  })).toBe(true);
+    return lines.some(line => line.startsWith(contract.headerPrefix))
+      && lines.some(line => line.startsWith(contract.loadPrefix));
+  }, topContract)).toBe(true);
 };
 
 const readGeometryState = page => page.evaluate(() => {
@@ -238,16 +213,17 @@ test('keeps one session correct while two independent pages resize and stream ou
     expect(Number(sizeMatch[1])).toBe(streamed[0].effective.rows);
     expect(Number(sizeMatch[2])).toBe(streamed[0].effective.cols);
 
-    await page.evaluate(() => window.__floetermPerfHarness.sendInput('top -s 1\r'));
+    await page.evaluate(command => window.__floetermPerfHarness.sendInput(`${command}\r`), topContract.command);
     await Promise.all([
       waitForTopSemanticFrame(page),
-      waitForTopFrameOnObserver(secondPage),
+      waitForTopSemanticFrame(secondPage),
     ]);
     await Promise.all([page, secondPage].map(target => target.evaluate(() => (
       new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     ))));
     const topStates = await Promise.all([readPageState(page), readPageState(secondPage)]);
-    expect(topStates.every(state => state.visibleLines[0]?.startsWith('Processes:'))).toBe(true);
+    expect(topStates.every(state => state.visibleLines.some(line => line.startsWith(topContract.headerPrefix)))).toBe(true);
+    expect(topStates.every(state => state.visibleLines.some(line => line.startsWith(topContract.loadPrefix)))).toBe(true);
     expect(topStates.every(state => state.stream.sequenceGaps === 0)).toBe(true);
     await page.evaluate(() => window.__floetermPerfHarness.sendInput('\x03'));
 

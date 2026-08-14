@@ -19,3 +19,9 @@ test('requires the isolated runner to provide a reserved loopback port and state
   assert.match(runner, /host: '127\.0\.0\.1', port: 0, exclusive: true/);
   assert.match(runner, /mkdtemp\(join\(tmpdir\(\), 'floeterm-e2e-'\)\)/);
 });
+
+test('keeps functional browser tests headless unless explicitly requested', () => {
+  const config = readFileSync(new URL('../playwright.config.mjs', import.meta.url), 'utf8');
+  assert.match(config, /const headed = process\.env\.FLOETERM_E2E_HEADED === '1'/);
+  assert.doesNotMatch(config, /Boolean\(process\.env\.CI\)/);
+});
