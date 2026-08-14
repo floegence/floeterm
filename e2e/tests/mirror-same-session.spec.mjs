@@ -325,7 +325,7 @@ test('atomically transfers controller geometry across rapid same-session view ac
   await page.keyboard.type(`python3 -c "import os;s=os.get_terminal_size(0);print('${marker}',s.lines,s.columns)"`);
   await page.keyboard.press('Enter');
   await expect.poll(() => page.evaluate(value => (
-    window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes(value))
+    window.__floetermMirrorHarness.getViews().every(view => new RegExp(`${value} \\d+ \\d+`).test(view.serialize()))
   ), marker), { intervals: [10, 20, 50], timeout: 5_000 }).toBe(true);
   const afterInput = await readMirror(page);
   const match = afterInput.views[0].serialized.match(new RegExp(`${marker} (\\d+) (\\d+)`));
