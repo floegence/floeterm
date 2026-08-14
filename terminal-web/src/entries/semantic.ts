@@ -11,6 +11,9 @@ export {
   TERMINAL_THEME_DEFINITIONS,
 } from '../utils/config.js';
 export type {
+  SemanticTerminalPalette,
+} from '../semantic/RendererSurface.js';
+export type {
   SemanticCell,
   SemanticFrame,
   SemanticHistoryDirection,
@@ -24,6 +27,7 @@ export type {
   TerminalID,
   TerminalInstanceSnapshot,
   TerminalSessionInfo,
+  TerminalThemeColors,
   TerminalThemeName,
 } from '../types.js';
 export { TerminalState } from '../types.js';

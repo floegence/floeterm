@@ -49,4 +49,12 @@ describe('reference app resize ownership', () => {
     expect(appSource).toContain('props.transport.forgetSession(mountedSessionId);');
     expect(appSource).not.toContain('props.transport.forgetSession(props.sessionId);');
   });
+
+  it('binds every semantic renderer to the current view-local theme palette', () => {
+    expect(appSource).toContain('getThemeColors');
+    expect(appSource.match(/setPalette\(getThemeColors\(props\.themeName\)\)/g)).toHaveLength(2);
+    expect(appSource.match(/const palette = getThemeColors\(props\.themeName\);/g)).toHaveLength(2);
+    expect(appSource.match(/setPalette\(palette\)/g)).toHaveLength(2);
+    expect(appSource.match(/<SemanticTerminalViewport[\s\S]*?themeName=\{props\.themeName\}/g)).toHaveLength(2);
+  });
 });

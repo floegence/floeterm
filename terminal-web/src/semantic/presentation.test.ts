@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { presentationAdvances, validateHistoryPage, validatePresentation } from './presentation';
 import type { SemanticPresentation } from './presentation';
 import { RendererSurface } from './RendererSurface';
+import { getThemeColors } from '../utils/config';
 
 const valid = (): SemanticPresentation => ({ sequence: 1, geometry: { generation: 1, cols: 2, rows: 1 }, state: { sequence: 1 }, frame: { width: 2, height: 1, bufferKind: 'normal', history: { revision: 1, totalRows: 1, screenStartOffset: 0 }, graphics: { generation: 0, images: [], placements: [] }, rows: [{ cells: [{ text: 'A', width: 1, style: { foreground: 'rgb:e5e7eb', background: 'indexed:1' } }, { text: '', width: 1 }] }], cursor: { x: 0, y: 0, visible: true, shape: 'block', blinking: false } } });
 describe('semantic presentation', () => {
@@ -28,6 +29,14 @@ describe('semantic presentation', () => {
     expect(presentationAdvances(current, next(9, 5))).toBe(true);
   });
   it('requires atomic geometry and frame shape', () => { expect(validatePresentation(valid())).toEqual(valid()); expect(() => validatePresentation({ ...valid(), frame: { ...valid().frame, width: 3 } })).toThrow(/geometry/); });
+  it('accepts only the terminal 256-color indexed range', () => {
+    const highest = structuredClone(valid());
+    highest.frame.rows[0]!.cells[0]!.style!.foreground = 'indexed:255';
+    expect(validatePresentation(highest)).toEqual(highest);
+    const outside = structuredClone(highest);
+    outside.frame.rows[0]!.cells[0]!.style!.foreground = 'indexed:256';
+    expect(() => validatePresentation(outside)).toThrow(/semantic color/);
+  });
   it('requires a bounded cursor contract and paints each supported visible shape', () => {
     const context = { clearRect: vi.fn(), fillRect: vi.fn(), fillText: vi.fn(), setTransform: vi.fn(), font: '', textBaseline: '', fillStyle: '' };
     const host = { clientWidth: 180, clientHeight: 90 };
@@ -219,6 +228,168 @@ describe('semantic presentation', () => {
     new RendererSurface(canvas).apply(validatePresentation(valid()));
   });
 
+  it('repaints the latest immutable presentation for every view-local palette change', () => {
+    let animationFrame: FrameRequestCallback | undefined;
+    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+      animationFrame = callback;
+      return requestAnimationFrame.mock.calls.length;
+    });
+    vi.stubGlobal('requestAnimationFrame', requestAnimationFrame);
+    const fills: Array<{ color: string; rect: number[] }> = [];
+    const texts: Array<{ color: string; text: string }> = [];
+    const context = {
+      clearRect: vi.fn(),
+      fillRect: vi.fn((...rect: number[]) => fills.push({ color: context.fillStyle, rect })),
+      fillText: vi.fn((text: string) => texts.push({ color: context.fillStyle, text })),
+      setTransform: vi.fn(),
+      font: '', textBaseline: '', fillStyle: '',
+    };
+    const host = { clientWidth: 180, clientHeight: 90 };
+    const canvas = {
+      width: 0, height: 0, clientWidth: 180, clientHeight: 90,
+      parentElement: host, style: {}, getContext: () => context,
+    } as unknown as HTMLCanvasElement;
+    const presentation = structuredClone(valid());
+    presentation.geometry.cols = 3;
+    presentation.frame.width = 3;
+    presentation.frame.rows[0]!.cells = [
+      { text: 'D', width: 1, style: { foreground: 'default', background: 'default' } },
+      { text: 'R', width: 1, style: { foreground: 'rgb:112233', background: 'indexed:196' } },
+      { text: 'I', width: 1, style: { foreground: 'indexed:1', background: 'default' } },
+    ];
+    presentation.frame.cursor = { x: 0, y: 0, visible: true, shape: 'bar', blinking: false };
+    const renderer = new RendererSurface(canvas);
+
+    renderer.setPalette(getThemeColors('light'));
+    renderer.apply(validatePresentation(presentation));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+    animationFrame?.(16);
+    expect(fills).toContainEqual({ color: '#ffffff', rect: [0, 0, 180, 90] });
+    expect(fills).toContainEqual({ color: '#ff0000', rect: [9, 0, 9.5, 18.5] });
+    expect(texts).toContainEqual({ color: '#333333', text: 'D' });
+    expect(texts).toContainEqual({ color: '#112233', text: 'R' });
+    expect(texts).toContainEqual({ color: '#cd3131', text: 'I' });
+    expect(canvas.style.background).toBe('#ffffff');
+
+    fills.length = 0;
+    texts.length = 0;
+    renderer.setPalette(getThemeColors('dark'));
+    renderer.setPalette(getThemeColors('dark'));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(2);
+    animationFrame?.(32);
+    expect(fills).toContainEqual({ color: '#0b0f14', rect: [0, 0, 180, 90] });
+    expect(fills).toContainEqual({ color: '#ff0000', rect: [9, 0, 9.5, 18.5] });
+    expect(texts).toContainEqual({ color: '#c9d1d9', text: 'D' });
+    expect(texts).toContainEqual({ color: '#112233', text: 'R' });
+    expect(texts).toContainEqual({ color: '#ff5c57', text: 'I' });
+    expect(presentation.sequence).toBe(1);
+    expect(presentation.geometry).toEqual({ generation: 1, cols: 3, rows: 1 });
+
+    fills.length = 0;
+    renderer.setPalette(getThemeColors('light'));
+    expect(requestAnimationFrame).toHaveBeenCalledTimes(3);
+    animationFrame?.(48);
+    expect(fills).toContainEqual({ color: '#ffffff', rect: [0, 0, 180, 90] });
+    expect(canvas.style.background).toBe('#ffffff');
+  });
+
+  it('keeps palettes independent for two views of the same presentation', () => {
+    const createSurface = () => {
+      const context = { clearRect: vi.fn(), fillRect: vi.fn(), fillText: vi.fn(), setTransform: vi.fn(), font: '', textBaseline: '', fillStyle: '' };
+      const host = { clientWidth: 180, clientHeight: 90 };
+      const canvas = { width: 0, height: 0, clientWidth: 180, clientHeight: 90, parentElement: host, style: {}, getContext: () => context } as unknown as HTMLCanvasElement;
+      return { canvas, renderer: new RendererSurface(canvas) };
+    };
+    const light = createSurface();
+    const dark = createSurface();
+    const presentation = validatePresentation(valid());
+
+    light.renderer.setPalette(getThemeColors('light'));
+    dark.renderer.setPalette(getThemeColors('dark'));
+    light.renderer.apply(presentation);
+    dark.renderer.apply(presentation);
+
+    expect(light.canvas.style.background).toBe('#ffffff');
+    expect(dark.canvas.style.background).toBe('#0b0f14');
+    expect(presentation.sequence).toBe(1);
+  });
+
+  it('uses each palette cursor and cursor accent for every semantic cursor shape', () => {
+    const paints: Array<{ color: string; rect: number[] }> = [];
+    const texts: Array<{ color: string; text: string }> = [];
+    const context = {
+      clearRect: vi.fn(),
+      fillRect: vi.fn((...rect: number[]) => paints.push({ color: context.fillStyle, rect })),
+      fillText: vi.fn((text: string) => texts.push({ color: context.fillStyle, text })),
+      setTransform: vi.fn(), font: '', textBaseline: '', fillStyle: '',
+    };
+    const host = { clientWidth: 180, clientHeight: 90 };
+    const canvas = { width: 0, height: 0, clientWidth: 180, clientHeight: 90, parentElement: host, style: {}, getContext: () => context } as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    let sequence = 1;
+
+    for (const [theme, expectedCursor, expectedAccent] of [
+      ['light', '#333333', '#ffffff'],
+      ['dark', '#c9d1d9', '#0b0f14'],
+    ] as const) {
+      renderer.setPalette(getThemeColors(theme));
+      for (const shape of ['block', 'bar', 'underline', 'hollow'] as const) {
+        paints.length = 0;
+        texts.length = 0;
+        const presentation = structuredClone(valid());
+        presentation.sequence = sequence;
+        presentation.state.sequence = sequence;
+        presentation.frame.history.revision = sequence;
+        presentation.frame.cursor = { x: 0, y: 0, visible: true, shape, blinking: false };
+        renderer.apply(validatePresentation(presentation));
+        expect(paints.some(paint => paint.color === expectedCursor)).toBe(true);
+        if (shape === 'block') expect(texts).toContainEqual({ color: expectedAccent, text: 'A' });
+        sequence += 1;
+      }
+    }
+  });
+
+  it('invalidates an in-flight graphics paint as soon as its view palette changes', async () => {
+    let animationFrame: FrameRequestCallback | undefined;
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      animationFrame = callback;
+      return 9;
+    }));
+    const bitmapResolvers: Array<(bitmap: ImageBitmap) => void> = [];
+    vi.stubGlobal('createImageBitmap', vi.fn(() => new Promise<ImageBitmap>(resolve => bitmapResolvers.push(resolve))));
+    const context = {
+      clearRect: vi.fn(), fillRect: vi.fn(), fillText: vi.fn(), setTransform: vi.fn(),
+      createImageData: vi.fn(() => ({ data: new Uint8ClampedArray(4), width: 1, height: 1 })),
+      drawImage: vi.fn(), font: '', textBaseline: '', fillStyle: '',
+    };
+    const host = { clientWidth: 180, clientHeight: 90 };
+    const canvas = { width: 0, height: 0, clientWidth: 180, clientHeight: 90, parentElement: host, style: {}, getContext: () => context } as unknown as HTMLCanvasElement;
+    const presentation = structuredClone(valid());
+    presentation.frame.graphics = {
+      generation: 1,
+      images: [{ id: 7, width: 1, height: 1, format: 0, generation: 1, pixels: new Uint8Array([255, 0, 0]) }],
+      placements: [{ imageId: 7, placementId: 1, z: 0, viewportColumn: 0, viewportRow: 0, gridColumns: 1, gridRows: 1, visible: true, virtual: false }],
+    };
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(validatePresentation(presentation));
+    animationFrame?.(16);
+    expect(bitmapResolvers).toHaveLength(1);
+    const staleBitmap = { close: vi.fn() } as unknown as ImageBitmap;
+
+    renderer.setPalette(getThemeColors('light'));
+    bitmapResolvers.shift()!(staleBitmap);
+    await vi.waitFor(() => expect(staleBitmap.close).toHaveBeenCalledTimes(1));
+    expect(context.drawImage).not.toHaveBeenCalled();
+
+    animationFrame?.(32);
+    expect(bitmapResolvers).toHaveLength(1);
+    const currentBitmap = { close: vi.fn() } as unknown as ImageBitmap;
+    bitmapResolvers.shift()!(currentBitmap);
+    await vi.waitFor(() => expect(context.drawImage).toHaveBeenCalledTimes(1));
+    renderer.dispose();
+    expect(currentBitmap.close).toHaveBeenCalledTimes(1);
+  });
+
   it('measures the pane instead of stale inline canvas dimensions after a host resize', () => {
     const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
     const host={clientWidth:320,clientHeight:160};
@@ -324,6 +495,48 @@ describe('semantic presentation', () => {
     expect(context.fillRect).toHaveBeenCalledWith(0, 0, 360, 180);
     expect(context.fillText).toHaveBeenCalledWith('A', 0, 14.76);
     expect(getContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('tracks DPR-only changes when the CSS viewport does not resize', () => {
+    let dpr = 1;
+    vi.stubGlobal('devicePixelRatio', dpr);
+    const listeners: Array<Set<() => void>> = [];
+    const queries: string[] = [];
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => {
+      queries.push(query);
+      const ownListeners = new Set<() => void>();
+      listeners.push(ownListeners);
+      return {
+        matches: true,
+        media: query,
+        onchange: null,
+        addEventListener: (_type: string, listener: () => void) => ownListeners.add(listener),
+        removeEventListener: (_type: string, listener: () => void) => ownListeners.delete(listener),
+        addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+      } as unknown as MediaQueryList;
+    }));
+    const context = { clearRect: vi.fn(), fillRect: vi.fn(), fillText: vi.fn(), setTransform: vi.fn(), font: '', textBaseline: '', fillStyle: '' };
+    const host = { clientWidth: 180, clientHeight: 90 };
+    const canvas = { width: 0, height: 0, clientWidth: 180, clientHeight: 90, parentElement: host, style: {}, getContext: () => context } as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(validatePresentation(valid()));
+    expect(canvas.width).toBe(180);
+    expect(canvas.height).toBe(90);
+    expect(queries).toEqual(['(resolution: 1dppx)']);
+
+    dpr = 1.5;
+    vi.stubGlobal('devicePixelRatio', dpr);
+    for (const listener of [...listeners[0]!]) listener();
+
+    expect(canvas.width).toBe(270);
+    expect(canvas.height).toBe(135);
+    expect(context.setTransform).toHaveBeenLastCalledWith(1.5, 0, 0, 1.5, 0, 0);
+    expect(queries).toEqual(['(resolution: 1dppx)', '(resolution: 1.5dppx)']);
+    expect(listeners[0]).toHaveLength(0);
+    expect(listeners[1]).toHaveLength(1);
+
+    renderer.dispose();
+    expect(listeners[1]).toHaveLength(0);
   });
 
   it('paints only the latest complete presentation once per browser frame', () => {

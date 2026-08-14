@@ -180,6 +180,9 @@ export {
   SEMANTIC_CELL_WIDTH_CSS_PX,
 } from './semantic/RendererSurface.js';
 export type {
+  SemanticTerminalPalette,
+} from './semantic/RendererSurface.js';
+export type {
   SemanticPresentation, SemanticCell, SemanticFrame,
   SemanticHistoryDirection, SemanticHistoryPage, SemanticHistoryRequest,
 } from './semantic/presentation.js';

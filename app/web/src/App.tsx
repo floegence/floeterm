@@ -3,6 +3,7 @@ import {
   RendererSurface,
   SEMANTIC_CELL_HEIGHT_CSS_PX,
   SEMANTIC_CELL_WIDTH_CSS_PX,
+  getThemeColors,
   isTerminalThemeName,
   presentationAdvances,
   TerminalState,
@@ -246,6 +247,7 @@ const SemanticTerminalViewport = (props: {
   eventSource: DemoEventSource;
   class: string;
   canvasLabel: string;
+  themeName: TerminalThemeName;
   onState?: (connected: boolean, error: string) => void;
   onHandle?: (handle: SemanticViewportHandle | null) => void;
 }) => {
@@ -345,9 +347,14 @@ const SemanticTerminalViewport = (props: {
   };
 
   createEffect(() => props.onState?.(connected(), presentationError()));
+  createEffect(() => {
+    const palette = getThemeColors(props.themeName);
+    renderer?.setPalette(palette);
+  });
   onMount(() => {
     if (!canvas) throw new Error('semantic terminal canvas is required');
     renderer = new RendererSurface(canvas, error => setPresentationError(error.message));
+    renderer.setPalette(getThemeColors(props.themeName));
     const resizeObserver = typeof ResizeObserver === 'undefined'
       ? undefined
       : new ResizeObserver(() => { void requestResize(); });
@@ -466,7 +473,7 @@ const SingleTerminalPane = (props: {
 	const [historyHovered, setHistoryHovered] = createSignal(false);
 	const [historyDragging, setHistoryDragging] = createSignal(false);
 	const [historyBusy, setHistoryBusy] = createSignal(false);
-	const [historySummary, setHistorySummary] = createSignal({ totalRows: 0, screenStartOffset: 0 });
+  const [historySummary, setHistorySummary] = createSignal({ totalRows: 0, screenStartOffset: 0 });
   let liveConnected = false;
   let latestPresentation: SemanticPresentation | null = null;
 	let historyRequestEpoch = 0;
@@ -664,9 +671,10 @@ const SingleTerminalPane = (props: {
 	};
 
   onMount(() => {
-		if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas, error => {
-			setPresentationError(error.message);
-		});
+			if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas, error => {
+				setPresentationError(error.message);
+			});
+			semanticRenderer?.setPalette(getThemeColors(props.themeName));
 		const semanticResizeObserver = semanticCanvas && typeof ResizeObserver !== 'undefined'
 			? new ResizeObserver(() => { void requestResize(); })
 			: undefined;
@@ -737,6 +745,11 @@ const SingleTerminalPane = (props: {
       unsubscribeData();
       unsubscribeGeometry?.();
     });
+  });
+
+  createEffect(() => {
+    const palette = getThemeColors(props.themeName);
+    semanticRenderer?.setPalette(palette);
   });
 
   createEffect(() => {
@@ -899,6 +912,7 @@ const MirrorTerminalConnection = (props: {
         eventSource={props.runtime.eventSource}
         class="mirrorTerminalSurface"
         canvasLabel={`${props.label} semantic terminal surface`}
+        themeName={props.themeName}
         onState={(connected, error) => {
           const nextStatus = error || (connected ? 'live' : 'connecting');
           setStatus(nextStatus);
@@ -1065,6 +1079,7 @@ const GridTerminalTile = (props: {
         eventSource={props.eventSource}
         class="tileTerminal"
         canvasLabel={`${props.session.name} semantic terminal surface`}
+        themeName={props.themeName}
         onState={handleState}
       />
     </section>

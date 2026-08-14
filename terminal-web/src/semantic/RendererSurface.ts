@@ -1,7 +1,17 @@
 import { presentationAdvances, type SemanticFrame, type SemanticPresentation } from './presentation.js';
+import { getThemeColors } from '../utils/config.js';
+import type { TerminalThemeColors } from '../types.js';
 
 export const SEMANTIC_CELL_WIDTH_CSS_PX = 9;
 export const SEMANTIC_CELL_HEIGHT_CSS_PX = 18;
+
+export type SemanticTerminalPalette = TerminalThemeColors;
+
+const PALETTE_KEYS = [
+  'background', 'foreground', 'cursor', 'cursorAccent', 'selectionBackground', 'selectionForeground',
+  'black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+  'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite',
+] as const satisfies readonly (keyof SemanticTerminalPalette)[];
 
 export class RendererSurface {
   private latest: SemanticPresentation | null = null;
@@ -14,6 +24,8 @@ export class RendererSurface {
   private context: CanvasRenderingContext2D | null | undefined;
   private cursorBlinkTimer: ReturnType<typeof setTimeout> | null = null;
   private cursorBlinkPhaseVisible = true;
+  private palette: SemanticTerminalPalette = Object.freeze(getThemeColors('dark'));
+  private dprMediaQuery: MediaQueryList | null = null;
   private readonly graphicBitmaps = new Map<string, ImageBitmap>();
   private readonly visibilityHandler = (): void => {
     if (this.failed) return;
@@ -21,11 +33,17 @@ export class RendererSurface {
     this.syncCursorBlinkTimer();
     this.scheduleRender();
   };
+  private readonly dprChangeHandler = (): void => {
+    if (this.failed) return;
+    this.bindDprChangeListener();
+    this.resize();
+  };
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly onError: (error: Error) => void = () => {},
   ) {
     globalThis.document?.addEventListener('visibilitychange', this.visibilityHandler);
+    this.bindDprChangeListener();
   }
   apply(presentation: SemanticPresentation): void {
     if (this.failed) return;
@@ -42,6 +60,13 @@ export class RendererSurface {
       this.cursorBlinkPhaseVisible = true;
       this.syncCursorBlinkTimer();
     }
+    this.scheduleRender();
+  }
+  setPalette(palette: SemanticTerminalPalette): void {
+    if (this.failed || samePalette(this.palette, palette)) return;
+    this.palette = Object.freeze({ ...palette });
+    this.renderGeneration += 1;
+    this.canvas.style.background = this.palette.background;
     this.scheduleRender();
   }
   project(frame: SemanticFrame | null): void {
@@ -100,7 +125,7 @@ export class RendererSurface {
     // JavaScript task, so no empty backing can be composited between them.
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
-    this.canvas.style.background = '#0b0f14';
+    this.canvas.style.background = this.palette.background;
     this.scheduleRender();
   }
   dispose(): void {
@@ -111,6 +136,7 @@ export class RendererSurface {
     this.animationFrame = null;
     this.clearCursorBlinkTimer();
     this.clearGraphicBitmaps();
+    this.unbindDprChangeListener();
     globalThis.document?.removeEventListener('visibilitychange', this.visibilityHandler);
     this.latest = null;
     this.viewportFrame = null;
@@ -140,6 +166,7 @@ export class RendererSurface {
   private render(presentation: SemanticPresentation): void {
     const renderGeneration = ++this.renderGeneration;
     const frame = this.viewportFrame ?? presentation.frame;
+    const palette = this.palette;
     const context = this.getContext();
     // The canvas owns its backing store, but its containing pane owns the
     // layout bounds. Reading the canvas rect after writing inline dimensions
@@ -152,28 +179,28 @@ export class RendererSurface {
     const cellWidth = SEMANTIC_CELL_WIDTH_CSS_PX;
     const cellHeight = SEMANTIC_CELL_HEIGHT_CSS_PX;
     context.clearRect(0, 0, cssWidth, cssHeight);
-    context.fillStyle = '#0b0f14';
+    context.fillStyle = palette.background;
     context.fillRect(0, 0, cssWidth, cssHeight);
     context.font = `${Math.max(1, Math.floor(cellHeight * 0.78))}px monospace`;
     context.textBaseline = 'alphabetic';
     frame.rows.forEach((row, y) => {
       row.cells.forEach((cell, x) => {
         const background = this.isCellSelected(y, x)
-          ? '#315c3d'
-          : resolveColor(cell.style?.background, '#0b0f14');
+          ? palette.selectionBackground
+          : resolveColor(cell.style?.background, palette.background, palette);
         context.fillStyle = background;
         context.fillRect(x * cellWidth, y * cellHeight, cellWidth + 0.5, cellHeight + 0.5);
       });
       row.cells.forEach((cell, x) => {
         if (!cell.text) return;
         const foreground = this.isCellSelected(y, x)
-          ? '#ffffff'
-          : resolveColor(cell.style?.foreground, '#e5e7eb');
+          ? palette.selectionForeground
+          : resolveColor(cell.style?.foreground, palette.foreground, palette);
         this.paintCellText(context, cell, x, y, cellWidth, cellHeight, foreground);
       });
     });
-    this.paintCursor(context, frame, frame.cursor, cellWidth, cellHeight);
-    void this.paintGraphics(context, frame, cellWidth, cellHeight, renderGeneration)
+    this.paintCursor(context, frame, frame.cursor, cellWidth, cellHeight, palette);
+    void this.paintGraphics(context, frame, cellWidth, cellHeight, renderGeneration, palette)
       .catch(error => this.fail(error));
   }
 
@@ -183,11 +210,12 @@ export class RendererSurface {
     cursor: SemanticFrame['cursor'],
     cellWidth: number,
     cellHeight: number,
+    palette: SemanticTerminalPalette,
   ): void {
     if (!cursor.visible || (cursor.blinking && !this.cursorBlinkPhaseVisible)) return;
     const x = Math.max(0, Math.min(frame.width - 1, cursor.x));
     const y = Math.max(0, Math.min(frame.height - 1, cursor.y));
-    const foreground = resolveColor(cursor.color, '#e5e7eb');
+    const foreground = resolveColor(cursor.color, palette.cursor, palette);
     context.fillStyle = foreground;
     if (cursor.shape === 'bar') {
       context.fillRect(x * cellWidth, y * cellHeight, Math.max(2, Math.round(cellWidth * 0.16)), cellHeight);
@@ -201,12 +229,9 @@ export class RendererSurface {
       context.fillRect((x + 1) * cellWidth - thickness, y * cellHeight, thickness, cellHeight);
     } else {
       const cell = frame.rows[y]?.cells[x];
-      const inverseForeground = this.isCellSelected(y, x)
-        ? '#315c3d'
-        : resolveColor(cell?.style?.background, '#0b0f14');
       context.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
       if (cell?.text) {
-        this.paintCellText(context, cell, x, y, cellWidth, cellHeight, inverseForeground);
+        this.paintCellText(context, cell, x, y, cellWidth, cellHeight, palette.cursorAccent);
       }
     }
   }
@@ -251,21 +276,22 @@ export class RendererSurface {
     const y = Math.max(0, Math.min(frame.height - 1, frame.cursor.y));
     const cell = frame.rows[y]?.cells[x];
     const context = this.getContext();
+    const palette = this.palette;
     const background = this.isCellSelected(y, x)
-      ? '#315c3d'
-      : resolveColor(cell?.style?.background, '#0b0f14');
+      ? palette.selectionBackground
+      : resolveColor(cell?.style?.background, palette.background, palette);
     context.fillStyle = background;
     context.fillRect(x * SEMANTIC_CELL_WIDTH_CSS_PX, y * SEMANTIC_CELL_HEIGHT_CSS_PX, SEMANTIC_CELL_WIDTH_CSS_PX + 0.5, SEMANTIC_CELL_HEIGHT_CSS_PX + 0.5);
     if (cell?.text) {
       const foreground = this.isCellSelected(y, x)
-        ? '#ffffff'
-        : resolveColor(cell.style?.foreground, '#e5e7eb');
+        ? palette.selectionForeground
+        : resolveColor(cell.style?.foreground, palette.foreground, palette);
       this.paintCellText(context, cell, x, y, SEMANTIC_CELL_WIDTH_CSS_PX, SEMANTIC_CELL_HEIGHT_CSS_PX, foreground);
     }
-    this.paintCursor(context, frame, frame.cursor, SEMANTIC_CELL_WIDTH_CSS_PX, SEMANTIC_CELL_HEIGHT_CSS_PX);
+    this.paintCursor(context, frame, frame.cursor, SEMANTIC_CELL_WIDTH_CSS_PX, SEMANTIC_CELL_HEIGHT_CSS_PX, palette);
   }
 
-  private async paintGraphics(context: CanvasRenderingContext2D, frame: SemanticFrame, cellWidth: number, cellHeight: number, renderGeneration: number): Promise<void> {
+  private async paintGraphics(context: CanvasRenderingContext2D, frame: SemanticFrame, cellWidth: number, cellHeight: number, renderGeneration: number, palette: SemanticTerminalPalette): Promise<void> {
     if (frame.graphics.images.length === 0 || frame.graphics.placements.length === 0) {
       this.clearGraphicBitmaps();
       return;
@@ -320,7 +346,7 @@ export class RendererSurface {
       if (!bitmap) continue;
       context.drawImage(bitmap, placement.viewportColumn * cellWidth, placement.viewportRow * cellHeight, placement.gridColumns * cellWidth, placement.gridRows * cellHeight);
     }
-    this.paintCursor(context, frame, frame.cursor, cellWidth, cellHeight);
+    this.paintCursor(context, frame, frame.cursor, cellWidth, cellHeight, palette);
   }
 
   private fail(cause: unknown): void {
@@ -372,6 +398,28 @@ export class RendererSurface {
     this.graphicBitmaps.clear();
   }
 
+  private bindDprChangeListener(): void {
+    this.unbindDprChangeListener();
+    if (typeof globalThis.matchMedia !== 'function') return;
+    const dpr = Math.max(1, globalThis.devicePixelRatio || 1);
+    this.dprMediaQuery = globalThis.matchMedia(`(resolution: ${dpr}dppx)`);
+    if (typeof this.dprMediaQuery.addEventListener === 'function') {
+      this.dprMediaQuery.addEventListener('change', this.dprChangeHandler);
+    } else {
+      this.dprMediaQuery.addListener(this.dprChangeHandler);
+    }
+  }
+
+  private unbindDprChangeListener(): void {
+    if (!this.dprMediaQuery) return;
+    if (typeof this.dprMediaQuery.removeEventListener === 'function') {
+      this.dprMediaQuery.removeEventListener('change', this.dprChangeHandler);
+    } else {
+      this.dprMediaQuery.removeListener(this.dprChangeHandler);
+    }
+    this.dprMediaQuery = null;
+  }
+
   private currentFrame(): SemanticFrame | null {
     return this.viewportFrame ?? this.latest?.frame ?? null;
   }
@@ -418,21 +466,47 @@ export class RendererSurface {
     if (this.canvas.height !== backingHeight) this.canvas.height = backingHeight;
     this.canvas.style.width = '100%';
     this.canvas.style.height = '100%';
-    this.canvas.style.background = '#0b0f14';
+    this.canvas.style.background = this.palette.background;
     return { cssWidth, cssHeight, dpr };
   }
 }
 
-const ANSI16 = ['#000000', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', '#06989a', '#d3d7cf', '#555753', '#ef2929', '#8ae234', '#fce94f', '#729fcf', '#ad7fa8', '#34e2e2', '#eeeeec'];
-
-function resolveColor(value: string | undefined, fallback: string): string {
+function resolveColor(value: string | undefined, fallback: string, palette: SemanticTerminalPalette): string {
   if (!value || value === 'default') return fallback;
   if (value.startsWith('rgb:')) return `#${value.slice(4)}`;
   if (value.startsWith('indexed:')) {
     const index = Number(value.slice(8));
-    return ANSI16[index] ?? fallback;
+    return resolveIndexedColor(index, palette) ?? fallback;
   }
   return fallback;
+}
+
+function resolveIndexedColor(index: number, palette: SemanticTerminalPalette): string | undefined {
+  const ansi16 = [
+    palette.black, palette.red, palette.green, palette.yellow,
+    palette.blue, palette.magenta, palette.cyan, palette.white,
+    palette.brightBlack, palette.brightRed, palette.brightGreen, palette.brightYellow,
+    palette.brightBlue, palette.brightMagenta, palette.brightCyan, palette.brightWhite,
+  ];
+  if (index >= 0 && index < ansi16.length) return ansi16[index];
+  if (index >= 16 && index <= 231) {
+    const offset = index - 16;
+    const levels = [0, 95, 135, 175, 215, 255];
+    return rgbHex(levels[Math.floor(offset / 36)]!, levels[Math.floor(offset / 6) % 6]!, levels[offset % 6]!);
+  }
+  if (index >= 232 && index <= 255) {
+    const level = 8 + (index - 232) * 10;
+    return rgbHex(level, level, level);
+  }
+  return undefined;
+}
+
+function rgbHex(red: number, green: number, blue: number): string {
+  return `#${[red, green, blue].map(value => value.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function samePalette(left: SemanticTerminalPalette, right: SemanticTerminalPalette): boolean {
+  return PALETTE_KEYS.every(key => left[key] === right[key]);
 }
 
 function sameCursor(left: SemanticFrame['cursor'], right: SemanticFrame['cursor']): boolean {
