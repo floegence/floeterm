@@ -180,14 +180,12 @@ func clonePresentation(in SemanticPresentation) SemanticPresentation {
 	return out
 }
 
-// PresentationStore owns one replaceable pending Presentation. A full frame is
-// self-contained, so retaining older frames would only backpressure the actor
-// and can never improve what a view eventually renders.
+// PresentationStore owns the latest immutable Presentation for bootstrap and
+// diagnostics. Live delivery receives the exact value returned by the actor.
 type PresentationStore struct {
-	mu      sync.Mutex
-	latest  SemanticPresentation
-	pending bool
-	closed  bool
+	mu     sync.Mutex
+	latest SemanticPresentation
+	closed bool
 }
 
 func NewPresentationStore(_ int) *PresentationStore {
@@ -201,27 +199,7 @@ func (s *PresentationStore) Publish(p SemanticPresentation) error {
 		return errSessionClosed
 	}
 	s.latest = clonePresentation(p)
-	s.pending = true
 	return nil
-}
-
-func (s *PresentationStore) Next() (SemanticPresentation, bool) {
-	return s.TakeLatest()
-}
-
-// TakeLatest returns the newest immutable presentation and advances the
-// delivery cursor past older frames. Live views render a complete snapshot,
-// so replaying every intermediate frame would let a slow transport stall the
-// PTY actor without improving what the user sees.
-func (s *PresentationStore) TakeLatest() (SemanticPresentation, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.pending {
-		return SemanticPresentation{}, false
-	}
-	p := clonePresentation(s.latest)
-	s.pending = false
-	return p, true
 }
 
 func (s *PresentationStore) Latest() (SemanticPresentation, bool) {
@@ -233,34 +211,7 @@ func (s *PresentationStore) Latest() (SemanticPresentation, bool) {
 	return clonePresentation(s.latest), true
 }
 
-func (s *PresentationStore) Close() { s.mu.Lock(); s.closed = true; s.pending = false; s.mu.Unlock() }
-
-func (s *Session) PublishPresentation(frame SemanticFrame, state TerminalState) error {
-	if s == nil {
-		return errSessionClosed
-	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return errSessionClosed
-	}
-	if s.presentationStore == nil {
-		s.presentationStore = NewPresentationStore(64)
-	}
-	nextSequence := s.sequenceNumber + 1
-	presentation := SemanticPresentation{
-		Sequence: uint64(nextSequence),
-		Geometry: TerminalGeometry{Generation: s.geometryGeneration, OutputSequenceBoundary: s.committedSequence, Cols: s.lastAppliedCols, Rows: s.lastAppliedRows},
-		Frame:    frame, State: state,
-	}
-	if err := s.presentationStore.Publish(presentation); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	s.sequenceNumber = nextSequence
-	s.mu.Unlock()
-	return nil
-}
+func (s *PresentationStore) Close() { s.mu.Lock(); s.closed = true; s.mu.Unlock() }
 
 func (s *Session) LatestPresentation() (SemanticPresentation, bool) {
 	if s == nil {

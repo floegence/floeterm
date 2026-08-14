@@ -6,14 +6,10 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 )
 
 const (
-	MaxQueuedOutputBytes  = 4 * 1024 * 1024
-	MaxQueuedOutputChunks = 4096
-	maxOutputStreamBytes  = 256 * 1024
-	OutputCoalesceWindow  = time.Millisecond
+	maxReliableServerEvents = 256
 
 	ErrorCodeProtocolViolation uint16 = 1
 	ErrorCodePermissionDenied  uint16 = 2
@@ -32,7 +28,6 @@ var (
 )
 
 type Subscriber struct {
-	OnOutput        func(OutputRecord) bool
 	OnGeometry      func(EffectiveGeometry) bool
 	OnPresentation  func([]byte) bool
 	OnSessionClosed func()
@@ -45,96 +40,13 @@ type Backend interface {
 	Resize(ctx context.Context, attachment Attach, resize Resize) (EffectiveGeometry, error)
 }
 
-type Service struct {
-	backend        Backend
-	newOutputTimer func(time.Duration) outputTimer
-}
+type Service struct{ backend Backend }
 
-func NewService(backend Backend) *Service {
-	return &Service{backend: backend}
-}
+func NewService(backend Backend) *Service { return &Service{backend: backend} }
 
-type outputQueue struct {
-	mu        sync.Mutex
-	queued    int
-	items     chan OutputRecord
-	space     chan struct{}
-	closed    chan struct{}
-	isClosed  bool
-	closeOnce sync.Once
-}
-
-func newOutputQueue() *outputQueue {
-	return &outputQueue{
-		items:  make(chan OutputRecord, MaxQueuedOutputChunks),
-		space:  make(chan struct{}),
-		closed: make(chan struct{}),
-	}
-}
-
-func (q *outputQueue) enqueue(record OutputRecord) bool {
-	if q == nil || record.GeometryGeneration == 0 || record.Cols == 0 || record.Rows == 0 ||
-		len(record.Data) == 0 || len(record.Data) > MaxQueuedOutputBytes {
-		return false
-	}
-	owned := OutputRecord{
-		Sequence:           record.Sequence,
-		TimestampMs:        record.TimestampMs,
-		GeometryGeneration: record.GeometryGeneration,
-		Cols:               record.Cols,
-		Rows:               record.Rows,
-		Data:               append([]byte(nil), record.Data...),
-	}
-	for {
-		q.mu.Lock()
-		if q.isClosed {
-			q.mu.Unlock()
-			return false
-		}
-		if q.queued+len(owned.Data) <= MaxQueuedOutputBytes {
-			q.queued += len(owned.Data)
-			q.mu.Unlock()
-			select {
-			case q.items <- owned:
-				return true
-			case <-q.closed:
-				q.takeBytes(len(owned.Data))
-				return false
-			}
-		}
-		space := q.space
-		q.mu.Unlock()
-
-		select {
-		case <-space:
-			continue
-		case <-q.closed:
-			return false
-		}
-	}
-}
-
-func (q *outputQueue) close() {
-	if q == nil {
-		return
-	}
-	q.closeOnce.Do(func() {
-		q.mu.Lock()
-		q.isClosed = true
-		q.mu.Unlock()
-		close(q.closed)
-	})
-}
-
-func (q *outputQueue) takeBytes(size int) {
-	q.mu.Lock()
-	q.queued -= size
-	if q.queued < 0 {
-		q.queued = 0
-	}
-	close(q.space)
-	q.space = make(chan struct{})
-	q.mu.Unlock()
+type serverEvent struct {
+	kind     FrameType
+	geometry EffectiveGeometry
 }
 
 func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error {
@@ -163,67 +75,77 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 		return s.protocolFailure(stream, ErrorCodeProtocolViolation, "invalid attach frame", err)
 	}
 
-	queue := newOutputQueue()
-	defer queue.close()
-	sessionClosed := make(chan struct{})
-	superseded := make(chan struct{})
-	var sessionClosedOnce sync.Once
-	var supersededOnce sync.Once
 	var writeMu sync.Mutex
 	writeBytes := func(data []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return writeAll(stream, data)
 	}
-	var geometryMu sync.Mutex
+
+	reliable := make(chan serverEvent, maxReliableServerEvents)
+	presentationWake := make(chan struct{}, 1)
+	var presentationMu sync.Mutex
+	var latestPresentation []byte
+	var preAttachMu sync.Mutex
 	attachedWritten := false
 	var pendingGeometry *EffectiveGeometry
-	writeGeometry := func(geometry EffectiveGeometry) bool {
-		geometryMu.Lock()
+	var pendingPresentation []byte
+
+	failConnection := func() {
+		cancel()
+		_ = stream.Close()
+	}
+	enqueueReliable := func(event serverEvent) bool {
+		select {
+		case reliable <- event:
+			return true
+		default:
+			failConnection()
+			return false
+		}
+	}
+	queueGeometry := func(geometry EffectiveGeometry) bool {
+		preAttachMu.Lock()
 		if !attachedWritten {
 			copyGeometry := geometry
 			pendingGeometry = &copyGeometry
-			geometryMu.Unlock()
+			preAttachMu.Unlock()
 			return true
 		}
-		geometryMu.Unlock()
-		encoded, encodeErr := EncodeGeometryChanged(geometry)
-		if encodeErr != nil || writeBytes(encoded) != nil {
-			cancel()
-			_ = stream.Close()
-			return false
+		preAttachMu.Unlock()
+		return enqueueReliable(serverEvent{kind: FrameGeometryChanged, geometry: geometry})
+	}
+	queuePresentation := func(data []byte) bool {
+		owned := append([]byte(nil), data...)
+		preAttachMu.Lock()
+		if !attachedWritten {
+			pendingPresentation = owned
+			preAttachMu.Unlock()
+			return true
+		}
+		preAttachMu.Unlock()
+		presentationMu.Lock()
+		latestPresentation = owned
+		presentationMu.Unlock()
+		select {
+		case presentationWake <- struct{}{}:
+		default:
 		}
 		return true
 	}
-	attachedProtocolWritten := false
-	var pendingPresentations [][]byte
-	writePresentation := func(data []byte) bool {
-		if !attachedProtocolWritten {
-			pendingPresentations = append(pendingPresentations, append([]byte(nil), data...))
-			return true
-		}
-		encoded, err := EncodeFrame(Frame{Type: FramePresentation, Payload: data})
-		if err != nil || writeBytes(encoded) != nil {
-			cancel()
-			_ = stream.Close()
-			return false
-		}
-		return true
-	}
+
 	attached, detach, err := s.backend.Attach(ctx, attachment, Subscriber{
-		OnOutput:       queue.enqueue,
-		OnGeometry:     writeGeometry,
-		OnPresentation: writePresentation,
+		OnGeometry:     queueGeometry,
+		OnPresentation: queuePresentation,
 		OnSessionClosed: func() {
-			sessionClosedOnce.Do(func() { close(sessionClosed) })
+			enqueueReliable(serverEvent{kind: FrameSessionClosed})
 		},
 		OnSuperseded: func() {
-			supersededOnce.Do(func() { close(superseded) })
+			enqueueReliable(serverEvent{kind: FrameError})
 		},
 	})
 	if err != nil {
-		code := ErrorCodeInternal
-		message := "terminal attach failed"
+		code, message := ErrorCodeInternal, "terminal attach failed"
 		switch {
 		case errors.Is(err, ErrPermissionDenied):
 			code, message = ErrorCodePermissionDenied, "terminal permission denied"
@@ -232,7 +154,7 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 		case errors.Is(err, ErrActivationFailed):
 			code, message = ErrorCodeActivationFailed, "terminal activation failed"
 		}
-		return s.protocolFailure(stream, code, message, err)
+		return s.protocolFailure(stream, uint16(code), message, err)
 	}
 	if detach == nil {
 		detach = func() {}
@@ -246,27 +168,23 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 	if err := writeBytes(attachedBytes); err != nil {
 		return err
 	}
-	geometryMu.Lock()
+	preAttachMu.Lock()
 	attachedWritten = true
-	pending := pendingGeometry
+	geometry := pendingGeometry
+	presentation := pendingPresentation
 	pendingGeometry = nil
-	geometryMu.Unlock()
-	if pending != nil && pending.Generation > attached.GeometryGeneration {
-		if !writeGeometry(*pending) {
-			return io.ErrClosedPipe
-		}
+	pendingPresentation = nil
+	preAttachMu.Unlock()
+	if geometry != nil && geometry.Generation > attached.GeometryGeneration && !queueGeometry(*geometry) {
+		return ErrSlowConsumer
 	}
-	attachedProtocolWritten = true
-	for _, presentation := range pendingPresentations {
-		if !writePresentation(presentation) {
-			return io.ErrClosedPipe
-		}
+	if len(presentation) > 0 && !queuePresentation(presentation) {
+		return ErrSlowConsumer
 	}
-	pendingPresentations = nil
 
 	writerDone := make(chan error, 1)
 	go func() {
-		writerDone <- s.writeOutputs(ctx, stream, &writeMu, queue, sessionClosed, superseded)
+		writerDone <- s.writeServerEvents(ctx, stream, &writeMu, reliable, presentationWake, &presentationMu, &latestPresentation)
 	}()
 
 	var lastInputSequence uint64
@@ -276,7 +194,7 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 		if readErr != nil {
 			select {
 			case writerErr := <-writerDone:
-				if writerErr != nil {
+				if writerErr != nil && !errors.Is(writerErr, io.ErrClosedPipe) {
 					return writerErr
 				}
 			default:
@@ -306,11 +224,8 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal resize failed", resizeErr)
 			}
 			ack, encodeErr := EncodeResizeApplied(ResizeApplied{
-				Sequence:               resize.Sequence,
-				GeometryGeneration:     geometry.Generation,
-				OutputSequenceBoundary: geometry.OutputSequenceBoundary,
-				Cols:                   geometry.Cols,
-				Rows:                   geometry.Rows,
+				Sequence: resize.Sequence, GeometryGeneration: geometry.Generation,
+				PresentationSequence: geometry.PresentationSequence, Cols: geometry.Cols, Rows: geometry.Rows,
 			})
 			if encodeErr != nil {
 				return encodeErr
@@ -330,287 +245,72 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 	}
 }
 
-func (s *Service) writeOutputs(
+func (s *Service) writeServerEvents(
 	ctx context.Context,
 	stream io.ReadWriteCloser,
 	writeMu *sync.Mutex,
-	queue *outputQueue,
-	sessionClosed <-chan struct{},
-	superseded <-chan struct{},
+	reliable <-chan serverEvent,
+	presentationWake <-chan struct{},
+	presentationMu *sync.Mutex,
+	latestPresentation *[]byte,
 ) error {
-	encodeCtx, cancelEncode := context.WithCancel(ctx)
-	var encoderWG sync.WaitGroup
-	encoderWG.Add(1)
-	frames := make(chan encodedOutputFrame, MaxOutputBatchChunks)
-	encoderDone := make(chan error, 1)
-	go func() {
-		defer encoderWG.Done()
-		err := encodeOutputFrames(encodeCtx, queue, frames)
-		close(frames)
-		encoderDone <- err
-	}()
-	defer func() {
-		queue.close()
-		cancelEncode()
-		encoderWG.Wait()
-	}()
-
-	var pendingFrame *encodedOutputFrame
-	idle := true
-	var window outputTimer
-	defer func() {
-		if window != nil {
-			window.Stop()
-		}
-	}()
 	for {
-		var first encodedOutputFrame
-		if idle {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-sessionClosed:
-				return s.writeSessionClosed(stream, writeMu)
-			case <-superseded:
-				_ = s.protocolFailureLocked(stream, writeMu, ErrorCodeProtocolViolation, "terminal attachment superseded", ErrProtocolViolation)
-				_ = stream.Close()
-				return ErrProtocolViolation
-			case frame, ok := <-frames:
-				if !ok {
-					return <-encoderDone
-				}
-				first = frame
-			}
-		} else if pendingFrame != nil {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-sessionClosed:
-				return s.writeSessionClosed(stream, writeMu)
-			case <-superseded:
-				_ = s.protocolFailureLocked(stream, writeMu, ErrorCodeProtocolViolation, "terminal attachment superseded", ErrProtocolViolation)
-				_ = stream.Close()
-				return ErrProtocolViolation
-			default:
-				first = *pendingFrame
-				pendingFrame = nil
-			}
-		} else {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-sessionClosed:
-				return s.writeSessionClosed(stream, writeMu)
-			case <-superseded:
-				_ = s.protocolFailureLocked(stream, writeMu, ErrorCodeProtocolViolation, "terminal attachment superseded", ErrProtocolViolation)
-				_ = stream.Close()
-				return ErrProtocolViolation
-			case <-window.Chan():
-				window.Stop()
-				window = nil
-				idle = true
-				continue
-			case frame, ok := <-frames:
-				if !ok {
-					return <-encoderDone
-				}
-				first = frame
-			}
-		}
-
-		var output encodedOutputWrite
-		var nextPending *encodedOutputFrame
-		if idle {
-			output, nextPending = collectAvailableOutputFrames(first, frames)
-		} else {
-			output, nextPending = collectOutputFramesUntilDeadline(ctx, first, frames, window.Chan())
-			window.Stop()
-			window = nil
-		}
-		pendingFrame = nextPending
 		select {
-		case <-ctx.Done():
-			return nil
+		case event := <-reliable:
+			if err := s.writeReliableServerEvent(stream, writeMu, event); err != nil {
+				return err
+			}
 		default:
+			select {
+			case <-ctx.Done():
+				return nil
+			case event := <-reliable:
+				if err := s.writeReliableServerEvent(stream, writeMu, event); err != nil {
+					return err
+				}
+			case <-presentationWake:
+				presentationMu.Lock()
+				data := append([]byte(nil), (*latestPresentation)...)
+				presentationMu.Unlock()
+				encoded, err := EncodeFrame(Frame{Type: FramePresentation, Payload: data})
+				if err != nil {
+					return err
+				}
+				writeMu.Lock()
+				err = writeAll(stream, encoded)
+				writeMu.Unlock()
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
+func (s *Service) writeReliableServerEvent(
+	stream io.ReadWriteCloser,
+	writeMu *sync.Mutex,
+	event serverEvent,
+) error {
+	switch event.kind {
+	case FrameGeometryChanged:
+		encoded, err := EncodeGeometryChanged(event.geometry)
+		if err != nil {
+			return err
 		}
 		writeMu.Lock()
-		err := writeAll(stream, output.data)
+		err = writeAll(stream, encoded)
 		writeMu.Unlock()
-		if err != nil {
-			return err
-		}
-		queue.takeBytes(output.queuedBytes)
-		idle = false
-		window = s.startOutputTimer(OutputCoalesceWindow)
-	}
-}
-
-type outputTimer interface {
-	Chan() <-chan time.Time
-	Stop() bool
-}
-
-type standardOutputTimer struct {
-	timer *time.Timer
-}
-
-func (t *standardOutputTimer) Chan() <-chan time.Time { return t.timer.C }
-func (t *standardOutputTimer) Stop() bool             { return t.timer.Stop() }
-
-func (s *Service) startOutputTimer(window time.Duration) outputTimer {
-	if s != nil && s.newOutputTimer != nil {
-		return s.newOutputTimer(window)
-	}
-	return &standardOutputTimer{timer: time.NewTimer(window)}
-}
-
-type encodedOutputFrame struct {
-	data        []byte
-	queuedBytes int
-}
-
-type encodedOutputWrite struct {
-	data        []byte
-	queuedBytes int
-}
-
-func encodeOutputFrames(ctx context.Context, queue *outputQueue, frames chan<- encodedOutputFrame) error {
-	var pendingRecord *OutputRecord
-	for {
-		first, ok := takeNextOutputRecord(ctx, queue, &pendingRecord, true)
-		if !ok {
-			return nil
-		}
-		frame, nextPending, err := encodeOutputFrame(first, queue)
-		if err != nil {
-			return err
-		}
-		pendingRecord = nextPending
-		select {
-		case frames <- frame:
-		case <-ctx.Done():
-			return nil
-		}
-	}
-}
-
-func collectAvailableOutputFrames(
-	first encodedOutputFrame,
-	frames <-chan encodedOutputFrame,
-) (encodedOutputWrite, *encodedOutputFrame) {
-	output := encodedOutputWrite{
-		data:        append([]byte(nil), first.data...),
-		queuedBytes: first.queuedBytes,
-	}
-	for len(output.data) < maxOutputStreamBytes {
-		select {
-		case next, ok := <-frames:
-			if !ok {
-				return output, nil
-			}
-			if len(output.data)+len(next.data) > maxOutputStreamBytes {
-				return output, &next
-			}
-			output.data = append(output.data, next.data...)
-			output.queuedBytes += next.queuedBytes
-		default:
-			return output, nil
-		}
-	}
-	return output, nil
-}
-
-func collectOutputFramesUntilDeadline(
-	ctx context.Context,
-	first encodedOutputFrame,
-	frames <-chan encodedOutputFrame,
-	deadline <-chan time.Time,
-) (encodedOutputWrite, *encodedOutputFrame) {
-	output := encodedOutputWrite{
-		data:        append([]byte(nil), first.data...),
-		queuedBytes: first.queuedBytes,
-	}
-	for len(output.data) < maxOutputStreamBytes {
-		select {
-		case <-deadline:
-			return output, nil
-		default:
-		}
-		select {
-		case <-ctx.Done():
-			return output, nil
-		case <-deadline:
-			return output, nil
-		case next, ok := <-frames:
-			if !ok {
-				return output, nil
-			}
-			if len(output.data)+len(next.data) > maxOutputStreamBytes {
-				return output, &next
-			}
-			output.data = append(output.data, next.data...)
-			output.queuedBytes += next.queuedBytes
-		}
-	}
-	return output, nil
-}
-
-func takeNextOutputRecord(
-	ctx context.Context,
-	queue *outputQueue,
-	pending **OutputRecord,
-	wait bool,
-) (OutputRecord, bool) {
-	if *pending != nil {
-		record := **pending
-		*pending = nil
-		return record, true
-	}
-	if wait {
-		select {
-		case record := <-queue.items:
-			return record, true
-		case <-ctx.Done():
-			return OutputRecord{}, false
-		}
-	}
-	select {
-	case record := <-queue.items:
-		return record, true
+		return err
+	case FrameSessionClosed:
+		return s.writeSessionClosed(stream, writeMu)
+	case FrameError:
+		_ = s.protocolFailureLocked(stream, writeMu, ErrorCodeProtocolViolation, "terminal attachment superseded", ErrProtocolViolation)
+		_ = stream.Close()
+		return ErrProtocolViolation
 	default:
-		return OutputRecord{}, false
+		return fmt.Errorf("unsupported reliable server event: %d", event.kind)
 	}
-}
-
-func encodeOutputFrame(first OutputRecord, queue *outputQueue) (encodedOutputFrame, *OutputRecord, error) {
-	records := []OutputRecord{first}
-	dataBytes := len(first.Data)
-	var pending *OutputRecord
-drain:
-	for len(records) < MaxOutputBatchChunks && dataBytes < MaxOutputBatchBytes {
-		select {
-		case next := <-queue.items:
-			if next.GeometryGeneration != first.GeometryGeneration || next.Cols != first.Cols || next.Rows != first.Rows ||
-				dataBytes+len(next.Data) > MaxOutputBatchBytes {
-				pending = &next
-				break drain
-			}
-			records = append(records, next)
-			dataBytes += len(next.Data)
-		default:
-			break drain
-		}
-	}
-	encoded, err := EncodeOutputBatch(OutputBatch{
-		GeometryGeneration: first.GeometryGeneration,
-		Cols:               first.Cols,
-		Rows:               first.Rows,
-		Records:            records,
-	})
-	if err != nil {
-		return encodedOutputFrame{}, nil, err
-	}
-	return encodedOutputFrame{data: encoded, queuedBytes: dataBytes}, pending, nil
 }
 
 func (s *Service) writeSessionClosed(stream io.ReadWriteCloser, writeMu *sync.Mutex) error {

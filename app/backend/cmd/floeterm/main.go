@@ -15,8 +15,7 @@ import (
 )
 
 type statePaths struct {
-	Root             string
-	HistorySpoolRoot string
+	Root string
 }
 
 func main() {
@@ -61,8 +60,7 @@ func main() {
 		StaticDir:                    staticDir,
 		EnablePerformanceDiagnostics: performanceDiagnostics,
 		ManagerConfig: terminal.ManagerConfig{
-			Logger:           logger,
-			HistorySpoolRoot: paths.HistorySpoolRoot,
+			Logger: logger,
 			ShellArgsProvider: terminal.DefaultShellArgsProvider{
 				EnableCommandLifecycle: true,
 			},
@@ -106,10 +104,7 @@ func resolveStatePaths(configuredRoot string) (statePaths, error) {
 	if err != nil {
 		return statePaths{}, fmt.Errorf("resolve state directory: %w", err)
 	}
-	return statePaths{
-		Root:             absoluteRoot,
-		HistorySpoolRoot: filepath.Join(absoluteRoot, "history-spool"),
-	}, nil
+	return statePaths{Root: absoluteRoot}, nil
 }
 
 func displayLocalAccessURL(addr string) string {

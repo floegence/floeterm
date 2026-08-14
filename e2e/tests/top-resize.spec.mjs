@@ -81,76 +81,34 @@ const waitForConvergence = async (page, previousGeneration) => {
   return converged;
 };
 
-const historyContains = async (request, sessionId, marker) => {
-  let startSequence = 1;
-  let historyGeneration = 0;
-  const chunks = [];
-  for (let pageIndex = 0; pageIndex < 8; pageIndex += 1) {
-    const response = await request.get(
-      `/api/sessions/${encodeURIComponent(sessionId)}/history?startSeq=${startSequence}&endSeq=-1&historyGeneration=${historyGeneration}&maxBytes=524288`,
-    );
-    if (!response.ok()) return false;
-    const page = await response.json();
-    historyGeneration = page.historyGeneration;
-    if (page.historyReset) {
-      startSequence = page.firstRetainedSequence || 1;
-      chunks.length = 0;
-      continue;
-    }
-    chunks.push(...page.chunks.map(chunk => Buffer.from(chunk.data, 'base64')));
-    if (!page.hasMore) break;
-    startSequence = page.nextStartSequence;
+const semanticHistoryContains = async (page, marker) => page.evaluate(async expected => {
+  try {
+    const history = await window.__floetermPerfHarness?.readSemanticHistory('end');
+    return history?.frame.rows
+      .map(row => row.cells.map(cell => cell.text).join(''))
+      .join('\n')
+      .includes(expected) ?? false;
+  } catch (error) {
+    if (/semantic history revision is stale/.test(String(error))) return false;
+    throw error;
   }
-  return Buffer.concat(chunks).includes(Buffer.from(marker));
-};
+}, marker);
 
-const readHistoryChunks = async (request, sessionId) => {
-  let startSequence = 1;
-  let historyGeneration = 0;
-  const chunks = [];
-  for (let pageIndex = 0; pageIndex < 8; pageIndex += 1) {
-    const response = await request.get(
-      `/api/sessions/${encodeURIComponent(sessionId)}/history?startSeq=${startSequence}&endSeq=-1&historyGeneration=${historyGeneration}&maxBytes=524288`,
-    );
-    expect(response.ok()).toBe(true);
-    const history = await response.json();
-    historyGeneration = history.historyGeneration;
-    if (history.historyReset) {
-      startSequence = history.firstRetainedSequence || 1;
-      chunks.length = 0;
-      continue;
-    }
-    chunks.push(...history.chunks.map(chunk => ({
-      ...chunk,
-      bytes: Buffer.from(chunk.data, 'base64'),
-    })));
-    if (!history.hasMore) break;
-    startSequence = history.nextStartSequence;
-  }
-  return chunks;
-};
-
-const waitForAuthoritativeTopFrame = async (page, request, sessionId, geometry) => {
+const waitForAuthoritativeTopFrame = async (page, geometry) => {
   let evidence = null;
   let diagnostic = null;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const [state, chunks] = await Promise.all([
-      readState(page, true),
-      readHistoryChunks(request, sessionId),
-    ]);
-    const postBoundary = chunks.filter(chunk => (
-      chunk.sequence > geometry.outputSequenceBoundary
-        && chunk.geometryGeneration === geometry.generation
-        && chunk.cols === geometry.cols
-        && chunk.rows === geometry.rows
-    ));
-    const raw = Buffer.concat(postBoundary.map(chunk => chunk.bytes));
+    const state = await readState(page, true);
+    const presentation = await page.evaluate(() => window.__floetermPerfHarness?.getPresentationDiagnostics?.() ?? null);
     const row0 = state.visibleLines[0] ?? '';
     const row1 = state.visibleLines[1] ?? '';
-    const converged = raw.includes(Buffer.from('\x1b[H\x1b[2J'))
-      && raw.includes(Buffer.from('Processes:'))
-      && /\x1b\[1;\d+H\d{2}:\d{2}:\d{2}/.test(raw.toString('latin1'))
+    const converged = presentation?.sequence > geometry.presentationSequence
+      && presentation.geometry.generation === geometry.generation
+      && presentation.geometry.cols === geometry.cols
+      && presentation.geometry.rows === geometry.rows
+      && presentation.frame.width === geometry.cols
+      && presentation.frame.height === geometry.rows
       && row0.startsWith('Processes:')
       && row1.startsWith('Load Avg:');
     diagnostic = {
@@ -158,19 +116,23 @@ const waitForAuthoritativeTopFrame = async (page, request, sessionId, geometry) 
       currentGeometry: state.geometry,
       stream: state.stream,
       visibleLines: state.visibleLines.slice(0, 8),
-      postBoundary: postBoundary.map(chunk => ({
-        sequence: chunk.sequence,
-        generation: chunk.geometryGeneration,
-        cols: chunk.cols,
-        rows: chunk.rows,
-        bytes: chunk.bytes.length,
-      })),
-      hasClearHome: raw.includes(Buffer.from('\x1b[H\x1b[2J')),
-      hasProcesses: raw.includes(Buffer.from('Processes:')),
-      rawTail: raw.subarray(Math.max(0, raw.length - 4096)).toString('latin1'),
+      presentation: presentation && {
+        sequence: presentation.sequence,
+        geometry: presentation.geometry,
+        frame: { width: presentation.frame.width, height: presentation.frame.height },
+      },
     };
     if (converged) {
-      evidence = { state, postBoundary, raw };
+      evidence = {
+        state,
+        presentation,
+        postBoundary: [{
+          sequence: presentation.sequence,
+          geometryGeneration: presentation.geometry.generation,
+          cols: presentation.geometry.cols,
+          rows: presentation.geometry.rows,
+        }],
+      };
       break;
     }
     await page.waitForTimeout(100);
@@ -230,7 +192,7 @@ const expectTopClockPixelsAtRightEdge = async (page, geometry) => {
     .toBeGreaterThan(8);
 };
 
-const assertTopKeepsAdvancingAndVisible = async (page, request, sessionId, cycles = 3) => {
+const assertTopKeepsAdvancingAndVisible = async (page, cycles = 3) => {
   let state = await readState(page, true);
   let browserSequence = state.stream.lastSequence;
   let presentationSequence = (await page.evaluate(() => window.__floetermPerfHarness?.getPresentationDiagnostics?.()?.sequence ?? 0));
@@ -290,7 +252,7 @@ test('converges the visible real macOS top grid across exact grow shrink and rap
     await setTerminalGridSize(page, cols, rows);
     state = await waitForConvergence(page, previousGeneration);
     expect(state.host).toEqual({ cols, rows });
-    const evidence = await waitForAuthoritativeTopFrame(page, request, sessionId, state.geometry);
+    const evidence = await waitForAuthoritativeTopFrame(page, state.geometry);
     expect(evidence.postBoundary.length).toBeGreaterThan(0);
     for (let index = 1; index < evidence.postBoundary.length; index += 1) {
       expect(evidence.postBoundary[index].sequence).toBe(evidence.postBoundary[index - 1].sequence + 1);
@@ -299,7 +261,7 @@ test('converges the visible real macOS top grid across exact grow shrink and rap
     expect(evidence.state.visibleLines[0]).toMatch(/^Processes:/);
     expect(evidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
     expect(evidence.state.visibleLines).toHaveLength(rows);
-    await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
+    await assertTopKeepsAdvancingAndVisible(page);
   }
 
   const beforeRapidGeneration = state.geometry.generation;
@@ -325,12 +287,12 @@ test('converges the visible real macOS top grid across exact grow shrink and rap
   }
   await setTerminalGridSize(page, 102, 27);
   state = await waitForConvergence(page, beforeRapidGeneration);
-  const rapidEvidence = await waitForAuthoritativeTopFrame(page, request, sessionId, state.geometry);
+  const rapidEvidence = await waitForAuthoritativeTopFrame(page, state.geometry);
   expect(state.host).toEqual({ cols: 102, rows: 27 });
   expect(rapidEvidence.state.visibleLines[0]).toMatch(/^Processes:/);
   expect(rapidEvidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
   expect(rapidEvidence.state.stream.sequenceGaps).toBe(0);
-  await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
+  await assertTopKeepsAdvancingAndVisible(page);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
   expect(failures).toEqual([]);
 });
@@ -354,15 +316,10 @@ test('reconnects top from the latest semantic presentation after detached output
   }).toBe(true);
   await setTerminalGridSize(page, 102, 27);
   const beforeRefresh = await readState(page);
-  await waitForAuthoritativeTopFrame(page, request, sessionId, beforeRefresh.geometry);
-
-  const beforeDetachChunks = await readHistoryChunks(request, sessionId);
-  const beforeDetachSequence = beforeDetachChunks.at(-1)?.sequence ?? 0;
+  const beforeRefreshEvidence = await waitForAuthoritativeTopFrame(page, beforeRefresh.geometry);
+  const beforeDetachSequence = beforeRefreshEvidence.presentation.sequence;
   await page.goto('about:blank');
-  await expect.poll(async () => {
-    const chunks = await readHistoryChunks(request, sessionId);
-    return (chunks.at(-1)?.sequence ?? 0) - beforeDetachSequence;
-  }, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+  await page.waitForTimeout(3500);
 
   await page.goto(`/?mode=single&session=${encodeURIComponent(sessionId)}&perf_probe=1`);
   await page.waitForFunction(() => (
@@ -389,17 +346,18 @@ test('reconnects top from the latest semantic presentation after detached output
   expect(reconnected.state.visibleLines[0]).toMatch(/^Processes:/);
   expect(reconnected.state.visibleLines[1]).toMatch(/^Load Avg:/);
   await expectTopClockPixelsAtRightEdge(page, reconnected.state.geometry);
-  await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
+  expect(reconnected.presentation.sequence).toBeGreaterThan(beforeDetachSequence);
+  await assertTopKeepsAdvancingAndVisible(page);
 
   const beforePostRefreshResize = refreshed.geometry.generation;
   await setTerminalGridSize(page, 140, 36);
   const resized = await waitForConvergence(page, beforePostRefreshResize);
-  const resizedEvidence = await waitForAuthoritativeTopFrame(page, request, sessionId, resized.geometry);
+  const resizedEvidence = await waitForAuthoritativeTopFrame(page, resized.geometry);
   expect(resizedEvidence.state.visibleLines[0]).toMatch(/^Processes:/);
   expect(resizedEvidence.state.visibleLines[1]).toMatch(/^Load Avg:/);
   await expectTopClockPixelsAtRightEdge(page, resized.geometry);
   expect(resizedEvidence.state.stream.sequenceGaps).toBe(0);
-  await assertTopKeepsAdvancingAndVisible(page, request, sessionId);
+  await assertTopKeepsAdvancingAndVisible(page);
   expect(failures).toEqual([]);
 });
 
@@ -462,7 +420,7 @@ test('keeps real macOS top correct across repeated terminal resizes', async ({ p
     return `${session?.foregroundCommand?.phase ?? ''}:${session?.foregroundCommand?.displayName ?? ''}:${session?.outputActivity?.phase ?? ''}`;
   }).toBe('running:top:streaming');
   expect(state.stream.sequenceGaps).toBe(0);
-  await expect.poll(() => historyContains(request, sessionId, 'Processes:')).toBe(true);
+  await expect.poll(() => semanticHistoryContains(page, 'Processes:')).toBe(true);
   state = await readState(page, true);
   expect(state.serialized.length).toBeGreaterThan(0);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);
@@ -477,7 +435,7 @@ test('keeps real macOS top correct across repeated terminal resizes', async ({ p
     window.__floetermPerfHarness.sendInput(`\x03${command}\r`);
   }, exitMarkerHex);
   await page.waitForFunction(marker => window.__floetermPerfHarness.serialize().includes(marker), exitMarker);
-  await expect.poll(() => historyContains(request, sessionId, exitMarker)).toBe(true);
+  await expect.poll(() => semanticHistoryContains(page, exitMarker)).toBe(true);
   const finalState = await readState(page, true);
   expect(finalState.stream.sequenceGaps).toBe(0);
   expect(finalState.serialized).toContain(exitMarker);

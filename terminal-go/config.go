@@ -12,13 +12,6 @@ type ManagerConfig struct {
 	ShellResolver               ShellResolver
 	ShellArgsProvider           ShellArgsProvider
 	ShellInitWriter             ShellInitWriter
-	HistoryFilter               HistoryFilter
-	HistoryBufferSize           int
-	HistoryBufferMaxChunks      int
-	HistoryBufferMaxBytes       int64
-	HistorySpoolRoot            string
-	HistorySpoolSegmentMaxBytes int64
-	HistorySpoolMaxBytes        int64
 	OutputActivityQuietDuration time.Duration
 	// Deprecated: terminal output is no longer dropped during initial resize.
 	InitialResizeSuppressDuration time.Duration
@@ -73,15 +66,6 @@ func (cfg ManagerConfig) applyDefaults() ManagerConfig {
 	if cfg.ShellInitWriter == nil {
 		cfg.ShellInitWriter = DefaultShellInitWriter{}
 	}
-	if cfg.HistoryFilter == nil {
-		cfg.HistoryFilter = DefaultHistoryFilter{}
-	}
-	if cfg.HistoryBufferSize <= 0 {
-		cfg.HistoryBufferSize = 2048
-	}
-	if cfg.HistoryBufferMaxChunks < cfg.HistoryBufferSize {
-		cfg.HistoryBufferMaxChunks = cfg.HistoryBufferSize
-	}
 	if cfg.OutputActivityQuietDuration <= 0 {
 		cfg.OutputActivityQuietDuration = 3500 * time.Millisecond
 	}
@@ -104,13 +88,6 @@ type sessionConfig struct {
 	shellResolver               ShellResolver
 	shellArgsProvider           ShellArgsProvider
 	shellInitWriter             ShellInitWriter
-	historyFilter               HistoryFilter
-	historyBufferSize           int
-	historyBufferMaxChunks      int
-	historyBufferMaxBytes       int64
-	historySpoolRoot            string
-	historySpoolSegmentMaxBytes int64
-	historySpoolMaxBytes        int64
 	outputActivityQuietDuration time.Duration
 	terminalEnv                 TerminalEnv
 	shellLifecycleAuthEnabled   bool
@@ -135,13 +112,6 @@ func newSessionConfig(cfg ManagerConfig) sessionConfig {
 		shellResolver:               cfg.ShellResolver,
 		shellArgsProvider:           cfg.ShellArgsProvider,
 		shellInitWriter:             cfg.ShellInitWriter,
-		historyFilter:               cfg.HistoryFilter,
-		historyBufferSize:           cfg.HistoryBufferSize,
-		historyBufferMaxChunks:      cfg.HistoryBufferMaxChunks,
-		historyBufferMaxBytes:       cfg.HistoryBufferMaxBytes,
-		historySpoolRoot:            cfg.HistorySpoolRoot,
-		historySpoolSegmentMaxBytes: cfg.HistorySpoolSegmentMaxBytes,
-		historySpoolMaxBytes:        cfg.HistorySpoolMaxBytes,
 		outputActivityQuietDuration: cfg.OutputActivityQuietDuration,
 		terminalEnv:                 cfg.TerminalEnv,
 		shellLifecycleAuthEnabled:   lifecycleAuthEnabled,

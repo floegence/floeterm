@@ -14,8 +14,8 @@ test('accepts a complete in-budget standalone report', () => {
   const report = {
     runner: {
       refresh_period_ms: 16.7,
-      browser_mode: 'headed_hardware_webgl2',
-      gpu_renderer: 'ANGLE Metal Renderer: Apple M3 Pro',
+      browser_mode: 'headed_semantic_canvas',
+      gpu_renderer: 'browser-2d-canvas',
     },
     metrics: {
       key_to_paint: { sample_count: 100, p95_ms: 20, p99_ms: 30 },
@@ -203,7 +203,7 @@ test('reports missing metric groups without undefined threshold noise', () => {
   assert.equal(result.failures.some(failure => failure.includes('undefined')), false);
 });
 
-test('rejects software WebGL and non-headed browser measurements', () => {
+test('rejects non-semantic or non-headed browser measurements', () => {
   const report = {
     runner: {
       refresh_period_ms: 16.7,
@@ -287,6 +287,6 @@ test('rejects software WebGL and non-headed browser measurements', () => {
   };
 
   const result = evaluateStandalonePerformanceReport(report);
-  assert.ok(result.failures.includes('performance runner must use headed hardware WebGL2'));
-  assert.ok(result.failures.includes('performance runner used a software GPU renderer'));
+  assert.ok(result.failures.includes('performance runner must use headed semantic canvas'));
+  assert.ok(result.failures.includes('performance runner semantic canvas renderer missing'));
 });

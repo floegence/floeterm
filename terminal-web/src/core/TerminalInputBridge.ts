@@ -571,8 +571,8 @@ export class TerminalInputBridge {
       return false;
     }
 
-    // ghostty-web places the real keyboard focus on an inner contenteditable
-    // host. Treat only that terminal-owned host as copy-eligible so embedded
+    // Some hosts place the real keyboard focus on an inner contenteditable
+    // element. Treat only that terminal-owned host as copy-eligible so embedded
     // user inputs inside overlays still keep their native clipboard behavior.
     return target.matches(TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR);
   }

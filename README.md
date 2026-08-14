@@ -1,198 +1,157 @@
-# floeterm
+# FloeTerm
 
-<p align="center">
-  <strong>Open-source terminal infrastructure for product teams.</strong><br />
-  <sub>Embed a real terminal into your product with a PTY-backed Go backend, a headless web terminal wrapper, and a runnable reference app.</sub>
-</p>
+FloeTerm is semantic terminal infrastructure for product teams. A Go `SessionActor`
+owns the PTY and one native Ghostty VT instance. Browsers receive immutable semantic
+presentations and provide view-local rendering, palette, selection, and input.
 
-<p align="center">
-  <a href="https://github.com/floegence/floeterm/actions/workflows/ci.yml">
-    <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/floegence/floeterm/ci.yml?branch=main&label=CI" />
-  </a>
-  <a href="https://github.com/floegence/floeterm/releases">
-    <img alt="Release" src="https://img.shields.io/github/v/tag/floegence/floeterm?label=release" />
-  </a>
-  <a href="https://www.npmjs.com/package/@floegence/floeterm-terminal-web">
-    <img alt="npm" src="https://img.shields.io/npm/v/%40floegence%2Ffloeterm-terminal-web?label=npm" />
-  </a>
-  <a href="https://pkg.go.dev/github.com/floegence/floeterm/terminal-go">
-    <img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/floegence/floeterm/terminal-go.svg" />
-  </a>
-  <a href="./LICENSE">
-    <img alt="License" src="https://img.shields.io/github/license/floegence/floeterm" />
-  </a>
-</p>
+[![CI](https://img.shields.io/github/actions/workflow/status/floegence/floeterm/ci.yml?branch=main&label=CI)](https://github.com/floegence/floeterm/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40floegence%2Ffloeterm-terminal-web?label=npm)](https://www.npmjs.com/package/@floegence/floeterm-terminal-web)
+[![Go Reference](https://pkg.go.dev/badge/github.com/floegence/floeterm/terminal-go.svg)](https://pkg.go.dev/github.com/floegence/floeterm/terminal-go)
+[![License](https://img.shields.io/github/license/floegence/floeterm)](./LICENSE)
 
-<p align="center">
-  <img alt="Headless UI" src="https://img.shields.io/badge/Headless-UI%20agnostic-0f766e?style=for-the-badge" />
-  <img alt="PTY-backed" src="https://img.shields.io/badge/PTY-backed%20sessions-164e63?style=for-the-badge" />
-  <img alt="History Replay" src="https://img.shields.io/badge/History-Replay%20ready-7c2d12?style=for-the-badge" />
-  <img alt="IME Ready" src="https://img.shields.io/badge/IME%20%2B%20Touch-Input%20bridge-1d4ed8?style=for-the-badge" />
-  <img alt="Multi-view resize" src="https://img.shields.io/badge/Multi--view-Resize%20coordination-6d28d9?style=for-the-badge" />
-  <img alt="Reference App" src="https://img.shields.io/badge/Reference-App%20included-c2410c?style=for-the-badge" />
-</p>
+## Architecture
 
-<p align="center">
-  <a href="#-why-floeterm">Why floeterm</a> ·
-  <a href="#-packages">Packages</a> ·
-  <a href="#-quick-start">Quick Start</a> ·
-  <a href="#-development">Development</a>
-</p>
+FloeTerm has one terminal state owner:
 
-## 🎯 Why floeterm
-
-`floeterm` is built for teams that want terminal workflows inside their own product, not inside someone else's UI shell.
-
-- `Product-first`: ship your own terminal experience while floeterm handles PTY lifecycle, history replay, resize coordination, and browser-facing terminal plumbing.
-- `Composable`: use [`terminal-go`](./terminal-go) as the backend engine, [`terminal-web`](./terminal-web) as the headless browser layer, or start from the end-to-end reference app in [`app/`](./app). FloeTerm also owns the versioned [`beamterm-renderer`](./beamterm-renderer) WebGL2 distribution used by the web package.
-- `User-ready`: mobile-friendly input bridging, IME support, reconnect-friendly history replay, configurable clipboard behavior, and first-class shell bell/title plus link-provider extension points are already in the stack.
-- `Operationally sane`: one `make check` path matches CI for Go race tests, `govulncheck`, web lint/test/build, and `npm audit`.
-
-Typical use cases:
-
-- AI coding workspaces and browser IDEs
-- Cloud admin consoles and internal ops tools
-- Remote development environments
-- Embedded terminals inside dashboards, drawers, tabs, or dedicated terminal pages
-
-## ✨ Feature Tags
-
-| Tag | What it means in practice |
-| --- | --- |
-| `🧩 HEADLESS UI` | `terminal-web` exposes `TerminalCore`, `createTerminalInstance`, and `TerminalSessionsCoordinator` without forcing a component library or design system. |
-| `🌱 DORMANT-FIRST` | Sessions can be created before the PTY starts, then activated with the real viewport size on first attach. |
-| `📚 HISTORY REPLAY` | Scrollback is buffered, filtered, and replayed safely after reconnects or remounts. |
-| `⌨️ IME READY` | The web layer bridges the hidden textarea used by `ghostty-web`, keeping soft keyboard and composition input usable on touch devices. |
-| `📐 MULTI-VIEW` | Responsive resize controls help keep one remote session usable across panes, tabs, and focused terminal views. |
-| `🔗 ACTIONABLE OUTPUT` | Custom link providers and bell/title forwarding let products turn terminal output into file navigation, alerts, and richer UX without patching internals. |
-| `🧪 REFERENCE APP` | A runnable HTTP + WebSocket app shows the full integration path end to end. |
-
-## 📦 Packages
-
-| Package | Best for | What you get |
-| --- | --- | --- |
-| [`terminal-go`](./terminal-go) | Go backends that need PTY sessions | Session lifecycle, history buffering/filtering, explicit workdir and foreground-command signals, low-frequency output activity metadata, resize coordination, and event callbacks |
-| [`terminal-web`](./terminal-web) | Web clients that want terminal plumbing without UI lock-in | `TerminalCore`, `createTerminalInstance`, `TerminalSessionsCoordinator`, strict Agent CLI classification, config helpers, and a headless `ghostty-web` wrapper |
-| [`beamterm-renderer`](./beamterm-renderer) | FloeTerm's WebGL2 rendering release | A versioned, reproducible Beamterm fork with upstream provenance and browser warning/performance gates |
-| [`app/`](./app) | Teams that want a working reference before integrating | HTTP APIs, WebSocket streaming, and a Solid.js demo UI that wires the stack together |
-
-Install the building blocks you need:
-
-```bash
-go get github.com/floegence/floeterm/terminal-go
-npm i @floegence/floeterm-terminal-web
+```text
+PTY bytes/input/resize/history
+             |
+             v
+terminal-go SessionActor + native Ghostty VT
+             |
+             v
+immutable SemanticPresentation
+             |
+             v
+terminal-web RendererSurface + TerminalInputBridge
 ```
 
-## 👀 What Problems It Solves
+The browser does not run a second VT parser, restore raw checkpoints, replay a raw
+journal, or own PTY geometry. Every view renders the same authoritative frame while
+keeping its palette, canvas backing store, selection, crop/pad, and IME anchor local.
 
-| You need to... | floeterm gives you... |
+Key contracts:
+
+- PTY output, structured input, resize, and semantic history are serialized by the
+  session actor.
+- A Presentation contains matching state, geometry, frame, cursor, and graphics.
+- Live transport uses a bounded reliable FIFO plus one latest-Presentation slot.
+- Only the current controller changes PTY geometry or sends input; observers remain
+  render-only.
+- Resize acknowledgements mean canonical geometry was actually applied.
+- IME composition commits Unicode input exactly once and anchors to the semantic
+  cursor without applying device-pixel ratio twice.
+
+## Packages
+
+| Package | Contract |
 | --- | --- |
-| Start a session before layout is stable | Dormant-first session creation via `CreateSession`, then shared PTY activation with real `cols/rows` via `ActivateSession`, `ActivateSessionContext`, or first attach |
-| Restore terminal output after reconnect or remount | History chunks, replay windows, and filtering that removes problematic terminal auto-responses |
-| Support touch devices and IME input | A browser input bridge that keeps composition and soft keyboard flows working with `ghostty-web` |
-| Reuse one session across multiple surfaces | Per-connection sizing on the backend plus focus-aware responsive resize options in the web layer |
-| Distinguish a running command from active terminal output | Independent foreground-command and `unknown` / `streaming` / `settled` output metadata, without subscribing every session to its PTY byte stream |
-| Turn terminal output into product interactions | Custom link providers, bell events, and title updates surfaced through `TerminalCore` |
-| Evaluate quickly before integrating | A reference app you can run locally in minutes |
+| [`terminal-go`](./terminal-go) | PTY lifecycle, native Ghostty SessionActor, canonical geometry, controller ownership, semantic presentations, bounded semantic history, and live protocol backend |
+| [`terminal-web`](./terminal-web) | Presentation validator, canvas `RendererSurface`, `TerminalInputBridge`, semantic live transport, themes, and session metadata utilities |
+| [`app/`](./app) | Reference HTTP/WebSocket backend and Solid.js UI for single, mirror, and grid views |
 
-## 🚀 Quick Start
+Install the released packages:
 
-### 1. Run the reference app
+```bash
+go get github.com/floegence/floeterm/terminal-go@v0.10.0
+npm install @floegence/floeterm-terminal-web@0.15.0
+```
+
+## Browser Integration
+
+Use explicit semantic subpaths so product adapters depend only on the capability they
+need:
+
+```ts
+import {
+  RendererSurface,
+  TerminalInputBridge,
+  getThemeColors,
+  validatePresentation,
+} from '@floegence/floeterm-terminal-web/semantic';
+import {
+  createSemanticTerminalLiveTransport,
+} from '@floegence/floeterm-terminal-web/live';
+
+const canvas = document.querySelector('canvas')!;
+const renderer = new RendererSurface(canvas, console.error);
+renderer.setPalette(getThemeColors('tokyoNight'));
+
+const bundle = createSemanticTerminalLiveTransport({
+  connectionId: crypto.randomUUID(),
+  openStream,
+  control,
+});
+
+const unsubscribe = bundle.eventSource.onTerminalPresentation(sessionId, value => {
+  renderer.apply(validatePresentation(value));
+});
+
+const input = new TerminalInputBridge({
+  inputHost,
+  inputElement,
+  onData: data => void bundle.transport.sendInput(sessionId, data),
+  syncInputGeometry: () => positionInputAt(renderer.getCursorClientRect()),
+});
+```
+
+`RendererSurface` is the only canvas writer. Host bounds determine CSS size; the
+renderer updates DPR backing, fills the full background, and paints the latest
+Presentation in one scheduled draw. Theme changes repaint the same Presentation and
+never mutate the PTY or transport sequence.
+
+## Go Integration
+
+```go
+manager := terminal.NewManager(terminal.ManagerConfig{})
+session, err := manager.CreateSession("shell", "")
+if err != nil {
+    return err
+}
+if err := manager.ActivateSession(session.ID, 120, 40); err != nil {
+    return err
+}
+```
+
+Use `livev1.NewService` with the manager backend for the bidirectional semantic live
+stream. The reference server in [`app/backend`](./app/backend) shows attach, input,
+resize, presentation, lifecycle, and semantic-history endpoints.
+
+## Reference App
+
+Build and run on loopback:
 
 ```bash
 make run
 ```
 
-Then open `http://localhost:8280`.
+Then open `http://127.0.0.1:8280`. The app supports single, mirrored, and grid views
+of one session, view-local themes, cursor shapes and visibility, IME, CJK/emoji,
+Kitty graphics, reconnect, and continuous resize.
 
-- `make run` serves the bundled app and is also reachable from other devices on your LAN via `http://<your-ip>:8280`.
-- `make dev` starts the Go backend on `0.0.0.0:8080` and the Vite dev server on `0.0.0.0:5173` for HMR and cross-device debugging.
+## Development
 
-### 2. Start a PTY-backed session in Go
-
-```go
-package main
-
-import (
-	"log"
-
-	terminal "github.com/floegence/floeterm/terminal-go"
-)
-
-func main() {
-	manager := terminal.NewManager(terminal.ManagerConfig{})
-
-	session, err := manager.CreateSession("", "")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err := manager.ActivateSession(session.ID, 120, 40); err != nil {
-		log.Fatal(err)
-	}
-
-	if err := session.WriteDataWithSource([]byte("ls\n"), ""); err != nil {
-		log.Fatal(err)
-	}
-}
+```bash
+make check
 ```
 
-### 3. Mount the terminal in the browser
+The final gate runs Go race tests and vulnerability checks, terminal-web unit/browser
+and package-artifact checks, app tests, real-process Playwright E2E, and npm audits.
+Native focused checks are available with `make native-check`.
 
-```ts
-import { createTerminalInstance } from '@floegence/floeterm-terminal-web';
+The `terminal-go/internal/nativevt/generated` directory contains reproducible static
+archives for Darwin/Linux on amd64/arm64, the thin public-API adapter, Ghostty license,
+and exact source/artifact hashes. Regenerate them with `scripts/build_native_vt.sh`
+from the pinned Ghostty source and toolchain recorded by that script.
 
-const controller = createTerminalInstance({
-  sessionId: 'session-1',
-  isActive: true,
-  transport: myTransport,
-  eventSource: myEventSource,
-});
-
-await controller.mount(container);
-```
-
-## 🧭 Integration Notes
-
-| Topic | Notes |
-| --- | --- |
-| Platform | `terminal-go` relies on a POSIX PTY and is tested on macOS/Linux. |
-| Lifecycle | `CreateSession` creates a dormant logical session. The first attach or an explicit activation should provide the real terminal viewport size. `ActivateSessionContext` lets a request stop waiting without cancelling another caller's shared activation; delete and cleanup cancel the session-owned activation. |
-| Multi-view sizing | Every live connection reports its own viewport `cols/rows`. Because one PTY has one real window size, the shared PTY uses the minimum live column count and minimum live row count. `terminal/live_v1` publishes that effective geometry to every renderer, so differently sized pages keep one terminal grid and identical screen state; detaching the limiting view expands the PTY and all remaining renderers together. |
-| Working directory tracking | `terminal-go` follows explicit local cwd OSC markers and buffers incomplete frames across PTY reads. Remote OSC 7 authority/path hints remain display-only execution context and never overwrite local session resource metadata. |
-| Context, command, and output awareness | Shell integration exposes atomic location/application context, revision-fenced semantic work, a bounded foreground executable basename, and independent output activity. Long-lived SSH/Agent processes do not imply loading; `settled` only means visible output is quiet. |
-| UI ownership | `terminal-web` is intentionally headless. You own the surrounding layout, session list, controls, and product experience. |
-| Input model | Every `TerminalCore` owns an isolated `ghostty-web` WASM runtime and supports explicit-copy-only clipboard behavior when you disable copy-on-select. |
-| Extension points | `TerminalCore` exposes link providers, shell bell/title callbacks, buffer line reads, touch-scroll helpers, and explicit runtime font updates so downstream apps do not need `any`-based terminal mutations. |
-| Reference transport | The sample app uses HTTP APIs for control operations and one bidirectional binary WebSocket for live terminal input, resize, and output. |
-
-## 🛠 Development
-
-| Command | What it does |
-| --- | --- |
-| `make check` | Runs the same hard gates as CI: Go race tests, `govulncheck`, renderer Rust/WASM/package checks, web lint/test/build, real-process E2E, and `npm audit` |
-| `make run` | Builds and serves the reference app from the Go backend |
-| `make dev` | Runs backend + Vite dev server separately for local iteration |
-| `make app-web-build` | Builds the reference web app only |
-| `cd e2e && npm run perf:standalone -- --url=http://127.0.0.1:8280` | Runs the headed hardware WebGL2 performance gate, including two differently-sized views on one session |
-
-Renderer and web releases are coupled: `terminal-web` pins one exact
-`@floegence/beamterm-renderer` version. The release workflow validates that pin, builds
-the Rust/WASM package with the repository's fixed toolchain, publishes the renderer
-first, and only then validates and publishes `terminal-web`.
-
-## 🗂 Repository Layout
+## Repository Layout
 
 | Path | Purpose |
 | --- | --- |
-| [`terminal-go/`](./terminal-go) | Go PTY session manager |
-| [`terminal-web/`](./terminal-web) | Framework-neutral web terminal package |
-| [`beamterm-renderer/`](./beamterm-renderer) | FloeTerm-maintained Beamterm WebGL2 renderer fork and npm package |
-| [`app/backend/`](./app/backend) | HTTP + WebSocket backend reference implementation |
-| [`app/web/`](./app/web) | Solid.js reference UI |
-| [`e2e/`](./e2e) | Real-process unit, Playwright functional, and hardware performance gates |
+| [`terminal-go/`](./terminal-go) | Go PTY/session actor and native semantic engine |
+| [`terminal-web/`](./terminal-web) | Framework-neutral semantic browser package |
+| [`app/backend/`](./app/backend) | Reference control plane and WebSocket service |
+| [`app/web/`](./app/web) | Reference semantic terminal UI |
+| [`e2e/`](./e2e) | Real-process functional and diagnostic performance tests |
 
-## 📄 Notices
-
-- Third-party notices: [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
-- License: [MIT](./LICENSE)
+See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for third-party licensing.

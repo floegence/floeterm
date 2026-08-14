@@ -8,14 +8,15 @@ export { TerminalInputBridge } from '../core/TerminalInputBridge.js';
 export type { TerminalInputBridgeOptions } from '../core/TerminalInputBridge.js';
 export { presentationAdvances, validateHistoryPage, validatePresentation } from '../semantic/presentation.js';
 export {
+  getDefaultTerminalConfig,
   getTerminalThemeDefinition,
   getThemeColors,
   isTerminalThemeName,
+  normalizeTerminalThemeName,
   TERMINAL_THEME_DEFINITIONS,
+  TERMINAL_THEME_NAMES,
 } from '../utils/config.js';
-export type {
-  SemanticTerminalPalette,
-} from '../semantic/RendererSurface.js';
+export type { SemanticTerminalPalette } from '../semantic/RendererSurface.js';
 export type {
   SemanticCell,
   SemanticFrame,
@@ -25,12 +26,8 @@ export type {
   SemanticPresentation,
 } from '../semantic/presentation.js';
 export type {
-  TerminalDataChunk,
-  TerminalHistoryPage,
-  TerminalID,
-  TerminalInstanceSnapshot,
-  TerminalSessionInfo,
+  Logger,
   TerminalThemeColors,
+  TerminalThemeDefinition,
   TerminalThemeName,
 } from '../types.js';
-export { TerminalState } from '../types.js';

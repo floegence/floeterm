@@ -8,12 +8,11 @@ import {
   getThemeColors,
   isTerminalThemeName,
   presentationAdvances,
-  TerminalState,
-  type TerminalInstanceSnapshot,
-  validatePresentation,
-  type SemanticHistoryDirection,
-  type SemanticHistoryPage,
-  type SemanticPresentation,
+	validatePresentation,
+	type SemanticHistoryDirection,
+	type SemanticHistoryPage,
+	type SemanticHistoryRequest,
+	type SemanticPresentation,
   type TerminalThemeName,
 } from '@floegence/floeterm-terminal-web/semantic';
 import { applyTerminalThemeShell, ThemeSelector } from './themeCatalog';
@@ -35,6 +34,13 @@ import {
 
 const THEME_STORAGE_KEY = 'floeterm_theme_name';
 
+type TerminalInstanceSnapshot = {
+  state: Record<string, unknown> & { state: string; dimensions: { cols: number; rows: number } };
+  connection: Record<string, unknown> & { state: string; error: Error | null; retryCount: number };
+  loadingState: string;
+  loadingMessage: string;
+};
+
 type FloetermPerfHarness = {
   sendInput(data: string): void;
   clear(): void;
@@ -43,11 +49,16 @@ type FloetermPerfHarness = {
   getSelectionText(): string;
   hasSelection(): boolean;
   getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null;
-  getPresentationDiagnostics?(): SemanticPresentation | null;
+	getPresentationDiagnostics?(): SemanticPresentation | null;
+	readSemanticHistory(
+		direction: SemanticHistoryDirection,
+		anchor?: string,
+		limit?: number,
+	): Promise<SemanticHistoryPage>;
   getResizeDiagnostics?(): readonly unknown[];
   getSnapshot(): TerminalInstanceSnapshot;
   forceResize(): void;
-  getGeometryDiagnostics(): { generation: number; outputSequenceBoundary: number; cols: number; rows: number };
+  getGeometryDiagnostics(): { generation: number; presentationSequence: number; cols: number; rows: number };
   getStreamDiagnostics(): {
     dataEvents: number;
     firstSequence: number;
@@ -87,9 +98,37 @@ type FloetermPerfWindow = Window & {
   __floetermMirrorHarness?: FloetermMirrorHarness;
 };
 
+const recordPresentationDiagnostics = (
+  diagnostics: ReturnType<typeof createPresentationDiagnostics>,
+  presentation: SemanticPresentation,
+  afterSequence: number,
+): void => {
+  const sequence = presentation.sequence;
+  if (sequence <= afterSequence) return;
+  const text = presentation.frame.rows.map(row => row.cells.map(cell => cell.text).join('')).join('\n');
+  const bytes = new TextEncoder().encode(text);
+  diagnostics.dataEvents += 1;
+  diagnostics.totalBytes += bytes.byteLength;
+  if (diagnostics.firstSequence === 0) diagnostics.firstSequence = sequence;
+  else if (sequence <= diagnostics.lastSequence) diagnostics.sequenceGaps += 1;
+  diagnostics.lastSequence = sequence;
+  diagnostics.tail = text.slice(-4096);
+  for (const byte of bytes) diagnostics.hash = Math.imul(diagnostics.hash ^ byte, 16777619) >>> 0;
+};
+
+const createPresentationDiagnostics = () => ({
+  dataEvents: 0,
+  firstSequence: 0,
+  lastSequence: 0,
+  sequenceGaps: 0,
+  totalBytes: 0,
+  hash: 2166136261,
+  tail: '',
+});
+
 const initialTerminalSnapshot: TerminalInstanceSnapshot = {
   state: {
-    state: TerminalState.IDLE,
+    state: 'idle',
     dimensions: { cols: 80, rows: 24 },
     get isReady() { return false; },
     get isConnected() { return false; },
@@ -293,11 +332,16 @@ type SemanticViewportHandle = Readonly<{
   getSelectionText(): string;
   hasSelection(): boolean;
   getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null;
-  getPresentation(): SemanticPresentation | null;
+	getPresentation(): SemanticPresentation | null;
+	readSemanticHistory(
+		direction: SemanticHistoryDirection,
+		anchor?: string,
+		limit?: number,
+	): Promise<SemanticHistoryPage>;
   getSnapshot(): TerminalInstanceSnapshot;
   forceResize(): void;
   synchronizeSize(): Promise<void>;
-  getGeometryDiagnostics(): { generation: number; outputSequenceBoundary: number; cols: number; rows: number };
+  getGeometryDiagnostics(): { generation: number; presentationSequence: number; cols: number; rows: number };
   getRenderDiagnostics(): { count: number; lastRenderAtMs: number };
   resetRenderDiagnostics(): void;
   getStreamDiagnostics(): {
@@ -323,23 +367,13 @@ const SemanticTerminalViewport = (props: {
   onHandle?: (handle: SemanticViewportHandle | null) => void;
 }) => {
   const mountedSessionId = props.sessionId;
-  const initialStreamDiagnostics = () => ({
-    dataEvents: 0,
-    firstSequence: 0,
-    lastSequence: 0,
-    sequenceGaps: 0,
-    totalBytes: 0,
-    hash: 2166136261,
-    tail: '',
-  });
   let canvas: HTMLCanvasElement | undefined;
   let inputController: TerminalInputBridge | undefined;
   let renderer: RendererSurface | undefined;
   let latestPresentation: SemanticPresentation | null = null;
-  let geometryDiagnostics = { generation: 0, outputSequenceBoundary: 0, cols: 0, rows: 0 };
+  let geometryDiagnostics = { generation: 0, presentationSequence: 0, cols: 0, rows: 0 };
   let viewDimensions = { cols: 80, rows: 24 };
-  let streamDiagnostics = initialStreamDiagnostics();
-  let streamDecoder = new TextDecoder();
+  let streamDiagnostics = createPresentationDiagnostics();
   let streamDiagnosticsAfterSequence = 0;
   let renderDiagnostics = { count: 0, lastRenderAtMs: 0 };
   const [connected, setConnected] = createSignal(false);
@@ -358,12 +392,12 @@ const SemanticTerminalViewport = (props: {
     measure,
     repaint: () => { renderer?.resize(); inputController?.syncGeometry(); },
     attach: async dimensions => {
-      const attached = await props.transport.attachWithHistoryBoundary(
+      const attached = await props.transport.attachWithPresentation(
         mountedSessionId, dimensions.cols, dimensions.rows,
       );
       return {
         generation: attached.geometryGeneration,
-        outputSequenceBoundary: attached.historyBoundarySequence,
+        presentationSequence: attached.presentationSequence,
         cols: attached.cols,
         rows: attached.rows,
       };
@@ -383,7 +417,7 @@ const SemanticTerminalViewport = (props: {
   };
   const handle: SemanticViewportHandle = {
     sendInput: data => { void props.transport.sendInput(mountedSessionId, data); },
-    clear: () => { void props.transport.clear(mountedSessionId); },
+    clear: () => { void props.transport.sendInput(mountedSessionId, '\x0c'); },
     serialize: () => latestPresentation?.frame.rows
       .map(row => row.cells.map(cell => cell.text).join('')).join('\n') ?? '',
     getVisibleLines: () => latestPresentation?.frame.rows
@@ -395,7 +429,18 @@ const SemanticTerminalViewport = (props: {
       cols: latestPresentation.frame.width,
       bufferLength: latestPresentation.frame.history.totalRows,
     }) : null,
-    getPresentation: () => latestPresentation,
+		getPresentation: () => latestPresentation,
+		readSemanticHistory: async (direction, anchor, limit) => {
+			const presentation = latestPresentation;
+			if (!presentation) throw new Error('terminal presentation is unavailable');
+			const request: SemanticHistoryRequest = {
+				expectedRevision: presentation.sequence,
+				direction,
+				limit: limit ?? presentation.frame.height,
+				...(anchor ? { anchor } : {}),
+			};
+			return await props.transport.semanticHistory(mountedSessionId, request);
+		},
     getSnapshot: () => ({
       ...initialTerminalSnapshot,
       state: { ...initialTerminalSnapshot.state, dimensions: { ...viewDimensions } },
@@ -412,8 +457,7 @@ const SemanticTerminalViewport = (props: {
     resetRenderDiagnostics: () => { renderDiagnostics = { count: 0, lastRenderAtMs: 0 }; },
     getStreamDiagnostics: () => ({ ...streamDiagnostics }),
     resetStreamDiagnostics: (afterSequence = 0) => {
-      streamDiagnostics = initialStreamDiagnostics();
-      streamDecoder = new TextDecoder();
+      streamDiagnostics = createPresentationDiagnostics();
       streamDiagnosticsAfterSequence = Math.max(0, Number(afterSequence) || 0);
     },
   };
@@ -438,6 +482,7 @@ const SemanticTerminalViewport = (props: {
         const presentation = validatePresentation(value);
         if (!presentationAdvances(latestPresentation, presentation)) return;
         latestPresentation = presentation;
+        recordPresentationDiagnostics(streamDiagnostics, presentation, streamDiagnosticsAfterSequence);
         renderer?.apply(presentation);
         inputController?.syncGeometry();
         renderDiagnostics.count += 1;
@@ -454,26 +499,10 @@ const SemanticTerminalViewport = (props: {
     const unsubscribeGeometry = props.eventSource.onTerminalGeometry?.(mountedSessionId, event => {
       semanticResize.handleGeometry({
         generation: event.generation,
-        outputSequenceBoundary: event.outputSequenceBoundary,
+        presentationSequence: event.presentationSequence,
         cols: event.cols,
         rows: event.rows,
       });
-    });
-    const unsubscribeData = props.eventSource.onTerminalData(mountedSessionId, event => {
-      if (event.type !== 'data') return;
-      const sequence = Number(event.sequence ?? 0);
-      if (sequence > 0 && sequence <= streamDiagnosticsAfterSequence) return;
-      streamDiagnostics.dataEvents += 1;
-      streamDiagnostics.totalBytes += event.data.byteLength;
-      if (streamDiagnostics.firstSequence === 0) streamDiagnostics.firstSequence = sequence;
-      else if (sequence !== streamDiagnostics.lastSequence + 1) streamDiagnostics.sequenceGaps += 1;
-      streamDiagnostics.lastSequence = sequence;
-      streamDiagnostics.tail = (
-        streamDiagnostics.tail + streamDecoder.decode(event.data, { stream: true })
-      ).slice(-4096);
-      for (const byte of event.data) {
-        streamDiagnostics.hash = Math.imul(streamDiagnostics.hash ^ byte, 16777619) >>> 0;
-      }
     });
     props.onHandle?.(handle);
     void requestResize();
@@ -482,7 +511,6 @@ const SemanticTerminalViewport = (props: {
       unsubscribePresentation?.();
       unsubscribeLifecycle?.();
       unsubscribeGeometry?.();
-      unsubscribeData();
       resizeObserver?.disconnect();
       window.removeEventListener('resize', handleWindowResize);
       semanticResize.dispose();
@@ -523,19 +551,9 @@ const SingleTerminalPane = (props: {
   onRestart: () => void;
   onThemeChange: (theme: TerminalThemeName) => void;
 }) => {
-  const initialStreamDiagnostics = () => ({
-    dataEvents: 0,
-    firstSequence: 0,
-    lastSequence: 0,
-    sequenceGaps: 0,
-    totalBytes: 0,
-    hash: 2166136261,
-    tail: '',
-  });
-  let streamDiagnostics = initialStreamDiagnostics();
-  let streamDecoder = new TextDecoder();
+  let streamDiagnostics = createPresentationDiagnostics();
   let streamDiagnosticsAfterSequence = 0;
-  let geometryDiagnostics = { generation: 0, outputSequenceBoundary: 0, cols: 0, rows: 0 };
+  let geometryDiagnostics = { generation: 0, presentationSequence: 0, cols: 0, rows: 0 };
 	let semanticCanvas: HTMLCanvasElement | undefined;
 	let semanticRenderer: RendererSurface | undefined;
 	let inputController: TerminalInputBridge | undefined;
@@ -576,14 +594,14 @@ const SingleTerminalPane = (props: {
     attach: async dimensions => {
       attachRequestCount += 1;
       recordResizeDiagnostic({ action: 'attach-requested', dimensions: { ...dimensions } });
-      const attached = await props.transport.attachWithHistoryBoundary(
+      const attached = await props.transport.attachWithPresentation(
         props.sessionId,
         dimensions.cols,
         dimensions.rows,
       );
       const geometry = {
         generation: attached.geometryGeneration,
-        outputSequenceBoundary: attached.historyBoundarySequence,
+        presentationSequence: attached.presentationSequence,
         cols: attached.cols,
         rows: attached.rows,
       };
@@ -611,7 +629,7 @@ const SingleTerminalPane = (props: {
   )
     ? {
       sendInput: data => { void props.transport.sendInput(props.sessionId, data); },
-      clear: () => { void props.transport.clear(props.sessionId); },
+      clear: () => { void props.transport.sendInput(props.sessionId, '\x0c'); },
       serialize: () => {
 		const frame = historyProjected() ? historyPage()?.frame : latestPresentation?.frame;
 		return frame?.rows.map(row => row.cells.map(cell => cell.text).join('')).join('\n') ?? '';
@@ -627,7 +645,18 @@ const SingleTerminalPane = (props: {
 		cols: latestPresentation.frame.width,
 		bufferLength: historySummary().totalRows,
 	  }) : null,
-      getPresentationDiagnostics: () => latestPresentation,
+			  getPresentationDiagnostics: () => latestPresentation,
+			  readSemanticHistory: async (direction, anchor, limit) => {
+				const presentation = latestPresentation;
+				if (!presentation) throw new Error('terminal presentation is unavailable');
+				const request: SemanticHistoryRequest = {
+					expectedRevision: presentation.sequence,
+					direction,
+					limit: limit ?? presentation.frame.height,
+					...(anchor ? { anchor } : {}),
+				};
+				return await props.transport.semanticHistory(props.sessionId, request);
+			  },
       getResizeDiagnostics: () => [
         { action: 'summary', attachRequestCount, lifecycleCloseCount },
         ...resizeDiagnostics.map(value => structuredClone(value)),
@@ -637,8 +666,7 @@ const SingleTerminalPane = (props: {
       getGeometryDiagnostics: () => ({ ...geometryDiagnostics }),
       getStreamDiagnostics: () => ({ ...streamDiagnostics }),
       resetStreamDiagnostics: (afterSequence = 0) => {
-        streamDiagnostics = initialStreamDiagnostics();
-        streamDecoder = new TextDecoder();
+        streamDiagnostics = createPresentationDiagnostics();
         streamDiagnosticsAfterSequence = Math.max(0, Number(afterSequence) || 0);
       },
     }
@@ -760,6 +788,7 @@ const SingleTerminalPane = (props: {
 				const presentation = validatePresentation(value);
 				if (!presentationAdvances(latestPresentation, presentation)) return;
 				latestPresentation = presentation;
+				recordPresentationDiagnostics(streamDiagnostics, presentation, streamDiagnosticsAfterSequence);
 			setHistorySummary({
 				totalRows: presentation.frame.history.totalRows,
 				screenStartOffset: presentation.frame.history.screenStartOffset,
@@ -782,29 +811,10 @@ const SingleTerminalPane = (props: {
 		semanticResize.handleClosed(event.reason);
 	});
 	void requestResize();
-    const unsubscribeData = props.eventSource.onTerminalData(props.sessionId, event => {
-      if (event.type !== 'data') return;
-      const sequence = Number(event.sequence ?? 0);
-      if (sequence > 0 && sequence <= streamDiagnosticsAfterSequence) return;
-      streamDiagnostics.dataEvents += 1;
-      streamDiagnostics.totalBytes += event.data.byteLength;
-      if (streamDiagnostics.firstSequence === 0) {
-        streamDiagnostics.firstSequence = sequence;
-      } else if (sequence !== streamDiagnostics.lastSequence + 1) {
-        streamDiagnostics.sequenceGaps += 1;
-      }
-      streamDiagnostics.lastSequence = sequence;
-      streamDiagnostics.tail = (
-        streamDiagnostics.tail + streamDecoder.decode(event.data, { stream: true })
-      ).slice(-4096);
-      for (const byte of event.data) {
-        streamDiagnostics.hash = Math.imul(streamDiagnostics.hash ^ byte, 16777619) >>> 0;
-      }
-    });
     const unsubscribeGeometry = props.eventSource.onTerminalGeometry?.(props.sessionId, event => {
       semanticResize.handleGeometry({
         generation: event.generation,
-        outputSequenceBoundary: event.outputSequenceBoundary,
+        presentationSequence: event.presentationSequence,
         cols: event.cols,
         rows: event.rows,
       });
@@ -817,7 +827,6 @@ const SingleTerminalPane = (props: {
 		window.removeEventListener('resize', handleWindowResize);
 		semanticResize.dispose();
 		semanticRenderer?.dispose();
-      unsubscribeData();
       unsubscribeGeometry?.();
     });
   });
@@ -832,7 +841,7 @@ const SingleTerminalPane = (props: {
   });
 
   const clearTerminal = () => {
-    void props.transport.clear(props.sessionId);
+    void props.transport.sendInput(props.sessionId, '\x0c');
   };
 
   const status = () => 'live';
@@ -959,7 +968,8 @@ const MirrorTerminalConnection = (props: {
       getSelectionText: handle.getSelectionText,
       hasSelection: handle.hasSelection,
       getTerminalInfo: handle.getTerminalInfo,
-      getPresentationDiagnostics: handle.getPresentation,
+		getPresentationDiagnostics: handle.getPresentation,
+		readSemanticHistory: handle.readSemanticHistory,
       getSnapshot: handle.getSnapshot,
       forceResize: handle.forceResize,
       synchronizeSize: handle.synchronizeSize,

@@ -18,18 +18,18 @@ const waitUntil = async (predicate: () => boolean) => {
 describe('semantic resize controller', () => {
   it('does not settle stale or internally inconsistent canonical geometry', async () => {
     let size = { cols: 80, rows: 24 };
-    const firstResize = { generation: 2, outputSequenceBoundary: 9, cols: 120, rows: 40 };
+    const firstResize = { generation: 2, presentationSequence: 9, cols: 120, rows: 40 };
     const resizeResults = [
       firstResize,
-      { generation: 1, outputSequenceBoundary: 8, cols: 100, rows: 30 },
-      { generation: 2, outputSequenceBoundary: 10, cols: 132, rows: 41 },
+      { generation: 1, presentationSequence: 8, cols: 100, rows: 30 },
+      { generation: 2, presentationSequence: 10, cols: 132, rows: 41 },
     ];
     const onGeometry = vi.fn();
     const onError = vi.fn();
     const controller = createSemanticResizeController({
       measure: () => size,
       repaint: vi.fn(),
-      attach: vi.fn(async next => ({ generation: 1, outputSequenceBoundary: 0, ...next })),
+      attach: vi.fn(async next => ({ generation: 1, presentationSequence: 0, ...next })),
       resize: vi.fn(async () => resizeResults.shift()!),
       onConnectionChange: vi.fn(),
       onGeometry,
@@ -54,13 +54,13 @@ describe('semantic resize controller', () => {
     let controller: ReturnType<typeof createSemanticResizeController>;
     const attach = vi.fn(async () => {
       controller.handleClosed('superseded');
-      return { generation: 1, outputSequenceBoundary: 0, cols: 100, rows: 30 };
+      return { generation: 1, presentationSequence: 0, cols: 100, rows: 30 };
     });
     controller = createSemanticResizeController({
       measure: () => ({ cols: 100, rows: 30 }),
       repaint: vi.fn(),
       attach,
-      resize: vi.fn(async size => ({ generation: 2, outputSequenceBoundary: 0, ...size })),
+      resize: vi.fn(async size => ({ generation: 2, presentationSequence: 0, ...size })),
       onConnectionChange: vi.fn(),
       onGeometry: vi.fn(),
       onError: vi.fn(),
@@ -76,7 +76,7 @@ describe('semantic resize controller', () => {
     let releaseFailedResize: (() => void) | undefined;
     const attach = vi.fn(async (next: { cols: number; rows: number }) => ({
       generation: attach.mock.calls.length,
-      outputSequenceBoundary: attach.mock.calls.length === 1 ? 0 : 7,
+      presentationSequence: attach.mock.calls.length === 1 ? 0 : 7,
       ...next,
     }));
     const resize = vi.fn(async () => {
@@ -111,7 +111,7 @@ describe('semantic resize controller', () => {
     expect(resize).toHaveBeenCalledWith({ cols: 100, rows: 30 });
     expect(onGeometry).toHaveBeenLastCalledWith({
       generation: 2,
-      outputSequenceBoundary: 7,
+      presentationSequence: 7,
       cols: 132,
       rows: 41,
     });
@@ -122,7 +122,7 @@ describe('semantic resize controller', () => {
     let size = { cols: 80, rows: 24 };
     const attach = vi.fn(async (next: { cols: number; rows: number }) => ({
       generation: 1,
-      outputSequenceBoundary: 0,
+      presentationSequence: 0,
       ...next,
     }));
     const onError = vi.fn();
@@ -148,10 +148,10 @@ describe('semantic resize controller', () => {
 
   it('does not enqueue the same size again while its resize is in flight', async () => {
     let size = { cols: 80, rows: 24 };
-    let settleResize: ((geometry: { generation: number; outputSequenceBoundary: number; cols: number; rows: number }) => void) | undefined;
+    let settleResize: ((geometry: { generation: number; presentationSequence: number; cols: number; rows: number }) => void) | undefined;
     const resize = vi.fn((size: { cols: number; rows: number }) => new Promise<{
       generation: number;
-      outputSequenceBoundary: number;
+      presentationSequence: number;
       cols: number;
       rows: number;
     }>(resolve => {
@@ -161,7 +161,7 @@ describe('semantic resize controller', () => {
     const controller = createSemanticResizeController({
       measure: () => size,
       repaint: vi.fn(),
-      attach: vi.fn(async next => ({ generation: 1, outputSequenceBoundary: 0, ...next })),
+      attach: vi.fn(async next => ({ generation: 1, presentationSequence: 0, ...next })),
       resize,
       onConnectionChange: vi.fn(),
       onGeometry: vi.fn(),
@@ -175,7 +175,7 @@ describe('semantic resize controller', () => {
     const duplicate = controller.requestResize();
     await flushTasks();
     expect(resize).toHaveBeenCalledTimes(1);
-    settleResize?.({ generation: 2, outputSequenceBoundary: 4, cols: 120, rows: 40 });
+    settleResize?.({ generation: 2, presentationSequence: 4, cols: 120, rows: 40 });
     await Promise.all([first, duplicate]);
 
     expect(resize).toHaveBeenCalledTimes(1);
@@ -183,10 +183,10 @@ describe('semantic resize controller', () => {
 
   it('drops an obsolete queued size when dragging back to the in-flight size', async () => {
     let size = { cols: 80, rows: 24 };
-    let settleResize: ((geometry: { generation: number; outputSequenceBoundary: number; cols: number; rows: number }) => void) | undefined;
+    let settleResize: ((geometry: { generation: number; presentationSequence: number; cols: number; rows: number }) => void) | undefined;
     const resize = vi.fn((next: { cols: number; rows: number }) => new Promise<{
       generation: number;
-      outputSequenceBoundary: number;
+      presentationSequence: number;
       cols: number;
       rows: number;
     }>(resolve => {
@@ -196,7 +196,7 @@ describe('semantic resize controller', () => {
     const controller = createSemanticResizeController({
       measure: () => size,
       repaint: vi.fn(),
-      attach: vi.fn(async next => ({ generation: 1, outputSequenceBoundary: 0, ...next })),
+      attach: vi.fn(async next => ({ generation: 1, presentationSequence: 0, ...next })),
       resize,
       onConnectionChange: vi.fn(),
       onGeometry: vi.fn(),
@@ -211,7 +211,7 @@ describe('semantic resize controller', () => {
     const obsolete = controller.requestResize();
     size = { cols: 100, rows: 30 };
     const latest = controller.requestResize();
-    settleResize?.({ generation: 2, outputSequenceBoundary: 4, ...size });
+    settleResize?.({ generation: 2, presentationSequence: 4, ...size });
     await Promise.all([first, obsolete, latest]);
 
     expect(resize).toHaveBeenCalledTimes(1);
@@ -223,12 +223,12 @@ describe('semantic resize controller', () => {
     let rejectResize: ((error: Error) => void) | undefined;
     const attach = vi.fn(async (next: { cols: number; rows: number }) => ({
       generation: attach.mock.calls.length,
-      outputSequenceBoundary: 0,
+      presentationSequence: 0,
       ...next,
     }));
     const resize = vi.fn(() => new Promise<{
       generation: number;
-      outputSequenceBoundary: number;
+      presentationSequence: number;
       cols: number;
       rows: number;
     }>((_resolve, reject) => { rejectResize = reject; }));
@@ -261,13 +261,13 @@ describe('semantic resize controller', () => {
     let size = { cols: 80, rows: 24 };
     const resize = vi.fn(async (next: { cols: number; rows: number }) => ({
       generation: 2,
-      outputSequenceBoundary: 4,
+      presentationSequence: 4,
       ...next,
     }));
     const controller = createSemanticResizeController({
       measure: () => size,
       repaint: vi.fn(),
-      attach: vi.fn(async next => ({ generation: 1, outputSequenceBoundary: 0, ...next })),
+      attach: vi.fn(async next => ({ generation: 1, presentationSequence: 0, ...next })),
       resize,
       onConnectionChange: vi.fn(),
       onGeometry: vi.fn(),
@@ -275,7 +275,7 @@ describe('semantic resize controller', () => {
     });
     await controller.requestResize();
     size = { cols: 132, rows: 41 };
-    controller.handleGeometry({ generation: 2, outputSequenceBoundary: 4, ...size });
+    controller.handleGeometry({ generation: 2, presentationSequence: 4, ...size });
     await controller.requestResize();
 
     expect(resize).not.toHaveBeenCalled();

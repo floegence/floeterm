@@ -14,8 +14,6 @@ const (
 	HeaderSize           = 8
 	MaxFramePayloadBytes = 256 * 1024
 	MaxInputBytes        = 64 * 1024
-	MaxOutputBatchBytes  = 64 * 1024
-	MaxOutputBatchChunks = 256
 	MaxIdentifierBytes   = 256
 )
 
@@ -36,7 +34,6 @@ const (
 	FrameDetach FrameType = 0x04
 
 	FrameAttached        FrameType = 0x81
-	FrameOutputBatch     FrameType = 0x82
 	FrameResizeApplied   FrameType = 0x83
 	FrameSessionClosed   FrameType = 0x84
 	FrameGeometryChanged FrameType = 0x85
@@ -70,43 +67,25 @@ type Resize struct {
 }
 
 type Attached struct {
-	HistoryBoundarySequence uint64
-	HistoryGeneration       uint64
-	HistoryStartSequence    uint64
-	GeometryGeneration      uint64
-	Cols                    uint32
-	Rows                    uint32
+	PresentationSequence uint64
+	GeometryGeneration   uint64
+	Cols                 uint32
+	Rows                 uint32
 }
 
 type ResizeApplied struct {
-	Sequence               uint64
-	GeometryGeneration     uint64
-	OutputSequenceBoundary uint64
-	Cols                   uint32
-	Rows                   uint32
-}
-
-type OutputRecord struct {
-	Sequence           uint64
-	TimestampMs        uint64
-	GeometryGeneration uint64
-	Cols               uint32
-	Rows               uint32
-	Data               []byte
-}
-
-type OutputBatch struct {
-	GeometryGeneration uint64
-	Cols               uint32
-	Rows               uint32
-	Records            []OutputRecord
+	Sequence             uint64
+	GeometryGeneration   uint64
+	PresentationSequence uint64
+	Cols                 uint32
+	Rows                 uint32
 }
 
 type EffectiveGeometry struct {
-	Generation             uint64
-	OutputSequenceBoundary uint64
-	Cols                   uint32
-	Rows                   uint32
+	Generation           uint64
+	PresentationSequence uint64
+	Cols                 uint32
+	Rows                 uint32
 }
 
 type ProtocolError struct {
@@ -117,7 +96,7 @@ type ProtocolError struct {
 func validFrameType(frameType FrameType) bool {
 	switch frameType {
 	case FrameAttach, FrameInput, FrameResize, FrameDetach,
-		FrameAttached, FrameOutputBatch, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation, FrameError:
+		FrameAttached, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation, FrameError:
 		return true
 	default:
 		return false
@@ -353,17 +332,14 @@ func DecodeResize(frame Frame) (Resize, error) {
 }
 
 func EncodeAttached(value Attached) ([]byte, error) {
-	if value.HistoryGeneration == 0 || value.HistoryStartSequence == 0 || value.HistoryStartSequence > value.HistoryBoundarySequence+1 ||
-		value.GeometryGeneration == 0 || value.Cols == 0 || value.Rows == 0 {
+	if value.PresentationSequence == 0 || value.GeometryGeneration == 0 || value.Cols == 0 || value.Rows == 0 {
 		return nil, ErrInvalidPayload
 	}
-	payload := make([]byte, 40)
-	binary.BigEndian.PutUint64(payload[:8], value.HistoryBoundarySequence)
-	binary.BigEndian.PutUint64(payload[8:16], value.HistoryGeneration)
-	binary.BigEndian.PutUint64(payload[16:24], value.HistoryStartSequence)
-	binary.BigEndian.PutUint64(payload[24:32], value.GeometryGeneration)
-	binary.BigEndian.PutUint32(payload[32:36], value.Cols)
-	binary.BigEndian.PutUint32(payload[36:40], value.Rows)
+	payload := make([]byte, 24)
+	binary.BigEndian.PutUint64(payload[:8], value.PresentationSequence)
+	binary.BigEndian.PutUint64(payload[8:16], value.GeometryGeneration)
+	binary.BigEndian.PutUint32(payload[16:20], value.Cols)
+	binary.BigEndian.PutUint32(payload[20:24], value.Rows)
 	return EncodeFrame(Frame{Type: FrameAttached, Payload: payload})
 }
 
@@ -371,18 +347,16 @@ func DecodeAttached(frame Frame) (Attached, error) {
 	if frame.Type != FrameAttached {
 		return Attached{}, ErrUnexpectedFrameType
 	}
-	if len(frame.Payload) != 40 {
+	if len(frame.Payload) != 24 {
 		return Attached{}, ErrInvalidPayload
 	}
 	value := Attached{
-		HistoryBoundarySequence: binary.BigEndian.Uint64(frame.Payload[:8]),
-		HistoryGeneration:       binary.BigEndian.Uint64(frame.Payload[8:16]),
-		HistoryStartSequence:    binary.BigEndian.Uint64(frame.Payload[16:24]),
-		GeometryGeneration:      binary.BigEndian.Uint64(frame.Payload[24:32]),
-		Cols:                    binary.BigEndian.Uint32(frame.Payload[32:36]),
-		Rows:                    binary.BigEndian.Uint32(frame.Payload[36:40]),
+		PresentationSequence: binary.BigEndian.Uint64(frame.Payload[:8]),
+		GeometryGeneration:   binary.BigEndian.Uint64(frame.Payload[8:16]),
+		Cols:                 binary.BigEndian.Uint32(frame.Payload[16:20]),
+		Rows:                 binary.BigEndian.Uint32(frame.Payload[20:24]),
 	}
-	if value.HistoryGeneration == 0 || value.HistoryStartSequence == 0 || value.HistoryStartSequence > value.HistoryBoundarySequence+1 ||
+	if value.PresentationSequence == 0 ||
 		value.GeometryGeneration == 0 || value.Cols == 0 || value.Rows == 0 {
 		return Attached{}, ErrInvalidPayload
 	}
@@ -396,7 +370,7 @@ func EncodeResizeApplied(value ResizeApplied) ([]byte, error) {
 	payload := make([]byte, 32)
 	binary.BigEndian.PutUint64(payload[:8], value.Sequence)
 	binary.BigEndian.PutUint64(payload[8:16], value.GeometryGeneration)
-	binary.BigEndian.PutUint64(payload[16:24], value.OutputSequenceBoundary)
+	binary.BigEndian.PutUint64(payload[16:24], value.PresentationSequence)
 	binary.BigEndian.PutUint32(payload[24:28], value.Cols)
 	binary.BigEndian.PutUint32(payload[28:32], value.Rows)
 	return EncodeFrame(Frame{Type: FrameResizeApplied, Payload: payload})
@@ -410,11 +384,11 @@ func DecodeResizeApplied(frame Frame) (ResizeApplied, error) {
 		return ResizeApplied{}, ErrInvalidPayload
 	}
 	value := ResizeApplied{
-		Sequence:               binary.BigEndian.Uint64(frame.Payload[:8]),
-		GeometryGeneration:     binary.BigEndian.Uint64(frame.Payload[8:16]),
-		OutputSequenceBoundary: binary.BigEndian.Uint64(frame.Payload[16:24]),
-		Cols:                   binary.BigEndian.Uint32(frame.Payload[24:28]),
-		Rows:                   binary.BigEndian.Uint32(frame.Payload[28:32]),
+		Sequence:             binary.BigEndian.Uint64(frame.Payload[:8]),
+		GeometryGeneration:   binary.BigEndian.Uint64(frame.Payload[8:16]),
+		PresentationSequence: binary.BigEndian.Uint64(frame.Payload[16:24]),
+		Cols:                 binary.BigEndian.Uint32(frame.Payload[24:28]),
+		Rows:                 binary.BigEndian.Uint32(frame.Payload[28:32]),
 	}
 	if value.Sequence == 0 || value.GeometryGeneration == 0 || value.Cols == 0 || value.Rows == 0 {
 		return ResizeApplied{}, ErrInvalidPayload
@@ -428,7 +402,7 @@ func EncodeGeometryChanged(value EffectiveGeometry) ([]byte, error) {
 	}
 	payload := make([]byte, 24)
 	binary.BigEndian.PutUint64(payload[:8], value.Generation)
-	binary.BigEndian.PutUint64(payload[8:16], value.OutputSequenceBoundary)
+	binary.BigEndian.PutUint64(payload[8:16], value.PresentationSequence)
 	binary.BigEndian.PutUint32(payload[16:20], value.Cols)
 	binary.BigEndian.PutUint32(payload[20:24], value.Rows)
 	return EncodeFrame(Frame{Type: FrameGeometryChanged, Payload: payload})
@@ -442,98 +416,14 @@ func DecodeGeometryChanged(frame Frame) (EffectiveGeometry, error) {
 		return EffectiveGeometry{}, ErrInvalidPayload
 	}
 	value := EffectiveGeometry{
-		Generation:             binary.BigEndian.Uint64(frame.Payload[:8]),
-		OutputSequenceBoundary: binary.BigEndian.Uint64(frame.Payload[8:16]),
-		Cols:                   binary.BigEndian.Uint32(frame.Payload[16:20]),
-		Rows:                   binary.BigEndian.Uint32(frame.Payload[20:24]),
+		Generation:           binary.BigEndian.Uint64(frame.Payload[:8]),
+		PresentationSequence: binary.BigEndian.Uint64(frame.Payload[8:16]),
+		Cols:                 binary.BigEndian.Uint32(frame.Payload[16:20]),
+		Rows:                 binary.BigEndian.Uint32(frame.Payload[20:24]),
 	}
 	if value.Generation == 0 || value.Cols == 0 || value.Rows == 0 {
 		return EffectiveGeometry{}, ErrInvalidPayload
 	}
-	return value, nil
-}
-
-func EncodeOutputBatch(value OutputBatch) ([]byte, error) {
-	if value.GeometryGeneration == 0 || value.Cols == 0 || value.Rows == 0 ||
-		len(value.Records) == 0 || len(value.Records) > MaxOutputBatchChunks {
-		return nil, ErrInvalidPayload
-	}
-	payload := make([]byte, 18)
-	binary.BigEndian.PutUint64(payload[:8], value.GeometryGeneration)
-	binary.BigEndian.PutUint32(payload[8:12], value.Cols)
-	binary.BigEndian.PutUint32(payload[12:16], value.Rows)
-	binary.BigEndian.PutUint16(payload[16:18], uint16(len(value.Records)))
-	totalData := 0
-	for _, record := range value.Records {
-		if record.Sequence == 0 || len(record.Data) == 0 ||
-			record.GeometryGeneration != value.GeometryGeneration || record.Cols != value.Cols || record.Rows != value.Rows {
-			return nil, ErrInvalidPayload
-		}
-		totalData += len(record.Data)
-		if totalData > MaxOutputBatchBytes {
-			return nil, ErrInvalidPayload
-		}
-		start := len(payload)
-		payload = append(payload, make([]byte, 20+len(record.Data))...)
-		binary.BigEndian.PutUint64(payload[start:start+8], record.Sequence)
-		binary.BigEndian.PutUint64(payload[start+8:start+16], record.TimestampMs)
-		binary.BigEndian.PutUint32(payload[start+16:start+20], uint32(len(record.Data)))
-		copy(payload[start+20:], record.Data)
-	}
-	return EncodeFrame(Frame{Type: FrameOutputBatch, Payload: payload})
-}
-
-func DecodeOutputBatch(frame Frame) (OutputBatch, error) {
-	if frame.Type != FrameOutputBatch {
-		return OutputBatch{}, ErrUnexpectedFrameType
-	}
-	if len(frame.Payload) < 18 {
-		return OutputBatch{}, ErrInvalidPayload
-	}
-	value := OutputBatch{
-		GeometryGeneration: binary.BigEndian.Uint64(frame.Payload[:8]),
-		Cols:               binary.BigEndian.Uint32(frame.Payload[8:12]),
-		Rows:               binary.BigEndian.Uint32(frame.Payload[12:16]),
-	}
-	if value.GeometryGeneration == 0 || value.Cols == 0 || value.Rows == 0 {
-		return OutputBatch{}, ErrInvalidPayload
-	}
-	count := int(binary.BigEndian.Uint16(frame.Payload[16:18]))
-	if count == 0 || count > MaxOutputBatchChunks {
-		return OutputBatch{}, ErrInvalidPayload
-	}
-	offset := 18
-	totalData := 0
-	records := make([]OutputRecord, 0, count)
-	for range count {
-		if len(frame.Payload)-offset < 20 {
-			return OutputBatch{}, ErrInvalidPayload
-		}
-		dataSize := int(binary.BigEndian.Uint32(frame.Payload[offset+16 : offset+20]))
-		if dataSize <= 0 || dataSize > len(frame.Payload)-(offset+20) {
-			return OutputBatch{}, ErrInvalidPayload
-		}
-		totalData += dataSize
-		if totalData > MaxOutputBatchBytes {
-			return OutputBatch{}, ErrInvalidPayload
-		}
-		records = append(records, OutputRecord{
-			Sequence:           binary.BigEndian.Uint64(frame.Payload[offset : offset+8]),
-			TimestampMs:        binary.BigEndian.Uint64(frame.Payload[offset+8 : offset+16]),
-			GeometryGeneration: value.GeometryGeneration,
-			Cols:               value.Cols,
-			Rows:               value.Rows,
-			Data:               append([]byte(nil), frame.Payload[offset+20:offset+20+dataSize]...),
-		})
-		if records[len(records)-1].Sequence == 0 {
-			return OutputBatch{}, ErrInvalidPayload
-		}
-		offset += 20 + dataSize
-	}
-	if offset != len(frame.Payload) {
-		return OutputBatch{}, ErrInvalidPayload
-	}
-	value.Records = records
 	return value, nil
 }
 

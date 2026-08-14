@@ -22,7 +22,6 @@ type deletingOutputActivityHandler struct {
 	done    chan error
 }
 
-func (h *deletingOutputActivityHandler) OnTerminalData(string, TerminalOutputEvent)           {}
 func (h *deletingOutputActivityHandler) OnTerminalNameChanged(string, string, string, string) {}
 func (h *deletingOutputActivityHandler) OnTerminalSessionCreated(*Session)                    {}
 func (h *deletingOutputActivityHandler) OnTerminalSessionClosed(string)                       {}
@@ -33,7 +32,6 @@ func (h *deletingOutputActivityHandler) OnTerminalOutputActivityChanged(sessionI
 	})
 }
 
-func (h *outputActivityCaptureHandler) OnTerminalData(string, TerminalOutputEvent)           {}
 func (h *outputActivityCaptureHandler) OnTerminalNameChanged(string, string, string, string) {}
 func (h *outputActivityCaptureHandler) OnTerminalSessionCreated(*Session)                    {}
 func (h *outputActivityCaptureHandler) OnTerminalSessionClosed(string)                       {}
@@ -61,18 +59,15 @@ func (h *outputActivityCaptureHandler) snapshot() []TerminalOutputActivityInfo {
 
 func newOutputActivityTestSession(handler TerminalEventHandler, quiet time.Duration) *Session {
 	return &Session{
-		ID:                   "session-output-activity",
-		Name:                 "repo",
-		WorkingDir:           "/workspace/repo",
-		CreatedAt:            time.Now(),
-		LastActive:           time.Now(),
-		connections:          make(map[string]*ConnectionInfo),
-		liveAttachments:      make(map[string]liveAttachment),
-		ringBuffer:           NewTerminalRingBuffer(32),
-		historyGeneration:    1,
-		historyStartSequence: 1,
-		currentWorkingDir:    "/workspace/repo",
-		eventHandler:         handler,
+		ID:                "session-output-activity",
+		Name:              "repo",
+		WorkingDir:        "/workspace/repo",
+		CreatedAt:         time.Now(),
+		LastActive:        time.Now(),
+		connections:       make(map[string]*ConnectionInfo),
+		liveAttachments:   make(map[string]liveAttachment),
+		currentWorkingDir: "/workspace/repo",
+		eventHandler:      handler,
 		config: newSessionConfig(ManagerConfig{
 			Logger:                      NopLogger{},
 			OutputActivityQuietDuration: quiet,

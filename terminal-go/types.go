@@ -10,46 +10,6 @@ import (
 	"github.com/creack/pty"
 )
 
-// TerminalDataChunk represents a chunk of PTY output stored for history replay.
-type TerminalDataChunk struct {
-	Sequence           int64
-	Data               []byte
-	Timestamp          int64
-	Size               int
-	GeometryGeneration uint64
-	Cols               int
-	Rows               int
-}
-
-// HistoryPageOptions configures a bounded chronological terminal history read.
-type HistoryPageOptions struct {
-	StartSeq          int64
-	EndSeq            int64
-	HistoryGeneration int64
-	LimitChunks       int
-	MaxBytes          int
-}
-
-// HistoryPage is a bounded terminal history snapshot plus replay cursor metadata.
-type HistoryPage struct {
-	Chunks                 []TerminalDataChunk
-	Checkpoint             *TerminalHistoryCheckpoint
-	DeltaStartSequence     int64
-	FirstSequence          int64
-	LastSequence           int64
-	FirstRetainedSequence  int64
-	NextStartSeq           int64
-	HasMore                bool
-	CoveredThroughSequence int64
-	SnapshotEndSequence    int64
-	HistoryGeneration      int64
-	HistoryReset           bool
-	HistoryTruncated       bool
-	CoveredBytes           int64
-	TotalBytes             int64
-	UsedChunks             int
-}
-
 // TerminalSessionInfo summarizes a terminal session for listing APIs.
 type TerminalSessionInfo struct {
 	ID                string
@@ -185,15 +145,12 @@ type TerminalOutputActivityInfo struct {
 	UpdatedAt int64
 }
 
-// ManagerDiagnostics reports terminal history memory without imposing a
-// session-count limit or changing session lifecycle behavior.
+// ManagerDiagnostics reports current session and attachment counts.
 type ManagerDiagnostics struct {
 	SessionCount        int
 	ActiveSessionCount  int
 	ConnectionCount     int
 	LiveAttachmentCount int
-	HistoryBytes        int64
-	SessionHistoryBytes map[string]int64
 }
 
 // ConnectionInfo stores metadata for a connected client.
@@ -204,9 +161,8 @@ type ConnectionInfo struct {
 	Rows     int
 }
 
-// TerminalEventHandler receives session lifecycle and output events.
+// TerminalEventHandler receives session lifecycle events.
 type TerminalEventHandler interface {
-	OnTerminalData(sessionID string, event TerminalOutputEvent)
 	OnTerminalNameChanged(sessionID string, oldName string, newName string, workingDir string)
 	OnTerminalSessionCreated(session *Session)
 	OnTerminalSessionClosed(sessionID string)
@@ -236,36 +192,25 @@ type TerminalSemanticWorkStateEventHandler interface {
 
 // TerminalGeometry identifies one applied PTY grid size.
 type TerminalGeometry struct {
-	Generation             uint64 `json:"generation"`
-	OutputSequenceBoundary int64  `json:"outputSequenceBoundary"`
-	Cols                   int    `json:"cols"`
-	Rows                   int    `json:"rows"`
+	Generation           uint64 `json:"generation"`
+	PresentationSequence uint64 `json:"presentationSequence"`
+	Cols                 int    `json:"cols"`
+	Rows                 int    `json:"rows"`
 }
 
-// TerminalOutputEvent is committed once and shared by live output and history.
-type TerminalOutputEvent struct {
-	Data        []byte
-	Sequence    int64
-	TimestampMs int64
-	Geometry    TerminalGeometry
-}
-
-// LiveSubscriber receives exact output for one attached connection.
+// LiveSubscriber receives semantic state for one attached connection.
 type LiveSubscriber struct {
-	OnOutput        func(TerminalOutputEvent) bool
 	OnGeometry      func(TerminalGeometry) bool
 	OnPresentation  func(SemanticPresentation) bool
 	OnSessionClosed func()
 	OnSuperseded    func()
 }
 
-// LiveConnectionAttachment describes the atomic history/live handoff.
+// LiveConnectionAttachment describes one atomic semantic attach cut.
 type LiveConnectionAttachment struct {
-	HistoryBoundarySequence int64
-	HistoryGeneration       int64
-	HistoryStartSequence    int64
-	Geometry                TerminalGeometry
-	Detach                  func()
+	Presentation SemanticPresentation
+	Geometry     TerminalGeometry
+	Detach       func()
 }
 
 // TerminalSession defines the operations for a persistent terminal session.
@@ -284,10 +229,6 @@ type TerminalSession interface {
 
 	WriteDataWithSource(data []byte, sourceConnID string) error
 	ResizePTY(cols, rows int) error
-	GetHistoryPage(options HistoryPageOptions) (HistoryPage, error)
-	CommitHistoryCheckpoint(checkpoint TerminalHistoryCheckpoint) error
-	GetHistoryFromSequence(fromSeq int64) ([]TerminalDataChunk, error)
-	ClearHistory() error
 	Close() error
 }
 
@@ -297,8 +238,6 @@ type TerminalManager interface {
 	GetSession(sessionID string) (*Session, bool)
 	ListSessions() []*Session
 	DeleteSession(sessionID string) error
-	ClearSessionHistory(sessionID string) error
-	CommitSessionHistoryCheckpoint(sessionID string, checkpoint TerminalHistoryCheckpoint) error
 	RenameSession(sessionID, newName string) error
 	ActivateSession(sessionID string, cols, rows int) error
 	SetEventHandler(handler TerminalEventHandler)
@@ -329,7 +268,6 @@ type Session struct {
 	outputClosed    bool
 	cleaned         bool
 	mu              sync.RWMutex
-	historyCommitMu sync.Mutex
 	ptyOrderMu      sync.Mutex
 	ptyOrderCond    *sync.Cond
 	ptyResizeActive bool
@@ -342,17 +280,9 @@ type Session struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 
-	connections        map[string]*ConnectionInfo
-	ringBuffer         *TerminalRingBuffer
-	historySpool       *TerminalHistorySpool
-	historySpoolErr    error
-	appendHistorySpool func(*TerminalHistorySpool, TerminalDataChunk) error
-	liveAttachments    map[string]liveAttachment
-
-	sequenceNumber       int64
-	committedSequence    int64
-	historyGeneration    int64
-	historyStartSequence int64
+	connections            map[string]*ConnectionInfo
+	liveAttachments        map[string]liveAttachment
+	presentationDispatchMu sync.Mutex
 
 	currentWorkingDir             string
 	workdirPending                []byte
@@ -369,6 +299,7 @@ type Session struct {
 	executionContext              TerminalExecutionContextInfo
 	workState                     TerminalWorkStateInfo
 	presentationStore             *PresentationStore
+	latestPresentationSequence    uint64
 	controllerState               ControllerState
 	semanticAttachments           map[string]SemanticAttachment
 	semanticActor                 *SessionActor

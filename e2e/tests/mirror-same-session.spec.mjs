@@ -69,6 +69,17 @@ const resetMirrorRenderDiagnostics = page => page.evaluate(() => {
   window.__floetermMirrorHarness.getViews().forEach(view => view.resetRenderDiagnostics());
 });
 
+const expectMirrorPresentationConverged = async page => {
+  await expect.poll(() => page.evaluate(() => {
+    const views = window.__floetermMirrorHarness?.getViews() ?? [];
+    if (views.length !== 2) return false;
+    const presentations = views.map(view => view.getPresentationDiagnostics?.());
+    if (presentations.some(value => !value)) return false;
+    return presentations.every(value => value.sequence === presentations[0].sequence)
+      && views.every(view => view.serialize() === views[0].serialize());
+  })).toBe(true);
+};
+
 const expectMirrorGeometryConverged = async page => {
   await expect.poll(async () => {
     const state = await readMirror(page);
@@ -174,12 +185,17 @@ test('keeps independent viewport sizes on one shared terminal grid and screen st
   await page.waitForFunction(marker => (
     window.__floetermMirrorHarness.getViews().every(view => view.serialize().includes(marker))
   ), consistencyMarkers[2]);
+  await expectMirrorPresentationConverged(page);
   const consistency = await page.evaluate(markers => window.__floetermMirrorHarness.getViews().map(view => ({
     stream: view.getStreamDiagnostics(),
+    presentationSequence: view.getPresentationDiagnostics().sequence,
     markers: markers.map(marker => view.serialize().includes(marker)),
     serialized: view.serialize(),
   })), consistencyMarkers);
-  expect(consistency[0].stream).toEqual(consistency[1].stream);
+  expect(consistency.every(view => view.stream.sequenceGaps === 0 && view.stream.dataEvents > 0)).toBe(true);
+  expect(consistency[0].stream.lastSequence).toBe(consistency[0].presentationSequence);
+  expect(consistency[1].stream.lastSequence).toBe(consistency[1].presentationSequence);
+  expect(consistency[0].presentationSequence).toBe(consistency[1].presentationSequence);
   expect(consistency[0].serialized).toContain(consistencyMarkers[1]);
   expect(consistency[0].markers).toEqual([true, true, true]);
   expect(consistency[1].markers).toEqual([true, true, true]);
@@ -303,7 +319,7 @@ test('repaints the complete shared screen after one view is hidden, restored, an
   expect(consoleErrors).toEqual([]);
 });
 
-test('replays relative-screen history at each recorded geometry after reconnect', async ({ page }) => {
+test('restores the latest semantic screen at its canonical geometry after reconnect', async ({ page }) => {
   const consoleErrors = captureBrowserFailures(page);
   await openMirror(page);
 
@@ -376,11 +392,16 @@ test('keeps long wrapped output and terminal state identical across different vi
   await page.waitForFunction(target => (
     window.__floetermMirrorHarness.getViews().every(view => view.serialize().replace(/\s/g, '').includes(target))
   ), wrapTarget);
+  await expectMirrorPresentationConverged(page);
   const wrapped = await page.evaluate(() => window.__floetermMirrorHarness.getViews().map(view => ({
     stream: view.getStreamDiagnostics(),
+    presentationSequence: view.getPresentationDiagnostics().sequence,
     serialized: view.serialize(),
   })));
-  expect(wrapped[0].stream).toEqual(wrapped[1].stream);
+  expect(wrapped.every(view => view.stream.sequenceGaps === 0 && view.stream.dataEvents > 0)).toBe(true);
+  expect(wrapped[0].stream.lastSequence).toBe(wrapped[0].presentationSequence);
+  expect(wrapped[1].stream.lastSequence).toBe(wrapped[1].presentationSequence);
+  expect(wrapped[0].presentationSequence).toBe(wrapped[1].presentationSequence);
   expect(wrapped[0].serialized).toEqual(wrapped[1].serialized);
   expect(wrapped.every(view => view.serialized.replace(/\s/g, '').includes(wrapTarget))).toBe(true);
   expect(await page.locator('.terminalRendererError').count()).toBe(0);

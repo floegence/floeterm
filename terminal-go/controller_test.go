@@ -132,7 +132,7 @@ func TestSemanticHistorySerializesWithPTYOutput(t *testing.T) {
 	}()
 	<-engine.entered
 	outputDone := make(chan struct{})
-	go func() { _ = actor.ApplyPTYOutput([]byte("after-history")); close(outputDone) }()
+	go func() { _, _ = actor.ApplyPTYOutput([]byte("after-history")); close(outputDone) }()
 	select {
 	case <-outputDone:
 		t.Fatal("PTY output entered engine while history query owned the actor")

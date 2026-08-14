@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -45,19 +44,6 @@ func getDirectoryName(path string) string {
 func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	sessionID := generateSessionID()
 	sessionCfg := newSessionConfig(m.config)
-	var historySpool *TerminalHistorySpool
-	if sessionCfg.historySpoolRoot != "" {
-		var err error
-		historySpool, err = OpenTerminalHistorySpool(TerminalHistorySpoolOptions{
-			Directory:       filepath.Join(sessionCfg.historySpoolRoot, sessionID),
-			SegmentMaxBytes: sessionCfg.historySpoolSegmentMaxBytes,
-			MaxBytes:        sessionCfg.historySpoolMaxBytes,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create terminal history spool: %w", err)
-		}
-	}
-
 	if name == "" {
 		name = getDirectoryName(workingDir)
 	}
@@ -82,21 +68,17 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	defer close(createdDone)
 
 	session := &Session{
-		ID:                   sessionID,
-		Name:                 name,
-		WorkingDir:           workingDir,
-		CreatedAt:            time.Now(),
-		LastActive:           time.Now(),
-		isActive:             false,
-		connections:          make(map[string]*ConnectionInfo),
-		liveAttachments:      make(map[string]liveAttachment),
-		ctx:                  ctx,
-		cancel:               cancel,
-		ringBuffer:           NewTerminalRingBufferWithLimits(sessionCfg.historyBufferSize, sessionCfg.historyBufferMaxChunks, sessionCfg.historyBufferMaxBytes),
-		historySpool:         historySpool,
-		historyGeneration:    1,
-		historyStartSequence: 1,
-		currentWorkingDir:    workingDir,
+		ID:                sessionID,
+		Name:              name,
+		WorkingDir:        workingDir,
+		CreatedAt:         time.Now(),
+		LastActive:        time.Now(),
+		isActive:          false,
+		connections:       make(map[string]*ConnectionInfo),
+		liveAttachments:   make(map[string]liveAttachment),
+		ctx:               ctx,
+		cancel:            cancel,
+		currentWorkingDir: workingDir,
 		foregroundCommand: TerminalForegroundCommandInfo{
 			Phase: ForegroundCommandUnknown,
 		},
@@ -120,7 +102,11 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 		if actor, actorErr := NewSessionActor(engine, 80, 24, store); actorErr == nil {
 			session.semanticActor = actor
 			session.presentationStore = store
-			_ = actor.PublishInitialPresentation()
+			if publishErr := actor.PublishInitialPresentation(); publishErr == nil {
+				if presentation, ok := store.Latest(); ok {
+					session.latestPresentationSequence = presentation.Sequence
+				}
+			}
 		} else {
 			engine.Close()
 		}
@@ -151,8 +137,7 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	return session, nil
 }
 
-// GetDiagnostics returns a point-in-time view of retained history memory.
-// It is intentionally observational: Floeterm never limits session creation.
+// GetDiagnostics returns a point-in-time view of sessions and attachments.
 func (m *Manager) GetDiagnostics() ManagerDiagnostics {
 	m.mu.RLock()
 	sessions := make([]*Session, 0, len(m.sessions))
@@ -161,14 +146,9 @@ func (m *Manager) GetDiagnostics() ManagerDiagnostics {
 	}
 	m.mu.RUnlock()
 
-	diagnostics := ManagerDiagnostics{
-		SessionCount:        len(sessions),
-		SessionHistoryBytes: make(map[string]int64, len(sessions)),
-	}
+	diagnostics := ManagerDiagnostics{SessionCount: len(sessions)}
 	for _, session := range sessions {
 		session.mu.RLock()
-		ringBuffer := session.ringBuffer
-		sessionID := session.ID
 		isActive := session.isActive
 		connectionCount := len(session.connections)
 		liveAttachmentCount := len(session.liveAttachments)
@@ -178,12 +158,6 @@ func (m *Manager) GetDiagnostics() ManagerDiagnostics {
 		}
 		diagnostics.ConnectionCount += connectionCount
 		diagnostics.LiveAttachmentCount += liveAttachmentCount
-		if ringBuffer == nil {
-			continue
-		}
-		bytes := ringBuffer.GetStats().TotalBytes
-		diagnostics.SessionHistoryBytes[sessionID] = bytes
-		diagnostics.HistoryBytes += bytes
 	}
 	return diagnostics
 }
@@ -336,30 +310,6 @@ func (m *Manager) detachAllSessions() []*Session {
 	m.sessions = make(map[string]*Session)
 	m.sessionOrder = make([]string, 0)
 	return sessions
-}
-
-// ClearSessionHistory clears the history ring buffer for a specific session.
-func (m *Manager) ClearSessionHistory(sessionID string) error {
-	m.mu.RLock()
-	session, exists := m.sessions[sessionID]
-	m.mu.RUnlock()
-	if !exists {
-		return fmt.Errorf("session not found: %s", sessionID)
-	}
-
-	return session.ClearHistory()
-}
-
-// CommitSessionHistoryCheckpoint atomically publishes a same-engine checkpoint
-// for one session before durable raw retention advances.
-func (m *Manager) CommitSessionHistoryCheckpoint(sessionID string, checkpoint TerminalHistoryCheckpoint) error {
-	m.mu.RLock()
-	session, exists := m.sessions[sessionID]
-	m.mu.RUnlock()
-	if !exists {
-		return fmt.Errorf("session not found: %s", sessionID)
-	}
-	return session.CommitHistoryCheckpoint(checkpoint)
 }
 
 // SetEventHandler sets a new handler for current and future sessions.

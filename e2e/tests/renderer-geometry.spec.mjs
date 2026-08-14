@@ -27,7 +27,7 @@ const readRendererGeometry = page => page.evaluate(() => {
     paneTop: paneRect.top + pane.clientTop,
     paneLeft: paneRect.left + pane.clientLeft,
     canvases: pane.querySelectorAll('canvas').length,
-    legacyCanvases: pane.querySelectorAll('.floeterm-beamterm-canvas').length,
+    legacyCanvases: pane.querySelectorAll('canvas:not(.semanticTerminalSurface)').length,
     errors: document.querySelectorAll('.terminalRendererError').length,
     host: harness.getSnapshot().state.dimensions,
     geometry: harness.getGeometryDiagnostics(),

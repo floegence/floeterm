@@ -34,4 +34,3 @@ func clampTerminalSize(cols, rows int) (int, int) {
 	}
 	return cols, rows
 }
-

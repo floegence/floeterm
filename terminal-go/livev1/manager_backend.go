@@ -58,28 +58,15 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		int(request.Cols),
 		int(request.Rows),
 		terminal.LiveSubscriber{
-			OnOutput: func(event terminal.TerminalOutputEvent) bool {
-				if subscriber.OnOutput == nil {
-					return false
-				}
-				return subscriber.OnOutput(OutputRecord{
-					Sequence:           uint64(event.Sequence),
-					TimestampMs:        uint64(event.TimestampMs),
-					GeometryGeneration: event.Geometry.Generation,
-					Cols:               uint32(event.Geometry.Cols),
-					Rows:               uint32(event.Geometry.Rows),
-					Data:               event.Data,
-				})
-			},
 			OnGeometry: func(geometry terminal.TerminalGeometry) bool {
 				if subscriber.OnGeometry == nil {
 					return false
 				}
 				return subscriber.OnGeometry(EffectiveGeometry{
-					Generation:             geometry.Generation,
-					OutputSequenceBoundary: uint64(geometry.OutputSequenceBoundary),
-					Cols:                   uint32(geometry.Cols),
-					Rows:                   uint32(geometry.Rows),
+					Generation:           geometry.Generation,
+					PresentationSequence: uint64(geometry.PresentationSequence),
+					Cols:                 uint32(geometry.Cols),
+					Rows:                 uint32(geometry.Rows),
 				})
 			},
 			OnPresentation: func(p terminal.SemanticPresentation) bool {
@@ -116,20 +103,11 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 	} else {
 		attachment.Geometry = session.CanonicalGeometry()
 	}
-	if subscriber.OnPresentation != nil {
-		if p, ok := session.LatestPresentation(); ok {
-			if encoded, encodeErr := terminal.EncodeSemanticPresentation(p); encodeErr == nil {
-				_ = subscriber.OnPresentation(encoded)
-			}
-		}
-	}
 	return Attached{
-			HistoryBoundarySequence: uint64(attachment.HistoryBoundarySequence),
-			HistoryGeneration:       uint64(attachment.HistoryGeneration),
-			HistoryStartSequence:    uint64(attachment.HistoryStartSequence),
-			GeometryGeneration:      attachment.Geometry.Generation,
-			Cols:                    uint32(attachment.Geometry.Cols),
-			Rows:                    uint32(attachment.Geometry.Rows),
+			PresentationSequence: attachment.Geometry.PresentationSequence,
+			GeometryGeneration:   attachment.Geometry.Generation,
+			Cols:                 uint32(attachment.Geometry.Cols),
+			Rows:                 uint32(attachment.Geometry.Rows),
 		}, func() {
 			attachment.Detach()
 			session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
@@ -172,16 +150,16 @@ func (b *ManagerBackend) Resize(_ context.Context, attachment Attach, resize Res
 	state := session.Controller()
 	if state.AttachmentID != attachment.ConnectionID {
 		canonical := session.CanonicalGeometry()
-		return EffectiveGeometry{Generation: canonical.Generation, OutputSequenceBoundary: uint64(canonical.OutputSequenceBoundary), Cols: uint32(canonical.Cols), Rows: uint32(canonical.Rows)}, nil
+		return EffectiveGeometry{Generation: canonical.Generation, PresentationSequence: canonical.PresentationSequence, Cols: uint32(canonical.Cols), Rows: uint32(canonical.Rows)}, nil
 	}
 	geometry, err := session.ApplySemanticControllerSize(attachment.ConnectionID, int(resize.Cols), int(resize.Rows), false)
 	if err != nil {
 		return EffectiveGeometry{}, err
 	}
 	return EffectiveGeometry{
-		Generation:             geometry.Generation,
-		OutputSequenceBoundary: uint64(geometry.OutputSequenceBoundary),
-		Cols:                   uint32(geometry.Cols),
-		Rows:                   uint32(geometry.Rows),
+		Generation:           geometry.Generation,
+		PresentationSequence: uint64(geometry.PresentationSequence),
+		Cols:                 uint32(geometry.Cols),
+		Rows:                 uint32(geometry.Rows),
 	}, nil
 }

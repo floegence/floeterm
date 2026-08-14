@@ -1,7 +1,6 @@
 package terminal
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -354,9 +353,6 @@ func (h *reentrantContextWorkHandler) OnTerminalSemanticWorkStateChanged(_ strin
 	h.reentered <- "work"
 }
 
-func (h *contextWorkCaptureHandler) OnTerminalData(_ string, event TerminalOutputEvent) {
-	h.data = append(h.data, append([]byte(nil), event.Data...))
-}
 func (*contextWorkCaptureHandler) OnTerminalNameChanged(string, string, string, string) {}
 func (*contextWorkCaptureHandler) OnTerminalSessionCreated(*Session)                    {}
 func (*contextWorkCaptureHandler) OnTerminalSessionClosed(string)                       {}
@@ -917,54 +913,6 @@ func TestLocalWorkingDirectoryContextChangeNotifiesClearedWork(t *testing.T) {
 
 	if len(handler.contexts) != 1 || len(handler.works) != 1 || handler.works[0].Phase != TerminalWorkUnknown {
 		t.Fatalf("cwd callbacks context=%+v work=%+v", handler.contexts, handler.works)
-	}
-}
-
-func TestStandardOSCIsPreservedInHistoryAndLiveOutput(t *testing.T) {
-	session := newExecutionContextTestSession()
-	handler := &contextWorkCaptureHandler{}
-	session.eventHandler = handler
-	session.ringBuffer = NewTerminalRingBufferWithLimits(8, 8, 64*1024)
-	session.liveAttachments = make(map[string]liveAttachment)
-	session.connections = make(map[string]*ConnectionInfo)
-	var subscriberBytes []byte
-	attachment, err := session.AttachLiveConnection("context-live", 1, 80, 24, LiveSubscriber{
-		OnOutput: func(event TerminalOutputEvent) bool {
-			subscriberBytes = append(subscriberBytes, event.Data...)
-			return true
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer attachment.Detach()
-	session.updateForegroundCommand(ForegroundCommandRunning, "ssh")
-	parts := [][]byte{
-		[]byte("\x1b]2;root@host.example\a"),
-		[]byte("\x1b]7;file://host.example/root\x1b"),
-		[]byte("\\"),
-	}
-	for _, part := range parts {
-		session.processRawPTYData(part)
-	}
-	history, err := session.GetHistoryFromSequence(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var historyBytes []byte
-	for _, chunk := range history {
-		historyBytes = append(historyBytes, chunk.Data...)
-	}
-	var liveBytes []byte
-	for _, chunk := range handler.data {
-		liveBytes = append(liveBytes, chunk...)
-	}
-	want := bytes.Join(parts, nil)
-	if !bytes.Equal(historyBytes, want) || !bytes.Equal(liveBytes, want) || !bytes.Equal(subscriberBytes, want) {
-		t.Fatalf("OSC bytes changed: history=%q handler=%q subscriber=%q want=%q", historyBytes, liveBytes, subscriberBytes, want)
-	}
-	if got := session.ToSessionInfo().OutputActivity.Phase; got != OutputActivityUnknown {
-		t.Fatalf("standard OSC produced output activity: %s", got)
 	}
 }
 

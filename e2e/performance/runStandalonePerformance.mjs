@@ -271,7 +271,7 @@ const visibleCanvas = async page => {
   const index = await page.locator('canvas').evaluateAll(canvases => canvases.findIndex(canvas => (
     getComputedStyle(canvas).opacity !== '0' && canvas.width > 0 && canvas.height > 0
   )));
-  if (index < 0) throw new Error('visible Beamterm canvas was not found');
+  if (index < 0) throw new Error('visible semantic canvas was not found');
   return page.locator('canvas').nth(index);
 };
 
@@ -301,9 +301,7 @@ const collectGoroutineProfile = async page => await page.evaluate(async () => {
 });
 
 const clearTerminal = async page => {
-  await page.evaluate(() => window.__floetermPerfHarness.clear());
-  await page.waitForTimeout(250);
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+	await resetTerminalState(page);
 };
 
 const resetTerminalState = async page => {
@@ -318,10 +316,10 @@ const resetTerminalState = async page => {
 const settleVisibleCanvas = async page => {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.evaluate(() => {
-    const canvas = Array.from(document.querySelectorAll('canvas')).find(candidate => (
+      const canvas = Array.from(document.querySelectorAll('canvas')).find(candidate => (
       getComputedStyle(candidate).opacity !== '0' && candidate.width > 0 && candidate.height > 0
     ));
-    canvas?.getContext('webgl2')?.finish();
+    canvas?.getContext('2d');
   });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
 };
@@ -375,7 +373,7 @@ const report = {
     logical_cpu_count: os.cpus().length,
     total_memory_bytes: os.totalmem(),
     url: baseURL,
-    browser_mode: 'headed_hardware_webgl2',
+  browser_mode: 'headed_semantic_canvas',
   },
   metrics: {},
   functional: {},
@@ -410,13 +408,9 @@ try {
     const canvas = Array.from(document.querySelectorAll('canvas')).find(candidate => (
       getComputedStyle(candidate).opacity !== '0' && candidate.width > 0 && candidate.height > 0
     ));
-    if (!canvas) throw new Error('visible Beamterm canvas was not found');
-    const gl = canvas.getContext('webgl2');
-    if (!gl) throw new Error('Beamterm WebGL2 context was not available');
-    const debug = gl.getExtension('WEBGL_debug_renderer_info');
-    return String(debug
-      ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL)
-      : gl.getParameter(gl.RENDERER));
+    if (!canvas) throw new Error('visible semantic canvas was not found');
+    if (!canvas.getContext('2d')) throw new Error('semantic 2D canvas context was not available');
+    return 'browser-2d-canvas';
   });
 
   await resetProbe(page);

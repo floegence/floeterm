@@ -54,25 +54,32 @@ func (a *SessionActor) PublishInitialPresentation() error {
 	}
 	a.sequence = 1
 	frame.History.Revision = a.sequence
+	a.geometry.PresentationSequence = a.sequence
 	return a.store.Publish(SemanticPresentation{Sequence: 1, Geometry: a.geometry, State: TerminalState{Sequence: 1}, Frame: frame})
 }
 
-func (a *SessionActor) ApplyPTYOutput(data []byte) error {
+func (a *SessionActor) ApplyPTYOutput(data []byte) (SemanticPresentation, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	state, err := a.engine.ApplyOutput(data)
 	if err != nil {
-		return err
+		return SemanticPresentation{}, err
 	}
 	frame, err := a.engine.CaptureFrame()
 	if err != nil {
-		return err
+		return SemanticPresentation{}, err
 	}
 	a.sequence++
 	frame.History.Revision = a.sequence
 	state.Sequence = a.sequence
-	p := SemanticPresentation{Sequence: a.sequence, Geometry: a.geometry, State: state, Frame: frame}
-	return a.store.Publish(p)
+	geometry := a.geometry
+	geometry.PresentationSequence = a.sequence
+	p := SemanticPresentation{Sequence: a.sequence, Geometry: geometry, State: state, Frame: frame}
+	if err := a.store.Publish(p); err != nil {
+		return SemanticPresentation{}, err
+	}
+	a.geometry = geometry
+	return p, nil
 }
 
 func (a *SessionActor) Resize(cols, rows int) error {
@@ -118,8 +125,10 @@ func (a *SessionActor) resizeToGeometryLocked(geometry TerminalGeometry) (Semant
 		return SemanticPresentation{}, a.rollbackResizeLocked(previousGeometry,
 			fmt.Errorf("semantic frame geometry %dx%d does not match resize %dx%d", frame.Width, frame.Height, geometry.Cols, geometry.Rows))
 	}
-	frame.History.Revision = a.sequence + 1
-	presentation := SemanticPresentation{Sequence: a.sequence + 1, Geometry: geometry, State: TerminalState{Sequence: a.sequence + 1}, Frame: frame}
+	nextSequence := a.sequence + 1
+	geometry.PresentationSequence = nextSequence
+	frame.History.Revision = nextSequence
+	presentation := SemanticPresentation{Sequence: nextSequence, Geometry: geometry, State: TerminalState{Sequence: nextSequence}, Frame: frame}
 	if err := a.store.Publish(presentation); err != nil {
 		return SemanticPresentation{}, a.rollbackResizeLocked(previousGeometry, err)
 	}

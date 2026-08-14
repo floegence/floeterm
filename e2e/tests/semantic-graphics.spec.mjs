@@ -44,7 +44,7 @@ test('renders and removes real Kitty graphics through the single semantic canvas
       frame: { width: presentation.frame.width, height: presentation.frame.height },
       placement,
       canvases: pane.querySelectorAll('canvas').length,
-      legacyCanvases: pane.querySelectorAll('.floeterm-beamterm-canvas').length,
+      legacyCanvases: pane.querySelectorAll('canvas:not(.semanticTerminalSurface)').length,
       rendererErrors: pane.querySelectorAll('.terminalRendererError').length,
     };
   });

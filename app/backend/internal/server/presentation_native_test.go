@@ -10,22 +10,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	terminal "github.com/floegence/floeterm/terminal-go"
 	"github.com/floegence/floeterm/terminal-go/livev1"
 )
 
 func TestRealSessionExposesSemanticPresentationAfterPTYOutput(t *testing.T) {
-	_, httpSrv := newTestServer(t)
+	srv, httpSrv := newTestServer(t)
 	created := createTestSession(t, httpSrv.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	connection := attachLiveTestConnection(t, ctx, httpSrv.URL, created.ID, "semantic-http")
-	defer connection.Close(1000, "done")
-	input, _ := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("semantic界\n")})
-	if err := connection.Write(ctx, 2, input); err != nil {
+	connection := attachLive(t, ctx, httpSrv.URL, created.ID, "semantic-http")
+	session, ok := srv.manager.GetSession(created.ID)
+	if !ok {
+		t.Fatal("session disappeared")
+	}
+	waitForInitialPresentation(t, ctx, session)
+	input, _ := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("printf 'semantic界'\r")})
+	if err := connection.conn.Write(ctx, websocket.MessageBinary, input); err != nil {
 		t.Fatal(err)
 	}
-	_ = readOutputContaining(t, ctx, connection, []byte("semantic"))
+	_ = waitPresentationContaining(t, ctx, connection, []byte("semantic"))
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		response, err := http.Get(httpSrv.URL + "/api/sessions/" + created.ID + "/presentation")

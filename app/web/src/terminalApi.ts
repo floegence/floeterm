@@ -2,9 +2,8 @@ import type {
   SemanticHistoryPage,
   SemanticHistoryRequest,
   SemanticPresentation,
-  TerminalID,
-  TerminalSessionInfo,
 } from '@floegence/floeterm-terminal-web/semantic';
+import type { TerminalID, TerminalSessionInfo } from '@floegence/floeterm-terminal-web/sessions';
 import { validateHistoryPage, validatePresentation } from '@floegence/floeterm-terminal-web/semantic';
 import {
   StreamKind,
@@ -76,9 +75,6 @@ export const createTerminalRuntime = (connId: string) => {
       return await openBrowserWebSocketByteStream(url.toString());
     },
     control: {
-      clear: async sessionId => {
-        await requestNoContent(`/api/sessions/${encodeURIComponent(sessionId)}/clear`, { method: 'POST' });
-      },
       semanticHistory: async (
         sessionId: TerminalID,
         connectionId: string,

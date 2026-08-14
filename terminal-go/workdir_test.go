@@ -148,8 +148,6 @@ type workdirNameChangeHandler struct {
 	changes []cwdSignal
 }
 
-func (h *workdirNameChangeHandler) OnTerminalData(string, TerminalOutputEvent) {}
-
 func (h *workdirNameChangeHandler) OnTerminalNameChanged(_ string, _ string, newName string, workingDir string) {
 	h.changes = append(h.changes, cwdSignal{path: workingDir, source: newName})
 }

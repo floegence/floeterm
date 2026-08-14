@@ -16,9 +16,8 @@ describe('reference app resize ownership', () => {
     expect(appSource).toContain('new ResizeObserver');
     expect(appSource).toContain('createSemanticResizeController');
     expect(appSource).toContain('class="semanticTerminalSurface"');
-    expect(appSource).toContain('const attached = await props.transport.attachWithHistoryBoundary(');
-    expect(appSource).not.toContain('attachWithHistoryBoundary(props.sessionId, 199, 48)');
-    expect(appSource).not.toContain('Beamterm WebGL2 unavailable');
+    expect(appSource).toContain('const attached = await props.transport.attachWithPresentation(');
+    expect(appSource).not.toContain('attachWithPresentation(props.sessionId, 199, 48)');
     expect(appSource).not.toContain('<div class="terminalSurface" ref={terminal.mount} />\n\t\t  <canvas class="semanticTerminalSurface"');
     expect(appSource).not.toContain('createSolidTerminal');
     expect(appSource).not.toContain("rendererType: 'webgl'");

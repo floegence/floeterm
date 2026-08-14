@@ -24,20 +24,13 @@ export const evaluateStandalonePerformanceReport = report => {
   const failures = [];
   check(
     failures,
-    report?.runner?.browser_mode === 'headed_hardware_webgl2',
-    'performance runner must use headed hardware WebGL2',
+    report?.runner?.browser_mode === 'headed_semantic_canvas',
+    'performance runner must use headed semantic canvas',
   );
-  const gpuRenderer = typeof report?.runner?.gpu_renderer === 'string'
+  const canvasRenderer = typeof report?.runner?.gpu_renderer === 'string'
     ? report.runner.gpu_renderer.trim()
     : '';
-  check(failures, gpuRenderer.length > 0, 'performance runner GPU renderer missing');
-  if (gpuRenderer.length > 0) {
-    check(
-      failures,
-      !/(swiftshader|software|llvmpipe)/i.test(gpuRenderer),
-      'performance runner used a software GPU renderer',
-    );
-  }
+  check(failures, canvasRenderer === 'browser-2d-canvas', 'performance runner semantic canvas renderer missing');
   const metrics = report?.metrics;
   const key = metrics?.key_to_paint;
   const paste = metrics?.large_paste;

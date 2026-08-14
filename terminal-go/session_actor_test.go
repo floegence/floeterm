@@ -105,7 +105,8 @@ func TestSessionActorAppliesOutputBeforeCapturingAtomicPresentation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := actor.ApplyPTYOutput([]byte("bytes")); err != nil {
+	produced, err := actor.ApplyPTYOutput([]byte("bytes"))
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(engine.calls) != 2 || engine.calls[0] != "apply" || engine.calls[1] != "capture" {
@@ -114,6 +115,9 @@ func TestSessionActorAppliesOutputBeforeCapturingAtomicPresentation(t *testing.T
 	p, ok := store.Latest()
 	if !ok || p.Sequence != 1 || p.State.Sequence != 1 || p.Geometry.Cols != 80 || p.Frame.Rows[0].Cells[0].Text != "界" {
 		t.Fatalf("presentation=%+v", p)
+	}
+	if produced.Sequence != p.Sequence || produced.Geometry.PresentationSequence != produced.Sequence {
+		t.Fatalf("actor cut=%+v stored=%+v", produced, p)
 	}
 }
 
@@ -140,7 +144,7 @@ func TestSessionActorOwnsConcurrentAdmissionSequence(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := actor.ApplyPTYOutput([]byte("x")); err != nil {
+			if _, err := actor.ApplyPTYOutput([]byte("x")); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -207,7 +211,7 @@ func TestSessionActorReadsOwnedSemanticHistoryWithoutMovingPresentation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := actor.ApplyPTYOutput([]byte("live")); err != nil {
+	if _, err := actor.ApplyPTYOutput([]byte("live")); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := store.Latest()

@@ -5,22 +5,19 @@ import test from 'node:test';
 const workflowPath = new URL('./release.yml', import.meta.url);
 const terminalWebPackagePath = new URL('../../terminal-web/package.json', import.meta.url);
 
-test('manual renderer releases skip terminal-web while tags retain the full chain', async () => {
+test('top-level release tags publish only the semantic terminal web package', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
 
-  assert.match(workflow, /workflow_dispatch:\s*\n\s+inputs:\s*\n\s+target:/);
-  assert.match(workflow, /options:\s*\n\s+- all\s*\n\s+- renderer/);
-  assert.match(workflow, /default:\s*all/);
-  assert.match(
-    workflow,
-    /npm-publish-terminal-web:[\s\S]*?if:\s*github\.event_name != 'workflow_dispatch' \|\| inputs\.target == 'all'/,
-  );
   assert.match(workflow, /push:\s*\n\s+tags:\s*\n\s+- "v\*\.\*\.\*"/);
+  assert.match(workflow, /npm-publish-terminal-web:/);
+  assert.match(workflow, /npm publish --access public --provenance/);
+  assert.doesNotMatch(workflow, /beamterm|renderer|wasm-pack/i);
 });
 
-test('checkpoint release publishes the terminal web minor version', async () => {
+test('semantic-only release publishes terminal-web 0.15.0', async () => {
   const manifest = JSON.parse(await readFile(terminalWebPackagePath, 'utf8'));
 
   assert.equal(manifest.name, '@floegence/floeterm-terminal-web');
-  assert.equal(manifest.version, '0.14.1');
+  assert.equal(manifest.version, '0.15.0');
+  assert.deepEqual(manifest.dependencies, {});
 });

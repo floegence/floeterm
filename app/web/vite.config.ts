@@ -1,6 +1,5 @@
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
-import wasm from 'vite-plugin-wasm';
 
 const env = (globalThis as typeof globalThis & {
   process?: { env?: Record<string, string | undefined> };
@@ -18,7 +17,7 @@ const terminalWebLiveSrc = decodeURIComponent(new URL('../../terminal-web/src/en
 const terminalWebSemanticSrc = decodeURIComponent(new URL('../../terminal-web/src/entries/semantic.ts', import.meta.url).pathname);
 
 export default defineConfig({
-  plugins: [wasm(), solid()],
+  plugins: [solid()],
   resolve: {
     alias: [
       { find: '@floegence/floeterm-terminal-web/semantic', replacement: terminalWebSemanticSrc },

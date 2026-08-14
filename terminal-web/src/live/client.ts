@@ -6,14 +6,12 @@ import {
   decodeAttached,
   decodeGeometryChanged,
   decodePresentation,
-  decodeOutputBatch,
   decodeProtocolError,
   decodeResizeApplied,
   encodeAttach,
   encodeInput,
   encodeResize,
   type Attached,
-  type OutputRecord,
   type TerminalLiveFrame,
 } from './codec.js';
 
@@ -58,9 +56,7 @@ export type TerminalLiveAttachRequest = Readonly<{
 }>;
 
 export type TerminalLiveAttached = Readonly<{
-  historyBoundarySequence: number;
-  historyGeneration: number;
-  historyStartSequence: number;
+  presentationSequence: number;
   geometryGeneration: number;
   cols: number;
   rows: number;
@@ -68,7 +64,7 @@ export type TerminalLiveAttached = Readonly<{
 
 export type TerminalLiveGeometry = Readonly<{
   generation: number;
-  outputSequenceBoundary: number;
+  presentationSequence: number;
   cols: number;
   rows: number;
 }>;
@@ -92,7 +88,6 @@ export type TerminalLiveConnection = Readonly<{
 export type ConnectTerminalLiveOptions = Readonly<{
   openStream: (kind: typeof StreamKind, options?: Readonly<{ signal?: AbortSignal }>) => Promise<TerminalByteStream>;
   attach: TerminalLiveAttachRequest;
-  onOutputBatch: (records: readonly OutputRecord[], geometry: TerminalLiveGeometry) => void;
   onPresentation?: (presentation: unknown) => void;
   onGeometry?: (geometry: TerminalLiveGeometry) => void;
   onClosed?: (reason: TerminalLiveCloseReason) => void;
@@ -122,20 +117,11 @@ const toSafeNumber = (value: bigint, name: string): number => {
   return number;
 };
 
-type PendingGeometry = Readonly<{
-  geometry: TerminalLiveGeometry;
-  outputSequenceBoundary: bigint;
-  resizeSequence?: bigint;
-}>;
-
 class TerminalLiveConnectionImpl implements TerminalLiveConnection {
   readonly attached: TerminalLiveAttached;
   private inputSequence = 0n;
   private resizeSequence = 0n;
   private queuedInputBytes = 0;
-  private nextOutputSequence: bigint;
-  private lastOutputSequence: bigint;
-  private pendingGeometries: PendingGeometry[] = [];
   private writeTail: Promise<void> = Promise.resolve();
   private readonly resizeWaiters = new Map<bigint, {
     requested: TerminalLiveResizeResult['requested'];
@@ -150,28 +136,23 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     private readonly stream: TerminalByteStream,
     private readonly reader: FrameReader,
     attached: Attached,
-    private readonly onOutputBatch: (records: readonly OutputRecord[], geometry: TerminalLiveGeometry) => void,
     private readonly onPresentation: ((presentation: unknown) => void) | undefined,
     private readonly onGeometry: ((geometry: TerminalLiveGeometry) => void) | undefined,
     private readonly onClosed: ((reason: TerminalLiveCloseReason) => void) | undefined,
     private readonly onError: ((error: Error) => void) | undefined,
   ) {
     this.attached = {
-      historyBoundarySequence: toSafeNumber(attached.historyBoundarySequence, 'historyBoundarySequence'),
-      historyGeneration: toSafeNumber(attached.historyGeneration, 'historyGeneration'),
-      historyStartSequence: toSafeNumber(attached.historyStartSequence, 'historyStartSequence'),
+      presentationSequence: toSafeNumber(attached.presentationSequence, 'presentationSequence'),
       geometryGeneration: toSafeNumber(attached.geometryGeneration, 'geometryGeneration'),
       cols: attached.cols,
       rows: attached.rows,
     };
     this.geometry = {
       generation: this.attached.geometryGeneration,
-      outputSequenceBoundary: this.attached.historyBoundarySequence,
+      presentationSequence: this.attached.presentationSequence,
       cols: this.attached.cols,
       rows: this.attached.rows,
     };
-    this.nextOutputSequence = attached.historyBoundarySequence + 1n;
-    this.lastOutputSequence = attached.historyBoundarySequence;
     this.onGeometry?.(this.geometry);
   }
 
@@ -253,40 +234,19 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
           return;
         }
         switch (frame.type) {
-          case TerminalLiveFrameType.OutputBatch:
-          {
-            const batch = decodeOutputBatch(frame);
-            const records = batch.records;
-            for (const record of records) {
-              if (record.sequence !== this.nextOutputSequence) {
-                throw new Error(
-                  `expected output sequence ${this.nextOutputSequence}, received ${record.sequence}`,
-                );
-              }
-              this.nextOutputSequence += 1n;
-            }
-            const batchGeometry = {
-              generation: toSafeNumber(batch.geometryGeneration, 'geometryGeneration'),
-              outputSequenceBoundary: toSafeNumber(records[0]!.sequence - 1n, 'outputSequenceBoundary'),
-              cols: batch.cols,
-              rows: batch.rows,
-            };
-            this.applyGeometry(batchGeometry);
-            this.onOutputBatch(records, batchGeometry);
-            if (records.length > 0) this.lastOutputSequence = records[records.length - 1]!.sequence;
-            this.flushPendingGeometries();
-            break;
-          }
           case TerminalLiveFrameType.ResizeApplied: {
             const applied = decodeResizeApplied(frame);
             const waiter = this.resizeWaiters.get(applied.sequence);
             if (!waiter) throw new Error('unexpected terminal live resize acknowledgement');
-            this.queueGeometry({
+            const geometry = {
               generation: toSafeNumber(applied.geometryGeneration, 'geometryGeneration'),
-              outputSequenceBoundary: toSafeNumber(applied.outputSequenceBoundary, 'outputSequenceBoundary'),
+              presentationSequence: toSafeNumber(applied.presentationSequence, 'presentationSequence'),
               cols: applied.cols,
               rows: applied.rows,
-            }, applied.outputSequenceBoundary, applied.sequence);
+            };
+            this.applyGeometry(geometry);
+            this.resizeWaiters.delete(applied.sequence);
+            waiter.resolve({ requested: waiter.requested, effective: geometry });
             break;
           }
           case TerminalLiveFrameType.Presentation:
@@ -294,12 +254,12 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
             break;
           case TerminalLiveFrameType.GeometryChanged: {
             const geometry = decodeGeometryChanged(frame);
-            this.queueGeometry({
+            this.applyGeometry({
               generation: toSafeNumber(geometry.generation, 'geometryGeneration'),
-              outputSequenceBoundary: toSafeNumber(geometry.outputSequenceBoundary, 'outputSequenceBoundary'),
+              presentationSequence: toSafeNumber(geometry.presentationSequence, 'presentationSequence'),
               cols: geometry.cols,
               rows: geometry.rows,
-            }, geometry.outputSequenceBoundary);
+            });
             break;
           }
           case TerminalLiveFrameType.SessionClosed:
@@ -326,43 +286,6 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
   private rejectResizeWaiters(error: Error): void {
     for (const waiter of this.resizeWaiters.values()) waiter.reject(error);
     this.resizeWaiters.clear();
-    this.pendingGeometries = [];
-  }
-
-  private queueGeometry(
-    geometry: TerminalLiveGeometry,
-    outputSequenceBoundary: bigint,
-    resizeSequence?: bigint,
-  ): void {
-    this.pendingGeometries.push({ geometry, outputSequenceBoundary, resizeSequence });
-    this.flushPendingGeometries();
-  }
-
-  private flushPendingGeometries(): void {
-    if (this.pendingGeometries.length === 0) return;
-    const ready: PendingGeometry[] = [];
-    const waiting: PendingGeometry[] = [];
-    for (const pending of this.pendingGeometries) {
-      (pending.outputSequenceBoundary <= this.lastOutputSequence ? ready : waiting).push(pending);
-    }
-    this.pendingGeometries = waiting;
-    ready.sort((left, right) => (
-      left.outputSequenceBoundary === right.outputSequenceBoundary
-        ? left.geometry.generation - right.geometry.generation
-        : left.outputSequenceBoundary < right.outputSequenceBoundary ? -1 : 1
-    ));
-    for (const pending of ready) {
-      this.applyGeometry(pending.geometry);
-      if (pending.resizeSequence !== undefined) {
-        const waiter = this.resizeWaiters.get(pending.resizeSequence);
-        if (!waiter) continue;
-        this.resizeWaiters.delete(pending.resizeSequence);
-        waiter.resolve({
-          requested: waiter.requested,
-          effective: pending.geometry,
-        });
-      }
-    }
   }
 
   private applyGeometry(next: TerminalLiveGeometry): void {
@@ -371,7 +294,7 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
       if (next.cols !== this.geometry.cols || next.rows !== this.geometry.rows) {
         throw new Error('terminal live geometry changed without advancing its generation');
       }
-      if (next.outputSequenceBoundary > this.geometry.outputSequenceBoundary) {
+      if (next.presentationSequence > this.geometry.presentationSequence) {
         this.geometry = next;
       }
       return;
@@ -420,7 +343,6 @@ export const connectTerminalLive = async (options: ConnectTerminalLiveOptions): 
       stream,
       reader,
       decodeAttached(first),
-      options.onOutputBatch,
       options.onPresentation,
       options.onGeometry,
       options.onClosed,

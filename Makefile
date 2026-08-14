@@ -5,7 +5,7 @@ SHELL := /bin/bash
 GO_MODULES := terminal-go app/backend
 
 .PHONY: check
-check: release-workflow-check go-test-race go-vuln renderer-check web-check e2e-check
+check: release-workflow-check go-test-race go-vuln web-check e2e-check
 
 .PHONY: release-workflow-check
 release-workflow-check:
@@ -28,12 +28,10 @@ go-vuln:
 	done
 
 .PHONY: terminal-web-prepare
-terminal-web-prepare: renderer-check
+terminal-web-prepare:
 	@set -euo pipefail; \
 	echo "==> terminal-web npm ci"; \
 	(cd terminal-web && npm ci); \
-	echo "==> terminal-web install local renderer under test"; \
-	(cd terminal-web && npm install --no-save --package-lock=false ../beamterm-renderer); \
 	echo "==> terminal-web Chromium runtime"; \
 	(cd terminal-web && npm exec playwright install chromium); \
 	echo "==> terminal-web lint/test/browser/build/package artifact"; \
@@ -41,12 +39,6 @@ terminal-web-prepare: renderer-check
 	echo "==> terminal-web npm audit"; \
 	(cd terminal-web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low) || \
 	(cd terminal-web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low)
-
-.PHONY: renderer-check
-renderer-check:
-	@set -euo pipefail; \
-	echo "==> beamterm-renderer source/build/package checks"; \
-	(cd beamterm-renderer && npm run check)
 
 .PHONY: app-web-prepare
 app-web-prepare: terminal-web-prepare
@@ -96,6 +88,14 @@ run: app-web-prepare
 native-check:
 	@(cd terminal-go && GOWORK=off go test -race -tags floeterm_native ./...)
 	@(cd app/backend && GOWORK=off go test -race -tags floeterm_native ./...)
+
+.PHONY: native-sanitizer-check
+native-sanitizer-check:
+	@set -euo pipefail; \
+	if [[ "$$(uname -s)" == "Linux" ]]; then \
+		(cd terminal-go && GOWORK=off go test -asan -tags floeterm_native ./...); \
+	fi; \
+	(cd terminal-go && GOWORK=off CGO_CFLAGS='-fsanitize=undefined' CGO_LDFLAGS='-fsanitize=undefined' go test -tags floeterm_native ./...)
 
 .PHONY: dev
 dev:

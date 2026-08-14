@@ -1,21 +1,14 @@
-import type {
-  TerminalAtomicAttachResult,
-  TerminalAtomicTransport,
-  TerminalDataChunk,
-  TerminalDataEvent,
-  TerminalEventSource,
-  TerminalID,
-  TerminalForegroundCommandUpdateEvent,
-  TerminalOutputActivityUpdateEvent,
-  TerminalExecutionContextUpdateEvent,
-  TerminalWorkStateUpdateEvent,
-  TerminalNameUpdateEvent,
-  TerminalSessionInfo,
-  TerminalHistoryPage,
-  TerminalHistoryCheckpoint,
-  TerminalGeometryEvent,
-} from '../types.js';
 import type { SemanticHistoryPage, SemanticHistoryRequest } from '../semantic/presentation.js';
+import type {
+  TerminalExecutionContextUpdateEvent,
+  TerminalForegroundCommandUpdateEvent,
+  TerminalGeometryEvent,
+  TerminalID,
+  TerminalNameUpdateEvent,
+  TerminalOutputActivityUpdateEvent,
+  TerminalSessionInfo,
+  TerminalWorkStateUpdateEvent,
+} from '../types.js';
 import {
   connectTerminalLive,
   type ConnectTerminalLiveOptions,
@@ -25,30 +18,7 @@ import {
 } from './client.js';
 import { StreamKind } from './codec.js';
 
-export type TerminalLiveControlPlane = Readonly<{
-  history(sessionId: TerminalID, startSeq: number, endSeq: number): Promise<TerminalDataChunk[]>;
-  historyPage(
-    sessionId: TerminalID,
-    startSequence: number,
-    endSequence: number,
-    historyGeneration: number,
-  ): Promise<TerminalHistoryPage>;
-  clear(sessionId: TerminalID): Promise<void>;
-  semanticHistory(
-    sessionId: TerminalID,
-    connectionId: string,
-    transportGeneration: number,
-    request: SemanticHistoryRequest,
-  ): Promise<SemanticHistoryPage>;
-  commitHistoryCheckpoint?(sessionId: TerminalID, checkpoint: TerminalHistoryCheckpoint): Promise<void>;
-  listSessions?(): Promise<TerminalSessionInfo[]>;
-  createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
-  deleteSession?(sessionId: TerminalID): Promise<void>;
-  renameSession?(sessionId: TerminalID, newName: string): Promise<void>;
-}>;
-
 export type SemanticTerminalLiveControlPlane = Readonly<{
-  clear(sessionId: TerminalID): Promise<void>;
   semanticHistory(
     sessionId: TerminalID,
     connectionId: string,
@@ -61,7 +31,11 @@ export type SemanticTerminalLiveControlPlane = Readonly<{
   renameSession?(sessionId: TerminalID, newName: string): Promise<void>;
 }>;
 
-export type TerminalLiveAttachResult = TerminalAtomicAttachResult & Readonly<{
+export type TerminalLiveAttachResult = Readonly<{
+  presentationSequence: number;
+  geometryGeneration: number;
+  cols: number;
+  rows: number;
   runtimeAttachGeneration: number;
 }>;
 
@@ -86,29 +60,39 @@ export type TerminalLiveAttachmentLifecycleEvent = Readonly<{
   reason?: TerminalLiveAttachmentCloseReason;
 }>;
 
-export interface TerminalLiveEventSource extends TerminalEventSource {
+export type SemanticTerminalLiveEventSource = Readonly<{
+  onTerminalPresentation(sessionId: TerminalID, handler: (presentation: unknown) => void): () => void;
+  onTerminalGeometry(sessionId: TerminalID, handler: (event: TerminalGeometryEvent) => void): () => void;
   onTerminalLiveAttachmentLifecycle(
     sessionId: TerminalID,
     handler: (event: TerminalLiveAttachmentLifecycleEvent) => void,
   ): () => void;
-}
-
-export type TerminalLiveTransport = Omit<TerminalAtomicTransport, 'attachWithHistoryBoundary'> & Readonly<{
-  attachWithHistoryBoundary(sessionId: TerminalID, cols: number, rows: number): Promise<TerminalLiveAttachResult>;
-  resizeWithEffectiveGeometry(
+  onSessionDeleted(sessionId: TerminalID, handler: () => void): () => void;
+  onTerminalNameUpdate?(
     sessionId: TerminalID,
-    cols: number,
-    rows: number,
-  ): Promise<TerminalLiveResizeAppliedResult>;
-  semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryPage>;
-  forgetSession(sessionId: string): void;
-  syncConnectionEpoch(key: object | null): void;
-  dispose(): void;
+    handler: (event: TerminalNameUpdateEvent) => void,
+  ): () => void;
+  onTerminalForegroundCommandUpdate?(
+    sessionId: TerminalID,
+    handler: (event: TerminalForegroundCommandUpdateEvent) => void,
+  ): () => void;
+  onTerminalOutputActivityUpdate?(
+    sessionId: TerminalID,
+    handler: (event: TerminalOutputActivityUpdateEvent) => void,
+  ): () => void;
+  onTerminalExecutionContextUpdate?(
+    sessionId: TerminalID,
+    handler: (event: TerminalExecutionContextUpdateEvent) => void,
+  ): () => void;
+  onTerminalWorkStateUpdate?(
+    sessionId: TerminalID,
+    handler: (event: TerminalWorkStateUpdateEvent) => void,
+  ): () => void;
 }>;
 
 export type SemanticTerminalLiveTransport = Readonly<{
   attach(sessionId: TerminalID, cols: number, rows: number): Promise<void>;
-  attachWithHistoryBoundary(sessionId: TerminalID, cols: number, rows: number): Promise<TerminalLiveAttachResult>;
+  attachWithPresentation(sessionId: TerminalID, cols: number, rows: number): Promise<TerminalLiveAttachResult>;
   resize(sessionId: TerminalID, cols: number, rows: number): Promise<void>;
   resizeWithEffectiveGeometry(
     sessionId: TerminalID,
@@ -116,7 +100,6 @@ export type SemanticTerminalLiveTransport = Readonly<{
     rows: number,
   ): Promise<TerminalLiveResizeAppliedResult>;
   sendInput(sessionId: TerminalID, input: string): Promise<void>;
-  clear(sessionId: TerminalID): Promise<void>;
   semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryPage>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
   createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
@@ -127,43 +110,32 @@ export type SemanticTerminalLiveTransport = Readonly<{
   dispose(): void;
 }>;
 
-export type CreateTerminalLiveTransportOptions = Readonly<{
-  connectionId: string;
-  openStream: ConnectTerminalLiveOptions['openStream'];
-  control: TerminalLiveControlPlane;
-  controlEvents?: TerminalEventSource;
-  onError?: (sessionId: string, error: Error) => void;
-}>;
+type MetadataEventSource = Pick<SemanticTerminalLiveEventSource,
+  | 'onTerminalNameUpdate'
+  | 'onTerminalForegroundCommandUpdate'
+  | 'onTerminalOutputActivityUpdate'
+  | 'onTerminalExecutionContextUpdate'
+  | 'onTerminalWorkStateUpdate'>;
 
 export type CreateSemanticTerminalLiveTransportOptions = Readonly<{
   connectionId: string;
   openStream: ConnectTerminalLiveOptions['openStream'];
   control: SemanticTerminalLiveControlPlane;
-  controlEvents?: TerminalEventSource;
+  controlEvents?: MetadataEventSource;
   onError?: (sessionId: string, error: Error) => void;
-}>;
-
-export type TerminalLiveTransportBundle = Readonly<{
-  transport: TerminalLiveTransport;
-  eventSource: TerminalLiveEventSource;
 }>;
 
 export type SemanticTerminalLiveTransportBundle = Readonly<{
   transport: SemanticTerminalLiveTransport;
-  eventSource: TerminalLiveEventSource;
+  eventSource: SemanticTerminalLiveEventSource;
 }>;
 
-type LiveEntry = {
-  generation: number;
-  connection: TerminalLiveConnection;
-};
-
+type LiveEntry = { generation: number; connection: TerminalLiveConnection };
 const textEncoder = new TextEncoder();
 
 export const createSemanticTerminalLiveTransport = (
   options: CreateSemanticTerminalLiveTransportOptions,
 ): SemanticTerminalLiveTransportBundle => {
-  const listeners = new Map<string, Set<(event: TerminalDataEvent) => void>>();
   const deletionListeners = new Map<string, Set<() => void>>();
   const geometryListeners = new Map<string, Set<(event: TerminalGeometryEvent) => void>>();
   const presentationListeners = new Map<string, Set<(presentation: unknown) => void>>();
@@ -174,35 +146,21 @@ export const createSemanticTerminalLiveTransport = (
   let nextGeneration = 0;
   let disposed = false;
 
-  const emit = (sessionId: string, event: TerminalDataEvent) => {
-    for (const listener of listeners.get(sessionId) ?? []) listener(event);
-  };
-
-  const emitDeleted = (sessionId: string) => {
+  const emitDeleted = (sessionId: string): void => {
     for (const listener of deletionListeners.get(sessionId) ?? []) listener();
   };
-
-  const emitGeometry = (sessionId: string, geometry: Readonly<{
-    generation: number;
-    outputSequenceBoundary: number;
-    cols: number;
-    rows: number;
-  }>) => {
-    const event: TerminalGeometryEvent = { sessionId, ...geometry };
-    for (const listener of geometryListeners.get(sessionId) ?? []) listener(event);
+  const emitGeometry = (sessionId: string, geometry: Omit<TerminalGeometryEvent, 'sessionId'>): void => {
+    for (const listener of geometryListeners.get(sessionId) ?? []) listener({ sessionId, ...geometry });
   };
-  const emitPresentation = (sessionId: string, presentation: unknown) => {
+  const emitPresentation = (sessionId: string, presentation: unknown): void => {
     for (const listener of presentationListeners.get(sessionId) ?? []) listener(presentation);
   };
-
   const emitLifecycle = (event: TerminalLiveAttachmentLifecycleEvent): void => {
     for (const listener of lifecycleListeners.get(event.sessionId) ?? []) listener(event);
   };
-
   const isCurrentGeneration = (sessionId: string, generation: number): boolean => (
     !disposed && activeGenerations.get(sessionId) === generation
   );
-
   const closeEntry = (sessionId: string, reason: TerminalLiveAttachmentCloseReason): void => {
     const generation = activeGenerations.get(sessionId);
     if (generation === undefined) return;
@@ -215,68 +173,30 @@ export const createSemanticTerminalLiveTransport = (
     emitLifecycle({ sessionId, runtimeAttachGeneration: generation, state: 'closed', reason });
   };
 
-  const attachWithHistoryBoundary = async (sessionId: string, cols: number, rows: number): Promise<TerminalLiveAttachResult> => {
+  const attachWithPresentation = async (
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ): Promise<TerminalLiveAttachResult> => {
     if (disposed) throw new Error('terminal live transport is disposed');
     closeEntry(sessionId, 'superseded');
-    nextGeneration += 1;
-    const generation = nextGeneration;
+    const generation = ++nextGeneration;
     activeGenerations.set(sessionId, generation);
     const connection = await connectTerminalLive({
       openStream: options.openStream,
-      attach: {
-        sessionId,
-        connectionId: options.connectionId,
-        attachGeneration: generation,
-        cols,
-        rows,
-      },
-      onOutputBatch: (records, geometry) => {
-        if (!isCurrentGeneration(sessionId, generation)) return;
-        for (const record of records) {
-          const sequence = Number(record.sequence);
-          const timestampMs = Number(record.timestampMs);
-          if (!Number.isSafeInteger(sequence) || !Number.isSafeInteger(timestampMs)) {
-            const error = new Error('terminal live output metadata exceeds JavaScript safe integer range');
-            options.onError?.(sessionId, error);
-            emit(sessionId, { sessionId, type: 'error', data: new Uint8Array(), error: error.message });
-            return;
-          }
-          emit(sessionId, {
-            sessionId,
-            type: 'data',
-            data: record.data,
-            sequence,
-            timestampMs,
-            liveBatchSize: records.length,
-            geometryGeneration: geometry.generation,
-            cols: geometry.cols,
-            rows: geometry.rows,
-          });
-        }
-      },
+      attach: { sessionId, connectionId: options.connectionId, attachGeneration: generation, cols, rows },
       onPresentation: presentation => {
-        if (!isCurrentGeneration(sessionId, generation)) return;
-        emitPresentation(sessionId, presentation);
+        if (isCurrentGeneration(sessionId, generation)) emitPresentation(sessionId, presentation);
       },
       onGeometry: geometry => {
-        if (!isCurrentGeneration(sessionId, generation)) return;
-        emitGeometry(sessionId, geometry);
+        if (isCurrentGeneration(sessionId, generation)) emitGeometry(sessionId, geometry);
       },
       onClosed: reason => {
         if (!isCurrentGeneration(sessionId, generation)) return;
         activeGenerations.delete(sessionId);
         if (entries.get(sessionId)?.generation === generation) entries.delete(sessionId);
         emitLifecycle({ sessionId, runtimeAttachGeneration: generation, state: 'closed', reason });
-        if (reason === 'session_closed') {
-          emitDeleted(sessionId);
-          return;
-        }
-        emit(sessionId, {
-          sessionId,
-          type: 'error',
-          data: new Uint8Array(),
-          error: 'terminal live stream closed',
-        });
+        if (reason === 'session_closed') emitDeleted(sessionId);
       },
       onError: error => {
         if (!isCurrentGeneration(sessionId, generation)) return;
@@ -284,7 +204,6 @@ export const createSemanticTerminalLiveTransport = (
         activeGenerations.delete(sessionId);
         if (entries.get(sessionId)?.generation === generation) entries.delete(sessionId);
         emitLifecycle({ sessionId, runtimeAttachGeneration: generation, state: 'closed', reason: 'error' });
-        emit(sessionId, { sessionId, type: 'error', data: new Uint8Array(), error: error.message });
       },
     });
     if (!isCurrentGeneration(sessionId, generation)) {
@@ -295,10 +214,7 @@ export const createSemanticTerminalLiveTransport = (
     }
     entries.set(sessionId, { generation, connection });
     emitLifecycle({ sessionId, runtimeAttachGeneration: generation, state: 'attached' });
-    return {
-      ...connection.attached,
-      runtimeAttachGeneration: generation,
-    };
+    return { ...connection.attached, runtimeAttachGeneration: generation };
   };
 
   const resizeWithEffectiveGeometry = async (
@@ -320,20 +236,15 @@ export const createSemanticTerminalLiveTransport = (
   };
 
   const transport: SemanticTerminalLiveTransport = {
-    attach: async (sessionId, cols, rows) => {
-      await attachWithHistoryBoundary(sessionId, cols, rows);
-    },
-    attachWithHistoryBoundary,
-    resize: async (sessionId, cols, rows) => {
-      await resizeWithEffectiveGeometry(sessionId, cols, rows);
-    },
+    attach: async (sessionId, cols, rows) => { await attachWithPresentation(sessionId, cols, rows); },
+    attachWithPresentation,
+    resize: async (sessionId, cols, rows) => { await resizeWithEffectiveGeometry(sessionId, cols, rows); },
     resizeWithEffectiveGeometry,
     sendInput: async (sessionId, input) => {
       const entry = entries.get(sessionId);
       if (!entry) throw new Error('terminal live session is not attached');
       await entry.connection.sendInput(textEncoder.encode(String(input ?? '')));
     },
-    clear: options.control.clear,
     semanticHistory: async (sessionId, request) => {
       const entry = entries.get(sessionId);
       if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
@@ -361,17 +272,15 @@ export const createSemanticTerminalLiveTransport = (
     syncConnectionEpoch: key => {
       if (connectionEpochKey === undefined) {
         connectionEpochKey = key;
-        return;
+      } else if (connectionEpochKey !== key) {
+        connectionEpochKey = key;
+        for (const sessionId of [...activeGenerations.keys()]) closeEntry(sessionId, 'connection_epoch_changed');
       }
-      if (connectionEpochKey === key) return;
-      connectionEpochKey = key;
-      for (const sessionId of Array.from(activeGenerations.keys())) closeEntry(sessionId, 'connection_epoch_changed');
     },
     dispose: () => {
       if (disposed) return;
-      for (const sessionId of Array.from(activeGenerations.keys())) closeEntry(sessionId, 'disposed');
+      for (const sessionId of [...activeGenerations.keys()]) closeEntry(sessionId, 'disposed');
       disposed = true;
-      listeners.clear();
       deletionListeners.clear();
       geometryListeners.clear();
       presentationListeners.clear();
@@ -379,88 +288,33 @@ export const createSemanticTerminalLiveTransport = (
     },
   };
 
-  const eventSource: TerminalLiveEventSource = {
-    onTerminalData: (sessionId, handler) => {
-      const set = listeners.get(sessionId) ?? new Set();
-      set.add(handler);
-      listeners.set(sessionId, set);
-      return () => {
-        set.delete(handler);
-        if (set.size === 0) listeners.delete(sessionId);
-      };
-    },
-    onTerminalNameUpdate: options.controlEvents?.onTerminalNameUpdate
-      ? (sessionId: TerminalID, handler: (event: TerminalNameUpdateEvent) => void) => (
-        options.controlEvents!.onTerminalNameUpdate!(sessionId, handler)
-      )
-      : undefined,
-    onTerminalForegroundCommandUpdate: options.controlEvents?.onTerminalForegroundCommandUpdate
-      ? (sessionId: TerminalID, handler: (event: TerminalForegroundCommandUpdateEvent) => void) => (
-        options.controlEvents!.onTerminalForegroundCommandUpdate!(sessionId, handler)
-      )
-      : undefined,
-    onTerminalOutputActivityUpdate: options.controlEvents?.onTerminalOutputActivityUpdate
-      ? (sessionId: TerminalID, handler: (event: TerminalOutputActivityUpdateEvent) => void) => (
-        options.controlEvents!.onTerminalOutputActivityUpdate!(sessionId, handler)
-      )
-      : undefined,
-    onTerminalExecutionContextUpdate: options.controlEvents?.onTerminalExecutionContextUpdate
-      ? (sessionId: TerminalID, handler: (event: TerminalExecutionContextUpdateEvent) => void) => (
-        options.controlEvents!.onTerminalExecutionContextUpdate!(sessionId, handler)
-      )
-      : undefined,
-    onTerminalWorkStateUpdate: options.controlEvents?.onTerminalWorkStateUpdate
-      ? (sessionId: TerminalID, handler: (event: TerminalWorkStateUpdateEvent) => void) => (
-        options.controlEvents!.onTerminalWorkStateUpdate!(sessionId, handler)
-      )
-      : undefined,
-    onTerminalGeometry: (sessionId, handler) => {
-      const set = geometryListeners.get(sessionId) ?? new Set();
-      set.add(handler);
-      geometryListeners.set(sessionId, set);
-      return () => {
-        set.delete(handler);
-        if (set.size === 0) geometryListeners.delete(sessionId);
-      };
-    },
-    onTerminalPresentation: (sessionId, handler) => {
-      const set = presentationListeners.get(sessionId) ?? new Set();
-      set.add(handler); presentationListeners.set(sessionId, set);
-      return () => { set.delete(handler); if (set.size === 0) presentationListeners.delete(sessionId); };
-    },
-    onTerminalLiveAttachmentLifecycle: (sessionId, handler) => {
-      const set = lifecycleListeners.get(sessionId) ?? new Set();
-      set.add(handler);
-      lifecycleListeners.set(sessionId, set);
-      return () => {
-        set.delete(handler);
-        if (set.size === 0) lifecycleListeners.delete(sessionId);
-      };
-    },
-    onSessionDeleted: (sessionId, handler) => {
-      const set = deletionListeners.get(sessionId) ?? new Set();
-      set.add(handler);
-      deletionListeners.set(sessionId, set);
-      return () => {
-        set.delete(handler);
-        if (set.size === 0) deletionListeners.delete(sessionId);
-      };
-    },
+  const eventSource: SemanticTerminalLiveEventSource = {
+    onTerminalPresentation: (sessionId, handler) => subscribe(presentationListeners, sessionId, handler),
+    onTerminalGeometry: (sessionId, handler) => subscribe(geometryListeners, sessionId, handler),
+    onTerminalLiveAttachmentLifecycle: (sessionId, handler) => subscribe(lifecycleListeners, sessionId, handler),
+    onSessionDeleted: (sessionId, handler) => subscribe(deletionListeners, sessionId, handler),
+    onTerminalNameUpdate: options.controlEvents?.onTerminalNameUpdate,
+    onTerminalForegroundCommandUpdate: options.controlEvents?.onTerminalForegroundCommandUpdate,
+    onTerminalOutputActivityUpdate: options.controlEvents?.onTerminalOutputActivityUpdate,
+    onTerminalExecutionContextUpdate: options.controlEvents?.onTerminalExecutionContextUpdate,
+    onTerminalWorkStateUpdate: options.controlEvents?.onTerminalWorkStateUpdate,
   };
 
   return { transport, eventSource };
 };
 
-export const createTerminalLiveTransport = (
-  options: CreateTerminalLiveTransportOptions,
-): TerminalLiveTransportBundle => {
-  const semantic = createSemanticTerminalLiveTransport(options);
-  const transport: TerminalLiveTransport = Object.assign(semantic.transport, {
-    history: options.control.history,
-    historyPage: options.control.historyPage,
-    commitHistoryCheckpoint: options.control.commitHistoryCheckpoint,
-  });
-  return { transport, eventSource: semantic.eventSource };
+const subscribe = <T>(
+  listeners: Map<string, Set<(event: T) => void>>,
+  sessionId: string,
+  handler: (event: T) => void,
+): (() => void) => {
+  const set = listeners.get(sessionId) ?? new Set();
+  set.add(handler);
+  listeners.set(sessionId, set);
+  return () => {
+    set.delete(handler);
+    if (set.size === 0) listeners.delete(sessionId);
+  };
 };
 
 export type OpenTerminalLiveStream = (

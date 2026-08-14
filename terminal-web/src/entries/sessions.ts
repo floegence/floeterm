@@ -9,6 +9,7 @@ export type { TerminalAgentCliIdentity } from '../sessions/TerminalAgentCliMetad
 export type { TerminalSessionsCoordinatorOptions } from '../sessions/TerminalSessionsCoordinator.js';
 export type {
   Logger,
+  TerminalID,
   TerminalForegroundCommandInfo,
   TerminalForegroundCommandPhase,
   TerminalForegroundCommandUpdateEvent,

@@ -115,13 +115,6 @@ func TestPresentationStorePublishesOneAtomicLatestSlot(t *testing.T) {
 	if !ok || latest.Sequence != 2 || latest.Geometry != second.Geometry || latest.Frame.Width != 120 {
 		t.Fatalf("latest=%+v ok=%v", latest, ok)
 	}
-	got, ok := store.TakeLatest()
-	if !ok || got.Sequence != 2 || got.Geometry != second.Geometry {
-		t.Fatalf("pending latest=%+v ok=%v", got, ok)
-	}
-	if _, ok := store.TakeLatest(); ok {
-		t.Fatal("latest presentation repeated without a new actor cut")
-	}
 }
 
 func TestPresentationStoreDoesNotExposeMutableOwnedBuffers(t *testing.T) {
@@ -131,27 +124,8 @@ func TestPresentationStoreDoesNotExposeMutableOwnedBuffers(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Frame.Rows[0].Cells[0].Text = "mutated"
-	got, _ := store.TakeLatest()
+	got, _ := store.Latest()
 	if got.Frame.Rows[0].Cells[0].Text != "界" {
 		t.Fatalf("store retained caller buffer: %+v", got)
-	}
-}
-
-func TestPresentationStoreTakeLatestDropsSupersededFrames(t *testing.T) {
-	store := NewPresentationStore(2)
-	for sequence := uint64(1); sequence <= 2; sequence++ {
-		if err := store.Publish(SemanticPresentation{Sequence: sequence}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	latest, ok := store.TakeLatest()
-	if !ok || latest.Sequence != 2 {
-		t.Fatalf("latest=%+v ok=%v", latest, ok)
-	}
-	if _, ok := store.TakeLatest(); ok {
-		t.Fatal("latest delivery repeated without a newly published presentation")
-	}
-	if err := store.Publish(SemanticPresentation{Sequence: 3}); err != nil {
-		t.Fatalf("store remained backpressured after latest delivery: %v", err)
 	}
 }

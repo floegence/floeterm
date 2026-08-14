@@ -62,7 +62,7 @@ func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer actor.Close()
-	if err := actor.ApplyPTYOutput([]byte("\x1b[?1049h\x1b]8;;https://test\x1b\\界e\u0301\x1b]8;;\x1b\\")); err != nil {
+	if _, err := actor.ApplyPTYOutput([]byte("\x1b[?1049h\x1b]8;;https://test\x1b\\界e\u0301\x1b]8;;\x1b\\")); err != nil {
 		t.Fatal(err)
 	}
 	p, ok := store.Latest()
@@ -75,7 +75,7 @@ func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 	if err := actor.Resize(30, 6); err != nil {
 		t.Fatal(err)
 	}
-	if err := actor.ApplyPTYOutput([]byte("x")); err != nil {
+	if _, err := actor.ApplyPTYOutput([]byte("x")); err != nil {
 		t.Fatal(err)
 	}
 	latest, _ := store.Latest()
@@ -107,7 +107,7 @@ func TestRealNativeActorPreservesIndexedAndRGBColors(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer actor.Close()
-	if err := actor.ApplyPTYOutput([]byte("\x1b[38;2;1;2;3;41mX\x1b[0m")); err != nil {
+	if _, err := actor.ApplyPTYOutput([]byte("\x1b[38;2;1;2;3;41mX\x1b[0m")); err != nil {
 		t.Fatal(err)
 	}
 	presentation, ok := store.Latest()
@@ -120,7 +120,7 @@ func TestRealNativeActorPreservesIndexedAndRGBColors(t *testing.T) {
 	}
 }
 
-func TestSessionPTYOutputPublishesNativePresentationBeforeCompatibilityHistory(t *testing.T) {
+func TestSessionPTYOutputPublishesNativePresentationAsTheDisplayAuthority(t *testing.T) {
 	engine, err := NewNativeSemanticEngine(20, 4)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestSessionResizeAndInputUseSameNativeActor(t *testing.T) {
 	if len(writes) != 1 || string(writes[0]) != "echo ok\n" {
 		t.Fatalf("writes=%q", writes)
 	}
-	if err := actor.ApplyPTYOutput([]byte("ok")); err != nil {
+	if _, err := actor.ApplyPTYOutput([]byte("ok")); err != nil {
 		t.Fatal(err)
 	}
 	p, _ := store.Latest()
@@ -191,10 +191,8 @@ func TestSessionResizePublishesPresentationWithCanonicalGeometry(t *testing.T) {
 	if err := actor.PublishInitialPresentation(); err != nil {
 		t.Fatal(err)
 	}
-	store.Next()
 	var presentations []SemanticPresentation
 	session.liveAttachments = map[string]liveAttachment{"view": {generation: 1, subscriber: LiveSubscriber{
-		OnOutput: func(TerminalOutputEvent) bool { return true },
 		OnPresentation: func(p SemanticPresentation) bool {
 			presentations = append(presentations, p)
 			return true
@@ -235,13 +233,12 @@ func TestSameSizeReconnectRefreshKeepsOneCanonicalGeometryGeneration(t *testing.
 	if err := actor.PublishInitialPresentation(); err != nil {
 		t.Fatal(err)
 	}
-	store.TakeLatest()
 
 	geometry, err := session.ApplyConnectionSizeForAttach("view", 20, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	presentation, ok := store.TakeLatest()
+	presentation, ok := store.Latest()
 	if !ok {
 		t.Fatal("same-size reconnect did not publish a fresh presentation")
 	}
@@ -264,7 +261,6 @@ func TestDetachedNativeOutputKeepsLatestPresentationWithoutBackpressure(t *testi
 		config:        newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
 		semanticActor: actor, presentationStore: store,
 		lastAppliedCols: 20, lastAppliedRows: 4, geometryGeneration: 1,
-		ringBuffer: NewTerminalRingBuffer(32),
 	}
 	defer session.cleanup()
 	for index := 0; index < 20; index++ {
@@ -273,8 +269,5 @@ func TestDetachedNativeOutputKeepsLatestPresentationWithoutBackpressure(t *testi
 	latest, ok := session.LatestPresentation()
 	if !ok || latest.Sequence != 20 {
 		t.Fatalf("detached latest presentation=%+v ok=%v", latest, ok)
-	}
-	if _, ok := store.Next(); ok {
-		t.Fatal("detached output retained a transport delivery backlog")
 	}
 }

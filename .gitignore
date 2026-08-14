@@ -9,7 +9,6 @@ coverage/
 playwright-report/
 test-results/
 target/
-terminal-go/internal/nativevt/generated/
 .cache/
 .next/
 .turbo/

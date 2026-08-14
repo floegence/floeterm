@@ -140,23 +140,6 @@ type metadataCaptureHandler struct {
 	updates []TerminalSessionInfo
 }
 
-type closingMetadataCaptureHandler struct {
-	session *Session
-	updates int
-}
-
-func (h *closingMetadataCaptureHandler) OnTerminalData(string, TerminalOutputEvent) {
-	_ = h.session.Close()
-}
-func (h *closingMetadataCaptureHandler) OnTerminalNameChanged(string, string, string, string) {}
-func (h *closingMetadataCaptureHandler) OnTerminalSessionCreated(*Session)                    {}
-func (h *closingMetadataCaptureHandler) OnTerminalSessionClosed(string)                       {}
-func (h *closingMetadataCaptureHandler) OnTerminalError(string, error)                        {}
-func (h *closingMetadataCaptureHandler) OnTerminalSessionMetadataChanged(string, TerminalSessionInfo) {
-	h.updates++
-}
-
-func (h *metadataCaptureHandler) OnTerminalData(string, TerminalOutputEvent)           {}
 func (h *metadataCaptureHandler) OnTerminalNameChanged(string, string, string, string) {}
 func (h *metadataCaptureHandler) OnTerminalSessionCreated(*Session)                    {}
 func (h *metadataCaptureHandler) OnTerminalSessionClosed(string)                       {}
@@ -176,19 +159,16 @@ func (h *metadataCaptureHandler) snapshot() []TerminalSessionInfo {
 func TestSessionTracksForegroundCommandMetadataFromShellIntegration(t *testing.T) {
 	handler := &metadataCaptureHandler{}
 	session := &Session{
-		ID:                   "session-command",
-		Name:                 "repo",
-		WorkingDir:           "/workspace/repo",
-		CreatedAt:            time.Now(),
-		LastActive:           time.Now(),
-		connections:          make(map[string]*ConnectionInfo),
-		liveAttachments:      make(map[string]liveAttachment),
-		ringBuffer:           NewTerminalRingBuffer(8),
-		historyGeneration:    1,
-		historyStartSequence: 1,
-		currentWorkingDir:    "/workspace/repo",
-		eventHandler:         handler,
-		config:               newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
+		ID:                "session-command",
+		Name:              "repo",
+		WorkingDir:        "/workspace/repo",
+		CreatedAt:         time.Now(),
+		LastActive:        time.Now(),
+		connections:       make(map[string]*ConnectionInfo),
+		liveAttachments:   make(map[string]liveAttachment),
+		currentWorkingDir: "/workspace/repo",
+		eventHandler:      handler,
+		config:            newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
 	}
 
 	session.processRawPTYData([]byte("\x1b]633;P;FloetermProgram=top\a\x1b]633;C\a"))
@@ -206,13 +186,6 @@ func TestSessionTracksForegroundCommandMetadataFromShellIntegration(t *testing.T
 	}
 	if updates := handler.snapshot(); len(updates) != 1 {
 		t.Fatalf("metadata updates = %d, want 1", len(updates))
-	}
-
-	if err := session.ClearHistory(); err != nil {
-		t.Fatal(err)
-	}
-	if got := session.ToSessionInfo().ForegroundCommand; got.Phase != ForegroundCommandRunning || got.DisplayName != "top" || got.Revision != 1 {
-		t.Fatalf("clear history changed foreground command: %+v", got)
 	}
 
 	session.processRawPTYData([]byte("\x1b]633;D;0\a\x1b]633;A\a"))
@@ -280,44 +253,6 @@ func TestShellIntegrationLifecycleMarkerRequiresStrictNonceAndEvent(t *testing.T
 		if !recognized || !invalid || source != "osc_633_lifecycle" {
 			t.Fatalf("invalid lifecycle marker accepted: payload=%q source=%q invalid=%v recognized=%v", payload, source, invalid, recognized)
 		}
-	}
-}
-
-func TestPrivateLifecycleMarkerIsStreamSafeAndNeverPublished(t *testing.T) {
-	const nonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	marker := "\x1b]633;P;FloetermLifecycle=v1;nonce=" + nonce + ";event=prompt_ready\a"
-	sequence := []byte("left" + marker + "right")
-	for split := range len(sequence) + 1 {
-		firstDisplay, pending := stripPrivateShellLifecycleMarkers(sequence[:split])
-		secondInput := append(append([]byte(nil), pending...), sequence[split:]...)
-		secondDisplay, finalPending := stripPrivateShellLifecycleMarkers(secondInput)
-		if got := string(append(firstDisplay, secondDisplay...)); got != "leftright" || len(finalPending) != 0 {
-			t.Fatalf("split=%d display=%q pending=%q", split, got, finalPending)
-		}
-	}
-
-	handler := &captureHandler{dataCh: make(chan []byte, 1)}
-	session := &Session{
-		ID: "session-private-lifecycle", WorkingDir: "/workspace", LastActive: time.Now(),
-		connections: make(map[string]*ConnectionInfo), liveAttachments: make(map[string]liveAttachment),
-		ringBuffer: NewTerminalRingBuffer(4), historyGeneration: 1, historyStartSequence: 1,
-		foregroundCommand: TerminalForegroundCommandInfo{Phase: ForegroundCommandIdle},
-		executionContext:  newLocalExecutionContext("/workspace"),
-		eventHandler:      handler,
-		config:            newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
-	}
-	session.processRawPTYData(sequence)
-	select {
-	case event := <-handler.dataCh:
-		if string(event) != "leftright" {
-			t.Fatalf("published private lifecycle marker: %q", event)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for filtered terminal output")
-	}
-	history, err := session.GetHistoryFromSequence(1)
-	if err != nil || len(history) != 1 || string(history[0].Data) != "leftright" {
-		t.Fatalf("history retained private lifecycle marker: history=%+v err=%v", history, err)
 	}
 }
 
@@ -457,26 +392,6 @@ func TestSessionCloseClearsForegroundCommandSnapshot(t *testing.T) {
 	}
 	if got := session.ToSessionInfo().ForegroundCommand; got.Phase != ForegroundCommandUnknown || got.DisplayName != "" || got.Revision != 3 {
 		t.Fatalf("foreground command after close = %+v", got)
-	}
-}
-
-func TestDataHandlerClosePreventsStaleForegroundCommandUpdate(t *testing.T) {
-	session := &Session{
-		ID:              "session-close-during-output",
-		connections:     make(map[string]*ConnectionInfo),
-		liveAttachments: make(map[string]liveAttachment),
-		config:          newSessionConfig(ManagerConfig{Logger: NopLogger{}}),
-	}
-	handler := &closingMetadataCaptureHandler{session: session}
-	session.eventHandler = handler
-
-	session.processRawPTYData([]byte("\x1b]633;P;FloetermProgram=top\a\x1b]633;C\a"))
-
-	if handler.updates != 0 {
-		t.Fatalf("metadata updates after close = %d, want 0", handler.updates)
-	}
-	if got := session.ToSessionInfo().ForegroundCommand; got.Phase != ForegroundCommandUnknown || got.DisplayName != "" {
-		t.Fatalf("foreground command after close = %+v, want unknown", got)
 	}
 }
 

@@ -11,28 +11,13 @@ const createSession = async request => {
   return await response.json();
 };
 
-const historyContains = async (request, sessionId, marker) => {
-  let startSequence = 1;
-  let historyGeneration = 0;
-  const chunks = [];
-  for (let pageIndex = 0; pageIndex < 4; pageIndex += 1) {
-    const response = await request.get(
-      `/api/sessions/${encodeURIComponent(sessionId)}/history?startSeq=${startSequence}&endSeq=-1&historyGeneration=${historyGeneration}&maxBytes=524288`,
-    );
-    if (!response.ok()) return false;
-    const page = await response.json();
-    historyGeneration = page.historyGeneration;
-    if (page.historyReset) {
-      startSequence = page.firstRetainedSequence || 1;
-      chunks.length = 0;
-      continue;
-    }
-    chunks.push(...page.chunks.map(chunk => Buffer.from(chunk.data, 'base64')));
-    if (!page.hasMore) break;
-    startSequence = page.nextStartSequence;
-  }
-  return Buffer.concat(chunks).includes(Buffer.from(marker));
-};
+const presentationContains = async (page, marker) => page.evaluate(expected => {
+  const presentation = window.__floetermPerfHarness?.getPresentationDiagnostics?.();
+  return presentation?.frame.rows
+    .map(row => row.cells.map(cell => cell.text).join(''))
+    .join('\n')
+    .includes(expected) ?? false;
+}, marker);
 
 const openSharedSessionPage = async (page, sessionId, viewport) => {
   await page.setViewportSize(viewport);
@@ -70,6 +55,7 @@ const readPageState = page => page.evaluate(() => {
     effective: harness.getTerminalInfo(),
     geometry: harness.getGeometryDiagnostics(),
     stream: harness.getStreamDiagnostics(),
+    presentationSequence: harness.getPresentationDiagnostics?.()?.sequence ?? 0,
     serialized: harness.serialize(),
     visibleLines: harness.getVisibleLines(),
     probe: window.__floetermPerfProbe.snapshot(),
@@ -225,7 +211,7 @@ test('keeps one session correct while two independent pages resize and stream ou
     const command = `python3 -c "import os; p=bytes.fromhex('${patternHex}'); s=os.get_terminal_size(0); os.write(1,p*8+bytes.fromhex('${sizeMarkerHex}')+f' {s.lines} {s.columns}\\n'.encode()+bytes.fromhex('${outputMarkerHex}'))"`;
     await page.bringToFront();
     await page.evaluate(value => window.__floetermPerfHarness.sendInput(`${value}\r`), command);
-    await expect.poll(() => historyContains(request, session.id, outputMarker)).toBe(true);
+    await expect.poll(() => presentationContains(page, outputMarker)).toBe(true);
     await page.bringToFront();
     await page.waitForFunction(marker => window.__floetermPerfHarness.getStreamDiagnostics().tail.includes(marker), outputMarker);
     await secondPage.bringToFront();
@@ -234,9 +220,16 @@ test('keeps one session correct while two independent pages resize and stream ou
       marker => window.__floetermPerfHarness.serialize().includes(marker),
       outputMarker,
     )));
+    await expect.poll(async () => {
+      const states = await Promise.all([readPageState(page), readPageState(secondPage)]);
+      return states[0].presentationSequence > 0
+        && states[0].presentationSequence === states[1].presentationSequence
+        && states[0].serialized === states[1].serialized;
+    }).toBe(true);
     const streamed = await Promise.all([readPageState(page), readPageState(secondPage)]);
-    expect(streamed[0].stream).toEqual(streamed[1].stream);
-    expect(streamed[0].stream.sequenceGaps).toBe(0);
+    expect(streamed.every(state => state.stream.sequenceGaps === 0 && state.stream.dataEvents > 0)).toBe(true);
+    expect(streamed[0].stream.lastSequence).toBe(streamed[0].presentationSequence);
+    expect(streamed[1].stream.lastSequence).toBe(streamed[1].presentationSequence);
     expect(streamed[0].serialized).toBe(streamed[1].serialized);
     expect(streamed.every(state => state.probe.historyRequests === 0)).toBe(true);
     expect(streamed.every(state => state.serialized.includes(outputMarker))).toBe(true);

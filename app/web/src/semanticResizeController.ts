@@ -1,7 +1,7 @@
 type TerminalSize = Readonly<{ cols: number; rows: number }>;
 type TerminalGeometry = Readonly<{
   generation: number;
-  outputSequenceBoundary: number;
+  presentationSequence: number;
   cols: number;
   rows: number;
 }>;
@@ -47,7 +47,7 @@ export function createSemanticResizeController(
       latestGeometry
       && (
         geometry.generation < latestGeometry.generation
-        || geometry.outputSequenceBoundary < latestGeometry.outputSequenceBoundary
+        || geometry.presentationSequence < latestGeometry.presentationSequence
       )
     ) return 'terminal geometry settlement regressed';
     if (

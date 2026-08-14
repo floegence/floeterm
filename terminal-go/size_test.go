@@ -29,4 +29,3 @@ func TestValidateTerminalSize_RejectsOutOfRange(t *testing.T) {
 		t.Fatalf("expected error for oversized rows")
 	}
 }
-

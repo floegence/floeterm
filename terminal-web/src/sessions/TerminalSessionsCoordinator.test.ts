@@ -17,11 +17,6 @@ const makeSession = (id: string, overrides: Partial<TerminalSessionInfo> = {}): 
 });
 
 const makeTransport = (overrides: Partial<TerminalTransport> = {}): TerminalTransport => ({
-  attach: vi.fn().mockResolvedValue(undefined),
-  resize: vi.fn().mockResolvedValue(undefined),
-  sendInput: vi.fn().mockResolvedValue(undefined),
-  history: vi.fn().mockResolvedValue([]),
-  clear: vi.fn().mockResolvedValue(undefined),
   ...overrides
 });
 

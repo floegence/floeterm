@@ -24,7 +24,7 @@ const readSemanticRenderer = page => page.evaluate(() => {
     errors: document.querySelectorAll('.terminalRendererError').length,
     allCanvases: pane.querySelectorAll('canvas').length,
     visibleCanvases: visibleCanvases.length,
-    legacyCanvases: pane.querySelectorAll('.floeterm-beamterm-canvas').length,
+    legacyCanvases: pane.querySelectorAll('canvas:not(.semanticTerminalSurface)').length,
     pane: {
       width: pane.clientWidth,
       height: pane.clientHeight,

@@ -9,6 +9,47 @@ on:
       - "v*.*.*"
 
 jobs:
+  native-semantic-engine:
+    name: Native semantic engine (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - macos-13
+          - macos-14
+          - ubuntu-22.04
+          - ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: terminal-go/go.mod
+          cache-dependency-path: |
+            terminal-go/go.sum
+            app/backend/go.sum
+
+      - name: Link and run terminal-go native tests
+        working-directory: terminal-go
+        run: GOWORK=off go test -tags floeterm_native ./...
+
+      - name: Contain native fatal faults to a disposable subprocess
+        working-directory: terminal-go
+        run: GOWORK=off go test -tags 'floeterm_native floeterm_test_fault' ./internal/nativevt -run '^TestNativeFatalFaultIsContainedToDisposableSubprocess$'
+
+      - name: Link and run reference backend native tests
+        working-directory: app/backend
+        run: GOWORK=off go test -tags floeterm_native ./...
+
+      - name: Run native ASan and UBSan discovery lanes
+        if: matrix.runner == 'ubuntu-22.04'
+        run: make native-sanitizer-check
+
   bash-shell-integration:
     name: Bash shell integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -73,11 +114,6 @@ jobs:
             terminal-web/package-lock.json
             app/web/package-lock.json
             e2e/package-lock.json
-
-      - name: Install pinned renderer build tool
-        uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack@0.13.1
 
       - name: Install real-shell matrix
         run: sudo apt-get update && sudo apt-get install -y zsh fish

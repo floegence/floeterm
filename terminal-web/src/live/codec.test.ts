@@ -1,179 +1,63 @@
 import { describe, expect, it } from 'vitest';
-import vectorsJson from '../../../protocol/terminal_live_v1_vectors.json?raw';
 
 import {
-  MAX_FRAME_PAYLOAD_BYTES,
-  StreamKind,
   TerminalLiveDecoder,
   TerminalLiveFrameType,
+  decodeAttach,
   decodeInput,
   decodePresentation,
-	decodeGeometryChanged,
-	decodeOutputBatch,
-	decodeResizeApplied,
+  decodeResize,
   encodeAttach,
-  encodeAttached,
   encodeInput,
-  encodeGeometryChanged,
-  encodeOutputBatch,
   encodeResize,
-  encodeResizeApplied,
 } from './codec.js';
 
-const vectors = JSON.parse(vectorsJson) as { kind: string; vectors: Array<{ name: string; hex: string }> };
+const presentationFrame = (value: unknown): Uint8Array => {
+  const payload = new TextEncoder().encode(JSON.stringify(value));
+  const out = new Uint8Array(8 + payload.byteLength);
+  out[0] = TerminalLiveFrameType.Presentation;
+  new DataView(out.buffer).setUint32(4, payload.byteLength, false);
+  out.set(payload, 8);
+  return out;
+};
 
-const hex = (data: Uint8Array): string => Array.from(data, value => value.toString(16).padStart(2, '0')).join('');
-
-describe('terminal/live_v1 codec', () => {
-  it('matches the shared protocol vectors', () => {
-    expect(vectors.kind).toBe(StreamKind);
-    const encoded = new Map<string, Uint8Array>([
-      ['attach', encodeAttach({ attachGeneration: 1n, cols: 80, rows: 24, sessionId: 's1', connectionId: 'c1' })],
-      ['input', encodeInput({ sequence: 1n, data: new TextEncoder().encode('abc') })],
-      ['resize', encodeResize({ sequence: 7n, cols: 80, rows: 24 })],
-      ['attached', encodeAttached({
-        historyBoundarySequence: 42n,
-        historyGeneration: 3n,
-        historyStartSequence: 40n,
-        geometryGeneration: 5n,
-        cols: 80,
-        rows: 24,
-      })],
-      ['resize_applied', encodeResizeApplied({ sequence: 7n, geometryGeneration: 5n, outputSequenceBoundary: 42n, cols: 80, rows: 24 })],
-      ['output_batch', encodeOutputBatch({
-        geometryGeneration: 5n,
-        cols: 80,
-        rows: 24,
-        records: [{ sequence: 9n, timestampMs: 10n, data: new Uint8Array([0x61, 0x62]) }],
-      })],
-      ['geometry_changed', encodeGeometryChanged({ generation: 5n, outputSequenceBoundary: 42n, cols: 80, rows: 24 })],
-    ]);
-    for (const vector of vectors.vectors) {
-      expect(hex(encoded.get(vector.name)!)).toBe(vector.hex);
-    }
-  });
-
-  it('rejects invalid effective geometry in server frames', () => {
-    expect(() => encodeAttached({
-      historyBoundarySequence: 0n,
-      historyGeneration: 1n,
-      historyStartSequence: 1n,
-      geometryGeneration: 0n,
-      cols: 0,
-      rows: 0,
-    })).toThrow(/geometry|cols|rows/i);
-    expect(() => encodeResizeApplied({ sequence: 1n, geometryGeneration: 0n, outputSequenceBoundary: 0n, cols: 0, rows: 0 })).toThrow(/geometry|cols|rows/i);
-    expect(() => encodeOutputBatch({
-      geometryGeneration: 0n,
-      cols: 0,
-      rows: 0,
-      records: [{ sequence: 1n, timestampMs: 1n, data: new Uint8Array([0x78]) }],
-    })).toThrow(/geometry|cols|rows/i);
-  });
-
-  it('decodes fragmented and coalesced frames', () => {
-    const input = encodeInput({ sequence: 1n, data: new Uint8Array([0x61]) });
-    const resize = encodeResize({ sequence: 2n, cols: 120, rows: 40 });
+describe('semantic terminal live codec', () => {
+  it('round trips client attach, input, and resize frames', () => {
     const decoder = new TerminalLiveDecoder();
-    expect(decoder.push(input.subarray(0, 5))).toEqual([]);
-    const joined = new Uint8Array(input.byteLength - 5 + resize.byteLength);
-    joined.set(input.subarray(5));
-    joined.set(resize, input.byteLength - 5);
-    expect(decoder.push(joined).map(frame => frame.type)).toEqual([
-      TerminalLiveFrameType.Input,
-      TerminalLiveFrameType.Resize,
-    ]);
+    const frames = [
+      encodeAttach({ attachGeneration: 2n, cols: 80, rows: 24, sessionId: 's', connectionId: 'c' }),
+      encodeInput({ sequence: 1n, data: new TextEncoder().encode('中') }),
+      encodeResize({ sequence: 2n, cols: 120, rows: 40 }),
+    ].flatMap(encoded => decoder.push(encoded));
+    expect(decodeAttach(frames[0]!)).toMatchObject({ attachGeneration: 2n, cols: 80, rows: 24 });
+    expect(new TextDecoder().decode(decodeInput(frames[1]!).data)).toBe('中');
+    expect(decodeResize(frames[2]!)).toEqual({ sequence: 2n, cols: 120, rows: 40 });
   });
 
-  it('decodes output at every byte fragmentation boundary', () => {
-    const encoded = encodeOutputBatch({
-      geometryGeneration: 5n,
-      cols: 120,
-      rows: 40,
-      records: [
-        { sequence: 9n, timestampMs: 10n, data: new TextEncoder().encode('\x1b[2J\x1b[Htop') },
-        { sequence: 10n, timestampMs: 11n, data: new TextEncoder().encode('中e\u0301🙂') },
-      ],
-    });
-    for (let split = 1; split < encoded.byteLength; split += 1) {
-      const decoder = new TerminalLiveDecoder();
-      expect(decoder.push(encoded.subarray(0, split)), `split ${split} first push`).toEqual([]);
-      const frames = decoder.push(encoded.subarray(split));
-      expect(frames.map(frame => frame.type), `split ${split} second push`).toEqual([
-        TerminalLiveFrameType.OutputBatch,
-      ]);
-    }
-  });
-
-  it('preserves a resize boundary stream across every byte', () => {
-	const encodedFrames = [
-	  encodeAttached({ historyBoundarySequence: 8n, historyGeneration: 1n, historyStartSequence: 1n, geometryGeneration: 4n, cols: 80, rows: 24 }),
-	  encodeOutputBatch({ geometryGeneration: 4n, cols: 80, rows: 24, records: [{ sequence: 9n, timestampMs: 10n, data: new TextEncoder().encode('\x1b[?1049h\x1b[HOLD') }] }),
-	  encodeResizeApplied({ sequence: 3n, geometryGeneration: 5n, outputSequenceBoundary: 9n, cols: 120, rows: 40 }),
-	  encodeGeometryChanged({ generation: 5n, outputSequenceBoundary: 9n, cols: 120, rows: 40 }),
-	  encodeOutputBatch({ geometryGeneration: 5n, cols: 120, rows: 40, records: [{ sequence: 10n, timestampMs: 11n, data: new TextEncoder().encode('\x1b[2J\x1b[HNEW中e\u0301🙂') }] }),
-	];
-	const stream = new Uint8Array(encodedFrames.reduce((total, frame) => total + frame.byteLength, 0));
-	let offset = 0;
-	for (const frame of encodedFrames) {
-	  stream.set(frame, offset);
-	  offset += frame.byteLength;
-	}
-	const decoder = new TerminalLiveDecoder();
-	const decoded = Array.from(stream).flatMap((_, index) => decoder.push(stream.subarray(index, index + 1)));
-	expect(decoded.map(frame => frame.type)).toEqual([
-	  TerminalLiveFrameType.Attached,
-	  TerminalLiveFrameType.OutputBatch,
-	  TerminalLiveFrameType.ResizeApplied,
-	  TerminalLiveFrameType.GeometryChanged,
-	  TerminalLiveFrameType.OutputBatch,
-	]);
-	expect(decodeResizeApplied(decoded[2]!)).toMatchObject({ geometryGeneration: 5n, outputSequenceBoundary: 9n, cols: 120, rows: 40 });
-	expect(decodeGeometryChanged(decoded[3]!)).toMatchObject({ generation: 5n, outputSequenceBoundary: 9n, cols: 120, rows: 40 });
-	expect(decodeOutputBatch(decoded[1]!)).toMatchObject({ geometryGeneration: 4n, records: [{ sequence: 9n }] });
-	expect(decodeOutputBatch(decoded[4]!)).toMatchObject({ geometryGeneration: 5n, records: [{ sequence: 10n }] });
-  });
-
-  it('rejects reserved bits and oversized frames', () => {
-    expect(() => new TerminalLiveDecoder().push(new Uint8Array([
-      TerminalLiveFrameType.Input, 0, 0, 1, 0, 0, 0, 0,
-    ]))).toThrow(/reserved/i);
-
-    const size = MAX_FRAME_PAYLOAD_BYTES + 1;
-    expect(() => new TerminalLiveDecoder().push(new Uint8Array([
-      TerminalLiveFrameType.Input,
-      0,
-      0,
-      0,
-      (size >>> 24) & 0xff,
-      (size >>> 16) & 0xff,
-      (size >>> 8) & 0xff,
-      size & 0xff,
-    ]))).toThrow(/too large/i);
-  });
-
-  it('rejects wrong frame types and invalid payloads', () => {
-    expect(() => decodeInput({ type: TerminalLiveFrameType.Resize, flags: 0, payload: new Uint8Array() })).toThrow(/type/i);
-    expect(() => decodeInput({ type: TerminalLiveFrameType.Input, flags: 0, payload: new Uint8Array(7) })).toThrow(/payload/i);
-  });
-
-  it('decodes Go JSON graphics bytes into an owned semantic inventory', () => {
-    const payload = new TextEncoder().encode(JSON.stringify({
-      v: 1, sequence: 1, geometry: { generation: 1, cols: 1, rows: 1 }, state: { sequence: 1 },
+  it('decodes an owned semantic presentation and rejects the removed raw frame type', () => {
+    const encoded = presentationFrame({
+      v: 1,
+      sequence: 1,
+      geometry: { generation: 1, cols: 1, rows: 1 },
+      state: { sequence: 1 },
       frame: {
-        width: 1, height: 1, bufferKind: 'normal', cursor: { x: 0, y: 0, visible: true, shape: 'block', blinking: false },
-        history: { revision: 1, totalRows: 1, screenStartOffset: 0 }, styles: [['default', 'default', false, false, false]],
-        rows: [[['', 1, 0, '']]],
-        graphics: {
-          generation: 3,
-          images: [{ id: 7, width: 1, height: 1, format: 0, generation: 2, pixels: 'AQID' }],
-          placements: [{ imageId: 7, placementId: 9, z: 0, viewportColumn: 0, viewportRow: 0, gridColumns: 1, gridRows: 1, visible: true, virtual: false }],
-        },
+        width: 1,
+        height: 1,
+        bufferKind: 'normal',
+        cursor: { x: 0, y: 0, visible: true, shape: 'block', blinking: false },
+        history: { revision: 1, totalRows: 1, screenStartOffset: 0 },
+        styles: [['default', 'default', false, false, false]],
+        rows: [[['中', 2, 0, '']]],
+        graphics: { generation: 3, images: [{ id: 7, width: 1, height: 1, format: 0, generation: 2, pixels: 'AQID' }], placements: [] },
       },
-    }));
-    const decoded = decodePresentation({ type: TerminalLiveFrameType.Presentation, flags: 0, payload }) as any;
-    expect(decoded.frame.cursor).toEqual({ x: 0, y: 0, visible: true, shape: 'block', blinking: false });
+    });
+    const decodedFrame = new TerminalLiveDecoder().push(encoded)[0]!;
+    const decoded = decodePresentation(decodedFrame) as any;
+    expect(decoded.frame.rows[0].cells[0]).toMatchObject({ text: '中', width: 2 });
     expect(decoded.frame.graphics.images[0].pixels).toEqual(new Uint8Array([1, 2, 3]));
-    expect(decoded.frame.graphics.placements[0]).toMatchObject({ imageId: 7, gridColumns: 1, visible: true });
+
+    const raw = new Uint8Array(8);
+    raw[0] = 0x82;
+    expect(() => new TerminalLiveDecoder().push(raw)).toThrow(/unknown/i);
   });
 });

@@ -4,7 +4,6 @@ package nativevt
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/generated/include -I${SRCDIR}/generated
-#cgo LDFLAGS: ${SRCDIR}/generated/lib/libghostty-vt.a -lc++
 #include "generated/adapter.h"
 int floeterm_native_history_total_rows(NativeEngine *engine, size_t *rows);
 int floeterm_native_anchor_screen_row(NativeAnchor *anchor, uint32_t *row);

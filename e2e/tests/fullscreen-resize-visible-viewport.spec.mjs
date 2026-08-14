@@ -41,20 +41,6 @@ const setTerminalHostSize = async (page, width, height) => {
   }, { width, height });
 };
 
-const readHistory = async (request, sessionId) => {
-  const response = await request.get(
-    `/api/sessions/${encodeURIComponent(sessionId)}/history?startSeq=1&endSeq=-1&historyGeneration=0&maxBytes=524288`,
-  );
-  expect(response.ok()).toBe(true);
-  const history = await response.json();
-  expect(history.historyReset).toBe(false);
-  expect(history.hasMore).toBe(false);
-  return history.chunks.map(chunk => ({
-    ...chunk,
-    bytes: Buffer.from(chunk.data, 'base64'),
-  }));
-};
-
 const assertVisibleTopBand = imageBuffer => {
   const image = PNG.sync.read(imageBuffer);
   const bandHeight = Math.max(2, Math.floor(image.height / 40));
@@ -89,7 +75,7 @@ while True:
     signal.pause()
 `;
 
-test('keeps every SIGWINCH frame edge visible through retained-backing grow and shrink', async ({ page, request }) => {
+test('keeps every SIGWINCH frame edge visible through retained-backing grow and shrink', async ({ page }) => {
   test.skip(process.platform !== 'darwin' && process.platform !== 'linux', 'real PTY resize coverage requires SIGWINCH');
   const failures = captureBrowserFailures(page);
   await page.goto('/?mode=single&perf_probe=1');
@@ -112,6 +98,7 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
 
   let previousFrame = 0;
   let previousGeneration = 0;
+  let previousPresentationSequence = 0;
   const vector = [[1280, 720], [760, 460], [1180, 680], [820, 440]];
   for (const [width, height] of vector) {
     await setTerminalHostSize(page, width, height);
@@ -151,29 +138,19 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
 
     const state = await readState(page);
     const frame = Number(state.serialized.match(/FRAME_(\d+)_ROW0_/)?.[1] ?? 0);
-    const marker = Buffer.from(`FRAME_${frame}_ROW0_${state.host.rows}x${state.host.cols}`);
-    const chunks = await readHistory(request, sessionId);
-    for (let index = 1; index < chunks.length; index += 1) {
-      expect(chunks[index].sequence).toBe(chunks[index - 1].sequence + 1);
-    }
-    const frameChunk = chunks.find(chunk => chunk.bytes.includes(marker));
-    expect(frameChunk).toBeDefined();
-    expect(frameChunk).toMatchObject({
-      geometryGeneration: state.geometry.generation,
-      cols: state.host.cols,
-      rows: state.host.rows,
-    });
     const presentation = await page.evaluate(() => (
       window.__floetermPerfHarness?.getPresentationDiagnostics?.() ?? null
     ));
-    expect(frameChunk.sequence, JSON.stringify({
+    expect(presentation).not.toBeNull();
+    expect(presentation.geometry).toMatchObject({
+      generation: state.geometry.generation,
+      cols: state.host.cols,
+      rows: state.host.rows,
+    });
+    expect(presentation.frame.width).toBe(state.host.cols);
+    expect(presentation.frame.height).toBe(state.host.rows);
+    expect(presentation.sequence, JSON.stringify({
       frame,
-      frameChunk: {
-        sequence: frameChunk.sequence,
-        geometryGeneration: frameChunk.geometryGeneration,
-        cols: frameChunk.cols,
-        rows: frameChunk.rows,
-      },
       geometry: state.geometry,
       presentation: presentation && {
         sequence: presentation.sequence,
@@ -183,13 +160,8 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
       resize: await page.evaluate(() => (
         window.__floetermPerfHarness?.getResizeDiagnostics?.() ?? []
       )),
-      chunks: chunks.slice(-12).map(chunk => ({
-        sequence: chunk.sequence,
-        geometryGeneration: chunk.geometryGeneration,
-        cols: chunk.cols,
-        rows: chunk.rows,
-      })),
-    })).toBeGreaterThan(state.geometry.outputSequenceBoundary);
+    })).toBeGreaterThan(state.geometry.presentationSequence);
+    expect(presentation.sequence).toBeGreaterThan(previousPresentationSequence);
     expect(state.serialized).toContain(`FRAME_${frame}_LAST_${state.host.rows}x${state.host.cols}`);
     expect(state.canvasTop).toBeCloseTo(state.surfaceTop, 5);
     expect(state.canvasLeft).toBeCloseTo(state.surfaceLeft, 5);
@@ -213,6 +185,7 @@ test('keeps every SIGWINCH frame edge visible through retained-backing grow and 
     expect(bottomInk).toBeGreaterThan(10);
     previousFrame = frame;
     previousGeneration = state.geometry.generation;
+    previousPresentationSequence = presentation.sequence;
   }
 
   const finalState = await readState(page);

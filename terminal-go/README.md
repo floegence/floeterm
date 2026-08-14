@@ -1,7 +1,8 @@
 # terminal-go
 
-PTY-backed terminal session manager for Go. It handles session lifecycle, history buffering,
-history filtering, workdir parsing, and resize coordination.
+PTY-backed semantic terminal session manager for Go. It handles session lifecycle,
+native Ghostty VT ownership, canonical geometry, bounded semantic history, workdir
+parsing, controller/observer attachment, and semantic Presentation delivery.
 
 ## Install
 ```bash
@@ -27,60 +28,22 @@ join one session-owned activation. Cancelling one caller stops only that wait;
 `DeleteSession`, `Close`, and `Cleanup` cancel the shared activation and reject
 any late PTY result without blocking on shell preparation.
 
-## Bounded history replay
+## Semantic history
 
-Use `GetHistoryPage` when forwarding terminal history over transports with frame or payload limits:
+History is owned only by the native Ghostty session actor. Call
+`ReadSemanticHistory` with the current attachment generation to request a bounded,
+owned page. Returned anchors are opaque and attachment-local; they expire when the
+view detaches and never expose native pointers, raw PTY replay, or parser state.
 
-```go
-page, err := session.GetHistoryPage(terminal.HistoryPageOptions{
-    StartSeq:    1,
-    LimitChunks: 256,
-    MaxBytes:    384 * 1024,
-})
-if err != nil {
-    // handle error
-}
+A semantic history query is serialized with PTY output, input, and resize without
+moving the live viewport or changing the current Presentation. The browser may
+project a returned page locally, while the authoritative live frame continues to
+arrive through the same semantic transport.
 
-for _, chunk := range page.Chunks {
-    _ = chunk
-}
-if page.HasMore {
-    next, err := session.GetHistoryPage(terminal.HistoryPageOptions{
-        StartSeq:          page.NextStartSeq,
-        EndSeq:            page.SnapshotEndSequence,
-        HistoryGeneration: page.HistoryGeneration,
-        LimitChunks:       256,
-        MaxBytes:          384 * 1024,
-    })
-    _ = next
-    _ = err
-}
-```
-
-`SnapshotEndSequence` freezes the committed source high-water captured by the first page, so a busy PTY cannot extend the initial replay forever. Pass it and `HistoryGeneration` to every later page. `CoveredThroughSequence` advances through retained or explicitly filtered source sequences even when a configured history filter removes every renderable chunk from a page. Hosts that attach a live client should use `AddConnectionWithHistoryBoundary`: the returned sequence is captured atomically with connection registration, belongs to initial history, and lets the host route only later sequences to that client's live stream.
-
-Check `HistoryReset` and `HistoryTruncated` before accepting a page. `FirstRetainedSequence` reports the current retention floor even for an empty requested range; a caller must rebase rather than treating evicted output as a normal sparse sequence. `ClearHistory` advances the generation without resetting the live source sequence.
-
-Retained history can be bounded by both chunk count and bytes without limiting the number of terminal sessions:
-
-```go
-manager := terminal.NewManager(terminal.ManagerConfig{
-    HistoryBufferSize:            2048,
-    HistoryBufferMaxChunks:       8192,
-    HistoryBufferMaxBytes:        8 * 1024 * 1024,
-    HistorySpoolRoot:             stateDir,
-    HistorySpoolSegmentMaxBytes:  4 * 1024 * 1024,
-    HistorySpoolMaxBytes:         256 * 1024 * 1024,
-})
-
-diagnostics := manager.GetDiagnostics()
-_ = diagnostics.SessionCount
-_ = diagnostics.HistoryBytes
-```
-
-`HistoryBufferSize` is the initial allocation. `HistoryBufferMaxChunks` may be larger to let the buffer grow on demand without charging dormant or small-history sessions for the maximum slot array. It defaults to `HistoryBufferSize`, preserving fixed-capacity behavior. `HistoryBufferMaxBytes` set to zero preserves chunk-only retention. A single oversized chunk is retained whole rather than slicing an ANSI or OSC sequence. Diagnostics are observational and never reject session creation.
-
-Set `HistorySpoolRoot` when hot-history eviction must remain recoverable without an active browser. The session-owned spool validates contiguous sequence and geometry metadata, checksums every raw record, and fails history reads closed after a write or quota error. Raw segments remain authoritative until `CommitSessionHistoryCheckpoint` atomically publishes a checkpoint that was captured and self-restored by the pinned Ghostty engine. Pages that begin before that checkpoint contain `Checkpoint`, set `DeltaStartSequence` to `CoveredThroughSequence + 1`, and return only the contiguous delta. Do not submit text snapshots or unchecked parser state as a checkpoint.
+The live service sends a bounded reliable FIFO for geometry/lifecycle events and one
+capacity-one latest Presentation slot. It never sends raw PTY bytes to a browser.
+Resize settlement is emitted only after the actor has applied canonical geometry and
+captured a matching Presentation.
 
 ## Command lifecycle shell integration
 
@@ -190,9 +153,9 @@ network, authentication, or authorization decisions.
 Custom `ShellInitWriter` implementations that also need to run without a PATH prepend can implement `ShellInitRequirement`. Existing writers keep the previous PATH-triggered behavior.
 
 ## Notes
-- Implement `TerminalEventHandler` to receive output and lifecycle events.
+- Implement `TerminalEventHandler` to receive lifecycle events.
 - `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession` or the caller-cancellable `ActivateSessionContext`.
-- Configure defaults via `ManagerConfig` (history buffer size, env, and filters). The legacy resize suppression duration fields are deprecated; resize never drops terminal history.
+- Configure environment and shell lifecycle defaults through `ManagerConfig`. The legacy resize suppression duration fields are deprecated; resize never drops PTY output.
 - PTYs start at the effective attached viewport, preserve their last size after the final detach, and skip redundant same-size resizes.
 - Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and local `OSC 7 file://...`) and ignores generic title-only OSC updates. Remote OSC 7 paths are display-only execution context.
 - Cwd parsing is stream-safe across PTY read chunks, so fragmented fullscreen/TUI control sequences do not trigger false working-directory parse failures.

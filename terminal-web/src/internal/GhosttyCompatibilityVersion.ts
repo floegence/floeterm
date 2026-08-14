@@ -1,1 +1,0 @@
-export const EXPECTED_GHOSTTY_WEB_COMPAT_VERSION = '0.5.0-rc.0';

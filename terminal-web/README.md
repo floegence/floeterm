@@ -1,486 +1,119 @@
-# terminal-web
+# @floegence/floeterm-terminal-web
 
-Framework-neutral ghostty-web (xterm.js API-compatible) integration with terminal core, session, and data flow utilities.
+Framework-neutral browser components for FloeTerm's semantic terminal protocol.
 
-The WebGL2 backend is the exact version of `@floegence/beamterm-renderer` declared by this package. Renderer initialization failures are explicit and retry the same backend; terminal-web never silently falls back to a second renderer.
+The package does not contain a VT parser, Ghostty WASM, a raw replay/checkpoint
+pipeline, or a WebGL terminal renderer. `terminal-go` owns terminal state and emits
+complete immutable Presentations. The browser owns only view-local rendering and
+interaction.
 
 ## Install
 
 ```bash
-npm i @floegence/floeterm-terminal-web
+npm install @floegence/floeterm-terminal-web@0.15.0
 ```
 
-## Usage
+## Exports
 
-Use the managed controller when you want attach, reconnect-friendly replay, ordered writes, resize, and action helpers handled for you:
+| Subpath | API |
+| --- | --- |
+| `./semantic` | `RendererSurface`, `TerminalInputBridge`, validators, semantic types, themes |
+| `./live` | semantic WebSocket codec, client, transport, lifecycle and geometry events |
+| `./sessions` | session coordinator and display-only metadata normalization |
+| `.` | semantic aggregation plus shell-integration parsing utilities |
 
-```ts
-import { createTerminalInstance } from '@floegence/floeterm-terminal-web';
-
-const controller = createTerminalInstance({
-  sessionId: 'session-1',
-  isActive: true,
-  transport: myTransport,
-  eventSource: myEventSource,
-});
-
-const unsubscribe = controller.subscribe((snapshot) => {
-  console.log(snapshot.connection.state, snapshot.loadingMessage);
-});
-
-await controller.mount(container);
-
-// Later:
-controller.actions.copySelection('command');
-unsubscribe();
-controller.dispose();
-```
-
-Use `TerminalCore` directly when the host product owns its own session lifecycle, paging, shell integration, or workbench coordination:
-
-```ts
-import { TerminalCore, getDefaultTerminalConfig } from '@floegence/floeterm-terminal-web';
-
-const core = new TerminalCore(
-  container,
-  getDefaultTerminalConfig('dark', { clipboard: { copyOnSelect: false } }),
-  {
-    onData: data => transport.sendInput(sessionId, data),
-    onResize: size => transport.resize(sessionId, size.cols, size.rows),
-  },
-);
-
-await core.initialize();
-```
-
-Session catalogs can carry independent `executionContext`, `workState`,
-`foregroundCommand`, and `outputActivity` snapshots. The coordinator fences
-each dimension by its own monotonic revision. `TerminalShellIntegrationParser`
-filters strict `FloetermContext=v1` and `FloetermWork=v1` metadata from renderer
-display data while returning ordered structured events; standard OSC title and
-OSC 7 controls remain untouched so replay preserves normal terminal semantics.
-Hosts must treat every context value as untrusted presentation metadata.
-
-Floeterm projects one renderer-neutral DOM scrollbar for both canvas and WebGL terminals while Ghostty remains the only scrollback and viewport owner:
-
-```ts
-const core = new TerminalCore(container, {
-  rendererType: 'webgl',
-  fit: { scrollbarReservePx: 15 },
-  scrollbar: {
-    visibility: 'persistent', // "auto" by default, or "hidden"
-    minThumbPx: 24,
-    ariaLabel: 'Terminal history',
-  },
-});
-
-// Keep a long-lived Core aligned with a runtime locale change.
-core.setScrollbarOptions({ ariaLabel: localizedTerminalHistoryLabel });
-```
-
-The scrollbar uses a 12px visual and fine-pointer rail. Reserve at least 12px when the last terminal column must remain fully unobstructed; the default 15px reserve provides a stable gutter. An explicit `scrollbarReservePx: 0` remains supported as an overlay mode and may cover the rightmost 12px. The visual overlay itself never owns pointer hit testing: Floeterm captures fine-pointer track and thumb gestures at the viewport boundary, while wheel and touch events continue to target Ghostty's terminal surface exactly once. `persistent` automatically behaves as `auto` on coarse-pointer-only devices. Mixed-pointer devices keep mouse and pen interaction without creating a dead touch strip.
-
-Floeterm follows Ghostty's default `keystroke, no-output` viewport policy. New output follows automatically while the viewport is already at the bottom. After a user scrolls into history, incoming output preserves that reading anchor; keyboard or text input, the End key, or an explicit scrollbar action returns to the latest output. Terminal-generated responses and mouse protocol events do not count as user input.
-
-`auto` reveals on terminal wheel activity, keyboard focus, or fine-pointer movement into the right-edge rail, then fades after 1,200ms of inactivity. `persistent` remains visible on fine-pointer layouts and `hidden` removes the control from pointer, tab, and accessibility access. Alternate-screen programs and empty buffers also hide it. Theme-derived idle and hover/focus colors meet 3:1 and 4.5:1 contrast targets. Drag color targets 7:1; when that ratio is mathematically impossible against the configured background, Floeterm chooses whichever of black or white provides the highest available contrast. Forced-colors and reduced-motion preferences are honored.
-
-After a host-owned layout transition or history recovery, request an explicit
-presentation fence before declaring the terminal surface ready:
-
-```ts
-await core.forceResizeAndWaitForPresentation();
-```
-
-The fence performs a fresh resize, requires a complete Beamterm frame, finishes
-the submitted WebGL work, and resolves after that frame has crossed a browser
-paint opportunity. Concurrent callers before the frame is submitted share the
-same work; a caller arriving after submission requests a newer frame. This is an
-explicit recovery/lifecycle operation, not a replacement for ordinary demand
-rendering.
-
-Hosts can preload the dynamic Ghostty module, WASM, and renderer resources before a terminal surface is visible without creating a `TerminalCore`:
-
-```ts
-import { preloadTerminalResources } from '@floegence/floeterm-terminal-web/preload';
-
-await preloadTerminalResources({ signal });
-await core.initialize({ priority: 'interactive', signal });
-```
-
-Resource loading is single-flight and retryable after a real import or WASM initialization failure. Caller cancellation only stops that caller from waiting; it does not interrupt shared resource initialization. Core initialization is globally bounded, gives queued interactive work priority over background work, and shares the actual ready promise across duplicate calls.
-
-Use the lightweight subpath exports when the host needs session metadata or renderer-neutral history before loading the full terminal feature:
+## Render a Presentation
 
 ```ts
 import {
-  TerminalSessionsCoordinator,
-  classifyTerminalAgentCli,
-} from '@floegence/floeterm-terminal-web/sessions';
-import { preparePagedTerminalHistory } from '@floegence/floeterm-terminal-web/history';
-```
-
-`TerminalSessionsCoordinator` treats `pollMs: 0` as a real periodic-poll disable. Subscribing still performs one best-effort initial reconcile, and explicit `refresh()` calls remain available to a host-owned lifecycle coordinator.
-
-Session snapshots may include independent `foregroundCommand` and
-`outputActivity` metadata. The coordinator normalizes missing metadata to
-`unknown` and merges each field only when its own revision is newer, so a stale
-list response cannot overwrite a newer output boundary. `outputActivity.phase`
-is `streaming` while a running command is producing visible display payload and
-becomes `settled` after the configured quiet interval. `settled` does not mean
-that the command, Agent turn, or task completed successfully.
-
-`classifyTerminalAgentCli` maps an already-sanitized foreground basename to an
-audited strict identity for Codex, Claude Code, OpenCode, Kimi Code, Gemini CLI,
-Qwen Code, GitHub Copilot CLI, Cline, Roo Code, Mistral Vibe, Cursor
-Agent, Junie CLI, Kiro CLI, OpenHands, Pi, TRAE Agent, or Kilo Code. Matching is
-case-insensitive and accepts one Windows executable suffix (`.exe`, `.cmd`, or
-`.bat`), but deliberately rejects paths, arguments, wrappers, partial matches,
-Unicode guesses, and overlong values. The root package exports the same helper.
-The lightweight sessions entry does not load TerminalCore or renderer code.
-
-Hosts that own output projection can reuse the bounded shell parser instead of
-maintaining a product-specific OSC implementation:
-
-```ts
-import { TerminalShellIntegrationParser } from '@floegence/floeterm-terminal-web';
-
-const parser = new TerminalShellIntegrationParser();
-const { displayData, events, tokens } = parser.parse(chunk);
-core.write(displayData);
-```
-
-When the host has an authoritative PTY hostname, pass it explicitly as
-`new TerminalShellIntegrationParser({ localHostname })` to reject same-host
-remote hints. The parser never infers the PTY host from the browser page origin.
-
-The parser recognizes OSC 633 prompt/command/cwd markers and Floeterm's safe
-program label. Recognized metadata is removed from display output, unknown OSC
-sequences are preserved, fragmented input is bounded, and program labels are
-limited to a 64-byte ASCII allowlist. The label never contains command
-arguments or environment values. `tokens` preserves the original order of
-display segments and recognized events, allowing hosts to attribute output to
-the foreground revision that was active at that exact byte boundary.
-
-## Notes
-
-- You must provide a `TerminalTransport` and `TerminalEventSource` for the managed controller.
-- Each `TerminalCore` owns an isolated `@floegence/ghostty-web` WASM runtime; consumers must not provide or share a Ghostty runtime.
-- `scrollback` is measured in terminal buffer rows, including separately wrapped rows, and accepts integers from 1 through 10,000. Within the supported geometry, Floeterm preserves at least the requested number of buffer rows; it does not trim to an exact physical row count. Floeterm maps that contract to a bounded byte budget for the exact pinned `@floegence/ghostty-web@0.5.0-rc.0` release, which currently interprets the value as bytes. The 81,920,000-byte cap limits Ghostty's scrollback arena, not the total memory of a WASM runtime. The mapping is temporary and must be reviewed and removed or updated with any Ghostty upgrade.
-- Supported terminal geometry is limited to 500 columns. Explicit dimensions above that limit fail, while automatic fitting reports at most 500 columns.
-- Consumer dependency overrides for `@floegence/ghostty-web` are unsupported. Floeterm's compatibility guard requires the exact package pin so an upstream behavior change cannot silently apply the row-to-byte mapping twice or reactivate the native canvas scrollbar beneath the renderer-neutral DOM control.
-- `TerminalCore` bridges the hidden textarea used by `ghostty-web`, so soft-keyboard and composition input continue to work on touch devices.
-- The hidden terminal input is mounted in the document viewport plane and anchored from rendered cursor geometry, so native IME candidate windows stay aligned without expanding transformed terminal hosts.
-- Programmatic terminal focus uses no-scroll focus by default, keeping embedded terminals stable inside scaled, projected, or otherwise transformed host surfaces.
-- Explicit terminal copy is handled through shared selection-copy APIs, so keyboard shortcuts, native app menus, and product context menus can reuse the same selection logic.
-- `TerminalCore` exposes runtime appearance updates, shell bell/title events, custom terminal link providers, buffer line reads, and touch-scroll helpers without requiring consumers to reach into private runtime objects.
-- Multiple live `TerminalCore` instances share one render scheduler, so large terminal grids coalesce demand-driven canvas work into browser frames.
-
-## Paged History And Live Recovery
-
-Hosts with cursor-paged history APIs can use the framework-neutral coordinator instead of maintaining a second live-output queue:
-
-```ts
-const output = createPagedTerminalOutputCoordinator({
-  fetchPage: ({ startSequence, endSequence, historyGeneration, cursor, signal }) =>
-    transport.historyPage(sessionId, {
-      startSequence,
-      endSequence,
-      historyGeneration,
-      cursor,
-      signal,
-    }),
-  write: data => new Promise(resolve => core.write(data, resolve)),
-  writeHistory: data => new Promise(resolve => core.writeHistory(data, resolve)),
-  clear: () => core.clear(),
-});
-
-void output.attach(1);
-const baseline = await output.waitForBaseline();
-if (!baseline.baselineReady) {
-  throw baseline.failure;
-}
-events.onData(sessionId, chunk => output.pushLive(chunk));
-```
-
-History pages must explicitly include `coveredThroughSequence`, including the valid empty-history value `0`. A missing or malformed value produces a structured contract failure instead of guessing from the last returned chunk. The first page may also provide `snapshotEndSequence`, `firstRetainedSequence`, and `historyGeneration`; pass the snapshot end and generation through each later request.
-
-History chunks must also carry the PTY geometry that produced their bytes:
-`geometryGeneration`, `cols`, and `rows`. The coordinator validates that tuple,
-keeps generations monotonic, splits writes at geometry changes, and invokes
-`applyHistoryGeometry` immediately before each history batch. Hosts that replay
-history into a fixed-grid renderer must use that hook to set the recorded
-dimensions; omitting or conflicting geometry fails the replay contract rather
-than silently interpreting historical cursor movement at the current grid.
-
-If a page reports `historyReset` or changes `historyGeneration` while catch-up is running, the coordinator atomically clears the obsolete baseline, preserves retained live output, and restarts from the new generation. Hosts must not merge pages from different generations or reinterpret the expected coverage reset as a malformed regression.
-
-`baselineReady` becomes true only after the complete fixed history snapshot has been source-sequence merged with retained live output and the final history writer completion has fired. After that fence, catch-up retries preserve baseline readiness and do not need to block input. Structured failures distinguish initial replay from background catch-up and expose stable codes without requiring error-string parsing.
-
-Use `TerminalCore.writeHistory` for history batches. Its auto-response suppression is scoped to that parser write and ends at its completion callback, so later live output and user input use normal terminal behavior.
-
-Running sessions can prepare bounded history before a visible terminal exists. Preparation does not create a Core, attach a session, resize a PTY, or subscribe to live output:
-
-```ts
-const preparedHistory = await preparePagedTerminalHistory({
-  fetchPage: request => transport.historyPage(sessionId, request),
-  maxBytes: 4 * 1024 * 1024,
-  signal,
-});
-
-const attachGeneration = output.beginAttach(0);
-const attach = await transport.attachWithHistoryBoundary(sessionId, cols, rows);
-await output.completeAttach(attachGeneration, attach.historyBoundarySequence, {
-  preparedHistory,
-});
-
-const baseline = await output.waitForBaseline();
-if (baseline.preparedHistoryOutcome?.status === 'accepted') {
-  console.log('prepared history used', { rebased: baseline.preparedHistoryOutcome.rebased });
-}
-```
-
-Prepared history is renderer-neutral and pins `historyGeneration`, `firstRetainedSequence`, and `snapshotEndSequence`. The visible attach validates those boundaries, replays the seed once, and fetches only the missing delta. A generation reset, retention advance, stale fence, or malformed seed discards it and falls back to the normal full recovery path. The baseline snapshot reports `accepted`, `rejected`, or `not-provided` plus a `rebased` flag, so hosts do not need to infer seed use from fetched byte counts.
-
-`preparePagedTerminalHistory` requires those three metadata fields on every prepared page and passes the remaining retained-byte budget as `request.maxBytes` so transports can bound each page as well. The helper always enforces its retained seed budget after a page returns; adapters should honor the request hint to keep peak response memory bounded too.
-
-## Restorable In-Memory Snapshots
-
-Adaptive host worksets can release inactive renderers without closing their PTY sessions:
-
-```ts
-await output.pause();
-const snapshot = core.captureRestorableSnapshot({
-  coveredThroughSequence: output.getSnapshot().coveredThroughSequence,
-});
-const estimate = core.getResourceEstimate();
-
-core.dispose(); // The host-owned PTY and output coordinator remain alive.
-
-const restored = await nextCore.restoreSnapshot(snapshot);
-output.setActive(true);
-```
-
-`pause()` stops new live writes, cancels retry or catch-up work, and resolves only after every writer that already entered the terminal parser has completed. Live output received while paused remains in the coordinator's bounded retained queue. Hosts must await this fence before capturing or disposing a core; if a host abandons hibernation, it should keep the core and call `setActive(true)`.
-
-Snapshots are versioned opaque values intended for memory-only storage. They are bounded to 2 MiB by default and include sequence coverage so the host can fetch only newer output. Floeterm does not write snapshots to persistent browser storage.
-
-## Responsive Resize
-
-When the same remote terminal session can be displayed in multiple views, enable responsive options so the focused terminal re-syncs cols/rows to the remote PTY:
-
-```ts
-const core = new TerminalCore(container, {
-  responsive: {
-    fitOnFocus: true,
-    emitResizeOnFocus: true,
-    notifyResizeOnlyWhenFocused: true,
-  },
-});
-```
-
-For an active fixed-grid view that is becoming interactive after history recovery,
-measure host capacity without changing the shared PTY grid, then submit that
-capacity through the host transport:
-
-```ts
-await core.forceResizeAndWaitForPresentation();
-const hostDimensions = core.measureHostDimensions();
-```
-
-`measureHostDimensions()` is read-only. It returns `undefined` while the host or
-renderer has no usable dimensions and never bypasses focus-gated resize policy;
-the host remains responsible for deciding whether to request a shared PTY resize.
-
-When a host can capture an atomic attach boundary, call `beginAttach(startSequence)` before subscribing and starting the server attach, then pass its generation token together with the returned server boundary to `completeAttach(attachGeneration, snapshotEndSequence)`. Live output arriving during the attach round trip remains retained, while a stale attach acknowledgement cannot complete a newer generation. The convenience `attach(startSequence, snapshotEndSequence)` performs both steps when no such window exists. Route only sequences after the boundary to `pushLive`: initial history is fixed at the boundary, while catch-up history is bounded before the first retained live sequence. If defensive overlap still reaches the coordinator, the raw live copy wins over history for the same sequence so terminal query/response behavior is not replaced by replay semantics.
-
-Passive mirrors of a remote PTY can render with the session owner's current dimensions:
-
-```ts
-const core = new TerminalCore(container, {
-  fixedDimensions: { cols: 100, rows: 30 },
-});
-
-core.setFixedDimensions(null);
-core.forceResize();
-```
-
-Interactive views of one shared PTY can keep independent viewport measurements while rendering the server-confirmed terminal grid:
-
-```ts
-const controller = createTerminalInstance({
-  sessionId,
-  transport,
-  eventSource,
-  isActive: true,
-  config: {
-    responsive: {
-      reportHostDimensionsWithFixedGrid: true,
-    },
-  },
-});
-```
-
-The live transport applies `ATTACHED`, `GEOMETRY_CHANGED`, `RESIZE_APPLIED`, and `OUTPUT_BATCH` geometry monotonically. Container resize notifications still report each view's own capacity to the server.
-
-Hosts that need to explain shared PTY geometry can request the structured, boundary-ordered resize result instead of guessing from the latest geometry event:
-
-```ts
-const applied = await transport.resizeWithEffectiveGeometry(sessionId, localCols, localRows);
-
-console.log(applied.runtimeAttachGeneration);
-console.log(applied.requested); // This view's requested grid.
-console.log(applied.effective); // The shared grid after its output boundary.
-```
-
-The existing `transport.resize()` remains available and resolves at the same boundary without returning the result. `eventSource.onTerminalLiveAttachmentLifecycle()` reports the exact runtime attach generation entering `attached` or `closed`. Output, geometry, resize results, errors, and close callbacks from superseded generations are fenced before they reach host listeners.
-
-Hosts with overlay scrollbars can remove the default ghostty-web scrollbar reserve:
-
-```ts
-const core = new TerminalCore(container, {
-  fit: {
-    scrollbarReservePx: 0,
-  },
-});
-```
-
-## Clipboard
-
-By default, upstream mouse selection keeps the `ghostty-web` behavior and copies immediately on selection. Consumers that want explicit copy commands only can disable that side effect:
-
-```ts
-const core = new TerminalCore(container, {
-  clipboard: {
-    copyOnSelect: false,
-  },
-});
-```
-
-With `copyOnSelect: false`, `TerminalCore` keeps selection explicit:
-
-- `core.hasSelection()` reports whether the terminal currently owns a copyable selection.
-- `core.copySelection()` writes the current terminal selection to the clipboard.
-- `Cmd+C` / `Ctrl+C` copies only when the terminal currently has a selection. Without a selection, `Ctrl+C` remains terminal input and produces the standard interrupt control byte; `Cmd+C` is not converted into terminal input.
-
-The managed controller exposes the same helpers through `controller.actions`.
-
-## Link Providers And Buffer Reads
-
-`TerminalCore` forwards shell lifecycle events and lets consumers register custom links over rendered terminal rows:
-
-```ts
-import { TerminalCore, type TerminalLinkProvider } from '@floegence/floeterm-terminal-web';
-
-const linkProvider: TerminalLinkProvider = {
-  provideLinks(y, callback) {
-    const line = core.readBufferLine(y);
-    void line;
-    callback(undefined);
-  },
-};
-
-const core = new TerminalCore(container, {}, {
-  onBell: () => console.log('bell'),
-  onTitleChange: title => console.log('title', title),
-});
-
-await core.initialize();
-core.registerLinkProvider(linkProvider);
-```
-
-This is the intended extension point for product features such as modifier-click file navigation, build-log deep links, or shell attention badges driven by bell events.
-
-## Touch Scroll Helpers
-
-Hosts with custom mobile input surfaces can ask `TerminalCore` for a safe touch-scroll facade instead of reaching into the underlying runtime:
-
-```ts
-const touch = core.getTouchScrollRuntime();
-
-if (touch?.isAlternateScreen()) {
-  touch.sendAlternateScreenInput('\x1B[A');
-} else {
-  touch?.scrollLines(-3);
-}
-```
-
-## Visual Work Suspension
-
-Hosts that animate a surrounding workbench can temporarily suspend expensive terminal visual work while keeping PTY output and the terminal buffer live:
-
-```ts
-const suspend = core.beginVisualSuspend({ reason: 'workbench_widget_drag' });
-
-try {
-  // Move, zoom, or resize the host surface.
-} finally {
-  suspend.dispose();
-}
-```
-
-While suspended, `write()` continues to update terminal state. Rendering, fit, full repaint, and overlay refresh requests are coalesced and reconciled when the final nested suspend handle is disposed.
-
-## Multi-Terminal Render Scheduling
-
-`TerminalCore` keeps ghostty-web rendering demand-driven and routes visible terminal repaints through a shared scheduler. Demo or profiling surfaces can inspect the scheduler without reaching into private instances:
-
-```ts
-import { getTerminalRenderSchedulerStats } from '@floegence/floeterm-terminal-web';
-
-const stats = getTerminalRenderSchedulerStats();
-console.log(stats.lastFrameRendered, stats.pending);
-```
-
-Product code should continue to interact with `TerminalCore` or the managed controller.
-
-## Runtime Appearance Updates
-
-Consumers that need to respond to user preferences can update appearance without rebuilding the terminal session:
-
-```ts
-import { getThemeColors } from '@floegence/floeterm-terminal-web';
-
-core.setAppearance({
-  theme: getThemeColors('light'),
-  fontSize: 14,
-  fontFamily: '"Iosevka Term", monospace',
-  presentationScale: 1,
-});
-
-core.setFontFamily('"Iosevka Term", monospace');
-```
-
-## Built-in Theme Catalog
-
-Floeterm 0.8.0 publishes 20 immutable built-in theme definitions. Hosts can use
-the same stable catalog for validation, previews, and terminal rendering:
-
-```ts
-import {
-  TERMINAL_THEME_DEFINITIONS,
+  RendererSurface,
   getThemeColors,
-  normalizeTerminalThemeName,
-} from '@floegence/floeterm-terminal-web';
+  validatePresentation,
+} from '@floegence/floeterm-terminal-web/semantic';
 
-const selected = normalizeTerminalThemeName(persistedValue, 'dark');
-const colors = getThemeColors(selected);
-const lightThemes = TERMINAL_THEME_DEFINITIONS.filter(
-  (theme) => theme.appearance === 'light',
-);
+const renderer = new RendererSurface(canvas, error => showInlineError(error));
+renderer.setPalette(getThemeColors('tokyoNight'));
+renderer.apply(validatePresentation(payload));
 ```
 
-The exported arrays, definitions, and nested color objects are frozen at
-runtime. `getThemeColors()` returns a defensive copy. Theme provenance and
-third-party license details ship in `THEME_PROVENANCE.json` and
-`THIRD_PARTY_THEME_NOTICES.md`. The package also includes
-`THEME_QUALITY_EVIDENCE.json` with the catalog thresholds, measured results,
-and Signal Safe color-vision simulation evidence.
+`RendererSurface` owns one 2D canvas. It keeps the latest immutable Presentation,
+rejects sequence or geometry regressions, follows host CSS bounds, tracks DPR changes,
+fills every backing pixel before painting cells/graphics/cursor, and never stretches
+the authoritative cell grid to an observer viewport.
 
-### 0.8.0 migration
+Themes are view-local. Changing the palette repaints the latest Presentation without
+requesting output, resizing the PTY, or affecting another view. Explicit ANSI/RGB
+colors stay semantic; only default foreground/background/cursor fallbacks change.
 
-- `TerminalThemeName` now includes the full catalog; exhaustive switches must
-  handle the new IDs.
-- `getThemeColors()` keeps its function name but returns the exact readonly
-  `TerminalThemeColors` type instead of a mutable `Record<string, string>`.
-- `light`, `solarizedDark`, and `monokai` add `cursorAccent` equal to their
-  existing background. All other legacy fields and values are unchanged.
+## Input and IME
+
+```ts
+import { TerminalInputBridge } from '@floegence/floeterm-terminal-web/semantic';
+
+const bridge = new TerminalInputBridge({
+  inputHost,
+  inputElement: textarea,
+  onData: data => sendInput(data),
+  syncInputGeometry: () => positionTextarea(renderer.getCursorClientRect()),
+});
+```
+
+The textarea must remain editable and positioned in the visible terminal viewport.
+Composition preedit is never sent to the PTY. The final Unicode composition commit is
+sent exactly once across Chrome/Safari event orderings. Physical keys, paste,
+dead-key/emoji input, copy shortcuts, focus, and controller ownership remain separate
+from composition state.
+
+The cursor rectangle uses CSS pixels. Canvas backing DPR is not multiplied into the
+IME anchor.
+
+## Semantic Live Transport
+
+```ts
+import {
+  createSemanticTerminalLiveTransport,
+} from '@floegence/floeterm-terminal-web/live';
+
+const { transport, eventSource } = createSemanticTerminalLiveTransport({
+  connectionId,
+  openStream,
+  control,
+  onError: reportError,
+});
+
+await transport.attach(sessionId, cols, rows);
+const stop = eventSource.onTerminalPresentation(sessionId, value => {
+  renderer.apply(validatePresentation(value));
+});
+```
+
+The transport carries attach, structured input, canonical resize settlement,
+Presentation, geometry, and lifecycle frames. It does not carry raw PTY output.
+Unknown input is not replayed after a disconnect. A new transport generation does not
+write through an old connection.
+
+## Session Metadata
+
+The `./sessions` entry is independent of rendering. It normalizes session list,
+foreground command, output activity, execution context, and semantic work metadata.
+These values are display-only and must not be used for authorization.
+
+## Lifecycle
+
+Dispose each view's subscriptions, input bridge, renderer, and live transport. Disposal
+cancels RAF/blink/DPR/font listeners and releases graphics bitmaps without detaching or
+resizing another view.
+
+## Development
+
+```bash
+npm ci
+npm run lint
+npm test
+npm run test:browser
+npm run build
+npm run check:package-artifact
+```
+
+The package-artifact check installs the packed tarball into a fresh consumer and
+rejects removed parser, checkpoint, renderer, and WASM contracts.

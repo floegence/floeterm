@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -96,64 +95,6 @@ type semanticHistoryRequest struct {
 	Anchor              string                            `json:"anchor,omitempty"`
 	Direction           terminal.SemanticHistoryDirection `json:"direction"`
 	Limit               int                               `json:"limit"`
-}
-
-type historyChunk struct {
-	Sequence           int64  `json:"sequence"`
-	DataBase64         string `json:"data"`
-	TimestampMs        int64  `json:"timestampMs"`
-	GeometryGeneration uint64 `json:"geometryGeneration"`
-	Cols               int    `json:"cols"`
-	Rows               int    `json:"rows"`
-}
-
-type historyPageResponse struct {
-	Chunks                 []historyChunk             `json:"chunks"`
-	Checkpoint             *historyCheckpointResponse `json:"checkpoint,omitempty"`
-	DeltaStartSequence     int64                      `json:"deltaStartSequence"`
-	FirstRetainedSequence  int64                      `json:"firstRetainedSequence"`
-	NextStartSequence      int64                      `json:"nextStartSequence"`
-	HasMore                bool                       `json:"hasMore"`
-	CoveredThroughSequence int64                      `json:"coveredThroughSequence"`
-	SnapshotEndSequence    int64                      `json:"snapshotEndSequence"`
-	HistoryGeneration      int64                      `json:"historyGeneration"`
-	HistoryReset           bool                       `json:"historyReset"`
-	HistoryTruncated       bool                       `json:"historyTruncated"`
-	TotalBytes             int64                      `json:"totalBytes"`
-}
-
-type historyCheckpointResponse struct {
-	FormatVersion          uint32 `json:"formatVersion"`
-	EngineID               string `json:"engineId"`
-	CoveredThroughSequence int64  `json:"coveredThroughSequence"`
-	GeometryGeneration     uint64 `json:"geometryGeneration"`
-	ParserEpoch            uint64 `json:"parserEpoch"`
-	Cols                   int    `json:"cols"`
-	Rows                   int    `json:"rows"`
-	ChecksumSHA256         string `json:"checksumSha256"`
-	StateDigestSHA256      string `json:"stateDigestSha256"`
-	BytesBase64            string `json:"bytes"`
-}
-
-type historyCheckpointRequest struct {
-	FormatVersion          uint32 `json:"formatVersion"`
-	EngineID               string `json:"engineId"`
-	CoveredThroughSequence int64  `json:"coveredThroughSequence"`
-	GeometryGeneration     uint64 `json:"geometryGeneration"`
-	ParserEpoch            uint64 `json:"parserEpoch"`
-	Cols                   int    `json:"cols"`
-	Rows                   int    `json:"rows"`
-	ChecksumSHA256         string `json:"checksumSha256"`
-	StateDigestSHA256      string `json:"stateDigestSha256"`
-	BytesBase64            string `json:"bytes"`
-}
-
-type sessionStatsResponse struct {
-	History historyStats `json:"history"`
-}
-
-type historyStats struct {
-	TotalBytes int64 `json:"totalBytes"`
 }
 
 func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
@@ -336,92 +277,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 
-	case "history":
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		startSeq, err := parseIntQuery(r.URL.Query(), "startSeq", 0)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		endSeq, err := parseIntQuery(r.URL.Query(), "endSeq", -1)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		historyGeneration, err := parseIntQuery(r.URL.Query(), "historyGeneration", 0)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		maxBytes, err := parseIntQuery(r.URL.Query(), "maxBytes", defaultHistoryPageBytes)
-		if err != nil || maxBytes <= 0 || maxBytes > maxHistoryPageBytes {
-			http.Error(w, "invalid maxBytes", http.StatusBadRequest)
-			return
-		}
-
-		session, ok := s.manager.GetSession(sessionID)
-		if !ok {
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
-
-		page, err := session.GetHistoryPage(terminal.HistoryPageOptions{
-			StartSeq:          startSeq,
-			EndSeq:            endSeq,
-			HistoryGeneration: historyGeneration,
-			LimitChunks:       maxHistoryPageChunks,
-			MaxBytes:          int(maxBytes),
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		out := make([]historyChunk, 0, len(page.Chunks))
-		for _, chunk := range page.Chunks {
-			out = append(out, historyChunk{
-				Sequence:           chunk.Sequence,
-				DataBase64:         base64.StdEncoding.EncodeToString(chunk.Data),
-				TimestampMs:        chunk.Timestamp,
-				GeometryGeneration: chunk.GeometryGeneration,
-				Cols:               chunk.Cols,
-				Rows:               chunk.Rows,
-			})
-		}
-
-		var checkpoint *historyCheckpointResponse
-		if page.Checkpoint != nil {
-			checkpoint = &historyCheckpointResponse{
-				FormatVersion:          page.Checkpoint.FormatVersion,
-				EngineID:               page.Checkpoint.EngineID,
-				CoveredThroughSequence: page.Checkpoint.CoveredThroughSequence,
-				GeometryGeneration:     page.Checkpoint.GeometryGeneration,
-				ParserEpoch:            page.Checkpoint.ParserEpoch,
-				Cols:                   page.Checkpoint.Cols,
-				Rows:                   page.Checkpoint.Rows,
-				ChecksumSHA256:         page.Checkpoint.ChecksumSHA256,
-				StateDigestSHA256:      page.Checkpoint.StateDigestSHA256,
-				BytesBase64:            base64.StdEncoding.EncodeToString(page.Checkpoint.Bytes),
-			}
-		}
-
-		writeJSON(w, http.StatusOK, historyPageResponse{
-			Chunks:                 out,
-			Checkpoint:             checkpoint,
-			DeltaStartSequence:     page.DeltaStartSequence,
-			FirstRetainedSequence:  page.FirstRetainedSequence,
-			NextStartSequence:      page.NextStartSeq,
-			HasMore:                page.HasMore,
-			CoveredThroughSequence: page.CoveredThroughSequence,
-			SnapshotEndSequence:    page.SnapshotEndSequence,
-			HistoryGeneration:      page.HistoryGeneration,
-			HistoryReset:           page.HistoryReset,
-			HistoryTruncated:       page.HistoryTruncated,
-			TotalBytes:             page.TotalBytes,
-		})
 	case "presentation":
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -470,90 +325,6 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, page)
-		return
-
-	case "stats":
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		session, ok := s.manager.GetSession(sessionID)
-		if !ok {
-			http.Error(w, "session not found", http.StatusNotFound)
-			return
-		}
-
-		stats, err := session.GetHistoryStats()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		writeJSON(w, http.StatusOK, sessionStatsResponse{
-			History: historyStats{
-				TotalBytes: stats.TotalBytes,
-			},
-		})
-		return
-
-	case "checkpoint":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var req historyCheckpointRequest
-		if err := readJSON(w, r, &req, maxCheckpointJSONBodyBytes); err != nil {
-			var httpErr *httpError
-			if errors.As(err, &httpErr) {
-				http.Error(w, httpErr.message, httpErr.status)
-				return
-			}
-			http.Error(w, "invalid checkpoint payload", http.StatusBadRequest)
-			return
-		}
-		checkpointBytes, err := base64.StdEncoding.Strict().DecodeString(req.BytesBase64)
-		if err != nil || len(checkpointBytes) == 0 {
-			http.Error(w, "invalid checkpoint bytes", http.StatusBadRequest)
-			return
-		}
-		if len(checkpointBytes) > maxCheckpointBytes {
-			http.Error(w, "checkpoint bytes exceed limit", http.StatusRequestEntityTooLarge)
-			return
-		}
-		checkpoint := terminal.TerminalHistoryCheckpoint{
-			FormatVersion:          req.FormatVersion,
-			EngineID:               req.EngineID,
-			CoveredThroughSequence: req.CoveredThroughSequence,
-			GeometryGeneration:     req.GeometryGeneration,
-			ParserEpoch:            req.ParserEpoch,
-			Cols:                   req.Cols,
-			Rows:                   req.Rows,
-			ChecksumSHA256:         req.ChecksumSHA256,
-			StateDigestSHA256:      req.StateDigestSHA256,
-			Bytes:                  checkpointBytes,
-		}
-		if err := s.manager.CommitSessionHistoryCheckpoint(sessionID, checkpoint); err != nil {
-			if strings.Contains(err.Error(), "session not found") {
-				http.Error(w, "session not found", http.StatusNotFound)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return
-
-	case "clear":
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if err := s.manager.ClearSessionHistory(sessionID); err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
 		return
 
 	default:

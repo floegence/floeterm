@@ -20,9 +20,9 @@ var errSessionClosed = errors.New("session is closed")
 
 const naturalExitPTYDrainTimeout = 500 * time.Millisecond
 
-// Keep PTY reads flowing while the ordered commit path synchronizes durable
-// history. Each queued packet retains its independently captured geometry, and
-// the fixed capacity provides bounded backpressure instead of dropping output.
+// Keep PTY reads flowing while the actor serializes output with resize. Each
+// queued packet retains its admitted geometry, and the fixed capacity provides
+// bounded backpressure instead of dropping output.
 const ptyReadQueueCapacity = 2048
 
 type sessionActivation struct {
@@ -539,11 +539,9 @@ func (s *Session) Close() error {
 
 func (s *Session) cleanup() {
 	s.closePTYOrdering()
-	s.historyCommitMu.Lock()
 	s.mu.Lock()
 	if s.cleaned {
 		s.mu.Unlock()
-		s.historyCommitMu.Unlock()
 		return
 	}
 	s.cleaned = true
@@ -559,12 +557,10 @@ func (s *Session) cleanup() {
 	s.activation = nil
 	ptyFile := s.PTY
 	cmd := s.Cmd
-	historySpool := s.historySpool
 	waitDone := s.procWaitDone
 	bootstraps := s.takeShellLifecycleBootstrapsLocked()
 	s.PTY = nil
 	s.Cmd = nil
-	s.historySpool = nil
 	s.isActive = false
 	s.clearForegroundCommandLocked()
 	presentationStore := s.presentationStore
@@ -577,7 +573,6 @@ func (s *Session) cleanup() {
 	}
 	liveSubscribers := s.detachLiveSubscribersForClose()
 	s.mu.Unlock()
-	s.historyCommitMu.Unlock()
 	cleanupShellLifecycleBootstraps(bootstraps)
 	if semanticActor != nil {
 		semanticActor.Close()
@@ -593,11 +588,6 @@ func (s *Session) cleanup() {
 	}
 	if ptyFile != nil {
 		_ = ptyFile.Close()
-	}
-	if historySpool != nil {
-		if err := historySpool.Close(); err != nil {
-			s.config.logger.Warn("Failed to close terminal history spool", "sessionID", s.ID, "error", err)
-		}
 	}
 	if cmd != nil && cmd.Process != nil {
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -637,262 +627,6 @@ func cleanupShellLifecycleBootstraps(bootstraps []*shellLifecycleBootstrap) {
 	for _, bootstrap := range bootstraps {
 		bootstrap.cleanup()
 	}
-}
-
-// GetHistoryChunks returns raw chunks from the ring buffer.
-func (s *Session) GetHistoryChunks() ([]TerminalDataChunk, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.ringBuffer == nil {
-		return nil, fmt.Errorf("ring buffer not initialized")
-	}
-
-	return s.ringBuffer.ReadAllChunks(), nil
-}
-
-// GetHistoryPage returns a bounded history page and replay cursor metadata.
-func (s *Session) GetHistoryPage(options HistoryPageOptions) (HistoryPage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ringBuffer := s.ringBuffer
-
-	if ringBuffer == nil {
-		return HistoryPage{}, fmt.Errorf("ring buffer not initialized")
-	}
-	if s.historySpoolErr != nil {
-		return HistoryPage{}, fmt.Errorf("terminal history durability failed: %w", s.historySpoolErr)
-	}
-
-	if s.historyGeneration <= 0 {
-		s.historyGeneration = 1
-	}
-	snapshotEnd := s.committedSequence
-	if options.EndSeq > 0 && options.EndSeq < snapshotEnd {
-		snapshotEnd = options.EndSeq
-	}
-
-	readOptions := options
-	readOptions.EndSeq = snapshotEnd
-	page := ringBuffer.ReadChunkPage(readOptions)
-	page.SnapshotEndSequence = snapshotEnd
-	page.HistoryGeneration = s.historyGeneration
-	if options.HistoryGeneration > 0 && options.HistoryGeneration != s.historyGeneration {
-		page.Chunks = []TerminalDataChunk{}
-		page.FirstSequence = 0
-		page.LastSequence = 0
-		page.NextStartSeq = 0
-		page.HasMore = false
-		page.CoveredThroughSequence = 0
-		page.CoveredBytes = 0
-		page.HistoryReset = true
-		return page, nil
-	}
-	if page.HasMore && page.NextStartSeq > 0 {
-		page.CoveredThroughSequence = page.NextStartSeq - 1
-	} else {
-		page.CoveredThroughSequence = snapshotEnd
-	}
-	effectiveStart := options.StartSeq
-	if effectiveStart <= 0 {
-		effectiveStart = 1
-	}
-	historyReset := effectiveStart < s.historyStartSequence
-	durableStart := effectiveStart
-	if historyReset {
-		durableStart = s.historyStartSequence
-	}
-	useDurableHistory := durableStart <= snapshotEnd && page.FirstRetainedSequence > durableStart
-	if !useDurableHistory && s.historySpool != nil && durableStart <= snapshotEnd {
-		checkpoint, err := s.historySpool.Checkpoint()
-		if err != nil {
-			return HistoryPage{}, fmt.Errorf("read terminal history checkpoint: %w", err)
-		}
-		useDurableHistory = checkpoint != nil && durableStart <= checkpoint.CoveredThroughSequence
-	}
-	if useDurableHistory {
-		if s.historySpool == nil {
-			page.HistoryTruncated = true
-		} else {
-			durablePage, err := s.readDurableHistoryPageLocked(options, durableStart, snapshotEnd)
-			if err != nil {
-				return HistoryPage{}, err
-			}
-			page = durablePage
-		}
-	}
-	if historyReset {
-		page.HistoryReset = true
-		page.DeltaStartSequence = s.historyStartSequence
-		if page.FirstRetainedSequence == 0 || page.FirstRetainedSequence < s.historyStartSequence {
-			page.FirstRetainedSequence = s.historyStartSequence
-		}
-		if page.FirstRetainedSequence == s.historyStartSequence {
-			page.HistoryTruncated = false
-		}
-	}
-	if len(page.Chunks) > 0 && s.config.historyFilter != nil {
-		page.Chunks = s.config.historyFilter.Filter(page.Chunks)
-	}
-
-	return page, nil
-}
-
-func (s *Session) readDurableHistoryPageLocked(options HistoryPageOptions, startSequence, snapshotEnd int64) (HistoryPage, error) {
-	if s.historySpool == nil {
-		return HistoryPage{}, fmt.Errorf("terminal history spool is not initialized")
-	}
-	checkpoint, err := s.historySpool.Checkpoint()
-	if err != nil {
-		return HistoryPage{}, fmt.Errorf("read terminal history checkpoint: %w", err)
-	}
-	deltaStart := startSequence
-	historyTruncated := false
-	if checkpoint != nil && startSequence <= checkpoint.CoveredThroughSequence {
-		deltaStart = checkpoint.CoveredThroughSequence + 1
-		historyTruncated = true
-	}
-	chunks := []TerminalDataChunk{}
-	if deltaStart <= snapshotEnd {
-		chunks, err = s.historySpool.ReadChunks(deltaStart, snapshotEnd)
-		if err != nil {
-			return HistoryPage{}, fmt.Errorf("read terminal history spool: %w", err)
-		}
-	}
-	snapshot := s.historySpool.Snapshot()
-	firstRetained := snapshot.FirstSequence
-	if firstRetained == 0 {
-		firstRetained = deltaStart
-	}
-	page := HistoryPage{
-		Chunks:                 make([]TerminalDataChunk, 0, len(chunks)),
-		Checkpoint:             checkpoint,
-		DeltaStartSequence:     deltaStart,
-		FirstRetainedSequence:  firstRetained,
-		SnapshotEndSequence:    snapshotEnd,
-		HistoryGeneration:      s.historyGeneration,
-		HistoryTruncated:       historyTruncated,
-		TotalBytes:             snapshot.RawBytes,
-		UsedChunks:             len(chunks),
-		CoveredThroughSequence: snapshotEnd,
-	}
-	for _, chunk := range chunks {
-		if options.LimitChunks > 0 && len(page.Chunks) >= options.LimitChunks {
-			page.HasMore = true
-			page.NextStartSeq = chunk.Sequence
-			break
-		}
-		chunkBytes := len(chunk.Data)
-		if options.MaxBytes > 0 && len(page.Chunks) > 0 && page.CoveredBytes+int64(chunkBytes) > int64(options.MaxBytes) {
-			page.HasMore = true
-			page.NextStartSeq = chunk.Sequence
-			break
-		}
-		page.Chunks = append(page.Chunks, chunk)
-		page.CoveredBytes += int64(chunkBytes)
-		if page.FirstSequence == 0 {
-			page.FirstSequence = chunk.Sequence
-		}
-		page.LastSequence = chunk.Sequence
-	}
-	if page.HasMore {
-		page.CoveredThroughSequence = page.NextStartSeq - 1
-	}
-	return page, nil
-}
-
-// GetHistoryFromSequence returns chunks starting at a given sequence.
-func (s *Session) GetHistoryFromSequence(fromSeq int64) ([]TerminalDataChunk, error) {
-	page, err := s.GetHistoryPage(HistoryPageOptions{StartSeq: fromSeq})
-	if err != nil {
-		return nil, err
-	}
-	return page.Chunks, nil
-}
-
-// CommitHistoryCheckpoint publishes a checkpoint only after the durable spool
-// validates its sequence, geometry, digest, and blob checksum.
-func (s *Session) CommitHistoryCheckpoint(checkpoint TerminalHistoryCheckpoint) error {
-	s.historyCommitMu.Lock()
-	defer s.historyCommitMu.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.historySpoolErr != nil {
-		return fmt.Errorf("terminal history durability failed: %w", s.historySpoolErr)
-	}
-	if s.historySpool == nil {
-		return fmt.Errorf("terminal history spool is not configured")
-	}
-	if checkpoint.CoveredThroughSequence > s.committedSequence {
-		return fmt.Errorf("terminal history checkpoint exceeds committed output")
-	}
-	if checkpoint.ParserEpoch != uint64(s.historyGeneration) {
-		return fmt.Errorf("terminal history checkpoint parser epoch does not match history generation")
-	}
-	if err := s.historySpool.CommitCheckpoint(checkpoint); err != nil {
-		return fmt.Errorf("commit terminal history checkpoint: %w", err)
-	}
-	return nil
-}
-
-// GetHistoryStats returns a lightweight snapshot of the history buffer without copying stored data.
-func (s *Session) GetHistoryStats() (RingBufferStats, error) {
-	s.mu.RLock()
-	ringBuffer := s.ringBuffer
-	s.mu.RUnlock()
-
-	if ringBuffer == nil {
-		return RingBufferStats{}, fmt.Errorf("ring buffer not initialized")
-	}
-
-	return ringBuffer.GetStats(), nil
-}
-
-// ClearHistory removes stored PTY output from the ring buffer.
-func (s *Session) ClearHistory() error {
-	s.historyCommitMu.Lock()
-	defer s.historyCommitMu.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.ringBuffer != nil {
-		s.ringBuffer.Clear()
-	}
-	if s.historySpool != nil {
-		if err := s.historySpool.Reset(s.committedSequence); err != nil {
-			s.historySpoolErr = err
-			return fmt.Errorf("clear terminal history spool: %w", err)
-		}
-		s.historySpoolErr = nil
-	}
-	s.historyGeneration++
-	if s.historyGeneration <= 0 {
-		s.historyGeneration = 1
-	}
-	s.historyStartSequence = s.committedSequence + 1
-
-	s.config.logger.Info("Terminal history cleared", "sessionID", s.ID)
-	return nil
-}
-
-// broadcastData sends committed output without holding session locks.
-func (s *Session) broadcastData(event TerminalOutputEvent, subscribers []LiveSubscriber) {
-	// Never call external handlers while holding session locks. Handlers may
-	// synchronously call back into this Session/Manager and would deadlock.
-	s.mu.RLock()
-	handler := s.eventHandler
-	sessionID := s.ID
-	s.mu.RUnlock()
-
-	if handler != nil {
-		handler.OnTerminalData(sessionID, event)
-	}
-	for _, subscriber := range subscribers {
-		if subscriber.OnOutput != nil {
-			subscriber.OnOutput(event)
-		}
-	}
-	s.broadcastPendingPresentations(subscribers)
 }
 
 func (s *Session) readPTYOutput(
@@ -1447,123 +1181,52 @@ func (s *Session) publishPTYDisplayDataAtGeometry(
 	geometry TerminalGeometry,
 	onCommitted func(error),
 ) {
-	timestamp := time.Now().UnixMilli()
-
 	if len(displayData) == 0 {
 		if onCommitted != nil {
 			onCommitted(nil)
 		}
 		return
 	}
-	if len(displayData) > 0 {
-		s.mu.RLock()
-		semanticActor := s.semanticActor
-		s.mu.RUnlock()
-		if semanticActor != nil {
-			if err := semanticActor.ApplyPTYOutput(displayData); err != nil {
-				if onCommitted != nil {
-					onCommitted(err)
-				}
-				return
-			}
-		}
-		s.historyCommitMu.Lock()
-
-		s.mu.Lock()
-		if s.outputClosed {
-			s.mu.Unlock()
-			s.historyCommitMu.Unlock()
-			if onCommitted != nil {
-				onCommitted(errSessionClosed)
-			}
-			return
-		}
-		s.sequenceNumber++
-		seqNum := s.sequenceNumber
-		s.LastActive = time.Now()
-		if geometry.Generation == 0 || geometry.Cols <= 0 || geometry.Rows <= 0 {
-			geometry = s.effectiveGeometryLocked()
-		}
-
-		chunk := TerminalDataChunk{
-			Sequence:           seqNum,
-			Data:               displayData,
-			Timestamp:          timestamp,
-			Size:               len(displayData),
-			GeometryGeneration: geometry.Generation,
-			Cols:               geometry.Cols,
-			Rows:               geometry.Rows,
-		}
-		historySpool := s.historySpool
-		historySpoolReady := s.historySpoolErr == nil
-		ringBuffer := s.ringBuffer
-		s.mu.Unlock()
-
-		durableCommitted := false
-		if historySpool != nil && historySpoolReady {
-			appendHistory := s.appendHistorySpool
-			if appendHistory == nil {
-				appendHistory = func(spool *TerminalHistorySpool, chunk TerminalDataChunk) error {
-					return spool.Append(chunk)
-				}
-			}
-			if err := appendHistory(historySpool, chunk); err != nil {
-				s.mu.Lock()
-				if s.historySpool == historySpool && s.historySpoolErr == nil {
-					s.historySpoolErr = err
-				}
-				s.mu.Unlock()
-				s.config.logger.Error("Failed to append terminal history spool", "sessionID", s.ID, "error", err)
-			} else {
-				durableCommitted = true
-			}
-		}
-		ringCommitted := false
-		historyCommitAllowed := historySpool == nil || durableCommitted
-		if ringBuffer != nil && historyCommitAllowed {
-			if err := ringBuffer.writeOwnedWithSequenceAndGeometry(
-				displayData,
-				seqNum,
-				timestamp,
-				false,
-				geometry.Generation,
-				geometry.Cols,
-				geometry.Rows,
-			); err != nil {
-				s.config.logger.Error("Failed to write to ring buffer", "sessionID", s.ID, "error", err)
-			} else {
-				ringCommitted = true
-			}
-		}
-
-		s.mu.Lock()
-		if durableCommitted || ringCommitted {
-			s.committedSequence = seqNum
-		}
-		subscribers := make([]LiveSubscriber, 0, len(s.liveAttachments))
-		for _, attachment := range s.liveAttachments {
-			subscribers = append(subscribers, attachment.subscriber)
-		}
-		s.mu.Unlock()
-		s.historyCommitMu.Unlock()
+	s.mu.RLock()
+	semanticActor := s.semanticActor
+	s.mu.RUnlock()
+	if semanticActor == nil {
 		if onCommitted != nil {
-			var commitErr error
-			if !durableCommitted && !ringCommitted {
-				commitErr = errors.New("terminal output was not committed to durable or ring history")
-			}
-			onCommitted(commitErr)
+			onCommitted(errors.New("semantic session actor is unavailable"))
 		}
-
-		s.broadcastData(TerminalOutputEvent{
-			Data:        displayData,
-			Sequence:    seqNum,
-			TimestampMs: timestamp,
-			Geometry:    geometry,
-		}, subscribers)
-		if len(subscribers) == 0 {
-			s.broadcastPendingPresentations(nil)
-		}
+		return
 	}
+	presentation, err := semanticActor.ApplyPTYOutput(displayData)
+	if err != nil {
+		if onCommitted != nil {
+			onCommitted(err)
+		}
+		return
+	}
+
+	s.mu.Lock()
+	if s.outputClosed {
+		s.mu.Unlock()
+		if onCommitted != nil {
+			onCommitted(errSessionClosed)
+		}
+		return
+	}
+	s.LastActive = time.Now()
+	if presentation.Geometry.Generation > 0 {
+		s.geometryGeneration = presentation.Geometry.Generation
+	}
+	s.latestPresentationSequence = presentation.Sequence
+	if presentation.Geometry.Cols > 0 && presentation.Geometry.Rows > 0 {
+		s.lastAppliedCols = presentation.Geometry.Cols
+		s.lastAppliedRows = presentation.Geometry.Rows
+	}
+	subscribers := s.liveSubscribersLocked()
+	s.mu.Unlock()
+	if onCommitted != nil {
+		onCommitted(nil)
+	}
+	s.broadcastPresentation(presentation, subscribers)
 
 }
 

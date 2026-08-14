@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -10,15 +11,9 @@ import (
 
 // AddConnection registers a client connection with the session.
 func (s *Session) AddConnection(connectionID string, cols, rows int) {
-	s.AddConnectionWithHistoryBoundary(connectionID, cols, rows)
-}
-
-// AddConnectionWithHistoryBoundary registers a client and returns the last
-// committed source sequence that belongs to its initial history snapshot.
-func (s *Session) AddConnectionWithHistoryBoundary(connectionID string, cols, rows int) int64 {
 	if connectionID == "" {
 		s.config.logger.Error("Cannot add connection with empty ID", "sessionID", s.ID)
-		return 0
+		return
 	}
 
 	s.config.logger.Debug("Adding connection", "sessionID", s.ID, "connectionID", connectionID, "cols", cols, "rows", rows)
@@ -39,7 +34,6 @@ func (s *Session) AddConnectionWithHistoryBoundary(connectionID string, cols, ro
 	if s.isActive {
 		s.schedulePTYSizeReconcileLocked("connection-added")
 	}
-	return s.committedSequence
 }
 
 // RemoveConnection unregisters a client connection.
@@ -103,8 +97,8 @@ func (s *Session) ApplyConnectionSizeLatest(connectionID string, cols, rows int)
 }
 
 // ApplyConnectionSizeForAttach applies the initial live attachment size. The
-// attach path may request one same-size foreground redraw so a client whose
-// retained history is incomplete can receive a fresh post-boundary frame.
+// attach path may request one same-size foreground redraw so the new view gets
+// a fresh Presentation from the current actor cut.
 func (s *Session) ApplyConnectionSizeForAttach(connectionID string, cols, rows int) (TerminalGeometry, error) {
 	return s.applyConnectionSize(connectionID, cols, rows, true)
 }
@@ -133,6 +127,11 @@ func (s *Session) ApplySemanticControllerSize(connectionID string, cols, rows in
 		s.mu.Unlock()
 		s.endPTYResize()
 		return TerminalGeometry{}, fmt.Errorf("terminal connection %q is not attached", connectionID)
+	}
+	if s.semanticActor == nil {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return TerminalGeometry{}, errors.New("semantic session actor is unavailable")
 	}
 	previousCols, previousRows := connection.Cols, connection.Rows
 	previousGeneration := s.geometryGeneration
@@ -179,7 +178,7 @@ func (s *Session) CanonicalGeometry() TerminalGeometry {
 }
 
 // RegisterSemanticView records a view without making it participate in the
-// legacy min-size PTY reconciliation path.
+// min-size PTY reconciliation path used by non-semantic hosts.
 func (s *Session) RegisterSemanticView(connectionID string, cols, rows int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -312,10 +311,10 @@ func (s *Session) effectiveGeometryLocked() TerminalGeometry {
 		s.geometryGeneration = 1
 	}
 	return TerminalGeometry{
-		Generation:             s.geometryGeneration,
-		OutputSequenceBoundary: s.committedSequence,
-		Cols:                   cols,
-		Rows:                   rows,
+		Generation:           s.geometryGeneration,
+		PresentationSequence: s.latestPresentationSequence,
+		Cols:                 cols,
+		Rows:                 rows,
 	}
 }
 
@@ -361,7 +360,7 @@ func (s *Session) runPTYSizeReconciler() {
 			continue
 		}
 		// Serialize the kernel resize with PTY packets that have already
-		// returned from Read but are still awaiting ordered history commit.
+		// returned from Read but are still awaiting actor admission.
 		if err := s.beginPTYResize(); err != nil {
 			s.config.logger.Warn("Failed to order PTY resize", "sessionID", s.ID, "reason", reason, "error", err)
 			continue
@@ -371,7 +370,7 @@ func (s *Session) runPTYSizeReconciler() {
 		if s.geometryGeneration == 0 {
 			targetGeneration = 1
 		}
-		targetGeometry := TerminalGeometry{Generation: targetGeneration, OutputSequenceBoundary: s.committedSequence, Cols: cols, Rows: rows}
+		targetGeometry := TerminalGeometry{Generation: targetGeneration, PresentationSequence: s.latestPresentationSequence, Cols: cols, Rows: rows}
 		s.mu.RUnlock()
 		err := setSize(ptyFile, buildWinSize(cols, rows))
 		var presentation SemanticPresentation
@@ -389,6 +388,9 @@ func (s *Session) runPTYSizeReconciler() {
 			s.lastAppliedCols = cols
 			s.lastAppliedRows = rows
 			s.geometryGeneration = targetGeometry.Generation
+			if hasPresentation {
+				s.latestPresentationSequence = presentation.Sequence
+			}
 			geometry = s.effectiveGeometryLocked()
 			subscribers = s.liveSubscribersLocked()
 		}
@@ -447,7 +449,7 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 	} else if changed {
 		targetGeneration++
 	}
-	targetGeometry := TerminalGeometry{Generation: targetGeneration, OutputSequenceBoundary: s.committedSequence, Cols: cols, Rows: rows}
+	targetGeometry := TerminalGeometry{Generation: targetGeneration, PresentationSequence: s.latestPresentationSequence, Cols: cols, Rows: rows}
 	var presentation SemanticPresentation
 	hasPresentation := false
 	if s.semanticActor != nil {
@@ -464,6 +466,7 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 			return SemanticPresentation{}, false, resizeErr
 		}
 		hasPresentation = true
+		s.latestPresentationSequence = presentation.Sequence
 	}
 	if changed {
 		s.lastAppliedCols = cols
@@ -472,7 +475,7 @@ func (s *Session) applyPTYSizeLocked(cols, rows int, reason string, force bool) 
 	}
 	// TIOCSWINSZ notifies the foreground process group when the grid changes.
 	// A separate signal is reserved for a forced same-size attach that needs a
-	// fresh post-boundary frame after retained history was truncated.
+	// fresh Presentation without changing geometry.
 	if !changed && force {
 		s.requestPTYForegroundRedraw(s.PTY, reason)
 	}
@@ -507,7 +510,7 @@ func (s *Session) requestPTYForegroundRedraw(ptyFile *os.File, reason string) {
 		"sessionID", s.ID,
 		"reason", reason,
 		"generation", s.geometryGeneration,
-		"outputSequenceBoundary", s.committedSequence,
+		"presentationSequence", s.latestPresentationSequence,
 	)
 }
 

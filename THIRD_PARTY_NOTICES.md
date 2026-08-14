@@ -11,7 +11,7 @@ For authoritative license texts and copyright notices, refer to each upstream pr
 
 ## Embedded Source
 
-- Beamterm renderer, tag `beamterm-v1.0.0`, commit `fd8066e840ebf4d7ad26dbfcc0ac5f4b7b34b7e3` (License: MIT; provenance and license: `beamterm-renderer/UPSTREAM.md`, `beamterm-renderer/LICENSE`)
+- Ghostty VT static archives, source commit `d2c70a8c7b9b6893c13640c02d7b6f9a1624f3f0`, adapter commit `a3f9fda90c98bb12059fd16da67f3d7c544ebf6c` (License: MIT; provenance and license: `terminal-go/internal/nativevt/generated/provenance.txt`, `terminal-go/internal/nativevt/generated/GHOSTTY_LICENSE`)
 
 ## Go Modules
 
@@ -19,8 +19,6 @@ For authoritative license texts and copyright notices, refer to each upstream pr
 - github.com/creack/pty v1.1.24 (License: MIT; File: LICENSE)
 
 ## npm Packages
-
-- @floegence/beamterm-renderer 1.0.1 (License: MIT; FloeTerm-maintained Beamterm distribution)
 
 - @asamuzakjp/css-color@3.2.0 (License: MIT)
 - @babel/code-frame@7.28.6 (License: MIT)
@@ -157,7 +155,6 @@ For authoritative license texts and copyright notices, refer to each upstream pr
 - gensync@1.0.0-beta.2 (License: MIT)
 - get-intrinsic@1.3.0 (License: MIT)
 - get-proto@1.0.1 (License: MIT)
-- @floegence/ghostty-web@0.5.0-rc.0 (License: MIT)
 - gopd@1.2.0 (License: MIT)
 - has-symbols@1.1.0 (License: MIT)
 - has-tostringtag@1.0.2 (License: MIT)

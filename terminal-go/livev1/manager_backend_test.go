@@ -1,3 +1,5 @@
+//go:build floeterm_native
+
 package livev1
 
 import (
@@ -37,7 +39,7 @@ func TestManagerBackendRegistersLiveConnectionBeforeActivation(t *testing.T) {
 		Rows:             30,
 		SessionID:        session.ID,
 		ConnectionID:     "connection-a",
-	}, Subscriber{OnOutput: func(OutputRecord) bool { return true }})
+	}, Subscriber{})
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
@@ -70,7 +72,7 @@ func TestManagerBackendDetachesConnectionWhenActivationFails(t *testing.T) {
 		Rows:             30,
 		SessionID:        session.ID,
 		ConnectionID:     "connection-a",
-	}, Subscriber{OnOutput: func(OutputRecord) bool { return true }})
+	}, Subscriber{})
 	if !errors.Is(err, ErrActivationFailed) {
 		t.Fatalf("attach error = %v", err)
 	}
@@ -87,13 +89,13 @@ func TestManagerBackendObserverResizeDoesNotChangeCanonicalGeometry(t *testing.T
 	}
 	t.Cleanup(manager.Cleanup)
 	backend := NewManagerBackend(manager, ManagerBackendOptions{Activate: func(context.Context, string, int, int) error { return nil }})
-	_, detachFirst, err := backend.Attach(context.Background(), Attach{AttachGeneration: 1, Cols: 120, Rows: 40, SessionID: session.ID, ConnectionID: "first"}, Subscriber{OnOutput: func(OutputRecord) bool { return true }})
+	_, detachFirst, err := backend.Attach(context.Background(), Attach{AttachGeneration: 1, Cols: 120, Rows: 40, SessionID: session.ID, ConnectionID: "first"}, Subscriber{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer detachFirst()
 	controllerGeometry := session.CanonicalGeometry()
-	_, detachSecond, err := backend.Attach(context.Background(), Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: session.ID, ConnectionID: "second"}, Subscriber{OnOutput: func(OutputRecord) bool { return true }})
+	_, detachSecond, err := backend.Attach(context.Background(), Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: session.ID, ConnectionID: "second"}, Subscriber{})
 	if err != nil {
 		t.Fatal(err)
 	}

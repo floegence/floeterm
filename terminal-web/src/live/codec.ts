@@ -2,8 +2,6 @@ export const StreamKind = 'terminal/live_v1';
 export const FRAME_HEADER_BYTES = 8;
 export const MAX_FRAME_PAYLOAD_BYTES = 256 * 1024;
 export const MAX_INPUT_BYTES = 64 * 1024;
-export const MAX_OUTPUT_BATCH_BYTES = 64 * 1024;
-export const MAX_OUTPUT_BATCH_CHUNKS = 256;
 export const MAX_IDENTIFIER_BYTES = 256;
 
 export enum TerminalLiveFrameType {
@@ -12,7 +10,6 @@ export enum TerminalLiveFrameType {
   Resize = 0x03,
   Detach = 0x04,
   Attached = 0x81,
-  OutputBatch = 0x82,
   ResizeApplied = 0x83,
   SessionClosed = 0x84,
   GeometryChanged = 0x85,
@@ -37,30 +34,21 @@ export type Attach = Readonly<{
 export type Input = Readonly<{ sequence: bigint; data: Uint8Array }>;
 export type Resize = Readonly<{ sequence: bigint; cols: number; rows: number }>;
 export type Attached = Readonly<{
-  historyBoundarySequence: bigint;
-  historyGeneration: bigint;
-  historyStartSequence: bigint;
-  geometryGeneration: bigint;
+	presentationSequence: bigint;
+	geometryGeneration: bigint;
   cols: number;
   rows: number;
 }>;
 export type ResizeApplied = Readonly<{
   sequence: bigint;
   geometryGeneration: bigint;
-  outputSequenceBoundary: bigint;
+  presentationSequence: bigint;
   cols: number;
   rows: number;
-}>;
-export type OutputRecord = Readonly<{ sequence: bigint; timestampMs: bigint; data: Uint8Array }>;
-export type OutputBatch = Readonly<{
-  geometryGeneration: bigint;
-  cols: number;
-  rows: number;
-  records: readonly OutputRecord[];
 }>;
 export type GeometryChanged = Readonly<{
   generation: bigint;
-  outputSequenceBoundary: bigint;
+  presentationSequence: bigint;
   cols: number;
   rows: number;
 }>;
@@ -241,59 +229,47 @@ export const decodeResize = (value: TerminalLiveFrame): Resize => {
 };
 
 export const encodeAttached = (value: Attached): Uint8Array => {
-  assertPositiveUint64(value.historyGeneration, 'historyGeneration');
-  assertPositiveUint64(value.historyStartSequence, 'historyStartSequence');
+	assertPositiveUint64(value.presentationSequence, 'presentationSequence');
   assertPositiveUint64(value.geometryGeneration, 'geometryGeneration');
   assertPositiveUint32(value.cols, 'cols');
   assertPositiveUint32(value.rows, 'rows');
-  if (value.historyStartSequence > value.historyBoundarySequence + 1n) {
-    throw new Error('historyStartSequence exceeds the attached history boundary');
-  }
-  const payload = new Uint8Array(40);
-  const view = new DataView(payload.buffer);
-  view.setBigUint64(0, value.historyBoundarySequence, false);
-  view.setBigUint64(8, value.historyGeneration, false);
-  view.setBigUint64(16, value.historyStartSequence, false);
-  view.setBigUint64(24, value.geometryGeneration, false);
-  view.setUint32(32, value.cols, false);
-  view.setUint32(36, value.rows, false);
+	const payload = new Uint8Array(24);
+	const view = new DataView(payload.buffer);
+	view.setBigUint64(0, value.presentationSequence, false);
+	view.setBigUint64(8, value.geometryGeneration, false);
+	view.setUint32(16, value.cols, false);
+	view.setUint32(20, value.rows, false);
   return frame(TerminalLiveFrameType.Attached, payload);
 };
 
 export const decodeAttached = (value: TerminalLiveFrame): Attached => {
   if (value.type !== TerminalLiveFrameType.Attached) throw new Error('unexpected terminal live frame type');
-  if (value.payload.byteLength !== 40) throw new Error('invalid terminal live attached payload');
+	if (value.payload.byteLength !== 24) throw new Error('invalid terminal live attached payload');
   const view = new DataView(value.payload.buffer, value.payload.byteOffset);
-  const attached = {
-    historyBoundarySequence: view.getBigUint64(0, false),
-    historyGeneration: view.getBigUint64(8, false),
-    historyStartSequence: view.getBigUint64(16, false),
-    geometryGeneration: view.getBigUint64(24, false),
-    cols: view.getUint32(32, false),
-    rows: view.getUint32(36, false),
-  };
-  assertPositiveUint64(attached.historyGeneration, 'historyGeneration');
-  assertPositiveUint64(attached.historyStartSequence, 'historyStartSequence');
+	const attached = {
+		presentationSequence: view.getBigUint64(0, false),
+		geometryGeneration: view.getBigUint64(8, false),
+		cols: view.getUint32(16, false),
+		rows: view.getUint32(20, false),
+	};
+	assertPositiveUint64(attached.presentationSequence, 'presentationSequence');
   assertPositiveUint64(attached.geometryGeneration, 'geometryGeneration');
   assertPositiveUint32(attached.cols, 'cols');
   assertPositiveUint32(attached.rows, 'rows');
-  if (attached.historyStartSequence > attached.historyBoundarySequence + 1n) {
-    throw new Error('historyStartSequence exceeds the attached history boundary');
-  }
   return attached;
 };
 
 export const encodeResizeApplied = (value: ResizeApplied): Uint8Array => {
   assertPositiveUint64(value.sequence, 'sequence');
   assertPositiveUint64(value.geometryGeneration, 'geometryGeneration');
-  assertUint64(value.outputSequenceBoundary, 'outputSequenceBoundary');
+  assertPositiveUint64(value.presentationSequence, 'presentationSequence');
   assertPositiveUint32(value.cols, 'cols');
   assertPositiveUint32(value.rows, 'rows');
   const payload = new Uint8Array(32);
   const view = new DataView(payload.buffer);
   view.setBigUint64(0, value.sequence, false);
   view.setBigUint64(8, value.geometryGeneration, false);
-  view.setBigUint64(16, value.outputSequenceBoundary, false);
+  view.setBigUint64(16, value.presentationSequence, false);
   view.setUint32(24, value.cols, false);
   view.setUint32(28, value.rows, false);
   return frame(TerminalLiveFrameType.ResizeApplied, payload);
@@ -305,26 +281,26 @@ export const decodeResizeApplied = (value: TerminalLiveFrame): ResizeApplied => 
   const view = new DataView(value.payload.buffer, value.payload.byteOffset);
   const sequence = view.getBigUint64(0, false);
   const geometryGeneration = view.getBigUint64(8, false);
-  const outputSequenceBoundary = view.getBigUint64(16, false);
+  const presentationSequence = view.getBigUint64(16, false);
   const cols = view.getUint32(24, false);
   const rows = view.getUint32(28, false);
   assertPositiveUint64(sequence, 'sequence');
   assertPositiveUint64(geometryGeneration, 'geometryGeneration');
-  assertUint64(outputSequenceBoundary, 'outputSequenceBoundary');
+  assertPositiveUint64(presentationSequence, 'presentationSequence');
   assertPositiveUint32(cols, 'cols');
   assertPositiveUint32(rows, 'rows');
-  return { sequence, geometryGeneration, outputSequenceBoundary, cols, rows };
+  return { sequence, geometryGeneration, presentationSequence, cols, rows };
 };
 
 export const encodeGeometryChanged = (value: GeometryChanged): Uint8Array => {
   assertPositiveUint64(value.generation, 'geometryGeneration');
-  assertUint64(value.outputSequenceBoundary, 'outputSequenceBoundary');
+  assertPositiveUint64(value.presentationSequence, 'presentationSequence');
   assertPositiveUint32(value.cols, 'cols');
   assertPositiveUint32(value.rows, 'rows');
   const payload = new Uint8Array(24);
   const view = new DataView(payload.buffer);
   view.setBigUint64(0, value.generation, false);
-  view.setBigUint64(8, value.outputSequenceBoundary, false);
+  view.setBigUint64(8, value.presentationSequence, false);
   view.setUint32(16, value.cols, false);
   view.setUint32(20, value.rows, false);
   return frame(TerminalLiveFrameType.GeometryChanged, payload);
@@ -335,81 +311,14 @@ export const decodeGeometryChanged = (value: TerminalLiveFrame): GeometryChanged
   if (value.payload.byteLength !== 24) throw new Error('invalid terminal live geometry payload');
   const view = new DataView(value.payload.buffer, value.payload.byteOffset);
   const generation = view.getBigUint64(0, false);
-  const outputSequenceBoundary = view.getBigUint64(8, false);
+  const presentationSequence = view.getBigUint64(8, false);
   const cols = view.getUint32(16, false);
   const rows = view.getUint32(20, false);
   assertPositiveUint64(generation, 'geometryGeneration');
-  assertUint64(outputSequenceBoundary, 'outputSequenceBoundary');
+  assertPositiveUint64(presentationSequence, 'presentationSequence');
   assertPositiveUint32(cols, 'cols');
   assertPositiveUint32(rows, 'rows');
-  return { generation, outputSequenceBoundary, cols, rows };
-};
-
-export const encodeOutputBatch = (value: OutputBatch): Uint8Array => {
-  assertPositiveUint64(value.geometryGeneration, 'geometryGeneration');
-  assertPositiveUint32(value.cols, 'cols');
-  assertPositiveUint32(value.rows, 'rows');
-  if (value.records.length === 0 || value.records.length > MAX_OUTPUT_BATCH_CHUNKS) {
-    throw new Error('invalid terminal live output record count');
-  }
-  let dataBytes = 0;
-  let payloadBytes = 18;
-  for (const record of value.records) {
-    assertPositiveUint64(record.sequence, 'sequence');
-    if (record.data.byteLength === 0) throw new Error('invalid terminal live output data');
-    dataBytes += record.data.byteLength;
-    payloadBytes += 20 + record.data.byteLength;
-  }
-  if (dataBytes > MAX_OUTPUT_BATCH_BYTES) throw new Error('terminal live output batch is too large');
-  const payload = new Uint8Array(payloadBytes);
-  const view = new DataView(payload.buffer);
-  view.setBigUint64(0, value.geometryGeneration, false);
-  view.setUint32(8, value.cols, false);
-  view.setUint32(12, value.rows, false);
-  view.setUint16(16, value.records.length, false);
-  let offset = 18;
-  for (const record of value.records) {
-    view.setBigUint64(offset, record.sequence, false);
-    view.setBigUint64(offset + 8, record.timestampMs, false);
-    view.setUint32(offset + 16, record.data.byteLength, false);
-    payload.set(record.data, offset + 20);
-    offset += 20 + record.data.byteLength;
-  }
-  return frame(TerminalLiveFrameType.OutputBatch, payload);
-};
-
-export const decodeOutputBatch = (value: TerminalLiveFrame): OutputBatch => {
-  if (value.type !== TerminalLiveFrameType.OutputBatch) throw new Error('unexpected terminal live frame type');
-  if (value.payload.byteLength < 18) throw new Error('invalid terminal live output payload');
-  const view = new DataView(value.payload.buffer, value.payload.byteOffset);
-  const geometryGeneration = view.getBigUint64(0, false);
-  const cols = view.getUint32(8, false);
-  const rows = view.getUint32(12, false);
-  assertPositiveUint64(geometryGeneration, 'geometryGeneration');
-  assertPositiveUint32(cols, 'cols');
-  assertPositiveUint32(rows, 'rows');
-  const count = view.getUint16(16, false);
-  if (count === 0 || count > MAX_OUTPUT_BATCH_CHUNKS) throw new Error('invalid terminal live output record count');
-  const records: OutputRecord[] = [];
-  let offset = 18;
-  let dataBytes = 0;
-  for (let index = 0; index < count; index += 1) {
-    if (value.payload.byteLength - offset < 20) throw new Error('invalid terminal live output payload');
-    const size = view.getUint32(offset + 16, false);
-    if (size === 0 || size > value.payload.byteLength - offset - 20) throw new Error('invalid terminal live output payload');
-    dataBytes += size;
-    if (dataBytes > MAX_OUTPUT_BATCH_BYTES) throw new Error('terminal live output batch is too large');
-    const sequence = view.getBigUint64(offset, false);
-    assertPositiveUint64(sequence, 'sequence');
-    records.push({
-      sequence,
-      timestampMs: view.getBigUint64(offset + 8, false),
-      data: value.payload.slice(offset + 20, offset + 20 + size),
-    });
-    offset += 20 + size;
-  }
-  if (offset !== value.payload.byteLength) throw new Error('invalid terminal live output payload');
-  return { geometryGeneration, cols, rows, records };
+  return { generation, presentationSequence, cols, rows };
 };
 
 export const decodeProtocolError = (value: TerminalLiveFrame): ProtocolError => {

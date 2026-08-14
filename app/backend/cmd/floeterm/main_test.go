@@ -5,26 +5,24 @@ import (
 	"testing"
 )
 
-func TestResolveStatePathsKeepsHistorySpoolUnderExplicitStateRoot(t *testing.T) {
-	stateRoot := filepath.Join(t.TempDir(), "standalone-state")
+func TestResolveStatePathsUsesExplicitRootWithoutLegacyHistorySpool(t *testing.T) {
+	stateRoot := filepath.Join(t.TempDir(), "floeterm-state")
 	paths, err := resolveStatePaths(stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if paths.Root != stateRoot {
-		t.Fatalf("state root = %q, want %q", paths.Root, stateRoot)
-	}
-	if paths.HistorySpoolRoot != filepath.Join(stateRoot, "history-spool") {
-		t.Fatalf("history spool root = %q", paths.HistorySpoolRoot)
+	want, _ := filepath.Abs(stateRoot)
+	if paths.Root != want {
+		t.Fatalf("state root = %q, want %q", paths.Root, want)
 	}
 }
 
-func TestResolveStatePathsEnablesDurableHistoryByDefault(t *testing.T) {
+func TestResolveStatePathsReturnsAbsoluteDefault(t *testing.T) {
 	paths, err := resolveStatePaths("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !filepath.IsAbs(paths.Root) || paths.HistorySpoolRoot == "" {
-		t.Fatalf("default state paths are not durable: %+v", paths)
+	if !filepath.IsAbs(paths.Root) {
+		t.Fatalf("state root is not absolute: %q", paths.Root)
 	}
 }
