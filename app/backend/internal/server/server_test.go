@@ -246,7 +246,7 @@ func TestServerSemanticClearPublishesOneContentEpochToEveryViewAndRejectsStaleTr
 	first := attachLive(t, ctx, httpSrv.URL, session.ID, "first")
 	waitForInitialPresentation(t, ctx, productSession)
 	second := attachLive(t, ctx, httpSrv.URL, session.ID, "second")
-	input, _ := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("printf CLEAR_ME\\r")})
+	input, _ := livev1.EncodeInput(livev1.Input{Sequence: 1, Data: []byte("printf CLEAR_ME\r")})
 	if err := first.conn.Write(ctx, websocket.MessageBinary, input); err != nil {
 		t.Fatal(err)
 	}
