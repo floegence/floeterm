@@ -12,6 +12,7 @@ type fakeSemanticEngine struct {
 	output     []byte
 	frame      SemanticFrame
 	calls      []string
+	emptyInput bool
 	captureErr error
 	resizeErr  error
 	resetErr   error
@@ -93,6 +94,9 @@ func (e *fakeSemanticEngine) Resize(c, r int) error {
 }
 func (e *fakeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 	e.calls = append(e.calls, "input")
+	if e.emptyInput {
+		return nil, nil
+	}
 	if i.Text == "" {
 		return nil, errors.New("empty")
 	}

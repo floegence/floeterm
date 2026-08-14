@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.15.2
+npm install @floegence/floeterm-terminal-web@0.15.3
 ```
 
 ## Exports
@@ -63,16 +63,19 @@ import { TerminalInputBridge } from '@floegence/floeterm-terminal-web/semantic';
 const bridge = new TerminalInputBridge({
   inputHost,
   inputElement: textarea,
-  onData: data => sendInput(data),
+  onData: data => transport.sendInput(sessionId, data),
+  onInputIntent: intent => transport.sendInputIntent(sessionId, intent),
   syncInputGeometry: () => positionTextarea(renderer.getCursorClientRect()),
 });
 ```
 
 The textarea must remain editable and positioned in the visible terminal viewport.
 Composition preedit is never sent to the PTY. The final Unicode composition commit is
-sent exactly once across Chrome/Safari event orderings. Physical keys, paste,
-dead-key/emoji input, copy shortcuts, focus, and controller ownership remain separate
-from composition state.
+sent exactly once across Chrome/Safari event orderings. Non-text keys are emitted as
+structured W3C key intents so the actor-owned native Ghostty encoder, not the browser,
+resolves cursor modes, modifiers, and terminal escape sequences. Paste, dead-key/emoji
+input, copy shortcuts, focus, and controller ownership remain separate from composition
+state.
 
 The cursor rectangle uses CSS pixels. Canvas backing DPR is not multiplied into the
 IME anchor.

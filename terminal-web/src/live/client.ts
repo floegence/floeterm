@@ -10,8 +10,10 @@ import {
   decodeResizeApplied,
   encodeAttach,
   encodeInput,
+  encodeInputIntent,
   encodeResize,
   type Attached,
+  type InputIntent,
   type TerminalLiveFrame,
 } from './codec.js';
 
@@ -80,6 +82,7 @@ export type TerminalLiveResizeResult = Readonly<{
 export type TerminalLiveConnection = Readonly<{
   attached: TerminalLiveAttached;
   sendInput(data: Uint8Array): Promise<void>;
+  sendInputIntent(intent: Omit<InputIntent, 'sequence'>): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
   resizeWithEffectiveGeometry(cols: number, rows: number): Promise<TerminalLiveResizeResult>;
   close(): Promise<void>;
@@ -186,6 +189,22 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
       });
     } finally {
       this.queuedInputBytes -= data.byteLength;
+    }
+  }
+
+  async sendInputIntent(intent: Omit<InputIntent, 'sequence'>): Promise<void> {
+    if (this.closed) throw new Error('terminal live connection is closed');
+    const queuedBytes = 16 + new TextEncoder().encode(intent.code + intent.text).byteLength;
+    if (queuedBytes === 0 || queuedBytes > MAX_INPUT_BYTES || this.queuedInputBytes + queuedBytes > MAX_QUEUED_INPUT_BYTES) {
+      throw new Error('terminal live input queue limit exceeded');
+    }
+    this.inputSequence += 1n;
+    const sequence = this.inputSequence;
+    this.queuedInputBytes += queuedBytes;
+    try {
+      await this.enqueueWrite(() => this.stream.write(encodeInputIntent({ sequence, ...intent })));
+    } finally {
+      this.queuedInputBytes -= queuedBytes;
     }
   }
 

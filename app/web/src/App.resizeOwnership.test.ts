@@ -59,6 +59,9 @@ describe('reference app resize ownership', () => {
 
   it('uses the shared composition-aware input bridge and cursor-anchored editable element', () => {
     expect(appSource).toContain('new TerminalInputBridge({');
+    expect(appSource).toContain('onInputIntent: props.sendInputIntent');
+    expect(appSource).not.toContain('terminalKeyInput');
+    expect(appSource).not.toContain('onKeyDown={event => {\n          const value =');
     expect(appSource).toContain('renderer()?.getCursorClientRect()');
     expect(appSource).not.toContain('onInput={event =>');
     expect(stylesSource).toMatch(/\.terminalInputBridge\s*\{[^}]*position:\s*fixed;/);

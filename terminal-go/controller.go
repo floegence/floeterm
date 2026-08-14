@@ -170,6 +170,12 @@ func (s *Session) ReadSemanticHistory(attachmentID string, generation uint64, re
 
 // Interact atomically validates transport/epoch and permits same-principal takeover.
 func (s *Session) Interact(attachmentID, principalID string, transportGeneration, epoch uint64, input []byte) error {
+	return s.InteractSemantic(attachmentID, principalID, transportGeneration, epoch, SemanticInput{Kind: "text", Text: string(input)})
+}
+
+// InteractSemantic admits one structured input through the current attachment
+// and lets the actor-owned Ghostty encoder resolve terminal modes.
+func (s *Session) InteractSemantic(attachmentID, principalID string, transportGeneration, epoch uint64, input SemanticInput) error {
 	if s == nil || attachmentID == "" || principalID == "" || transportGeneration == 0 {
 		return ErrControllerTransport
 	}
@@ -197,20 +203,30 @@ func (s *Session) Interact(attachmentID, principalID string, transportGeneration
 		s.mu.Unlock()
 		return ErrControllerEpoch
 	}
-	if state.AttachmentID == "" || state.AttachmentID != attachmentID {
-		s.controllerState = ControllerState{AttachmentID: attachmentID, PrincipalID: principalID, TransportGeneration: transportGeneration, Epoch: state.Epoch + 1}
-	}
 	write := s.writePTY
 	if write == nil {
 		write = s.PTY.Write
 	}
 	var err error
+	inputCommitted := false
 	if s.semanticActor != nil {
-		err = s.semanticActor.Input(SemanticInput{Kind: "text", Text: string(input)}, func(encoded []byte) error {
-			return writeTerminalInput(write, encoded)
+		err = s.semanticActor.Input(input, func(encoded []byte) error {
+			if writeErr := writeTerminalInput(write, encoded); writeErr != nil {
+				return writeErr
+			}
+			inputCommitted = true
+			return nil
 		})
 	} else {
-		err = writeTerminalInput(write, input)
+		if input.Kind != "text" {
+			err = errors.New("structured terminal input requires the semantic actor")
+		} else {
+			err = writeTerminalInput(write, []byte(input.Text))
+			inputCommitted = err == nil
+		}
+	}
+	if err == nil && inputCommitted && (state.AttachmentID == "" || state.AttachmentID != attachmentID || state.TransportGeneration != transportGeneration) {
+		s.controllerState = ControllerState{AttachmentID: attachmentID, PrincipalID: principalID, TransportGeneration: transportGeneration, Epoch: state.Epoch + 1}
 	}
 	s.mu.Unlock()
 	return err

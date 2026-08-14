@@ -84,6 +84,56 @@ func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 	}
 }
 
+func TestRealNativeKeyEncoderUsesCurrentTerminalModes(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(20, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	for _, test := range []struct {
+		name   string
+		setup  string
+		intent SemanticInput
+		want   string
+	}{
+		{name: "enter", intent: SemanticInput{Kind: "key", Code: "Enter", Action: "press"}, want: "\r"},
+		{name: "normal cursor", intent: SemanticInput{Kind: "key", Code: "ArrowUp", Action: "press"}, want: "\x1b[A"},
+		{name: "application cursor", setup: "\x1b[?1h", intent: SemanticInput{Kind: "key", Code: "ArrowUp", Action: "press"}, want: "\x1bOA"},
+		{name: "control letter", intent: SemanticInput{Kind: "key", Code: "KeyC", Text: "c", Action: "press", Modifiers: SemanticModifierControl}, want: "\x03"},
+		{name: "alt letter", intent: SemanticInput{Kind: "key", Code: "KeyB", Text: "b", Action: "press", Modifiers: SemanticModifierAlt}, want: "\x1bb"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.setup != "" {
+				if _, err := engine.ApplyOutput([]byte(test.setup)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := engine.EncodeInput(test.intent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != test.want {
+				t.Fatalf("encoded key = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRealNativeKeyReleaseWithoutReportEventsProducesNoPTYBytes(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(20, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	got, err := engine.EncodeInput(SemanticInput{Kind: "key", Code: "Enter", Action: "release"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("default key release encoded unexpected PTY bytes %q", got)
+	}
+}
+
 func TestRealNativeActorClearResetsScreenHistoryAndGraphics(t *testing.T) {
 	engine, err := NewNativeSemanticEngine(8, 3)
 	if err != nil {

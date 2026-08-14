@@ -20,6 +20,10 @@ typedef struct {
   uint8_t color_b;
 } FloetermCursorInfo;
 int floeterm_native_cursor_info(NativeEngine *engine, FloetermCursorInfo *out);
+int floeterm_native_encode_key(NativeEngine *engine, const uint8_t *code,
+                               size_t code_len, int action, uint16_t mods,
+                               const uint8_t *text, size_t text_len,
+                               NativeBytes *output);
 */
 import "C"
 
@@ -80,6 +84,13 @@ type Result struct {
 	Title     string
 	Bells     uint32
 	Responses [][]byte
+}
+
+type KeyEvent struct {
+	Code      string
+	Text      string
+	Action    int
+	Modifiers uint16
 }
 
 type Anchor struct{ handle *C.NativeAnchor }
@@ -148,6 +159,26 @@ func (e *Engine) Reset() error {
 	return nil
 }
 func (e *Engine) EncodeText(text string) ([]byte, error) { return []byte(text), nil }
+func (e *Engine) EncodeKey(event KeyEvent) ([]byte, error) {
+	if e == nil || e.handle == nil || event.Code == "" {
+		return nil, errors.New("invalid native key input")
+	}
+	var code, text *C.uint8_t
+	if event.Code != "" {
+		code = (*C.uint8_t)(unsafe.Pointer(unsafe.StringData(event.Code)))
+	}
+	if event.Text != "" {
+		text = (*C.uint8_t)(unsafe.Pointer(unsafe.StringData(event.Text)))
+	}
+	var output C.NativeBytes
+	if C.floeterm_native_encode_key(e.handle, code, C.size_t(len(event.Code)), C.int(event.Action),
+		C.uint16_t(event.Modifiers), text, C.size_t(len(event.Text)), &output) == 0 {
+		return nil, errors.New("encode native key input")
+	}
+	defer C.native_bytes_free(&output)
+	runtime.KeepAlive(event)
+	return C.GoBytes(unsafe.Pointer(output.data), C.int(output.len)), nil
+}
 func (e *Engine) Capture() (Frame, error) {
 	if e == nil || e.handle == nil {
 		return Frame{}, errors.New("native engine closed")

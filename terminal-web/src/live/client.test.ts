@@ -4,6 +4,7 @@ import {
   TerminalLiveDecoder,
   TerminalLiveFrameType,
   decodeInput,
+  decodeInputIntent,
   decodeResize,
   encodeAttached,
   encodeResizeApplied,
@@ -47,11 +48,15 @@ describe('semantic terminal live client', () => {
     stream.push(encodeAttached({ presentationSequence: 4n, geometryGeneration: 1n, cols: 80, rows: 24 }));
     const connection = await connecting;
     await connection.sendInput(new TextEncoder().encode('中'));
+    await connection.sendInputIntent({ code: 'Enter', text: '', action: 'press', modifiers: 0 });
     const resizing = connection.resizeWithEffectiveGeometry(120, 40);
-    await waitUntil(() => stream.writes.length === 3);
+    await waitUntil(() => stream.writes.length === 4);
     const input = decodeInput(new TerminalLiveDecoder().push(stream.writes[1]!)[0]!);
     expect(new TextDecoder().decode(input.data)).toBe('中');
-    expect(decodeResize(new TerminalLiveDecoder().push(stream.writes[2]!)[0]!)).toEqual({ sequence: 1n, cols: 120, rows: 40 });
+    expect(decodeInputIntent(new TerminalLiveDecoder().push(stream.writes[2]!)[0]!)).toEqual({
+      sequence: 2n, code: 'Enter', text: '', action: 'press', modifiers: 0,
+    });
+    expect(decodeResize(new TerminalLiveDecoder().push(stream.writes[3]!)[0]!)).toEqual({ sequence: 1n, cols: 120, rows: 40 });
     stream.push(encodeResizeApplied({ sequence: 1n, geometryGeneration: 2n, presentationSequence: 4n, cols: 120, rows: 40 }));
     await expect(resizing).resolves.toMatchObject({ effective: { generation: 2, cols: 120, rows: 40 } });
     expect(geometries).toHaveLength(2);

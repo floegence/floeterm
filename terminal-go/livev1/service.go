@@ -40,6 +40,10 @@ type Backend interface {
 	Resize(ctx context.Context, attachment Attach, resize Resize) (EffectiveGeometry, error)
 }
 
+type InputIntentBackend interface {
+	WriteInputIntent(ctx context.Context, attachment Attach, input InputIntent) error
+}
+
 type Service struct{ backend Backend }
 
 func NewService(backend Backend) *Service { return &Service{backend: backend} }
@@ -212,6 +216,19 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 			}
 			if err := s.backend.WriteInput(ctx, attachment, input); err != nil {
 				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal input failed", err)
+			}
+			lastInputSequence = input.Sequence
+		case FrameInputIntent:
+			input, decodeErr := DecodeInputIntent(frame)
+			if decodeErr != nil || input.Sequence <= lastInputSequence {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "invalid input intent sequence", ErrProtocolViolation)
+			}
+			backend, ok := s.backend.(InputIntentBackend)
+			if !ok {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal input intent is unavailable", ErrActivationFailed)
+			}
+			if err := backend.WriteInputIntent(ctx, attachment, input); err != nil {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal input intent failed", err)
 			}
 			lastInputSequence = input.Sequence
 		case FrameResize:

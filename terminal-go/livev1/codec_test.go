@@ -2,6 +2,9 @@ package livev1
 
 import (
 	"bytes"
+	"encoding/hex"
+	"encoding/json"
+	"os"
 	"testing"
 )
 
@@ -17,6 +20,24 @@ func TestSemanticCodecRoundTrip(t *testing.T) {
 	attach, err := DecodeAttach(frame)
 	if err != nil || attach.AttachGeneration != 2 || attach.Cols != 80 || attach.Rows != 24 {
 		t.Fatalf("attach = %+v, err = %v", attach, err)
+	}
+
+	intentBytes, err := EncodeInputIntent(InputIntent{
+		Sequence:  2,
+		Code:      "ArrowUp",
+		Action:    KeyActionRepeat,
+		Modifiers: KeyModifierShift | KeyModifierControl,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intentFrame, err := ReadFrame(bytes.NewReader(intentBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := DecodeInputIntent(intentFrame)
+	if err != nil || intent.Sequence != 2 || intent.Code != "ArrowUp" || intent.Action != KeyActionRepeat || intent.Modifiers != 3 {
+		t.Fatalf("input intent = %+v, err = %v", intent, err)
 	}
 
 	attachedBytes, err := EncodeAttached(Attached{PresentationSequence: 9, GeometryGeneration: 3, Cols: 100, Rows: 30})
@@ -52,6 +73,59 @@ func TestSemanticCodecRoundTrip(t *testing.T) {
 	presentationFrame, err := ReadFrame(bytes.NewReader(presentationBytes))
 	if err != nil || presentationFrame.Type != FramePresentation {
 		t.Fatalf("presentation frame = %+v, err = %v", presentationFrame, err)
+	}
+}
+
+func TestInputIntentRejectsUnknownActionAndModifierBits(t *testing.T) {
+	for _, value := range []InputIntent{
+		{Sequence: 1, Code: "Enter", Action: KeyAction(99)},
+		{Sequence: 1, Code: "Enter", Action: KeyActionPress, Modifiers: 1 << 15},
+		{Sequence: 1, Code: "", Action: KeyActionPress},
+	} {
+		if _, err := EncodeInputIntent(value); err == nil {
+			t.Fatalf("invalid intent was accepted: %+v", value)
+		}
+	}
+}
+
+func TestTerminalLiveV1VectorsMatchCodec(t *testing.T) {
+	data, err := os.ReadFile("../../protocol/terminal_live_v1_vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		Kind    string `json:"kind"`
+		Vectors []struct {
+			Name string `json:"name"`
+			Hex  string `json:"hex"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(data, &contract); err != nil {
+		t.Fatal(err)
+	}
+	if contract.Kind != StreamKind {
+		t.Fatalf("vector kind = %q", contract.Kind)
+	}
+	encoded := map[string][]byte{}
+	encoded["attach"], _ = EncodeAttach(Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: "s1", ConnectionID: "c1"})
+	encoded["input"], _ = EncodeInput(Input{Sequence: 1, Data: []byte("abc")})
+	encoded["input_intent"], _ = EncodeInputIntent(InputIntent{Sequence: 2, Code: "ArrowUp", Action: KeyActionRepeat, Modifiers: KeyModifierShift | KeyModifierControl})
+	encoded["resize"], _ = EncodeResize(Resize{Sequence: 7, Cols: 80, Rows: 24})
+	encoded["attached"], _ = EncodeAttached(Attached{PresentationSequence: 42, GeometryGeneration: 3, Cols: 80, Rows: 24})
+	encoded["resize_applied"], _ = EncodeResizeApplied(ResizeApplied{Sequence: 7, GeometryGeneration: 5, PresentationSequence: 42, Cols: 80, Rows: 24})
+	encoded["geometry_changed"], _ = EncodeGeometryChanged(EffectiveGeometry{Generation: 5, PresentationSequence: 42, Cols: 80, Rows: 24})
+	if len(contract.Vectors) != len(encoded) {
+		t.Fatalf("vector count = %d, want %d", len(contract.Vectors), len(encoded))
+	}
+	for _, vector := range contract.Vectors {
+		want, err := hex.DecodeString(vector.Hex)
+		if err != nil {
+			t.Fatalf("%s hex: %v", vector.Name, err)
+		}
+		got, ok := encoded[vector.Name]
+		if !ok || !bytes.Equal(got, want) {
+			t.Fatalf("%s vector = %x, want %x", vector.Name, got, want)
+		}
 	}
 }
 

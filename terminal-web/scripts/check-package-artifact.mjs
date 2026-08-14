@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const expectedVersion = '0.15.2';
+const expectedVersion = '0.15.3';
 const expectedExports = ['.', './live', './semantic', './sessions'];
 const forbiddenContent = [
   '@floegence/ghostty-web',
@@ -117,6 +117,7 @@ try {
 import {
   RendererSurface,
   TerminalInputBridge,
+  type TerminalKeyInputIntent,
   type SemanticPresentation,
   type SemanticTerminalPalette,
 } from '@floegence/floeterm-terminal-web/semantic';
@@ -125,7 +126,8 @@ import { TerminalSessionsCoordinator } from '@floegence/floeterm-terminal-web/se
 void [RendererSurface, TerminalInputBridge, createSemanticTerminalLiveTransport, TerminalSessionsCoordinator];
 const presentation = {} as SemanticPresentation;
 const palette = {} as SemanticTerminalPalette;
-void [presentation, palette];
+const intent = {} as TerminalKeyInputIntent;
+void [presentation, palette, intent];
 `);
   await writeFile(path.join(installRoot, 'tsconfig.json'), JSON.stringify({
     compilerOptions: {

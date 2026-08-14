@@ -102,6 +102,119 @@ describe('TerminalInputBridge', () => {
     expect(onData).toHaveBeenLastCalledWith('\r');
   });
 
+  it('emits semantic key intents without a host-owned escape encoder', () => {
+    const container = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    container.appendChild(textarea);
+    document.body.appendChild(container);
+    const onData = vi.fn();
+    const onInputIntent = vi.fn();
+    const bridge = new TerminalInputBridge({
+      inputHost: container,
+      inputElement: textarea,
+      onData,
+      onInputIntent,
+    });
+
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter', code: 'Enter', bubbles: true, cancelable: true,
+    });
+    textarea.dispatchEvent(enter);
+    textarea.dispatchEvent(createInputEvent('beforeinput', {
+      data: null,
+      inputType: 'insertLineBreak',
+    }));
+    const controlC = new KeyboardEvent('keydown', {
+      key: 'c', code: 'KeyC', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    textarea.dispatchEvent(controlC);
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'ArrowUp', code: 'ArrowUp', repeat: true, bubbles: true, cancelable: true,
+    }));
+
+    expect(onData).not.toHaveBeenCalled();
+    expect(onInputIntent.mock.calls.map(([intent]) => intent)).toEqual([
+      {
+        kind: 'key', code: 'Enter', text: '', action: 'press',
+        modifiers: { shift: false, control: false, alt: false, super: false, capsLock: false, numLock: false },
+      },
+      {
+        kind: 'key', code: 'KeyC', text: 'c', action: 'press',
+        modifiers: { shift: false, control: true, alt: false, super: false, capsLock: false, numLock: false },
+      },
+      {
+        kind: 'key', code: 'ArrowUp', text: '', action: 'repeat',
+        modifiers: { shift: false, control: false, alt: false, super: false, capsLock: false, numLock: false },
+      },
+    ]);
+    expect(enter.defaultPrevented).toBe(true);
+    expect(controlC.defaultPrevented).toBe(true);
+    bridge.dispose();
+  });
+
+  it('keeps composition selection keys out of the semantic input stream', () => {
+    const container = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    container.appendChild(textarea);
+    document.body.appendChild(container);
+    const onData = vi.fn();
+    const onInputIntent = vi.fn();
+    const bridge = new TerminalInputBridge({ inputHost: container, inputElement: textarea, onData, onInputIntent });
+
+    textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true, bubbles: true, cancelable: true,
+    }));
+    textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中' }));
+
+    expect(onInputIntent).not.toHaveBeenCalled();
+    expect(onData).toHaveBeenCalledOnce();
+    expect(onData).toHaveBeenCalledWith('中');
+    bridge.dispose();
+  });
+
+  it('emits key release intent and suppresses delete beforeinput duplication', () => {
+    const container = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    container.appendChild(textarea);
+    document.body.appendChild(container);
+    const onData = vi.fn();
+    const onInputIntent = vi.fn();
+    const bridge = new TerminalInputBridge({ inputHost: container, inputElement: textarea, onData, onInputIntent });
+
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Delete', code: 'Delete', bubbles: true, cancelable: true,
+    }));
+    textarea.dispatchEvent(createInputEvent('beforeinput', { inputType: 'deleteContentForward' }));
+    textarea.dispatchEvent(new KeyboardEvent('keyup', {
+      key: 'Delete', code: 'Delete', bubbles: true, cancelable: true,
+    }));
+
+    expect(onData).not.toHaveBeenCalled();
+    expect(onInputIntent.mock.calls.map(([intent]) => intent.action)).toEqual(['press', 'release']);
+    bridge.dispose();
+  });
+
+  it('leaves dead-key text composition on the browser text path', () => {
+    const container = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    container.appendChild(textarea);
+    document.body.appendChild(container);
+    const onData = vi.fn();
+    const onInputIntent = vi.fn();
+    const bridge = new TerminalInputBridge({ inputHost: container, inputElement: textarea, onData, onInputIntent });
+
+    textarea.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Dead', code: 'Quote', altKey: true, bubbles: true, cancelable: true,
+    }));
+    textarea.dispatchEvent(createInputEvent('beforeinput', { data: 'é', inputType: 'insertText' }));
+
+    expect(onInputIntent).not.toHaveBeenCalled();
+    expect(onData).toHaveBeenCalledOnce();
+    expect(onData).toHaveBeenCalledWith('é');
+    bridge.dispose();
+  });
+
   it('emits plain text once when keydown is followed by beforeinput and input', () => {
     const { textarea, onData } = setup();
 

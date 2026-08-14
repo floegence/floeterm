@@ -9,6 +9,7 @@ export enum TerminalLiveFrameType {
   Input = 0x02,
   Resize = 0x03,
   Detach = 0x04,
+  InputIntent = 0x05,
   Attached = 0x81,
   ResizeApplied = 0x83,
   SessionClosed = 0x84,
@@ -32,6 +33,13 @@ export type Attach = Readonly<{
 }>;
 
 export type Input = Readonly<{ sequence: bigint; data: Uint8Array }>;
+export type InputIntent = Readonly<{
+  sequence: bigint;
+  code: string;
+  text: string;
+  action: 'press' | 'repeat' | 'release';
+  modifiers: number;
+}>;
 export type Resize = Readonly<{ sequence: bigint; cols: number; rows: number }>;
 export type Attached = Readonly<{
 	presentationSequence: bigint;
@@ -201,6 +209,69 @@ export const decodeInput = (value: TerminalLiveFrame): Input => {
   const sequence = new DataView(value.payload.buffer, value.payload.byteOffset).getBigUint64(0, false);
   assertPositiveUint64(sequence, 'sequence');
   return { sequence, data: value.payload.slice(8) };
+};
+
+const keyActionValue = (action: InputIntent['action']): number => {
+  switch (action) {
+    case 'press': return 1;
+    case 'repeat': return 2;
+    case 'release': return 3;
+    default: throw new Error('invalid terminal live input intent action');
+  }
+};
+
+const decodeKeyAction = (value: number): InputIntent['action'] => {
+  switch (value) {
+    case 1: return 'press';
+    case 2: return 'repeat';
+    case 3: return 'release';
+    default: throw new Error('invalid terminal live input intent action');
+  }
+};
+
+export const encodeInputIntent = (value: InputIntent): Uint8Array => {
+  assertPositiveUint64(value.sequence, 'sequence');
+  const code = encoder.encode(value.code);
+  const text = encoder.encode(value.text);
+  if (code.byteLength === 0 || code.byteLength > MAX_IDENTIFIER_BYTES || text.byteLength > MAX_INPUT_BYTES
+    || !Number.isSafeInteger(value.modifiers) || value.modifiers < 0 || (value.modifiers & ~0x3f) !== 0
+    || 16 + code.byteLength + text.byteLength > MAX_INPUT_BYTES) {
+    throw new Error('terminal live input intent payload is invalid');
+  }
+  const payload = new Uint8Array(16 + code.byteLength + text.byteLength);
+  const view = new DataView(payload.buffer);
+  view.setBigUint64(0, value.sequence, false);
+  payload[8] = keyActionValue(value.action);
+  view.setUint16(10, value.modifiers, false);
+  view.setUint16(12, code.byteLength, false);
+  view.setUint16(14, text.byteLength, false);
+  payload.set(code, 16);
+  payload.set(text, 16 + code.byteLength);
+  return frame(TerminalLiveFrameType.InputIntent, payload);
+};
+
+export const decodeInputIntent = (value: TerminalLiveFrame): InputIntent => {
+  if (value.type !== TerminalLiveFrameType.InputIntent) throw new Error('unexpected terminal live frame type');
+  if (value.payload.byteLength < 17 || value.payload.byteLength > MAX_INPUT_BYTES || value.payload[9] !== 0) {
+    throw new Error('invalid terminal live input intent payload');
+  }
+  const view = new DataView(value.payload.buffer, value.payload.byteOffset);
+  const sequence = view.getBigUint64(0, false);
+  const modifiers = view.getUint16(10, false);
+  const codeLength = view.getUint16(12, false);
+  const textLength = view.getUint16(14, false);
+  assertPositiveUint64(sequence, 'sequence');
+  if (codeLength === 0 || codeLength > MAX_IDENTIFIER_BYTES || (modifiers & ~0x3f) !== 0
+    || 16 + codeLength + textLength !== value.payload.byteLength) {
+    throw new Error('invalid terminal live input intent payload');
+  }
+  return {
+    sequence,
+    code: decoder.decode(value.payload.subarray(16, 16 + codeLength)),
+    text: decoder.decode(value.payload.subarray(16 + codeLength)),
+    action: decodeKeyAction(value.payload[8]!),
+    modifiers,
+  };
 };
 
 export const encodeResize = (value: Resize): Uint8Array => {

@@ -5,10 +5,12 @@ import {
   TerminalLiveFrameType,
   decodeAttach,
   decodeInput,
+  decodeInputIntent,
   decodePresentation,
   decodeResize,
   encodeAttach,
   encodeInput,
+  encodeInputIntent,
   encodeResize,
 } from './codec.js';
 
@@ -22,16 +24,37 @@ const presentationFrame = (value: unknown): Uint8Array => {
 };
 
 describe('semantic terminal live codec', () => {
-  it('round trips client attach, input, and resize frames', () => {
+  it('round trips client attach, text input, structured key input, and resize frames', () => {
     const decoder = new TerminalLiveDecoder();
     const frames = [
       encodeAttach({ attachGeneration: 2n, cols: 80, rows: 24, sessionId: 's', connectionId: 'c' }),
       encodeInput({ sequence: 1n, data: new TextEncoder().encode('中') }),
+      encodeInputIntent({
+        sequence: 2n,
+        code: 'ArrowUp',
+        text: '',
+        action: 'repeat',
+        modifiers: 0x03,
+      }),
       encodeResize({ sequence: 2n, cols: 120, rows: 40 }),
     ].flatMap(encoded => decoder.push(encoded));
     expect(decodeAttach(frames[0]!)).toMatchObject({ attachGeneration: 2n, cols: 80, rows: 24 });
     expect(new TextDecoder().decode(decodeInput(frames[1]!).data)).toBe('中');
-    expect(decodeResize(frames[2]!)).toEqual({ sequence: 2n, cols: 120, rows: 40 });
+    expect(decodeInputIntent(frames[2]!)).toEqual({
+      sequence: 2n,
+      code: 'ArrowUp',
+      text: '',
+      action: 'repeat',
+      modifiers: 0x03,
+    });
+    expect(decodeResize(frames[3]!)).toEqual({ sequence: 2n, cols: 120, rows: 40 });
+  });
+
+  it('rejects malformed structured key intent payloads', () => {
+    const encoded = encodeInputIntent({ sequence: 1n, code: 'Enter', text: '', action: 'press', modifiers: 0 });
+    const frame = new TerminalLiveDecoder().push(encoded)[0]!;
+    frame.payload[9] = 0xff;
+    expect(() => decodeInputIntent(frame)).toThrow(/input intent/i);
   });
 
   it('decodes an owned semantic presentation and rejects the removed raw frame type', () => {

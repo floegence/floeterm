@@ -15,6 +15,7 @@ export {
   decodeAttached,
   decodeGeometryChanged,
   decodeInput,
+  decodeInputIntent,
   decodePresentation,
   decodeProtocolError,
   decodeResize,
@@ -23,6 +24,7 @@ export {
   encodeAttached,
   encodeGeometryChanged,
   encodeInput,
+  encodeInputIntent,
   encodeResize,
   encodeResizeApplied,
 } from '../live/codec.js';
@@ -42,6 +44,7 @@ export type {
   Attached,
   GeometryChanged,
   Input,
+  InputIntent,
   Presentation,
   ProtocolError,
   Resize,

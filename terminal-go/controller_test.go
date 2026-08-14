@@ -39,6 +39,84 @@ func TestInteractRejectsStaleTransportEpochAndCrossPrincipalWithoutWrite(t *test
 	}
 }
 
+func TestStructuredKeyInputUsesActorEncoderAndRejectsStaleTransport(t *testing.T) {
+	engine := &fakeSemanticEngine{}
+	actor, err := NewSessionActor(engine, 80, 24, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writes [][]byte
+	session := &Session{config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}), PTY: &os.File{}, semanticActor: actor, writePTY: func(data []byte) (int, error) {
+		writes = append(writes, append([]byte(nil), data...))
+		return len(data), nil
+	}}
+	if err := session.AttachSemanticView("view", "principal", 3); err != nil {
+		t.Fatal(err)
+	}
+	intent := SemanticInput{Kind: "key", Code: "Enter", Text: "encoded-enter", Action: "press"}
+	if err := session.InteractSemantic("view", "principal", 3, 0, intent); err != nil {
+		t.Fatal(err)
+	}
+	if len(writes) != 1 || string(writes[0]) != "encoded-enter" || engine.calls[len(engine.calls)-1] != "input" {
+		t.Fatalf("writes=%q calls=%v", writes, engine.calls)
+	}
+	if err := session.InteractSemantic("view", "principal", 2, session.Controller().Epoch, intent); err != ErrControllerTransport {
+		t.Fatalf("stale structured input error=%v", err)
+	}
+	if len(writes) != 1 {
+		t.Fatalf("stale structured input wrote %d times", len(writes))
+	}
+}
+
+func TestFailedStructuredInputDoesNotTransferController(t *testing.T) {
+	engine := &fakeSemanticEngine{}
+	actor, _ := NewSessionActor(engine, 80, 24, NewPresentationStore(1))
+	session := &Session{config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}), PTY: &os.File{}, semanticActor: actor, writePTY: func(data []byte) (int, error) {
+		return len(data), nil
+	}}
+	if err := session.AttachSemanticView("first", "principal", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Interact("first", "principal", 1, 0, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	before := session.Controller()
+	if err := session.AttachSemanticView("second", "principal", 1); err != nil {
+		t.Fatal(err)
+	}
+	err := session.InteractSemantic("second", "principal", 1, before.Epoch, SemanticInput{Kind: "key", Code: "Enter", Action: "press"})
+	if err == nil {
+		t.Fatal("invalid structured input was accepted")
+	}
+	if after := session.Controller(); after != before {
+		t.Fatalf("failed input changed controller: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestZeroByteStructuredInputDoesNotTransferControllerOrWrite(t *testing.T) {
+	engine := &fakeSemanticEngine{emptyInput: true}
+	actor, _ := NewSessionActor(engine, 80, 24, NewPresentationStore(1))
+	writes := 0
+	session := &Session{config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}), PTY: &os.File{}, semanticActor: actor, writePTY: func(data []byte) (int, error) {
+		writes++
+		return len(data), nil
+	}}
+	if err := session.AttachSemanticView("observer", "principal", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.InteractSemantic("observer", "principal", 1, 0, SemanticInput{
+		Kind: "key", Code: "Enter", Action: "release",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if state := session.Controller(); state.AttachmentID != "" || state.Epoch != 0 {
+		t.Fatalf("zero-byte input transferred controller: %+v", state)
+	}
+	if writes != 0 {
+		t.Fatalf("zero-byte input wrote %d times", writes)
+	}
+}
+
 func TestSemanticDetachRequiresCurrentTransportGeneration(t *testing.T) {
 	session := &Session{}
 	if err := session.AttachSemanticView("view", "principal", 1); err != nil {

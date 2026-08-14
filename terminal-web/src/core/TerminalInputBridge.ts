@@ -8,7 +8,8 @@ import { noopLogger } from '../utils/logger.js';
 
 type input_suppression_token =
   | { kind: 'linebreak' }
-  | { kind: 'backspace' };
+  | { kind: 'backspace' }
+  | { kind: 'delete' };
 
 const TERMINAL_INPUT_SELECTOR = 'textarea[aria-label="Terminal input"]';
 const TERMINAL_CONTENTEDITABLE_INPUT_SELECTOR = '[contenteditable="true"][aria-label="Terminal input"]';
@@ -25,6 +26,8 @@ const MODIFIER_ONLY_KEYS = new Set([
   'ScrollLock',
   'Shift'
 ]);
+
+const BROWSER_TEXT_COMPOSITION_KEYS = new Set(['Dead', 'Process', 'Unidentified']);
 
 const isPlainPrintableKey = (event: KeyboardEvent): boolean => {
   if ((event.ctrlKey && !event.altKey) || (event.altKey && !event.ctrlKey) || event.metaKey) {
@@ -49,6 +52,7 @@ const isPrimaryCopyShortcut = (event: KeyboardEvent): boolean => {
 const createSuppressionTokenFromKeydown = (event: KeyboardEvent): input_suppression_token | null => {
   if (event.key === 'Enter') return { kind: 'linebreak' };
   if (event.key === 'Backspace') return { kind: 'backspace' };
+  if (event.key === 'Delete') return { kind: 'delete' };
   return null;
 };
 
@@ -121,7 +125,9 @@ const matchesBeforeInputSuppression = (token: input_suppression_token, event: In
   if (token.kind === 'linebreak') {
     return event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph';
   }
-  return event.inputType === 'deleteContentBackward';
+  return token.kind === 'backspace'
+    ? event.inputType === 'deleteContentBackward'
+    : event.inputType === 'deleteContentForward';
 };
 
 const matchesInputSuppression = (token: input_suppression_token, value: string): boolean => {
@@ -194,6 +200,7 @@ export type TerminalInputBridgeOptions = {
   inputHost: HTMLElement;
   inputElement: HTMLTextAreaElement;
   onData: (data: string) => void;
+  onInputIntent?: (intent: TerminalKeyInputIntent) => void;
   logger?: Logger;
   hasSelection?: () => boolean;
   copySelection?: (
@@ -203,10 +210,26 @@ export type TerminalInputBridgeOptions = {
   syncInputGeometry?: () => void;
 };
 
+export type TerminalKeyInputIntent = Readonly<{
+  kind: 'key';
+  code: string;
+  text: string;
+  action: 'press' | 'repeat' | 'release';
+  modifiers: Readonly<{
+    shift: boolean;
+    control: boolean;
+    alt: boolean;
+    super: boolean;
+    capsLock: boolean;
+    numLock: boolean;
+  }>;
+}>;
+
 export class TerminalInputBridge {
   private readonly inputHost: HTMLElement;
   private readonly inputElement: HTMLTextAreaElement;
   private readonly onData: (data: string) => void;
+  private readonly onInputIntent: ((intent: TerminalKeyInputIntent) => void) | undefined;
   private readonly logger: Logger;
   private readonly hasSelection: () => boolean;
   private readonly copySelection: (
@@ -221,10 +244,15 @@ export class TerminalInputBridge {
   private ephemeralStateResetTimer: ReturnType<typeof setTimeout> | null = null;
   private patchedTerminalFocusHost: HTMLElement | null = null;
   private restoreTerminalFocusHost: (() => void) | null = null;
+  private readonly structuredPressedKeys = new Set<string>();
   private readonly unregisterDocumentShortcutBridge: () => void;
 
   private readonly keydownListener = (event: KeyboardEvent) => {
     this.handleKeydown(event);
+  };
+
+  private readonly keyupListener = (event: KeyboardEvent) => {
+    this.handleKeyup(event);
   };
 
   private readonly beforeInputListener = (event: InputEvent) => {
@@ -267,6 +295,7 @@ export class TerminalInputBridge {
     this.inputHost = options.inputHost;
     this.inputElement = options.inputElement;
     this.onData = options.onData;
+    this.onInputIntent = options.onInputIntent;
     this.logger = options.logger ?? noopLogger;
     this.hasSelection = options.hasSelection ?? (() => false);
     this.copySelection = options.copySelection ?? (async (source) => ({
@@ -299,6 +328,7 @@ export class TerminalInputBridge {
     this.patchedTerminalFocusHost = null;
     this.unregisterDocumentShortcutBridge();
     this.inputElement.removeEventListener('keydown', this.keydownListener);
+    this.inputElement.removeEventListener('keyup', this.keyupListener);
     this.inputElement.removeEventListener('beforeinput', this.beforeInputListener as EventListener, true);
     this.inputElement.removeEventListener('input', this.inputListener);
     this.inputElement.removeEventListener('compositionstart', this.compositionStartListener);
@@ -312,8 +342,9 @@ export class TerminalInputBridge {
   private attach(): void {
     this.patchTerminalFocusHost();
     this.inputElement.addEventListener('keydown', this.keydownListener);
-    // The bridge owns mapped browser text input before ghostty's retained
-    // textarea listener; physical key encoding remains on the input host.
+    this.inputElement.addEventListener('keyup', this.keyupListener);
+    // Text and IME stay on the editable element; structured keys are handed to
+    // the server-side Ghostty encoder when the caller supplies that channel.
     this.inputElement.addEventListener('beforeinput', this.beforeInputListener as EventListener, true);
     this.inputElement.addEventListener('input', this.inputListener);
     this.inputElement.addEventListener('compositionstart', this.compositionStartListener);
@@ -366,7 +397,21 @@ export class TerminalInputBridge {
       return;
     }
 
+    if (BROWSER_TEXT_COMPOSITION_KEYS.has(event.key)) {
+      return;
+    }
+
     if (isPlainPrintableKey(event)) {
+      return;
+    }
+
+    if (this.onInputIntent && !event.metaKey && event.code) {
+      this.onInputIntent(keyIntentFromKeyboardEvent(event, event.repeat ? 'repeat' : 'press'));
+      this.structuredPressedKeys.add(event.code);
+      this.suppressionToken = createSuppressionTokenFromKeydown(event);
+      this.scheduleEphemeralStateReset();
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
@@ -379,6 +424,15 @@ export class TerminalInputBridge {
       event.preventDefault();
       event.stopPropagation();
     }
+  }
+
+  private handleKeyup(event: KeyboardEvent): void {
+    if (!this.onInputIntent || !event.code || !this.structuredPressedKeys.delete(event.code)) {
+      return;
+    }
+    this.onInputIntent(keyIntentFromKeyboardEvent(event, 'release'));
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   private handleBeforeInput(event: InputEvent): void {
@@ -615,6 +669,7 @@ export class TerminalInputBridge {
     this.pendingCompositionCommit = null;
     this.ignoreNextInput = false;
     this.suppressionToken = null;
+    this.structuredPressedKeys.clear();
   }
 
   private emitData(data: string): void {
@@ -652,6 +707,24 @@ export class TerminalInputBridge {
     this.inputFocusClaimTimer = null;
   }
 }
+
+const keyIntentFromKeyboardEvent = (
+  event: KeyboardEvent,
+  action: TerminalKeyInputIntent['action'],
+): TerminalKeyInputIntent => ({
+  kind: 'key',
+  code: event.code,
+  text: event.key.length === 1 ? event.key : '',
+  action,
+  modifiers: {
+    shift: event.shiftKey,
+    control: event.ctrlKey,
+    alt: event.altKey,
+    super: event.metaKey,
+    capsLock: event.getModifierState?.('CapsLock') ?? false,
+    numLock: event.getModifierState?.('NumLock') ?? false,
+  },
+});
 
 const resolveBridgeForTarget = (
   bridges: Set<TerminalInputBridge>,

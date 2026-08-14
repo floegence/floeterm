@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"unicode/utf8"
 )
 
 var ErrSemanticClearUnavailable = errors.New("semantic terminal clear is unavailable")
@@ -25,10 +26,20 @@ type SemanticResetEngine interface {
 }
 
 type SemanticInput struct {
-	Kind, Text string
-	Focused    bool
-	X, Y       float32
+	Kind, Text, Code, Action string
+	Modifiers                uint16
+	Focused                  bool
+	X, Y                     float32
 }
+
+const (
+	SemanticModifierShift uint16 = 1 << iota
+	SemanticModifierControl
+	SemanticModifierAlt
+	SemanticModifierSuper
+	SemanticModifierCapsLock
+	SemanticModifierNumLock
+)
 
 // SessionActor is the single mutable owner of PTY admission and the VT engine.
 type SessionActor struct {
@@ -207,13 +218,40 @@ func (a *SessionActor) rollbackResizeLocked(previous TerminalGeometry, cause err
 }
 
 func (a *SessionActor) Input(intent SemanticInput, write func([]byte) error) error {
+	if err := validateSemanticInput(intent); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	encoded, err := a.engine.EncodeInput(intent)
 	if err != nil {
 		return err
 	}
+	if len(encoded) == 0 {
+		return nil
+	}
 	return write(encoded)
+}
+
+func validateSemanticInput(intent SemanticInput) error {
+	switch intent.Kind {
+	case "text":
+		if intent.Text == "" || !utf8.ValidString(intent.Text) {
+			return errors.New("semantic text input is empty")
+		}
+	case "key":
+		if intent.Code == "" || !utf8.ValidString(intent.Code) || !utf8.ValidString(intent.Text) ||
+			(intent.Action != "press" && intent.Action != "repeat" && intent.Action != "release") {
+			return errors.New("semantic key input is invalid")
+		}
+		const allModifiers = SemanticModifierShift | SemanticModifierControl | SemanticModifierAlt | SemanticModifierSuper | SemanticModifierCapsLock | SemanticModifierNumLock
+		if intent.Modifiers & ^allModifiers != 0 {
+			return errors.New("semantic key modifiers are invalid")
+		}
+	default:
+		return errors.New("semantic input kind is invalid")
+	}
+	return nil
 }
 
 func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHistoryPage, error) {

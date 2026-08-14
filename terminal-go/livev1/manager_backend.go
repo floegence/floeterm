@@ -115,6 +115,25 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 }
 
 func (b *ManagerBackend) WriteInput(_ context.Context, attachment Attach, input Input) error {
+	return b.writeSemanticInput(attachment, terminal.SemanticInput{Kind: "text", Text: string(input.Data)})
+}
+
+func (b *ManagerBackend) WriteInputIntent(_ context.Context, attachment Attach, input InputIntent) error {
+	action := ""
+	switch input.Action {
+	case KeyActionPress:
+		action = "press"
+	case KeyActionRepeat:
+		action = "repeat"
+	case KeyActionRelease:
+		action = "release"
+	}
+	return b.writeSemanticInput(attachment, terminal.SemanticInput{
+		Kind: "key", Code: input.Code, Text: input.Text, Action: action, Modifiers: uint16(input.Modifiers),
+	})
+}
+
+func (b *ManagerBackend) writeSemanticInput(attachment Attach, input terminal.SemanticInput) error {
 	if b == nil || b.manager == nil {
 		return errors.New("terminal manager is required")
 	}
@@ -130,7 +149,7 @@ func (b *ManagerBackend) WriteInput(_ context.Context, attachment Attach, input 
 	if !ok {
 		return nil
 	}
-	if err := session.Interact(attachment.ConnectionID, "local", generation, state.Epoch, input.Data); err != nil {
+	if err := session.InteractSemantic(attachment.ConnectionID, "local", generation, state.Epoch, input); err != nil {
 		if errors.Is(err, terminal.ErrControllerEpoch) || errors.Is(err, terminal.ErrControllerTransport) || errors.Is(err, terminal.ErrControllerPrincipal) {
 			return nil
 		}

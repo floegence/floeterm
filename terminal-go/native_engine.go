@@ -166,6 +166,22 @@ func (e *nativeSemanticEngine) ReadHistory(anchor SemanticHistoryAnchor, limit i
 func (e *nativeSemanticEngine) Reset() error          { return e.engine.Reset() }
 func (e *nativeSemanticEngine) Resize(c, r int) error { return e.engine.Resize(uint16(c), uint16(r)) }
 func (e *nativeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
-	return e.engine.EncodeText(i.Text)
+	switch i.Kind {
+	case "text":
+		return e.engine.EncodeText(i.Text)
+	case "key":
+		action := 0
+		switch i.Action {
+		case "press":
+			action = 1
+		case "repeat":
+			action = 2
+		case "release":
+			action = 3
+		}
+		return e.engine.EncodeKey(nativevt.KeyEvent{Code: i.Code, Text: i.Text, Action: action, Modifiers: i.Modifiers})
+	default:
+		return nil, errors.New("unsupported native semantic input")
+	}
 }
 func (e *nativeSemanticEngine) Close() { e.engine.Close() }

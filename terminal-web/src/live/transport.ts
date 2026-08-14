@@ -1,4 +1,5 @@
 import type { SemanticHistoryPage, SemanticHistoryRequest } from '../semantic/presentation.js';
+import type { TerminalKeyInputIntent } from '../core/TerminalInputBridge.js';
 import type {
   TerminalExecutionContextUpdateEvent,
   TerminalForegroundCommandUpdateEvent,
@@ -110,6 +111,7 @@ export type SemanticTerminalLiveTransport = Readonly<{
     rows: number,
   ): Promise<TerminalLiveResizeAppliedResult>;
   sendInput(sessionId: TerminalID, input: string): Promise<void>;
+  sendInputIntent(sessionId: TerminalID, input: TerminalKeyInputIntent): Promise<void>;
   semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryPage>;
   clearSemanticContent?(sessionId: TerminalID): Promise<TerminalSemanticClearResult>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
@@ -253,8 +255,26 @@ export const createSemanticTerminalLiveTransport = (
     resizeWithEffectiveGeometry,
     sendInput: async (sessionId, input) => {
       const entry = entries.get(sessionId);
-      if (!entry) throw new Error('terminal live session is not attached');
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) throw new Error('terminal live session is not attached');
       await entry.connection.sendInput(textEncoder.encode(String(input ?? '')));
+    },
+    sendInputIntent: async (sessionId, input) => {
+      const entry = entries.get(sessionId);
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+        throw new Error('terminal live session is not attached');
+      }
+      const modifiers = (input.modifiers.shift ? 1 : 0)
+        | (input.modifiers.control ? 2 : 0)
+        | (input.modifiers.alt ? 4 : 0)
+        | (input.modifiers.super ? 8 : 0)
+        | (input.modifiers.capsLock ? 16 : 0)
+        | (input.modifiers.numLock ? 32 : 0);
+      await entry.connection.sendInputIntent({
+        code: input.code,
+        text: input.text,
+        action: input.action,
+        modifiers,
+      });
     },
     semanticHistory: async (sessionId, request) => {
       const entry = entries.get(sessionId);

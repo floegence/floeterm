@@ -28,10 +28,11 @@ var (
 type FrameType uint8
 
 const (
-	FrameAttach FrameType = 0x01
-	FrameInput  FrameType = 0x02
-	FrameResize FrameType = 0x03
-	FrameDetach FrameType = 0x04
+	FrameAttach      FrameType = 0x01
+	FrameInput       FrameType = 0x02
+	FrameResize      FrameType = 0x03
+	FrameDetach      FrameType = 0x04
+	FrameInputIntent FrameType = 0x05
 
 	FrameAttached        FrameType = 0x81
 	FrameResizeApplied   FrameType = 0x83
@@ -58,6 +59,35 @@ type Attach struct {
 type Input struct {
 	Sequence uint64
 	Data     []byte
+}
+
+type KeyAction uint8
+
+const (
+	KeyActionPress KeyAction = iota + 1
+	KeyActionRepeat
+	KeyActionRelease
+)
+
+type KeyModifiers uint16
+
+const (
+	KeyModifierShift KeyModifiers = 1 << iota
+	KeyModifierControl
+	KeyModifierAlt
+	KeyModifierSuper
+	KeyModifierCapsLock
+	KeyModifierNumLock
+)
+
+const allKeyModifiers = KeyModifierShift | KeyModifierControl | KeyModifierAlt | KeyModifierSuper | KeyModifierCapsLock | KeyModifierNumLock
+
+type InputIntent struct {
+	Sequence  uint64
+	Code      string
+	Text      string
+	Action    KeyAction
+	Modifiers KeyModifiers
 }
 
 type Resize struct {
@@ -95,7 +125,7 @@ type ProtocolError struct {
 
 func validFrameType(frameType FrameType) bool {
 	switch frameType {
-	case FrameAttach, FrameInput, FrameResize, FrameDetach,
+	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent,
 		FrameAttached, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation, FrameError:
 		return true
 	default:
@@ -300,6 +330,55 @@ func DecodeInput(frame Frame) (Input, error) {
 		return Input{}, ErrInvalidPayload
 	}
 	return value, nil
+}
+
+func EncodeInputIntent(value InputIntent) ([]byte, error) {
+	code := []byte(value.Code)
+	text := []byte(value.Text)
+	if value.Sequence == 0 || len(code) == 0 || len(code) > MaxIdentifierBytes || !utf8.Valid(code) ||
+		len(text) > MaxInputBytes || !utf8.Valid(text) || !validKeyAction(value.Action) || value.Modifiers&^allKeyModifiers != 0 ||
+		16+len(code)+len(text) > MaxInputBytes {
+		return nil, ErrInvalidPayload
+	}
+	payload := make([]byte, 16+len(code)+len(text))
+	binary.BigEndian.PutUint64(payload[:8], value.Sequence)
+	payload[8] = byte(value.Action)
+	binary.BigEndian.PutUint16(payload[10:12], uint16(value.Modifiers))
+	binary.BigEndian.PutUint16(payload[12:14], uint16(len(code)))
+	binary.BigEndian.PutUint16(payload[14:16], uint16(len(text)))
+	copy(payload[16:], code)
+	copy(payload[16+len(code):], text)
+	return EncodeFrame(Frame{Type: FrameInputIntent, Payload: payload})
+}
+
+func DecodeInputIntent(frame Frame) (InputIntent, error) {
+	if frame.Type != FrameInputIntent {
+		return InputIntent{}, ErrUnexpectedFrameType
+	}
+	if len(frame.Payload) < 17 || len(frame.Payload) > MaxInputBytes || frame.Payload[9] != 0 {
+		return InputIntent{}, ErrInvalidPayload
+	}
+	codeLength := int(binary.BigEndian.Uint16(frame.Payload[12:14]))
+	textLength := int(binary.BigEndian.Uint16(frame.Payload[14:16]))
+	if codeLength == 0 || codeLength > MaxIdentifierBytes || 16+codeLength+textLength != len(frame.Payload) {
+		return InputIntent{}, ErrInvalidPayload
+	}
+	value := InputIntent{
+		Sequence:  binary.BigEndian.Uint64(frame.Payload[:8]),
+		Action:    KeyAction(frame.Payload[8]),
+		Modifiers: KeyModifiers(binary.BigEndian.Uint16(frame.Payload[10:12])),
+		Code:      string(frame.Payload[16 : 16+codeLength]),
+		Text:      string(frame.Payload[16+codeLength:]),
+	}
+	if value.Sequence == 0 || !validKeyAction(value.Action) || value.Modifiers&^allKeyModifiers != 0 ||
+		!utf8.ValidString(value.Code) || !utf8.ValidString(value.Text) {
+		return InputIntent{}, ErrInvalidPayload
+	}
+	return value, nil
+}
+
+func validKeyAction(action KeyAction) bool {
+	return action == KeyActionPress || action == KeyActionRepeat || action == KeyActionRelease
 }
 
 func EncodeResize(value Resize) ([]byte, error) {

@@ -13,6 +13,7 @@ import {
 	type SemanticHistoryPage,
 	type SemanticHistoryRequest,
 	type SemanticPresentation,
+  type TerminalKeyInputIntent,
   type TerminalThemeName,
 } from '@floegence/floeterm-terminal-web/semantic';
 import { applyTerminalThemeShell, ThemeSelector } from './themeCatalog';
@@ -178,30 +179,6 @@ const createThemeName = () => {
   return [themeName, setThemeName] as const;
 };
 
-const terminalKeyInput = (event: KeyboardEvent): string | null => {
-  if (event.isComposing || event.keyCode === 229) return null;
-  if (event.ctrlKey && !event.altKey && !event.metaKey && event.key.length === 1) {
-    const code = event.key.toUpperCase().charCodeAt(0);
-    if (code >= 64 && code <= 95) return String.fromCharCode(code - 64);
-  }
-  switch (event.key) {
-    case 'Enter': return '\r';
-    case 'Backspace': return '\x7f';
-    case 'Tab': return '\t';
-    case 'Escape': return '\x1b';
-    case 'ArrowUp': return '\x1b[A';
-    case 'ArrowDown': return '\x1b[B';
-    case 'ArrowRight': return '\x1b[C';
-    case 'ArrowLeft': return '\x1b[D';
-    case 'Home': return '\x1b[H';
-    case 'End': return '\x1b[F';
-    case 'PageUp': return '\x1b[5~';
-    case 'PageDown': return '\x1b[6~';
-    case 'Delete': return '\x1b[3~';
-    default: return null;
-  }
-};
-
 const SemanticTerminalSurface = (props: {
   canvasId?: string;
   inputId?: string;
@@ -211,6 +188,7 @@ const SemanticTerminalSurface = (props: {
   onInputController?(controller: TerminalInputBridge | null): void;
   renderer(): RendererSurface | undefined;
   sendInput(value: string): void;
+  sendInputIntent(value: TerminalKeyInputIntent): void;
 }) => {
   let canvas: HTMLCanvasElement | undefined;
   let input: HTMLTextAreaElement | undefined;
@@ -239,6 +217,7 @@ const SemanticTerminalSurface = (props: {
       inputHost: canvas,
       inputElement: input,
       onData: props.sendInput,
+      onInputIntent: props.sendInputIntent,
       syncInputGeometry,
       hasSelection: () => props.renderer()?.hasSelection() ?? false,
       copySelection: async (source, clipboardData) => {
@@ -296,12 +275,6 @@ const SemanticTerminalSurface = (props: {
         onPointerUp={event => {
           props.renderer()?.endSelection(event.clientX, event.clientY);
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-        }}
-        onKeyDown={event => {
-          const value = terminalKeyInput(event);
-          if (value === null) return;
-          event.preventDefault();
-          props.sendInput(value);
         }}
       />
       <textarea
@@ -530,6 +503,7 @@ const SemanticTerminalViewport = (props: {
         onInputController={controller => { inputController = controller ?? undefined; }}
         renderer={() => renderer}
         sendInput={value => { void props.transport.sendInput(mountedSessionId, value); }}
+        sendInputIntent={value => { void props.transport.sendInputIntent(mountedSessionId, value); }}
       />
       <Show when={presentationError()}>
         {message => (
@@ -890,6 +864,7 @@ const SingleTerminalPane = (props: {
             onInputController={controller => { inputController = controller ?? undefined; }}
             renderer={() => semanticRenderer}
             sendInput={value => { void props.transport.sendInput(props.sessionId, value); }}
+            sendInputIntent={value => { void props.transport.sendInputIntent(props.sessionId, value); }}
           />
 		  <div
 			class="semanticHistoryRail"

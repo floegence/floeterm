@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { TerminalLiveDecoder, decodeInput, encodeAttached } from './codec.js';
+import { TerminalLiveDecoder, decodeInput, decodeInputIntent, encodeAttached } from './codec.js';
 import type { TerminalByteStream } from './client.js';
 import { createSemanticTerminalLiveTransport } from './transport.js';
 
@@ -34,12 +34,20 @@ describe('semantic terminal live transport', () => {
     await bundle.transport.sendInput('session', '中');
     const frame = new TerminalLiveDecoder().push(streams[0]!.writes[1]!)[0]!;
     expect(new TextDecoder().decode(decodeInput(frame).data)).toBe('中');
+    await bundle.transport.sendInputIntent('session', {
+      kind: 'key', code: 'Enter', text: '', action: 'press',
+      modifiers: { shift: false, control: false, alt: false, super: false, capsLock: false, numLock: false },
+    });
+    const intentFrame = new TerminalLiveDecoder().push(streams[0]!.writes[2]!)[0]!;
+    expect(decodeInputIntent(intentFrame)).toEqual({
+      sequence: 2n, code: 'Enter', text: '', action: 'press', modifiers: 0,
+    });
 
     const replacing = bundle.transport.attachWithPresentation('session', 120, 40);
     await waitUntil(() => streams.length === 2 && streams[1]!.writes.length === 1);
     streams[1]!.push(encodeAttached({ presentationSequence: 2n, geometryGeneration: 2n, cols: 120, rows: 40 }));
     await expect(replacing).resolves.toMatchObject({ runtimeAttachGeneration: 2, cols: 120, rows: 40 });
-    expect(streams[0]!.writes).toHaveLength(2);
+    expect(streams[0]!.writes).toHaveLength(3);
 
     await expect(bundle.transport.clearSemanticContent?.('session')).resolves.toEqual({
       presentationSequence: 2,
