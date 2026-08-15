@@ -127,6 +127,16 @@ describe('semantic presentation', () => {
     expect(() => validateHistoryPage({ ...page, anchor: '' })).toThrow(/anchor/);
     expect(() => validateHistoryPage({ ...page, frame: { ...page.frame, width: 3 } })).toThrow(/geometry|row width/);
   });
+  it('validates transport-bounded history pages shorter than the live screen', () => {
+    const page = {
+      revision: 4, anchor: 'page', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
+      offset: 3, totalRows: 10, screenStartOffset: 8, hasPrevious: true, hasNext: true,
+      frame: { ...valid().frame, history: { revision: 4, totalRows: 10, screenStartOffset: 8 } },
+    };
+    expect(page.frame.height).toBe(1);
+    expect(page.totalRows - page.screenStartOffset).toBe(2);
+    expect(validateHistoryPage(page)).toEqual(page);
+  });
   it('rejects semantic cell widths outside narrow, wide, and continuation values', () => {
     const invalid = structuredClone(valid());
     invalid.frame.rows[0].cells[0].width = 3;
@@ -601,6 +611,28 @@ describe('semantic presentation', () => {
     expect(fillText).toHaveBeenLastCalledWith('H', 0, 14.76);
     renderer.project(null);
     expect(fillText).toHaveBeenLastCalledWith('A', 0, 14.76);
+  });
+
+  it('projects a transport-bounded history frame shorter than the live grid', () => {
+    const fillText = vi.fn();
+    const fillRect = vi.fn();
+    const context={clearRect:vi.fn(),fillRect,fillText,setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:180,clientHeight:90};
+    const canvas={width:0,height:0,clientWidth:180,clientHeight:90,parentElement:host,style:{},getContext:()=>context} as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    const live = structuredClone(valid());
+    live.geometry.rows = 2;
+    live.frame.height = 2;
+    live.frame.rows.push(structuredClone(live.frame.rows[0]!));
+    live.frame.history = { revision: 1, totalRows: 2, screenStartOffset: 0 };
+    renderer.apply(validatePresentation(live));
+
+    const history = structuredClone(valid().frame);
+    history.rows[0]!.cells[0]!.text = 'H';
+    renderer.project(history);
+
+    expect(fillText).toHaveBeenLastCalledWith('H', 0, 14.76);
+    expect(fillRect).toHaveBeenCalledWith(0, 0, canvas.width, canvas.height);
   });
 
   it('owns view-local semantic selection without another renderer', () => {

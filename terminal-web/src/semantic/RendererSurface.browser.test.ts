@@ -103,6 +103,39 @@ describe('semantic terminal browser surface', () => {
     renderer.dispose();
   });
 
+  it('projects a bounded short history page without shrinking or exposing the canvas', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    const palette = getThemeColors('dark');
+    renderer.setPalette(palette);
+    const live = presentation();
+    live.geometry.rows = 2;
+    live.frame.height = 2;
+    live.frame.history = { revision: 1, totalRows: 2, screenStartOffset: 0 };
+    live.frame.rows.push(structuredClone(live.frame.rows[0]!));
+    renderer.apply(validatePresentation(live));
+    await nextPaint();
+
+    const history = structuredClone(presentation().frame);
+    history.rows[0]!.cells[0]!.text = 'H';
+    renderer.project(history);
+    await nextPaint();
+
+    const bounds = host.getBoundingClientRect();
+    expect(host.querySelectorAll('canvas')).toHaveLength(1);
+    expect(canvas.width).toBe(Math.round(bounds.width * devicePixelRatio));
+    expect(canvas.height).toBe(Math.round(bounds.height * devicePixelRatio));
+    const bottom = canvas.getContext('2d')!.getImageData(canvas.width - 1, canvas.height - 1, 1, 1).data;
+    expect(Array.from(bottom)).toEqual([...hexToRgb(palette.background), 255]);
+    expect(canvas.style.visibility).toBe('visible');
+
+    renderer.dispose();
+  });
+
   it('preserves inverse cell colors when cursor blink repaints one cell', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px';

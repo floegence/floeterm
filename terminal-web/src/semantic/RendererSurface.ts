@@ -162,7 +162,7 @@ export class RendererSurface {
     return { ...this.cellMetrics };
   }
   project(frame: SemanticFrame | null): void {
-    if (frame && this.latest && (frame.width !== this.latest.frame.width || frame.height !== this.latest.frame.height)) {
+    if (frame && this.latest && frame.width !== this.latest.frame.width) {
       throw new Error('semantic history frame does not match the current presentation geometry');
     }
     this.viewportFrame = frame;

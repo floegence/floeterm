@@ -71,11 +71,18 @@ export function validatePresentation(value: unknown): SemanticPresentation {
   if (p.state.contentEpoch !== undefined && (!Number.isSafeInteger(p.state.contentEpoch) || p.state.contentEpoch < 0)) throw new Error('invalid presentation content epoch');
   if (!Number.isInteger(p.geometry?.cols) || !Number.isInteger(p.geometry?.rows) || p.geometry.cols < 1 || p.geometry.rows < 1 || p.geometry.cols > MAX_COLS || p.geometry.rows > MAX_ROWS) throw new Error('invalid presentation geometry');
   if (p.frame?.width !== p.geometry.cols || p.frame?.height !== p.geometry.rows || !Array.isArray(p.frame.rows) || p.frame.rows.length !== p.frame.height) throw new Error('presentation frame does not match geometry');
-  const cursor = p.frame?.cursor;
-  if (!cursor || !Number.isInteger(cursor.x) || !Number.isInteger(cursor.y) || cursor.x < 0 || cursor.x >= p.frame.width || cursor.y < 0 || cursor.y >= p.frame.height || typeof cursor.visible !== 'boolean' || !['bar', 'block', 'underline', 'hollow'].includes(cursor.shape) || typeof cursor.blinking !== 'boolean' || (cursor.wideTail !== undefined && typeof cursor.wideTail !== 'boolean') || (cursor.color !== undefined && !/^rgb:[0-9a-fA-F]{6}$/.test(cursor.color))) throw new Error('invalid semantic cursor');
-  if (p.frame.history?.revision !== p.sequence || !Number.isSafeInteger(p.frame.history?.totalRows) || p.frame.history.totalRows < p.frame.height || !Number.isSafeInteger(p.frame.history?.screenStartOffset) || p.frame.history.screenStartOffset !== p.frame.history.totalRows - p.frame.height) throw new Error('invalid presentation history summary');
-  for (const row of p.frame.rows) {
-    if (!Array.isArray(row.cells) || row.cells.length !== p.frame.width) throw new Error('invalid semantic row width');
+  validateFrame(p.frame);
+  if (p.frame.history.revision !== p.sequence || p.frame.history.screenStartOffset !== p.frame.history.totalRows - p.frame.height) throw new Error('invalid presentation history summary');
+  return p;
+}
+
+function validateFrame(frame: SemanticFrame): void {
+  if (!Number.isInteger(frame?.width) || !Number.isInteger(frame?.height) || frame.width < 1 || frame.height < 1 || frame.width > MAX_COLS || frame.height > MAX_ROWS || !Array.isArray(frame.rows) || frame.rows.length !== frame.height) throw new Error('invalid semantic frame geometry');
+  const cursor = frame.cursor;
+  if (!cursor || !Number.isInteger(cursor.x) || !Number.isInteger(cursor.y) || cursor.x < 0 || cursor.x >= frame.width || cursor.y < 0 || cursor.y >= frame.height || typeof cursor.visible !== 'boolean' || !['bar', 'block', 'underline', 'hollow'].includes(cursor.shape) || typeof cursor.blinking !== 'boolean' || (cursor.wideTail !== undefined && typeof cursor.wideTail !== 'boolean') || (cursor.color !== undefined && !/^rgb:[0-9a-fA-F]{6}$/.test(cursor.color))) throw new Error('invalid semantic cursor');
+  if (!Number.isSafeInteger(frame.history?.revision) || frame.history.revision < 0 || !Number.isSafeInteger(frame.history?.totalRows) || frame.history.totalRows < frame.height || !Number.isSafeInteger(frame.history?.screenStartOffset) || frame.history.screenStartOffset < 0 || frame.history.screenStartOffset >= frame.history.totalRows) throw new Error('invalid semantic history summary');
+  for (const row of frame.rows) {
+    if (!Array.isArray(row.cells) || row.cells.length !== frame.width) throw new Error('invalid semantic row width');
     for (const cell of row.cells) {
       if (typeof cell.text !== 'string' || cell.text.length > 64 || !Number.isInteger(cell.width) || cell.width < 0 || cell.width > 2) throw new Error('invalid semantic cell');
       for (const color of [cell.style?.foreground, cell.style?.background]) {
@@ -87,8 +94,7 @@ export function validatePresentation(value: unknown): SemanticPresentation {
       if (cell.style?.inverse !== undefined && typeof cell.style.inverse !== 'boolean') throw new Error('invalid semantic inverse style');
     }
   }
-  validateGraphics(p.frame.graphics, p.frame.width, p.frame.height);
-  return p;
+  validateGraphics(frame.graphics, frame.width, frame.height);
 }
 
 function validateGraphics(graphics: SemanticGraphics, frameWidth: number, frameHeight: number): void {
@@ -127,14 +133,10 @@ export function validateHistoryPage(value: unknown): SemanticHistoryPage {
   if (page.totalRows <= 0 || page.offset >= page.totalRows || page.screenStartOffset >= page.totalRows || typeof page.hasPrevious !== 'boolean' || typeof page.hasNext !== 'boolean') {
     throw new Error('invalid semantic history bounds');
   }
+  validateFrame(page.frame);
+  if (page.offset + page.frame.height > page.totalRows) throw new Error('invalid semantic history page geometry');
   if (page.frame?.history?.revision !== page.revision || page.frame.history.totalRows !== page.totalRows || page.frame.history.screenStartOffset !== page.screenStartOffset) {
     throw new Error('semantic history page summary does not match its frame');
   }
-  validatePresentation({
-    sequence: Math.max(1, page.revision),
-    geometry: { generation: 1, cols: page.frame?.width, rows: page.frame?.height },
-    state: { sequence: Math.max(1, page.revision) },
-    frame: page.frame,
-  });
   return page;
 }
