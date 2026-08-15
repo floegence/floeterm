@@ -477,8 +477,52 @@ func TestSemanticHistorySerializesWithPTYOutput(t *testing.T) {
 	close(engine.release)
 	historyWG.Wait()
 	<-outputDone
-	if got := engine.calls[len(engine.calls)-2:]; got[0] != "apply" || got[1] != "capture" {
+	got := strings.Join(engine.calls, ",")
+	if strings.Index(got, "history-read") < 0 || strings.Index(got, "apply") <= strings.Index(got, "history-read") || !strings.Contains(got, "apply,capture") {
 		t.Fatalf("actor call order=%v", engine.calls)
+	}
+}
+
+func TestSemanticHistorySearchAndViewportLanesOwnIndependentBoundedFrontiers(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 12}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{semanticActor: actor}
+	if err := session.AttachSemanticView("view", "principal", 1); err != nil {
+		t.Fatal(err)
+	}
+	viewport, err := session.ReadSemanticHistory("view", 1, SemanticHistoryRequest{
+		Lane: HistoryViewportLane, Direction: HistoryEnd, ViewportRows: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	search, err := session.ReadSemanticHistory("view", 1, SemanticHistoryRequest{
+		Lane: HistorySearchLane, Direction: HistoryStart, ViewportRows: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viewport.Anchor == search.Anchor || viewport.Lane != HistoryViewportLane || search.Lane != HistorySearchLane {
+		t.Fatalf("history lanes are not isolated: viewport=%+v search=%+v", viewport, search)
+	}
+	target := viewport.Offset - 1
+	if _, err := session.ReadSemanticHistory("view", 1, SemanticHistoryRequest{
+		Lane: HistoryViewportLane, Anchor: viewport.Anchor, SnapshotID: viewport.SnapshotID,
+		Direction: HistoryBackward, Offset: viewport.Offset, TargetOffset: &target, ViewportRows: 3,
+	}); err != nil {
+		t.Fatalf("search replaced viewport frontier: %v", err)
+	}
+	if !session.LogicalDetachSemanticView("view", 1) {
+		t.Fatal("semantic view did not detach")
+	}
+	for _, anchor := range engine.anchors {
+		if !anchor.closed || anchor.closeCount != 1 {
+			t.Fatalf("detach anchor state=%+v, want exactly one close", anchor)
+		}
 	}
 }
 

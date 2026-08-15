@@ -5,7 +5,7 @@ import type {
   SemanticPresentation,
 } from '@floegence/floeterm-terminal-web/semantic';
 import type { TerminalID, TerminalSessionInfo } from '@floegence/floeterm-terminal-web/sessions';
-import { validateHistoryChunk, validatePresentation } from '@floegence/floeterm-terminal-web/semantic';
+import { SemanticHistoryError, validateHistoryChunk, validatePresentation } from '@floegence/floeterm-terminal-web/semantic';
 import {
   StreamKind,
   createSemanticTerminalLiveTransport,
@@ -40,7 +40,9 @@ const requestJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
   });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    throw new Error(text || `Request failed: ${response.status}`);
+    const error = new Error(text || `Request failed: ${response.status}`) as Error & { status: number };
+    error.status = response.status;
+    throw error;
   }
   return await response.json() as T;
 };
@@ -83,13 +85,23 @@ export const createTerminalRuntime = (connId: string) => {
         connectionId: string,
         transportGeneration: number,
         request: SemanticHistoryChunkRequest,
-      ): Promise<SemanticHistoryChunk> => validateHistoryChunk(await requestJson<unknown>(
-        `/api/sessions/${encodeURIComponent(sessionId)}/semantic-history`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ connectionId, transportGeneration, ...request }),
-        },
-      )),
+      ): Promise<SemanticHistoryChunk> => {
+        try {
+          return validateHistoryChunk(await requestJson<unknown>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/semantic-history`,
+            {
+              method: 'POST',
+              body: JSON.stringify({ connectionId, transportGeneration, ...request }),
+            },
+          ));
+        } catch (cause) {
+          const status = Number((cause as Error & { status?: number }).status);
+          if (status === 409) throw new SemanticHistoryError('anchor_invalid', 'semantic history anchor is invalid', { cause });
+          if (status === 412) throw new SemanticHistoryError('snapshot_superseded', 'semantic history snapshot was superseded', { cause });
+          if (status === 404 || status === 410) throw new SemanticHistoryError('session_detached', 'terminal history session is detached', { cause });
+          throw cause;
+        }
+      },
       clearSemanticContent: async (
         sessionId: TerminalID,
         connectionId: string,

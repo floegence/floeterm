@@ -6,11 +6,26 @@ export {
 } from '../semantic/RendererSurface.js';
 export { TerminalInputBridge } from '../core/TerminalInputBridge.js';
 export { HistoryViewportController } from '../semantic/HistoryViewportController.js';
-export type { HistoryViewportControllerOptions, HistoryViewportState } from '../semantic/HistoryViewportController.js';
+export type {
+  HistoryViewportCacheMetrics,
+  HistoryViewportControllerOptions,
+  HistoryViewportState,
+} from '../semantic/HistoryViewportController.js';
+export { HistorySearchController } from '../semantic/HistorySearchController.js';
+export type {
+  HistorySearchControllerOptions,
+  SemanticHistorySearchMatch,
+  SemanticHistorySearchResult,
+} from '../semantic/HistorySearchController.js';
 export type { TerminalInputBridgeOptions, TerminalKeyInputIntent } from '../core/TerminalInputBridge.js';
 export {
   assembleHistoryViewport,
+  isStructuralSemanticHistoryError,
   presentationAdvances,
+  SEMANTIC_HISTORY_MAX_CHUNK_BYTES,
+  SEMANTIC_HISTORY_MAX_CHUNKS,
+  SEMANTIC_HISTORY_MAX_SNAPSHOT_BYTES,
+  SemanticHistoryError,
   validateHistoryChunk,
   validateHistoryViewport,
   validatePresentation,
@@ -36,6 +51,8 @@ export type {
   SemanticHistoryChunk,
   SemanticHistoryChunkRequest,
   SemanticHistoryDirection,
+  SemanticHistoryErrorKind,
+  SemanticHistoryLane,
   SemanticHistoryRequest,
   SemanticHistoryViewport,
   SemanticPresentation,

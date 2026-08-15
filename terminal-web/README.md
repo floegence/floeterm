@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.16.0
+npm install @floegence/floeterm-terminal-web@0.16.1
 ```
 
 ## Exports
@@ -134,6 +134,14 @@ frames. The control plane returns bounded chunks from one actor-owned snapshot; 
 live transport verifies their identity, byte count, and SHA-256 digest before it
 decodes and returns one canonical-size viewport. Missing, stale, or corrupt chunks
 never replace the last complete frame.
+
+Each navigation request carries the current opaque frontier and snapshot identity, so
+a direct scrollbar seek is one server capture regardless of distance and a stale
+response cannot overwrite a newer target. `HistorySearchController` owns a separate,
+bounded server search lane. Search never replaces the navigation frontier, and every
+resolved match is returned as one complete atomic viewport before it can be projected.
+Caches account for semantic bytes as well as cells, use a 4 MiB per-view budget and a
+16 MiB global soft budget, and evict hidden-view extras first.
 
 Normal live output continues to advance in the background while a view browses an
 immutable history frame. Returning to the bottom reveals the latest Presentation.

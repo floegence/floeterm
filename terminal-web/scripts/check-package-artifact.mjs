@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const expectedVersion = '0.16.0';
+const expectedVersion = '0.16.1';
 const expectedExports = ['.', './live', './semantic', './sessions'];
 const forbiddenContent = [
   '@floegence/ghostty-web',
@@ -101,6 +101,8 @@ try {
 
   for (const [name, value] of Object.entries({
     RendererSurface: semantic.RendererSurface,
+    HistorySearchController: semantic.HistorySearchController,
+    HistoryViewportController: semantic.HistoryViewportController,
     TerminalInputBridge: semantic.TerminalInputBridge,
     validatePresentation: semantic.validatePresentation,
     createSemanticTerminalLiveTransport: live.createSemanticTerminalLiveTransport,
@@ -115,6 +117,8 @@ try {
 
   await writeFile(path.join(installRoot, 'semantic-consumer.mts'), `
 import {
+  HistorySearchController,
+  HistoryViewportController,
   RendererSurface,
   TerminalInputBridge,
   type TerminalKeyInputIntent,
@@ -124,7 +128,7 @@ import {
 } from '@floegence/floeterm-terminal-web/semantic';
 import { createSemanticTerminalLiveTransport } from '@floegence/floeterm-terminal-web/live';
 import { TerminalSessionsCoordinator } from '@floegence/floeterm-terminal-web/sessions';
-void [RendererSurface, TerminalInputBridge, createSemanticTerminalLiveTransport, TerminalSessionsCoordinator];
+void [HistorySearchController, HistoryViewportController, RendererSurface, TerminalInputBridge, createSemanticTerminalLiveTransport, TerminalSessionsCoordinator];
 const presentation = {} as SemanticPresentation;
 const cursorRect = {} as SemanticTerminalCursorRect;
 const palette = {} as SemanticTerminalPalette;

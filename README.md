@@ -60,8 +60,8 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.11.0
-npm install @floegence/floeterm-terminal-web@0.16.0
+go get github.com/floegence/floeterm/terminal-go@v0.11.1
+npm install @floegence/floeterm-terminal-web@0.16.1
 ```
 
 ## Browser Integration
@@ -72,6 +72,7 @@ need:
 ```ts
 import {
   RendererSurface,
+  HistorySearchController,
   HistoryViewportController,
   TerminalInputBridge,
   getThemeColors,
@@ -96,8 +97,14 @@ const history = new HistoryViewportController({
   request: request => bundle.transport.semanticHistory(sessionId, request),
 });
 
+const historySearch = new HistorySearchController({
+  request: request => bundle.transport.semanticHistory(sessionId, request),
+});
+
 const unsubscribe = bundle.eventSource.onTerminalPresentation(sessionId, value => {
-  history.apply(validatePresentation(value));
+  const presentation = validatePresentation(value);
+  history.apply(presentation);
+  historySearch.apply(presentation);
 });
 
 // Invoke only for a real pointer/keyboard activation, before its input write.

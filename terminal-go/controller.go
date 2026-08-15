@@ -201,7 +201,7 @@ func (s *Session) AttachSemanticView(attachmentID, principalID string, generatio
 	actor := s.semanticActor
 	s.mu.Unlock()
 	if replaced && previous.TransportGeneration != generation && actor != nil {
-		actor.ReleaseHistory(semanticHistoryViewID(attachmentID, previous.TransportGeneration))
+		releaseSemanticHistoryViews(actor, attachmentID, previous.TransportGeneration)
 	}
 	return nil
 }
@@ -232,7 +232,7 @@ func (s *Session) LogicalDetachSemanticView(attachmentID string, generation uint
 	subscribers := s.liveSubscribersLocked()
 	s.mu.Unlock()
 	if actor != nil {
-		actor.ReleaseHistory(semanticHistoryViewID(attachmentID, generation))
+		releaseSemanticHistoryViews(actor, attachmentID, generation)
 	}
 	if controllerChanged {
 		s.broadcastController(controller, subscribers)
@@ -240,8 +240,13 @@ func (s *Session) LogicalDetachSemanticView(attachmentID string, generation uint
 	return true
 }
 
-func semanticHistoryViewID(attachmentID string, generation uint64) string {
-	return fmt.Sprintf("%s/%d", attachmentID, generation)
+func semanticHistoryViewID(attachmentID string, generation uint64, lane SemanticHistoryLane) string {
+	return fmt.Sprintf("%s/%d/%s", attachmentID, generation, normalizeSemanticHistoryLane(lane))
+}
+
+func releaseSemanticHistoryViews(actor *SessionActor, attachmentID string, generation uint64) {
+	actor.ReleaseHistory(semanticHistoryViewID(attachmentID, generation, HistoryViewportLane))
+	actor.ReleaseHistory(semanticHistoryViewID(attachmentID, generation, HistorySearchLane))
 }
 
 // ReadSemanticHistory validates the current transport and enters the same
@@ -252,18 +257,30 @@ func (s *Session) ReadSemanticHistory(attachmentID string, generation uint64, re
 		return SemanticHistoryChunk{}, ErrControllerTransport
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	attachment, ok := s.semanticAttachments[attachmentID]
 	if !ok || attachment.TransportGeneration != generation {
+		s.mu.Unlock()
 		return SemanticHistoryChunk{}, ErrControllerTransport
 	}
 	if s.closed || s.semanticActor == nil {
+		s.mu.Unlock()
 		return SemanticHistoryChunk{}, errSessionClosed
 	}
-	request.ViewID = semanticHistoryViewID(attachmentID, generation)
-	chunk, err := s.semanticActor.ReadHistory(request)
+	actor := s.semanticActor
+	request.Lane = normalizeSemanticHistoryLane(request.Lane)
+	request.ViewID = semanticHistoryViewID(attachmentID, generation, request.Lane)
+	s.mu.Unlock()
+
+	chunk, err := actor.ReadHistory(request)
 	if err != nil {
 		return SemanticHistoryChunk{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attachment, ok = s.semanticAttachments[attachmentID]
+	if s.closed || s.semanticActor != actor || !ok || attachment.TransportGeneration != generation {
+		actor.ReleaseHistory(request.ViewID)
+		return SemanticHistoryChunk{}, ErrControllerTransport
 	}
 	chunk.TransportGeneration = generation
 	return chunk, nil

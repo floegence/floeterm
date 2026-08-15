@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/creack/pty"
@@ -316,6 +317,45 @@ func TestRealNativeActorClearResetsScreenHistoryAndGraphics(t *testing.T) {
 				t.Fatalf("clear retained cell text %q", cell.Text)
 			}
 		}
+	}
+}
+
+func TestRealNativeHistoryFrontierSupportsDirectSeekWhileLiveOutputAdvances(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(20, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor, err := NewSessionActor(engine, 20, 4, NewPresentationStore(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer actor.Close()
+	var initial strings.Builder
+	for index := 0; index < 100; index++ {
+		fmt.Fprintf(&initial, "NATIVE_HISTORY_%03d\r\n", index)
+	}
+	if _, err := actor.ApplyPTYOutput([]byte(initial.String())); err != nil {
+		t.Fatal(err)
+	}
+	first, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "native/viewport", Direction: HistoryEnd, ViewportRows: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := actor.ApplyPTYOutput([]byte("NATIVE_HISTORY_100\r\nNATIVE_HISTORY_101\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	target := max(0, first.Offset-20)
+	second, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "native/viewport", Anchor: first.Anchor, SnapshotID: first.SnapshotID,
+		Direction: HistoryBackward, Offset: first.Offset, TargetOffset: &target, ViewportRows: 4,
+	})
+	if err != nil {
+		t.Fatalf("native history seek after live output: %v", err)
+	}
+	if second.Offset != target || second.Revision <= first.Revision || second.Rows != 4 {
+		t.Fatalf("native history first=%+v second=%+v", first, second)
 	}
 }
 

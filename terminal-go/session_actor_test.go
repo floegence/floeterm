@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type fakeSemanticEngine struct {
@@ -21,16 +23,21 @@ type fakeSemanticEngine struct {
 }
 
 type fakeHistoryAnchor struct {
-	row    int
-	closed bool
+	row        int
+	closed     bool
+	closeCount int
 }
 
-func (a *fakeHistoryAnchor) Close() { a.closed = true }
+func (a *fakeHistoryAnchor) Close() {
+	a.closeCount++
+	a.closed = true
+}
 
 type fakeSemanticHistoryEngine struct {
 	fakeSemanticEngine
-	totalRows int
-	anchors   []*fakeHistoryAnchor
+	totalRows    int
+	anchors      []*fakeHistoryAnchor
+	anchorRowErr error
 }
 
 func (e *fakeSemanticHistoryEngine) TrackHistoryCell(_ int, row int) (SemanticHistoryAnchor, error) {
@@ -45,6 +52,9 @@ func (e *fakeSemanticHistoryEngine) TrackHistoryCell(_ int, row int) (SemanticHi
 
 func (e *fakeSemanticHistoryEngine) HistoryAnchorScreenRow(anchor SemanticHistoryAnchor) (int, AnchorStatus, error) {
 	e.calls = append(e.calls, "history-anchor-row")
+	if e.anchorRowErr != nil {
+		return 0, AnchorInvalid, e.anchorRowErr
+	}
 	tracked, ok := anchor.(*fakeHistoryAnchor)
 	if !ok || tracked.closed {
 		return 0, AnchorInvalid, nil
@@ -353,7 +363,7 @@ func TestSessionActorReadsOwnedSemanticHistoryWithoutMovingPresentation(t *testi
 	}
 
 	next, err := actor.ReadHistory(SemanticHistoryRequest{
-		ViewID: "view-a", Anchor: page.Anchor, Direction: HistoryForward,
+		ViewID: "view-a", Anchor: page.Anchor, SnapshotID: page.SnapshotID, Direction: HistoryForward,
 		Offset: page.Offset, ScrollDeltaRows: 3, ViewportRows: 3,
 	})
 	if err != nil {
@@ -362,7 +372,7 @@ func TestSessionActorReadsOwnedSemanticHistoryWithoutMovingPresentation(t *testi
 	if historyChunkFirstText(t, next) != "row-3" || !next.HasPrevious || !next.HasNext {
 		t.Fatalf("next history page=%+v", next)
 	}
-	if got := strings.Join(engine.calls[len(engine.calls)-4:], ","); got != "history-total,history-anchor-row,history-track,history-read" {
+	if got := strings.Join(engine.calls[len(engine.calls)-5:], ","); got != "history-total,history-anchor-row,history-track,history-read,history-anchor-row" {
 		t.Fatalf("history actor order=%v", engine.calls)
 	}
 }
@@ -403,9 +413,9 @@ func TestSessionActorReleasesSupersededHistoryAnchorsAndRejectsStaleTokens(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	frontierAnchors := append([]*fakeHistoryAnchor(nil), engine.anchors[:3]...)
+	frontierAnchors := append([]*fakeHistoryAnchor(nil), engine.anchors[:1]...)
 	second, err := actor.ReadHistory(SemanticHistoryRequest{
-		ViewID: "view-a", Anchor: first.Anchor, Direction: HistoryBackward,
+		ViewID: "view-a", Anchor: first.Anchor, SnapshotID: first.SnapshotID, Direction: HistoryBackward,
 		Offset: first.Offset, ScrollDeltaRows: 3, ViewportRows: 3,
 	})
 	if err != nil {
@@ -428,7 +438,7 @@ func TestSessionActorReleasesSupersededHistoryAnchorsAndRejectsStaleTokens(t *te
 		}
 	}
 	if _, err := actor.ReadHistory(SemanticHistoryRequest{
-		ViewID: "view-a", Anchor: first.Anchor, Direction: HistoryForward,
+		ViewID: "view-a", Anchor: first.Anchor, SnapshotID: first.SnapshotID, Direction: HistoryForward,
 		Offset: first.Offset, ScrollDeltaRows: 3, ViewportRows: 3,
 	}); !errors.Is(err, ErrSemanticHistoryAnchor) {
 		t.Fatalf("stale anchor error=%v", err)
@@ -438,6 +448,48 @@ func TestSessionActorReleasesSupersededHistoryAnchorsAndRejectsStaleTokens(t *te
 		if !anchor.closed {
 			t.Fatal("released view retained a native history anchor")
 		}
+	}
+}
+
+func TestSessionActorReleasesViewOnFrontierRowFailure(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 9}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view/failure", Direction: HistoryEnd, ViewportRows: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frontier := engine.anchors[0]
+	engine.anchorRowErr = errors.New("frontier row failed")
+	if _, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/failure", Anchor: first.Anchor, SnapshotID: first.SnapshotID, Direction: HistoryBackward,
+		Offset: first.Offset, ScrollDeltaRows: 1, ViewportRows: 3,
+	}); err == nil || !strings.Contains(err.Error(), "frontier row failed") {
+		t.Fatalf("frontier row error=%v", err)
+	}
+	if !frontier.closed {
+		t.Fatal("frontier row failure retained native anchor")
+	}
+	if frontier.closeCount != 1 {
+		t.Fatalf("frontier row failure close count=%d, want one", frontier.closeCount)
+	}
+	actor.mu.Lock()
+	_, retained := actor.historyViews["view/failure"]
+	actor.mu.Unlock()
+	if retained {
+		t.Fatal("frontier row failure retained snapshot payload or view entry")
+	}
+	if _, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/failure", Anchor: first.Anchor, SnapshotID: first.SnapshotID, Direction: HistoryBackward,
+		Offset: first.Offset, ScrollDeltaRows: 1, ViewportRows: 3,
+	}); !errors.Is(err, ErrSemanticHistoryAnchor) {
+		t.Fatalf("repeated released frontier error=%v", err)
+	}
+	if frontier.closeCount != 1 {
+		t.Fatalf("repeated failure closed frontier %d times", frontier.closeCount)
 	}
 }
 
@@ -453,5 +505,156 @@ func TestSessionActorBoundsSemanticHistoryRequests(t *testing.T) {
 		if _, err := actor.ReadHistory(request); err == nil {
 			t.Fatalf("request %+v unexpectedly succeeded", request)
 		}
+	}
+}
+
+func TestSessionActorHistoryEncodingDoesNotBlockPTYOutput(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 8}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	actor.historyEncoder = func(frame SemanticFrame) ([]byte, string, error) {
+		close(started)
+		<-release
+		return encodeSemanticHistoryFrame(frame)
+	}
+	historyDone := make(chan error, 1)
+	go func() {
+		_, readErr := actor.ReadHistory(SemanticHistoryRequest{
+			ViewID: "view/slow", Direction: HistoryStart, ViewportRows: 3,
+		})
+		historyDone <- readErr
+	}()
+	<-started
+	outputDone := make(chan error, 1)
+	go func() {
+		_, outputErr := actor.ApplyPTYOutput([]byte("live while history encodes"))
+		outputDone <- outputErr
+	}()
+	select {
+	case outputErr := <-outputDone:
+		if outputErr != nil {
+			t.Fatal(outputErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PTY output was blocked by semantic history encoding")
+	}
+	close(release)
+	if readErr := <-historyDone; readErr != nil {
+		t.Fatalf("slow encoded immutable snapshot error=%v", readErr)
+	}
+}
+
+func TestSessionActorHistoryEncodingFailureReleasesSnapshotAndNativeFrontier(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 8}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor.historyEncoder = func(SemanticFrame) ([]byte, string, error) {
+		return nil, "", ErrPresentationBackpressure
+	}
+	if _, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/encode-failure", Direction: HistoryStart, ViewportRows: 3,
+	}); !errors.Is(err, ErrPresentationBackpressure) {
+		t.Fatalf("history encoding error=%v", err)
+	}
+	actor.mu.Lock()
+	views := len(actor.historyViews)
+	actor.mu.Unlock()
+	if views != 0 {
+		t.Fatal("history encoding failure retained a view or payload")
+	}
+	for _, anchor := range engine.anchors {
+		if !anchor.closed {
+			t.Fatal("history encoding failure retained a native anchor")
+		}
+	}
+}
+
+func TestSessionActorDropsEncodedSnapshotAfterViewRelease(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 8}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	actor.historyEncoder = func(frame SemanticFrame) ([]byte, string, error) {
+		close(started)
+		<-release
+		return encodeSemanticHistoryFrame(frame)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, readErr := actor.ReadHistory(SemanticHistoryRequest{
+			ViewID: "view/released", Direction: HistoryStart, ViewportRows: 3,
+		})
+		done <- readErr
+	}()
+	<-started
+	actor.ReleaseHistory("view/released")
+	close(release)
+	if readErr := <-done; !errors.Is(readErr, ErrSemanticHistorySuperseded) {
+		t.Fatalf("released snapshot error=%v, want superseded", readErr)
+	}
+	actor.mu.Lock()
+	defer actor.mu.Unlock()
+	if len(actor.historyViews) != 0 {
+		t.Fatalf("released snapshot republished history view: %+v", actor.historyViews)
+	}
+	for _, anchor := range engine.anchors {
+		if !anchor.closed {
+			t.Fatal("released snapshot retained a native anchor")
+		}
+	}
+}
+
+func TestSessionActorDropsEncodedSnapshotSupersededByNewerRequest(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 12}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var encodeCalls atomic.Int32
+	actor.historyEncoder = func(frame SemanticFrame) ([]byte, string, error) {
+		if encodeCalls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return encodeSemanticHistoryFrame(frame)
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, readErr := actor.ReadHistory(SemanticHistoryRequest{
+			ViewID: "view/newer", Direction: HistoryStart, ViewportRows: 3,
+		})
+		firstDone <- readErr
+	}()
+	<-started
+	newer, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/newer", Direction: HistoryEnd, ViewportRows: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if readErr := <-firstDone; !errors.Is(readErr, ErrSemanticHistorySuperseded) {
+		t.Fatalf("superseded encoded snapshot error=%v", readErr)
+	}
+	actor.mu.Lock()
+	current := actor.historyViews["view/newer"]
+	actor.mu.Unlock()
+	if current.snapshot.id != newer.SnapshotID || current.snapshot.offset != newer.Offset {
+		t.Fatalf("older encoding replaced newer snapshot: current=%+v newer=%+v", current.snapshot, newer)
 	}
 }

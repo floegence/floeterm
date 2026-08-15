@@ -23,17 +23,55 @@ export type SemanticPresentation = {
 };
 
 export type SemanticHistoryDirection = 'start' | 'end' | 'forward' | 'backward';
+export type SemanticHistoryLane = 'viewport' | 'search';
+
+export type SemanticHistoryErrorKind =
+  | 'anchor_invalid'
+  | 'transport_stale'
+  | 'session_detached'
+  | 'attachment_invalid'
+  | 'snapshot_superseded'
+  | 'malformed_snapshot';
+
+export class SemanticHistoryError extends Error {
+  readonly kind: SemanticHistoryErrorKind;
+
+  constructor(kind: SemanticHistoryErrorKind, message: string, options?: { cause?: unknown }) {
+    super(message);
+    this.name = 'SemanticHistoryError';
+    this.kind = kind;
+    if (options && 'cause' in options) (this as Error & { cause?: unknown }).cause = options.cause;
+  }
+}
+
+export function isStructuralSemanticHistoryError(error: unknown): error is SemanticHistoryError {
+  return error instanceof SemanticHistoryError && (
+    error.kind === 'anchor_invalid'
+    || error.kind === 'transport_stale'
+    || error.kind === 'session_detached'
+    || error.kind === 'attachment_invalid'
+    || error.kind === 'snapshot_superseded'
+  );
+}
+
 export type SemanticHistoryRequest = Readonly<{
+  lane?: SemanticHistoryLane;
   anchor?: string;
+  snapshotId?: string;
   direction: SemanticHistoryDirection;
   offset?: number;
   scrollDeltaRows?: number;
+  targetOffset?: number;
   viewportRows: number;
 }>;
-export type SemanticHistoryChunkRequest = SemanticHistoryRequest | Readonly<{ continuation: string }>;
+export type SemanticHistoryChunkRequest = SemanticHistoryRequest | Readonly<{
+  continuation: string;
+  lane?: SemanticHistoryLane;
+}>;
 export type SemanticHistoryChunk = Readonly<{
   snapshotId: string;
   continuation?: string;
+  lane?: SemanticHistoryLane;
   chunkIndex: number;
   chunkCount: number;
   payloadBytes: number;
@@ -57,6 +95,7 @@ export type SemanticHistoryChunk = Readonly<{
 }>;
 export type SemanticHistoryViewport = Readonly<{
   snapshotId: string;
+  lane?: SemanticHistoryLane;
   revision: number;
   transportGeneration: number;
   contentEpoch: number;
@@ -98,6 +137,11 @@ export function presentationAdvances(
 
 const MAX_COLS = 1000;
 const MAX_ROWS = 1000;
+export const SEMANTIC_HISTORY_MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024;
+export const SEMANTIC_HISTORY_MAX_CHUNK_BYTES = 60 * 1024;
+export const SEMANTIC_HISTORY_MAX_CHUNKS = Math.ceil(
+  SEMANTIC_HISTORY_MAX_SNAPSHOT_BYTES / SEMANTIC_HISTORY_MAX_CHUNK_BYTES,
+);
 
 export function validatePresentation(value: unknown): SemanticPresentation {
   if (typeof value !== 'object' || value === null) throw new Error('invalid terminal presentation');
@@ -160,7 +204,7 @@ export function validateHistoryChunk(value: unknown): SemanticHistoryChunk {
   if (typeof value !== 'object' || value === null) throw new Error('invalid semantic history chunk');
   const wire = value as any;
   const payload = decodeHistoryPayload(wire.payload);
-  const chunk = { ...wire, payload } as SemanticHistoryChunk;
+  const chunk = { ...wire, lane: wire.lane ?? 'viewport', payload } as SemanticHistoryChunk;
   for (const identifier of [chunk.snapshotId, chunk.anchor, chunk.firstAvailable, chunk.lastAvailable, chunk.screenStart]) {
     if (typeof identifier !== 'string' || identifier.length === 0 || identifier.length > 192) {
       throw new Error('invalid semantic history anchor');
@@ -168,6 +212,9 @@ export function validateHistoryChunk(value: unknown): SemanticHistoryChunk {
   }
   if (chunk.continuation !== undefined && (typeof chunk.continuation !== 'string' || chunk.continuation.length === 0 || chunk.continuation.length > 192)) {
     throw new Error('invalid semantic history continuation');
+  }
+  if (chunk.lane !== 'viewport' && chunk.lane !== 'search') {
+    throw new Error('invalid semantic history lane');
   }
   for (const [name, number] of Object.entries({
     revision: chunk.revision,
@@ -187,9 +234,9 @@ export function validateHistoryChunk(value: unknown): SemanticHistoryChunk {
   }
   if (chunk.transportGeneration <= 0 || chunk.geometryGeneration <= 0
     || chunk.cols <= 0 || chunk.cols > MAX_COLS || chunk.rows <= 0 || chunk.rows > MAX_ROWS
-    || chunk.chunkCount <= 0 || chunk.chunkIndex >= chunk.chunkCount
-    || chunk.payloadBytes <= 0 || chunk.payloadBytes > 16 * 1024 * 1024
-    || payload.byteLength <= 0 || payload.byteLength > 60 * 1024
+    || chunk.chunkCount <= 0 || chunk.chunkCount > SEMANTIC_HISTORY_MAX_CHUNKS || chunk.chunkIndex >= chunk.chunkCount
+    || chunk.payloadBytes <= 0 || chunk.payloadBytes > SEMANTIC_HISTORY_MAX_SNAPSHOT_BYTES
+    || payload.byteLength <= 0 || payload.byteLength > SEMANTIC_HISTORY_MAX_CHUNK_BYTES
     || typeof chunk.payloadSha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(chunk.payloadSha256)) {
     throw new Error('invalid semantic history chunk metadata');
   }
@@ -207,15 +254,19 @@ export function validateHistoryChunk(value: unknown): SemanticHistoryChunk {
 export async function assembleHistoryViewport(chunks: readonly SemanticHistoryChunk[]): Promise<SemanticHistoryViewport> {
   if (chunks.length === 0) throw new Error('semantic history snapshot has no chunks');
   const first = chunks[0]!;
-  if (chunks.length !== first.chunkCount) throw new Error('semantic history snapshot is incomplete');
+  if (first.chunkIndex !== 0 || first.chunkCount > SEMANTIC_HISTORY_MAX_CHUNKS || chunks.length !== first.chunkCount) throw new Error('semantic history snapshot is incomplete');
   const signature = historyChunkSignature(first);
   let size = 0;
+  const continuations = new Set<string>();
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index]!;
     if (chunk.chunkIndex !== index || historyChunkSignature(chunk) !== signature) {
       throw new Error('semantic history snapshot chunks do not match');
     }
+    if (chunk.continuation && continuations.has(chunk.continuation)) throw new Error('semantic history snapshot continuation repeated');
+    if (chunk.continuation) continuations.add(chunk.continuation);
     size += chunk.payload.byteLength;
+    if (size > SEMANTIC_HISTORY_MAX_SNAPSHOT_BYTES || size > first.payloadBytes) throw new Error('semantic history snapshot exceeds its declared size');
   }
   if (size !== first.payloadBytes) throw new Error('semantic history snapshot size does not match');
   const payload = new Uint8Array(size);
@@ -230,6 +281,7 @@ export async function assembleHistoryViewport(chunks: readonly SemanticHistoryCh
   if (decoded?.v !== 1) throw new Error('invalid semantic history snapshot wire');
   return validateHistoryViewport({
     snapshotId: first.snapshotId,
+    lane: first.lane,
     revision: first.revision,
     transportGeneration: first.transportGeneration,
     contentEpoch: first.contentEpoch,
@@ -251,7 +303,11 @@ export async function assembleHistoryViewport(chunks: readonly SemanticHistoryCh
 
 export function validateHistoryViewport(value: unknown): SemanticHistoryViewport {
   if (typeof value !== 'object' || value === null) throw new Error('invalid semantic history viewport');
-  const viewport = value as SemanticHistoryViewport;
+  const wire = value as SemanticHistoryViewport;
+  const viewport = { ...wire, lane: wire.lane ?? 'viewport' } as SemanticHistoryViewport;
+  if (viewport.lane !== 'viewport' && viewport.lane !== 'search') {
+    throw new Error('invalid semantic history viewport lane');
+  }
   for (const identifier of [viewport.snapshotId, viewport.anchor, viewport.firstAvailable, viewport.lastAvailable, viewport.screenStart]) {
     if (typeof identifier !== 'string' || identifier.length === 0 || identifier.length > 192) {
       throw new Error('invalid semantic history viewport anchor');
@@ -291,8 +347,15 @@ export function validateHistoryViewport(value: unknown): SemanticHistoryViewport
 }
 
 function decodeHistoryPayload(value: unknown): Uint8Array {
-  if (value instanceof Uint8Array) return value.slice();
+  if (value instanceof Uint8Array) {
+    if (value.byteLength === 0 || value.byteLength > SEMANTIC_HISTORY_MAX_CHUNK_BYTES) {
+      throw new Error('invalid semantic history chunk payload');
+    }
+    return value.slice();
+  }
   if (typeof value !== 'string' || value.length === 0) throw new Error('invalid semantic history chunk payload');
+  const maxBase64Length = Math.ceil(SEMANTIC_HISTORY_MAX_CHUNK_BYTES / 3) * 4;
+  if (value.length > maxBase64Length) throw new Error('invalid semantic history chunk payload');
   try {
     if (typeof globalThis.atob === 'function') {
       const decoded = globalThis.atob(value);
@@ -306,7 +369,7 @@ function decodeHistoryPayload(value: unknown): Uint8Array {
 
 function historyChunkSignature(chunk: SemanticHistoryChunk): string {
   return JSON.stringify([
-    chunk.snapshotId, chunk.chunkCount, chunk.payloadBytes, chunk.payloadSha256,
+    chunk.snapshotId, chunk.lane ?? 'viewport', chunk.chunkCount, chunk.payloadBytes, chunk.payloadSha256,
     chunk.revision, chunk.transportGeneration, chunk.contentEpoch, chunk.geometryGeneration,
     chunk.cols, chunk.rows, chunk.anchor, chunk.firstAvailable, chunk.lastAvailable,
     chunk.screenStart, chunk.offset, chunk.totalRows, chunk.screenStartOffset,

@@ -4,6 +4,12 @@ import type {
   SemanticHistoryViewport,
   SemanticPresentation,
 } from './presentation.js';
+import {
+  isStructuralSemanticHistoryError,
+  SemanticHistoryError,
+  validateHistoryViewport,
+} from './presentation.js';
+import { runSemanticHistoryRequest } from './historyRequestScheduler.js';
 
 export type HistoryViewportState = Readonly<{
   browsing: boolean;
@@ -14,6 +20,13 @@ export type HistoryViewportState = Readonly<{
   error: Error | null;
 }>;
 
+export type HistoryViewportCacheMetrics = Readonly<{
+  entries: number;
+  bytes: number;
+  extraBytes: number;
+  extraCells: number;
+}>;
+
 export type HistoryViewportControllerOptions = Readonly<{
   renderer: Pick<RendererSurface, 'apply' | 'project' | 'getCellMetrics'>;
   request: (request: SemanticHistoryRequest) => Promise<SemanticHistoryViewport>;
@@ -22,29 +35,74 @@ export type HistoryViewportControllerOptions = Readonly<{
   cancelAnimationFrame?: (handle: number) => void;
 }>;
 
-type CachedViewport = Readonly<{ viewport: SemanticHistoryViewport; touched: number }>;
+type CachedViewport = Readonly<{
+  viewport: SemanticHistoryViewport;
+  touched: number;
+  bytes: number;
+  cells: number;
+}>;
+const MAX_HISTORY_CACHE_BYTES = 4 * 1024 * 1024;
+const MAX_GLOBAL_HISTORY_CACHE_BYTES = 16 * 1024 * 1024;
 
-const globalHistoryRequests = new class {
-  private active = 0;
-  private readonly waiting: Array<() => void> = [];
+type GlobalCacheEntry = Readonly<{
+  owner: number;
+  key: string;
+  bytes: number;
+  touched: number;
+  hidden: () => boolean;
+  evictable: () => boolean;
+  evict: () => void;
+}>;
 
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.active >= 2) await new Promise<void>(resolve => this.waiting.push(resolve));
-    this.active += 1;
-    try {
-      return await operation();
-    } finally {
-      this.active -= 1;
-      this.waiting.shift()?.();
+const globalHistoryCache = new class {
+  private readonly entries = new Map<string, GlobalCacheEntry>();
+  private nextOwner = 0;
+
+  owner(): number {
+    this.nextOwner += 1;
+    return this.nextOwner;
+  }
+
+  put(entry: GlobalCacheEntry): void {
+    this.entries.set(this.entryKey(entry.owner, entry.key), entry);
+    this.enforce();
+  }
+
+  remove(owner: number, key: string): void {
+    this.entries.delete(this.entryKey(owner, key));
+  }
+
+  clear(owner: number): void {
+    for (const [key, entry] of this.entries) {
+      if (entry.owner === owner) this.entries.delete(key);
     }
+  }
+
+  private enforce(): void {
+    let total = [...this.entries.values()].reduce((sum, entry) => sum + entry.bytes, 0);
+    while (total > MAX_GLOBAL_HISTORY_CACHE_BYTES) {
+      const candidate = [...this.entries.values()]
+        .filter(entry => entry.evictable())
+        .sort((left, right) => Number(right.hidden()) - Number(left.hidden()) || left.touched - right.touched)[0];
+      if (!candidate) return;
+      candidate.evict();
+      total = [...this.entries.values()].reduce((sum, entry) => sum + entry.bytes, 0);
+    }
+  }
+
+  private entryKey(owner: number, key: string): string {
+    return `${owner}:${key}`;
   }
 }();
 
 export class HistoryViewportController {
+  private readonly cacheOwner = globalHistoryCache.owner();
   private latest: SemanticPresentation | null = null;
   private visible: SemanticHistoryViewport | null = null;
   private frontier: SemanticHistoryViewport | null = null;
-  private readonly cache = new Map<number, CachedViewport>();
+  private readonly cache = new Map<string, CachedViewport>();
+  private cacheBytes = 0;
+  private historyAnchor: string | null = null;
   private desiredOffset: number | null = null;
   private prefetchOffset: number | null = null;
   private lane: Promise<void> | null = null;
@@ -79,7 +137,7 @@ export class HistoryViewportController {
     );
     this.latest = presentation;
     this.options.renderer.apply(presentation);
-    if (invalidated) this.resetHistory(false);
+    if (invalidated) this.resetHistory(true);
     this.emitState();
   }
 
@@ -123,6 +181,9 @@ export class HistoryViewportController {
     this.desiredOffset = null;
     this.prefetchOffset = null;
     this.visible = null;
+    this.frontier = null;
+    this.clearCache();
+    this.historyAnchor = null;
     this.error = null;
     this.options.renderer.project(null);
     this.emitState();
@@ -135,11 +196,10 @@ export class HistoryViewportController {
       this.showLatest();
       return;
     }
-    const cached = this.cache.get(target)?.viewport;
+    const cached = this.findCachedViewport(target);
     if (cached && this.isCompatible(cached)) {
       this.desiredOffset = null;
       this.display(cached);
-      this.schedulePrefetch(cached);
       return;
     }
     this.desiredOffset = target;
@@ -151,7 +211,10 @@ export class HistoryViewportController {
   setVisible(visible: boolean): void {
     if (this.disposed || this.viewVisible === visible) return;
     this.viewVisible = visible;
-    if (!visible) this.prefetchOffset = null;
+    if (!visible) {
+      this.prefetchOffset = null;
+      this.evictCache(true);
+    }
     else if (this.visible) this.schedulePrefetch(this.visible);
   }
 
@@ -186,13 +249,42 @@ export class HistoryViewportController {
     return this.visible;
   }
 
+  showViewport(viewport: SemanticHistoryViewport): void {
+    if (this.disposed) return;
+    viewport = validateHistoryViewport(viewport);
+    this.assertTransportGeneration(viewport);
+    if (!this.latest
+      || viewport.contentEpoch !== (this.latest.state.contentEpoch ?? 0)
+      || viewport.geometryGeneration !== this.latest.geometry.generation
+      || viewport.cols !== this.latest.geometry.cols
+      || viewport.rows !== this.latest.geometry.rows) {
+      throw new SemanticHistoryError('snapshot_superseded', 'semantic history viewport does not match the live surface');
+    }
+    this.desiredOffset = null;
+    this.prefetchOffset = null;
+    this.frontier = null;
+    this.clearCache();
+    this.historyAnchor = null;
+    this.visible = viewport;
+    this.error = null;
+    this.options.renderer.project(viewport.frame);
+    this.emitState();
+  }
+
+  getCacheMetrics(): HistoryViewportCacheMetrics {
+    const extras = [...this.cache.values()].filter(item => item.viewport !== this.visible);
+    const extraBytes = extras.reduce((sum, item) => sum + item.bytes, 0);
+    const extraCells = extras.reduce((sum, item) => sum + item.cells, 0);
+    return Object.freeze({ entries: this.cache.size, bytes: this.cacheBytes, extraBytes, extraCells });
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.epoch += 1;
     if (this.wheelFrame !== null) this.cancelFrame(this.wheelFrame);
     this.wheelFrame = null;
-    this.cache.clear();
+    this.clearCache();
     this.visible = null;
     this.frontier = null;
     this.desiredOffset = null;
@@ -218,7 +310,7 @@ export class HistoryViewportController {
         activeWasPrefetch = isPrefetch;
         if (target === null) return;
         if (isPrefetch) this.prefetchOffset = null;
-        const cached = this.cache.get(target)?.viewport;
+        const cached = this.findCachedViewport(target);
         if (cached && this.isCompatible(cached)) {
           if (!isPrefetch && this.desiredOffset === target) {
             this.desiredOffset = null;
@@ -243,7 +335,7 @@ export class HistoryViewportController {
       this.desiredOffset = null;
       this.prefetchOffset = null;
       if (activeWasPrefetch) this.error = null;
-      else if (isStructuralInvalidation(this.error)) this.resetHistory(false);
+      else if (isStructuralSemanticHistoryError(this.error)) this.resetHistory(true, this.error);
     }
   }
 
@@ -252,66 +344,68 @@ export class HistoryViewportController {
     const rows = this.latest.geometry.rows;
     let frontier = this.frontier;
     if (!frontier || !this.isCompatible(frontier)) {
-      frontier = await globalHistoryRequests.run(() => this.options.request({
+      frontier = validateHistoryViewport(await runSemanticHistoryRequest(() => this.options.request({
+        lane: 'viewport',
         direction: target === 0 ? 'start' : 'end',
         viewportRows: rows,
-      }));
+      })));
       this.assertTransportGeneration(frontier);
+      this.acceptLineage(frontier, true);
     }
     let current = frontier;
     if (!current) throw new Error('terminal history frontier is unavailable');
-    let intended = target;
-    while (current.offset !== intended) {
-      if (this.desiredOffset !== null) intended = this.desiredOffset;
-      const direction: SemanticHistoryRequest['direction'] = intended < current.offset ? 'backward' : 'forward';
-      const scrollDeltaRows = Math.min(200, Math.abs(current.offset - intended));
-      const anchor = current.anchor;
-      const offset = current.offset;
-      const next = await globalHistoryRequests.run(() => this.options.request({
-        direction,
-        anchor,
-        offset,
-        scrollDeltaRows,
-        viewportRows: rows,
-      }));
-      this.assertTransportGeneration(next);
-      if (next.offset === offset || (direction === 'backward' && next.offset > offset)
-        || (direction === 'forward' && next.offset < offset)) {
-        throw new Error('semantic history request did not advance toward its target');
-      }
-      current = next;
+    const intended = this.desiredOffset ?? target;
+    if (current.offset === intended) return current;
+    const direction: SemanticHistoryRequest['direction'] = intended < current.offset ? 'backward' : 'forward';
+    const scrollDeltaRows = Math.abs(current.offset - intended);
+    if (scrollDeltaRows <= 0) return current;
+    const offset = current.offset;
+    const next = validateHistoryViewport(await runSemanticHistoryRequest(() => this.options.request({
+      lane: 'viewport',
+      direction,
+      anchor: current.anchor,
+      snapshotId: current.snapshotId,
+      offset,
+      targetOffset: intended,
+      viewportRows: rows,
+    })));
+    this.assertTransportGeneration(next);
+    this.acceptLineage(next);
+    if (next.offset === offset || (direction === 'backward' && next.offset > offset)
+      || (direction === 'forward' && next.offset < offset)) {
+      throw new SemanticHistoryError('malformed_snapshot', 'semantic history request did not advance toward its target');
     }
+    current = next;
     return current;
   }
 
   private display(viewport: SemanticHistoryViewport): void {
     this.visible = viewport;
     this.error = null;
-    this.touch += 1;
-    this.cache.set(viewport.offset, { viewport, touched: this.touch });
+    this.putCache(viewport);
     this.options.renderer.project(viewport.frame);
     this.evictCache();
     this.emitState();
   }
 
   private cacheViewport(viewport: SemanticHistoryViewport): void {
-    this.touch += 1;
-    this.cache.set(viewport.offset, { viewport, touched: this.touch });
+    this.putCache(viewport);
     this.evictCache();
   }
 
-  private evictCache(): void {
-    if (!this.latest) return;
-    const viewportCells = this.latest.geometry.cols * this.latest.geometry.rows;
-    const extraCells = Math.min(2 * viewportCells, 12_288);
-    const maxEntries = 1 + Math.floor(extraCells / viewportCells);
-    while (this.cache.size > maxEntries) {
+  private evictCache(dropHiddenExtras = false): void {
+    const viewportCells = this.latest ? this.latest.geometry.cols * this.latest.geometry.rows : 0;
+    const maxExtraCells = Math.min(2 * viewportCells, 12_288);
+    for (;;) {
       const candidates = [...this.cache.entries()]
-        .filter(([, item]) => item.viewport !== this.visible && item.viewport !== this.frontier)
+        .filter(([, item]) => item.viewport !== this.visible)
         .sort((left, right) => left[1].touched - right[1].touched);
+      const extraBytes = candidates.reduce((sum, candidate) => sum + candidate[1].bytes, 0);
+      const extraCells = candidates.reduce((sum, candidate) => sum + candidate[1].cells, 0);
+      if (!dropHiddenExtras && extraBytes <= MAX_HISTORY_CACHE_BYTES && extraCells <= maxExtraCells) break;
       const oldest = candidates[0];
       if (!oldest) break;
-      this.cache.delete(oldest[0]);
+      this.removeCacheEntry(oldest[0]);
     }
   }
 
@@ -319,7 +413,7 @@ export class HistoryViewportController {
     if (!this.viewVisible || this.lastDirection === 0) return;
     const rows = viewport.rows;
     const target = clamp(viewport.offset + this.lastDirection * rows, 0, viewport.screenStartOffset);
-    if (target === viewport.offset || this.cache.has(target)) return;
+    if (target === viewport.offset || this.findCachedViewport(target)) return;
     this.prefetchOffset = target;
     if (!this.lane) this.startLane();
   }
@@ -329,6 +423,8 @@ export class HistoryViewportController {
       && viewport.contentEpoch === (this.latest.state.contentEpoch ?? 0)
       && viewport.geometryGeneration === this.latest.geometry.generation
       && (this.transportGeneration === null || viewport.transportGeneration === this.transportGeneration)
+      && (viewport.lane ?? 'viewport') === 'viewport'
+      && (this.historyAnchor === null || viewport.anchor === this.historyAnchor)
       && viewport.cols === this.latest.geometry.cols
       && viewport.rows === this.latest.geometry.rows);
   }
@@ -339,20 +435,87 @@ export class HistoryViewportController {
       return;
     }
     if (viewport.transportGeneration !== this.transportGeneration) {
-      throw new Error('stale terminal transport generation');
+      throw new SemanticHistoryError('transport_stale', 'stale terminal transport generation');
     }
   }
 
-  private resetHistory(projectLatest: boolean): void {
+  private resetHistory(projectLatest: boolean, error: Error | null = null): void {
     this.epoch += 1;
-    this.cache.clear();
+    this.clearCache();
     this.frontier = null;
     this.visible = null;
     this.desiredOffset = null;
     this.prefetchOffset = null;
-    this.error = null;
+    this.historyAnchor = null;
+    this.error = error;
     if (projectLatest) this.options.renderer.project(null);
     this.emitState();
+  }
+
+  private findCachedViewport(offset: number): SemanticHistoryViewport | null {
+    for (const item of this.cache.values()) {
+      if (item.viewport.offset === offset && this.isCompatible(item.viewport)) return item.viewport;
+    }
+    return null;
+  }
+
+  private putCache(viewport: SemanticHistoryViewport): void {
+    if ((viewport.lane ?? 'viewport') !== 'viewport') {
+      throw new SemanticHistoryError('malformed_snapshot', 'semantic history viewport belongs to another lane');
+    }
+    if (this.historyAnchor !== null && viewport.anchor !== this.historyAnchor) {
+      throw new SemanticHistoryError('snapshot_superseded', 'semantic history viewport lineage changed');
+    }
+    if (this.historyAnchor === null) this.historyAnchor = viewport.anchor;
+    const key = `${viewport.snapshotId}:${viewport.offset}`;
+    const bytes = estimateViewportBytes(viewport);
+    const cells = viewport.cols * viewport.rows;
+    const previous = this.cache.get(key);
+    if (previous) this.cacheBytes -= previous.bytes;
+    this.touch += 1;
+    const item = { viewport, touched: this.touch, bytes, cells };
+    this.cache.set(key, item);
+    this.cacheBytes += bytes;
+    globalHistoryCache.put({
+      owner: this.cacheOwner,
+      key,
+      bytes,
+      touched: item.touched,
+      hidden: () => !this.viewVisible,
+      evictable: () => {
+        const current = this.cache.get(key)?.viewport;
+        return Boolean(current && current !== this.visible);
+      },
+      evict: () => this.removeCacheEntry(key),
+    });
+  }
+
+  private clearCache(): void {
+    this.cache.clear();
+    this.cacheBytes = 0;
+    globalHistoryCache.clear(this.cacheOwner);
+  }
+
+  private removeCacheEntry(key: string): void {
+    const item = this.cache.get(key);
+    if (!item) return;
+    this.cache.delete(key);
+    this.cacheBytes -= item.bytes;
+    if (this.frontier === item.viewport) this.frontier = null;
+    globalHistoryCache.remove(this.cacheOwner, key);
+  }
+
+  private acceptLineage(viewport: SemanticHistoryViewport, allowReplacement = false): void {
+    if ((viewport.lane ?? 'viewport') !== 'viewport') {
+      throw new SemanticHistoryError('malformed_snapshot', 'semantic history response belongs to another lane');
+    }
+    if (this.historyAnchor !== null && viewport.anchor !== this.historyAnchor) {
+      this.clearCache();
+      if (!allowReplacement) {
+        throw new SemanticHistoryError('snapshot_superseded', 'semantic history frontier changed');
+      }
+    }
+    this.historyAnchor = viewport.anchor;
   }
 
   private emitState(): void {
@@ -360,10 +523,14 @@ export class HistoryViewportController {
   }
 }
 
-function isStructuralInvalidation(error: Error): boolean {
-  return /anchor is invalid|stale terminal transport generation|session is not attached|attachment.*invalid/iu.test(error.message);
-}
-
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function estimateViewportBytes(viewport: SemanticHistoryViewport): number {
+  let bytes = 256;
+  for (const row of viewport.frame.rows) {
+    for (const cell of row.cells) bytes += 16 + cell.text.length * 2 + (cell.hyperlink?.length ?? 0) * 2;
+  }
+  return bytes;
 }

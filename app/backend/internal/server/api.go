@@ -92,10 +92,13 @@ type semanticHistoryRequest struct {
 	ConnectionID        string                            `json:"connectionId"`
 	TransportGeneration uint64                            `json:"transportGeneration"`
 	Continuation        string                            `json:"continuation,omitempty"`
+	Lane                terminal.SemanticHistoryLane      `json:"lane,omitempty"`
 	Anchor              string                            `json:"anchor,omitempty"`
+	SnapshotID          string                            `json:"snapshotId,omitempty"`
 	Direction           terminal.SemanticHistoryDirection `json:"direction,omitempty"`
 	Offset              int                               `json:"offset,omitempty"`
 	ScrollDeltaRows     int                               `json:"scrollDeltaRows,omitempty"`
+	TargetOffset        *int                              `json:"targetOffset,omitempty"`
 	ViewportRows        int                               `json:"viewportRows,omitempty"`
 }
 
@@ -323,14 +326,16 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		page, err := session.ReadSemanticHistory(request.ConnectionID, request.TransportGeneration, terminal.SemanticHistoryRequest{
-			Continuation: request.Continuation, Anchor: request.Anchor, Direction: request.Direction,
-			Offset: request.Offset, ScrollDeltaRows: request.ScrollDeltaRows, ViewportRows: request.ViewportRows,
+			Continuation: request.Continuation, Lane: request.Lane, Anchor: request.Anchor, SnapshotID: request.SnapshotID, Direction: request.Direction,
+			Offset: request.Offset, ScrollDeltaRows: request.ScrollDeltaRows, TargetOffset: request.TargetOffset, ViewportRows: request.ViewportRows,
 		})
 		if err != nil {
 			status := http.StatusConflict
 			if errors.Is(err, terminal.ErrControllerTransport) {
 				status = http.StatusGone
-			} else if !errors.Is(err, terminal.ErrSemanticHistoryAnchor) {
+			} else if errors.Is(err, terminal.ErrSemanticHistorySuperseded) {
+				status = http.StatusPreconditionFailed
+			} else if !errors.Is(err, terminal.ErrSemanticHistoryAnchor) && !errors.Is(err, terminal.ErrSemanticHistorySuperseded) {
 				status = http.StatusBadRequest
 			}
 			http.Error(w, err.Error(), status)

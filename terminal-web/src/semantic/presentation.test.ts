@@ -148,10 +148,12 @@ describe('semantic presentation', () => {
     expect(viewport.frame.rows[0]!.cells[0]!.text).toBe('A');
     expect(viewport.frame.height).toBe(1);
     expect(() => validateHistoryChunk({ ...chunk, anchor: '' })).toThrow(/anchor/);
+    expect(() => validateHistoryChunk({ ...chunk, payload: new Uint8Array(60 * 1024 + 1) })).toThrow(/payload/);
+    expect(() => validateHistoryChunk({ ...chunk, payload: 'A'.repeat(Math.ceil((60 * 1024) / 3) * 4 + 1) })).toThrow(/payload/);
   });
   it('rejects a complete snapshot whose frame is shorter than its canonical viewport', () => {
     const viewport = {
-      snapshotId: 'snapshot', revision: 4, transportGeneration: 2, contentEpoch: 0,
+      snapshotId: 'snapshot', lane: 'viewport', revision: 4, transportGeneration: 2, contentEpoch: 0,
       geometryGeneration: 1, cols: 2, rows: 2,
       anchor: 'page', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
       offset: 3, totalRows: 10, screenStartOffset: 8, hasPrevious: true, hasNext: true,

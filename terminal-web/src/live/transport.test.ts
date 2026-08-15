@@ -10,7 +10,10 @@ import {
   encodeControllerChanged,
 } from './codec.js';
 import type { TerminalByteStream } from './client.js';
-import { createSemanticTerminalLiveTransport } from './transport.js';
+import {
+  createSemanticTerminalLiveTransport,
+  type SemanticTerminalLiveControlPlane,
+} from './transport.js';
 
 class FakeStream implements TerminalByteStream {
   readonly writes: Uint8Array[] = [];
@@ -26,6 +29,35 @@ const waitUntil = async (predicate: () => boolean): Promise<void> => {
   for (let attempt = 0; attempt < 100; attempt += 1) { if (predicate()) return; await Promise.resolve(); }
   throw new Error('condition was not reached');
 };
+
+const attachHistoryTransport = async (
+  semanticHistory: SemanticTerminalLiveControlPlane['semanticHistory'],
+) => {
+  const streams: FakeStream[] = [];
+  const bundle = createSemanticTerminalLiveTransport({
+    connectionId: 'view',
+    openStream: async () => { const stream = new FakeStream(); streams.push(stream); return stream; },
+    control: { semanticHistory },
+  });
+  const attaching = bundle.transport.attachWithPresentation('session', 2, 1);
+  await waitUntil(() => streams[0]?.writes.length === 1);
+  streams[0]!.push(encodeAttached({
+    presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n,
+    cols: 2, rows: 1, isController: true,
+  }));
+  await attaching;
+  return { bundle, streams };
+};
+
+const malformedChunk = (chunkIndex: number, chunkCount: number, continuation?: string) => ({
+  snapshotId: 'snapshot', ...(continuation ? { continuation } : {}),
+  chunkIndex, chunkCount, payloadBytes: chunkCount, payloadSha256: '0'.repeat(64),
+  payload: new Uint8Array([chunkIndex]),
+  revision: 4, transportGeneration: 1, contentEpoch: 0, geometryGeneration: 1,
+  cols: 2, rows: 1,
+  anchor: 'anchor', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
+  offset: 3, totalRows: 10, screenStartOffset: 9, hasPrevious: true, hasNext: true,
+});
 
 describe('semantic terminal live transport', () => {
   it('reassembles one transport-bounded snapshot before returning a complete viewport', async () => {
@@ -73,9 +105,97 @@ describe('semantic terminal live transport', () => {
     const result = await bundle.transport.semanticHistory('session', { direction: 'start', viewportRows: 1 });
 
     expect(semanticHistory).toHaveBeenCalledTimes(2);
-    expect(semanticHistory.mock.calls[1]?.[3]).toEqual({ continuation: 'hc-snapshot-1' });
+    expect(semanticHistory.mock.calls[1]?.[3]).toEqual({ continuation: 'hc-snapshot-1', lane: 'viewport' });
     expect(result.frame.rows[0]!.cells.map(cell => cell.text).join('')).toBe('HI');
     expect(result.frame.height).toBe(1);
+    bundle.transport.dispose();
+  });
+
+  it.each([
+    {
+      name: 'nonzero first index',
+      response: () => malformedChunk(1, 2, 'hc-snapshot-2'),
+      maxCalls: 1,
+    },
+    {
+      name: 'repeated continuation',
+      response: (call: number) => call === 0
+        ? malformedChunk(0, 3, 'hc-snapshot-1')
+        : malformedChunk(1, 3, 'hc-snapshot-1'),
+      maxCalls: 2,
+    },
+    {
+      name: 'changed chunk count',
+      response: (call: number) => call === 0
+        ? malformedChunk(0, 2, 'hc-snapshot-1')
+        : malformedChunk(1, 3, 'hc-snapshot-2'),
+      maxCalls: 2,
+    },
+    {
+      name: 'changed snapshot identity',
+      response: (call: number) => call === 0
+        ? malformedChunk(0, 2, 'hc-snapshot-1')
+        : { ...malformedChunk(1, 2), snapshotId: 'replacement' },
+      maxCalls: 2,
+    },
+    {
+      name: 'chunk count beyond the hard snapshot limit',
+      response: () => malformedChunk(0, 275, 'hc-snapshot-1'),
+      maxCalls: 1,
+    },
+    {
+      name: 'cumulative bytes beyond declaration',
+      response: (call: number) => call === 0
+        ? malformedChunk(0, 2, 'hc-snapshot-1')
+        : { ...malformedChunk(1, 2), payload: new Uint8Array([1, 2]) },
+      maxCalls: 2,
+    },
+    {
+      name: 'never-ending continuation',
+      response: (call: number) => malformedChunk(call, 3, `hc-snapshot-${call + 1}`),
+      maxCalls: 3,
+    },
+  ])('rejects $name without unbounded continuation requests', async ({ response, maxCalls }) => {
+    let calls = 0;
+    const semanticHistory = vi.fn(async () => response(calls++));
+    const { bundle } = await attachHistoryTransport(semanticHistory);
+
+    await expect(bundle.transport.semanticHistory('session', { direction: 'start', viewportRows: 1 }))
+      .rejects.toMatchObject({ kind: 'malformed_snapshot' });
+    expect(semanticHistory.mock.calls.length).toBeLessThanOrEqual(maxCalls);
+    bundle.transport.dispose();
+  });
+
+  it('rejects a response from a different history lane before requesting continuations', async () => {
+    const semanticHistory = vi.fn(async () => malformedChunk(0, 2, 'hc-snapshot-1'));
+    const { bundle } = await attachHistoryTransport(semanticHistory);
+
+    await expect(bundle.transport.semanticHistory('session', { lane: 'search', direction: 'start', viewportRows: 1 }))
+      .rejects.toMatchObject({ kind: 'malformed_snapshot' });
+    expect(semanticHistory).toHaveBeenCalledTimes(1);
+    bundle.transport.dispose();
+  });
+
+  it('rejects a late chunk from a superseded attachment generation', async () => {
+    let settleChunk: ((value: ReturnType<typeof malformedChunk>) => void) | undefined;
+    const semanticHistory = vi.fn(() => new Promise<ReturnType<typeof malformedChunk>>(resolve => {
+      settleChunk = resolve;
+    }));
+    const { bundle, streams } = await attachHistoryTransport(semanticHistory);
+    const reading = bundle.transport.semanticHistory('session', { direction: 'start', viewportRows: 1 });
+    await waitUntil(() => semanticHistory.mock.calls.length === 1);
+
+    const replacing = bundle.transport.attachWithPresentation('session', 2, 1);
+    await waitUntil(() => streams.length === 2 && streams[1]!.writes.length === 1);
+    streams[1]!.push(encodeAttached({
+      presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n,
+      cols: 2, rows: 1, isController: true,
+    }));
+    await replacing;
+    settleChunk?.(malformedChunk(0, 1));
+
+    await expect(reading).rejects.toMatchObject({ kind: 'transport_stale' });
+    expect(semanticHistory).toHaveBeenCalledTimes(1);
     bundle.transport.dispose();
   });
 

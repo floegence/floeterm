@@ -1,5 +1,9 @@
 import {
   assembleHistoryViewport,
+  SEMANTIC_HISTORY_MAX_CHUNK_BYTES,
+  SEMANTIC_HISTORY_MAX_CHUNKS,
+  SEMANTIC_HISTORY_MAX_SNAPSHOT_BYTES,
+  SemanticHistoryError,
   type SemanticHistoryChunk,
   type SemanticHistoryChunkRequest,
   type SemanticHistoryRequest,
@@ -327,22 +331,75 @@ export const createSemanticTerminalLiveTransport = (
     semanticHistory: async (sessionId, request) => {
       const entry = entries.get(sessionId);
       if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
-        throw new Error('terminal live session is not attached');
+        throw new SemanticHistoryError('session_detached', 'terminal live session is not attached');
       }
       const chunks: SemanticHistoryChunk[] = [];
-      let chunkRequest: SemanticHistoryChunkRequest = request;
-      for (;;) {
-        const chunk = validateHistoryChunk(await options.control.semanticHistory(
+      const lane = request.lane ?? 'viewport';
+      let chunkRequest: SemanticHistoryChunkRequest = { ...request, lane };
+      const seenContinuations = new Set<string>();
+      let expectedIndex = 0;
+      let expectedChunkCount = 0;
+      let expectedSnapshotId = '';
+      let expectedPayloadBytes = 0;
+      let expectedPayloadSha256 = '';
+      let expectedSignature = '';
+      let totalPayloadBytes = 0;
+      let complete = false;
+      for (; expectedIndex < SEMANTIC_HISTORY_MAX_CHUNKS; expectedIndex += 1) {
+        if (!isCurrentGeneration(sessionId, entry.generation)) {
+          throw new SemanticHistoryError('transport_stale', 'terminal semantic history request was superseded');
+        }
+        const rawChunk = await options.control.semanticHistory(
           sessionId, options.connectionId, entry.generation, chunkRequest,
-        ));
+        );
+        let chunk: SemanticHistoryChunk;
+        try {
+          chunk = validateHistoryChunk(rawChunk);
+        } catch (cause) {
+          throw new SemanticHistoryError('malformed_snapshot', 'invalid semantic history chunk', { cause });
+        }
         if (!isCurrentGeneration(sessionId, entry.generation) || chunk.transportGeneration !== entry.generation) {
-          const error = new Error('terminal semantic history request was superseded');
-          error.name = 'AbortError';
-          throw error;
+          throw new SemanticHistoryError('transport_stale', 'terminal semantic history request was superseded');
+        }
+        if (expectedIndex === 0) {
+          if (chunk.chunkIndex !== 0) throw new SemanticHistoryError('malformed_snapshot', 'semantic history chunk sequence must start at zero');
+          if ((chunk.lane ?? 'viewport') !== lane) throw new SemanticHistoryError('malformed_snapshot', 'semantic history response lane does not match its request');
+          expectedChunkCount = chunk.chunkCount;
+          expectedSnapshotId = chunk.snapshotId;
+          expectedPayloadBytes = chunk.payloadBytes;
+          expectedPayloadSha256 = chunk.payloadSha256;
+          expectedSignature = semanticHistoryChunkSignature(chunk);
+        } else if (chunk.chunkIndex !== expectedIndex
+          || chunk.chunkCount !== expectedChunkCount
+          || chunk.snapshotId !== expectedSnapshotId
+          || chunk.payloadBytes !== expectedPayloadBytes
+          || chunk.payloadSha256 !== expectedPayloadSha256
+          || semanticHistoryChunkSignature(chunk) !== expectedSignature) {
+          throw new SemanticHistoryError('malformed_snapshot', 'semantic history continuation identity changed');
+        }
+        totalPayloadBytes += chunk.payload.byteLength;
+        if (chunk.payload.byteLength > SEMANTIC_HISTORY_MAX_CHUNK_BYTES
+          || totalPayloadBytes > expectedPayloadBytes
+          || totalPayloadBytes > SEMANTIC_HISTORY_MAX_SNAPSHOT_BYTES) {
+          throw new SemanticHistoryError('malformed_snapshot', 'semantic history continuation exceeds its declared size');
         }
         chunks.push(chunk);
-        if (!chunk.continuation) break;
-        chunkRequest = { continuation: chunk.continuation };
+        if (!chunk.continuation) {
+          if (chunk.chunkIndex + 1 !== expectedChunkCount) {
+            throw new SemanticHistoryError('malformed_snapshot', 'semantic history continuation ended early');
+          }
+          complete = true;
+          break;
+        }
+        if (chunk.chunkIndex + 1 >= expectedChunkCount || seenContinuations.has(chunk.continuation)
+          || chunk.continuation !== `hc-${expectedSnapshotId}-${expectedIndex + 1}`) {
+          throw new SemanticHistoryError('malformed_snapshot', 'semantic history continuation token is invalid');
+        }
+        seenContinuations.add(chunk.continuation);
+        chunkRequest = { continuation: chunk.continuation, lane };
+      }
+      if (!complete || chunks.length !== expectedChunkCount) {
+        throw new SemanticHistoryError('malformed_snapshot', 'semantic history continuation did not terminate');
       }
       return assembleHistoryViewport(chunks);
     },
@@ -409,6 +466,14 @@ export const createSemanticTerminalLiveTransport = (
 
   return { transport, eventSource };
 };
+
+const semanticHistoryChunkSignature = (chunk: SemanticHistoryChunk): string => JSON.stringify([
+  chunk.snapshotId, chunk.lane ?? 'viewport', chunk.chunkCount, chunk.payloadBytes, chunk.payloadSha256,
+  chunk.revision, chunk.transportGeneration, chunk.contentEpoch, chunk.geometryGeneration,
+  chunk.cols, chunk.rows, chunk.anchor, chunk.firstAvailable, chunk.lastAvailable,
+  chunk.screenStart, chunk.offset, chunk.totalRows, chunk.screenStartOffset,
+  chunk.hasPrevious, chunk.hasNext,
+]);
 
 const subscribe = <T>(
   listeners: Map<string, Set<(event: T) => void>>,
