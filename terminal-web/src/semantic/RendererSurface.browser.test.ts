@@ -103,7 +103,7 @@ describe('semantic terminal browser surface', () => {
     renderer.dispose();
   });
 
-  it('projects a bounded short history page without shrinking or exposing the canvas', async () => {
+  it('rejects a short history frame instead of exposing a partial viewport', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px';
     const canvas = document.createElement('canvas');
@@ -122,16 +122,39 @@ describe('semantic terminal browser surface', () => {
 
     const history = structuredClone(presentation().frame);
     history.rows[0]!.cells[0]!.text = 'H';
+    expect(() => renderer.project(history)).toThrow(/geometry/i);
+
+    renderer.dispose();
+  });
+
+  it('keeps an immutable full history viewport while newer live presentations advance', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    const live = presentation();
+    live.geometry.rows = 2;
+    live.frame.height = 2;
+    live.frame.history = { revision: 1, totalRows: 2, screenStartOffset: 0 };
+    live.frame.rows.push(structuredClone(live.frame.rows[0]!));
+    renderer.apply(validatePresentation(live));
+
+    const history = structuredClone(live.frame);
+    history.rows[0]!.cells[0]!.text = 'H';
     renderer.project(history);
+
+    const advanced = structuredClone(live);
+    advanced.sequence = 2;
+    advanced.state.sequence = 2;
+    advanced.frame.history.revision = 2;
+    advanced.frame.rows[0]!.cells[0]!.text = 'L';
+    renderer.apply(validatePresentation(advanced));
     await nextPaint();
 
-    const bounds = host.getBoundingClientRect();
-    expect(host.querySelectorAll('canvas')).toHaveLength(1);
-    expect(canvas.width).toBe(Math.round(bounds.width * devicePixelRatio));
-    expect(canvas.height).toBe(Math.round(bounds.height * devicePixelRatio));
-    const bottom = canvas.getContext('2d')!.getImageData(canvas.width - 1, canvas.height - 1, 1, 1).data;
-    expect(Array.from(bottom)).toEqual([...hexToRgb(palette.background), 255]);
-    expect(canvas.style.visibility).toBe('visible');
+    const current = (renderer as unknown as { currentFrame(): typeof history }).currentFrame();
+    expect(current.rows[0]!.cells[0]!.text).toBe('H');
 
     renderer.dispose();
   });

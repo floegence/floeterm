@@ -28,6 +28,57 @@ const waitUntil = async (predicate: () => boolean): Promise<void> => {
 };
 
 describe('semantic terminal live transport', () => {
+  it('reassembles one transport-bounded snapshot before returning a complete viewport', async () => {
+    const streams: FakeStream[] = [];
+    const payload = new TextEncoder().encode(JSON.stringify({
+      v: 1,
+      frame: {
+        width: 2, height: 1, bufferKind: 'normal',
+        cursor: { x: 0, y: 0, visible: false, shape: 'block', blinking: false },
+        history: { revision: 4, totalRows: 10, screenStartOffset: 9 },
+        graphics: { generation: 0, images: [], placements: [] },
+        styles: [['default', 'default', false, false, false]],
+        styleInverses: [false],
+        rows: [[['H', 1, 0, ''], ['I', 1, 0, '']]],
+      },
+    }));
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', payload))]
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const split = Math.floor(payload.byteLength / 2);
+    const rawChunks = [payload.slice(0, split), payload.slice(split)].map((part, chunkIndex) => ({
+      snapshotId: 'snapshot',
+      ...(chunkIndex === 0 ? { continuation: 'hc-snapshot-1' } : {}),
+      chunkIndex, chunkCount: 2, payloadBytes: payload.byteLength, payloadSha256: digest, payload: part,
+      revision: 4, transportGeneration: 1, contentEpoch: 0, geometryGeneration: 1,
+      cols: 2, rows: 1,
+      anchor: 'anchor', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
+      offset: 3, totalRows: 10, screenStartOffset: 9, hasPrevious: true, hasNext: true,
+    }));
+    const semanticHistory = vi.fn(async (_sessionId, _connectionId, _generation, request) => (
+      'continuation' in request ? rawChunks[1]! : rawChunks[0]!
+    ));
+    const bundle = createSemanticTerminalLiveTransport({
+      connectionId: 'view',
+      openStream: async () => { const stream = new FakeStream(); streams.push(stream); return stream; },
+      control: { semanticHistory },
+    });
+    const attaching = bundle.transport.attachWithPresentation('session', 2, 1);
+    await waitUntil(() => streams[0]?.writes.length === 1);
+    streams[0]!.push(encodeAttached({
+      presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n,
+      cols: 2, rows: 1, isController: true,
+    }));
+    await attaching;
+
+    const result = await bundle.transport.semanticHistory('session', { direction: 'start', viewportRows: 1 });
+
+    expect(semanticHistory).toHaveBeenCalledTimes(2);
+    expect(semanticHistory.mock.calls[1]?.[3]).toEqual({ continuation: 'hc-snapshot-1' });
+    expect(result.frame.rows[0]!.cells.map(cell => cell.text).join('')).toBe('HI');
+    expect(result.frame.height).toBe(1);
+    bundle.transport.dispose();
+  });
+
   it('keeps one current attachment and sends input only through it', async () => {
     const streams: FakeStream[] = [];
     const bundle = createSemanticTerminalLiveTransport({

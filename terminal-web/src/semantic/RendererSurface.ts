@@ -115,9 +115,14 @@ export class RendererSurface {
     const cursorChanged = !this.latest || !sameCursor(this.latest.frame.cursor, presentation.frame.cursor);
     const contentChanged = this.latest !== null
       && (this.latest.state.contentEpoch ?? 0) !== (presentation.state.contentEpoch ?? 0);
+    const geometryChanged = this.latest !== null && (
+      this.latest.geometry.generation !== presentation.geometry.generation
+      || this.latest.geometry.cols !== presentation.geometry.cols
+      || this.latest.geometry.rows !== presentation.geometry.rows
+    );
     this.latest = presentation;
-    this.viewportFrame = null;
-    if (contentChanged) {
+    if (contentChanged || geometryChanged) {
+      this.viewportFrame = null;
       this.selectionAnchor = null;
       this.selectionFocus = null;
       this.selectionGesture = null;
@@ -162,7 +167,10 @@ export class RendererSurface {
     return { ...this.cellMetrics };
   }
   project(frame: SemanticFrame | null): void {
-    if (frame && this.latest && frame.width !== this.latest.frame.width) {
+    if (frame && (!this.latest
+      || frame.width !== this.latest.frame.width
+      || frame.height !== this.latest.frame.height
+      || frame.rows.length !== this.latest.frame.height)) {
       throw new Error('semantic history frame does not match the current presentation geometry');
     }
     this.viewportFrame = frame;

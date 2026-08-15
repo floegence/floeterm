@@ -156,6 +156,7 @@ func (a *SessionActor) resizeToGeometryLocked(geometry TerminalGeometry) (Semant
 	if err := a.store.Publish(presentation); err != nil {
 		return SemanticPresentation{}, a.rollbackResizeLocked(previousGeometry, err)
 	}
+	a.releaseAllHistoryLocked()
 	a.geometry = geometry
 	a.sequence++
 	return presentation, nil
@@ -174,10 +175,7 @@ func (a *SessionActor) Clear() (SemanticPresentation, error) {
 	if err := engine.Reset(); err != nil {
 		return SemanticPresentation{}, fmt.Errorf("reset semantic terminal: %w", err)
 	}
-	for viewID, view := range a.historyViews {
-		closeSemanticHistoryTokens(view.tokens)
-		delete(a.historyViews, viewID)
-	}
+	a.releaseAllHistoryLocked()
 	frame, err := a.engine.CaptureFrame()
 	if err != nil {
 		return SemanticPresentation{}, fmt.Errorf("capture cleared semantic terminal: %w", err)
@@ -259,87 +257,151 @@ func validateSemanticInput(intent SemanticInput) error {
 	return nil
 }
 
-func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHistoryPage, error) {
+func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHistoryChunk, error) {
 	if err := validateSemanticHistoryRequest(request); err != nil {
-		return SemanticHistoryPage{}, err
+		return SemanticHistoryChunk{}, err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	engine, ok := a.engine.(SemanticHistoryEngine)
 	if !ok {
-		return SemanticHistoryPage{}, errors.New("semantic history is unavailable")
+		return SemanticHistoryChunk{}, errors.New("semantic history is unavailable")
 	}
+	if request.Continuation != "" {
+		view, exists := a.historyViews[request.ViewID]
+		if !exists || len(view.snapshot.payload) == 0 {
+			return SemanticHistoryChunk{}, ErrSemanticHistoryAnchor
+		}
+		chunkIndex, valid := semanticHistoryContinuationIndex(view.snapshot.id, request.Continuation)
+		if !valid {
+			return SemanticHistoryChunk{}, ErrSemanticHistoryAnchor
+		}
+		return semanticHistoryChunk(view.snapshot, chunkIndex)
+	}
+	if request.ViewportRows != a.geometry.Rows {
+		return SemanticHistoryChunk{}, errors.New("semantic history viewport must match canonical geometry")
+	}
+
 	totalRows, err := engine.HistoryTotalRows()
 	if err != nil {
-		return SemanticHistoryPage{}, err
+		return SemanticHistoryChunk{}, err
 	}
-	if totalRows <= 0 {
-		return SemanticHistoryPage{}, errors.New("semantic history is empty")
+	if totalRows < request.ViewportRows {
+		return SemanticHistoryChunk{}, errors.New("semantic history cannot fill the canonical viewport")
 	}
-	maxStart := max(0, totalRows-request.Limit)
+	maxStart := max(0, totalRows-request.ViewportRows)
 	targetRow := 0
+	view, exists := a.historyViews[request.ViewID]
 	switch request.Direction {
+	case HistoryStart:
+		targetRow = 0
 	case HistoryEnd:
 		targetRow = maxStart
 	case HistoryForward, HistoryBackward:
-		view, exists := a.historyViews[request.ViewID]
-		anchor := view.tokens[request.Anchor]
-		if !exists || anchor == nil {
-			return SemanticHistoryPage{}, ErrSemanticHistoryAnchor
+		if !exists || request.Anchor != view.anchorID || request.Offset != view.snapshot.offset {
+			return SemanticHistoryChunk{}, ErrSemanticHistoryAnchor
 		}
-		row, status, rowErr := engine.HistoryAnchorScreenRow(anchor)
+		firstRow, status, rowErr := engine.HistoryAnchorScreenRow(view.firstAvailable)
 		if rowErr != nil {
-			return SemanticHistoryPage{}, rowErr
+			return SemanticHistoryChunk{}, rowErr
 		}
-		if status != AnchorValid {
-			return SemanticHistoryPage{}, ErrSemanticHistoryAnchor
+		if status != AnchorValid || firstRow != 0 {
+			return SemanticHistoryChunk{}, ErrSemanticHistoryAnchor
 		}
 		if request.Direction == HistoryForward {
-			targetRow = min(maxStart, row+request.Limit)
+			targetRow = min(maxStart, request.Offset+request.ScrollDeltaRows)
 		} else {
-			targetRow = max(0, row-request.Limit)
+			targetRow = max(0, request.Offset-request.ScrollDeltaRows)
 		}
 	}
 
-	rows := []int{targetRow, 0, totalRows - 1, max(0, totalRows-a.geometry.Rows)}
-	tokens := make(map[string]SemanticHistoryAnchor, len(rows))
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		anchor, trackErr := engine.TrackHistoryCell(0, row)
-		if trackErr != nil {
-			closeSemanticHistoryTokens(tokens)
-			return SemanticHistoryPage{}, trackErr
+	if !exists || request.Direction == HistoryStart || request.Direction == HistoryEnd {
+		created, createErr := a.createSemanticHistoryViewLocked(engine, totalRows)
+		if createErr != nil {
+			return SemanticHistoryChunk{}, createErr
 		}
-		a.nextHistoryTokenID++
-		token := fmt.Sprintf("h-%x", a.nextHistoryTokenID)
-		tokens[token] = anchor
-		ids = append(ids, token)
+		if exists {
+			view.close()
+		}
+		view = created
 	}
-	frame, status, err := engine.ReadHistory(tokens[ids[0]], request.Limit)
+
+	target, err := engine.TrackHistoryCell(0, targetRow)
+	if err != nil {
+		view.close()
+		delete(a.historyViews, request.ViewID)
+		return SemanticHistoryChunk{}, err
+	}
+	frame, status, err := engine.ReadHistory(target, request.ViewportRows)
+	target.Close()
 	if err != nil || status != AnchorValid {
-		closeSemanticHistoryTokens(tokens)
+		view.close()
+		delete(a.historyViews, request.ViewID)
 		if err != nil {
-			return SemanticHistoryPage{}, err
+			return SemanticHistoryChunk{}, err
 		}
-		return SemanticHistoryPage{}, ErrSemanticHistoryAnchor
+		return SemanticHistoryChunk{}, ErrSemanticHistoryAnchor
 	}
-	if frame.Width != a.geometry.Cols || frame.Height <= 0 || frame.Height > request.Limit {
-		closeSemanticHistoryTokens(tokens)
-		return SemanticHistoryPage{}, errors.New("semantic history page geometry is invalid")
+	if frame.Width != a.geometry.Cols || frame.Height != a.geometry.Rows || len(frame.Rows) != a.geometry.Rows {
+		view.close()
+		delete(a.historyViews, request.ViewID)
+		return SemanticHistoryChunk{}, errors.New("semantic history viewport geometry is invalid")
 	}
+	screenStartOffset := max(0, totalRows-a.geometry.Rows)
 	frame.History = SemanticHistorySummary{
 		Revision: a.sequence, TotalRows: totalRows,
-		ScreenStartOffset: max(0, totalRows-a.geometry.Rows),
+		ScreenStartOffset: screenStartOffset,
 	}
-	if previous, exists := a.historyViews[request.ViewID]; exists {
-		closeSemanticHistoryTokens(previous.tokens)
+	payload, payloadSHA256, err := encodeSemanticHistoryFrame(frame)
+	if err != nil {
+		view.close()
+		delete(a.historyViews, request.ViewID)
+		return SemanticHistoryChunk{}, err
 	}
-	a.historyViews[request.ViewID] = semanticHistoryView{tokens: tokens}
-	return SemanticHistoryPage{
-		Revision: a.sequence, Anchor: ids[0], FirstAvailable: ids[1], LastAvailable: ids[2], ScreenStart: ids[3],
-		Offset: targetRow, TotalRows: totalRows, ScreenStartOffset: rows[3],
-		HasPrevious: targetRow > 0, HasNext: targetRow < maxStart, Frame: frame,
+	a.nextHistoryTokenID++
+	snapshotID := fmt.Sprintf("hs-%x", a.nextHistoryTokenID)
+	view.snapshot = semanticHistorySnapshot{
+		id: snapshotID, payload: payload, payloadSHA256: payloadSHA256,
+		revision: a.sequence, contentEpoch: a.contentEpoch,
+		geometryGeneration: a.geometry.Generation, cols: a.geometry.Cols, rows: a.geometry.Rows,
+		offset: targetRow, totalRows: totalRows, screenStartOffset: screenStartOffset,
+		hasPrevious: targetRow > 0, hasNext: targetRow < maxStart,
+		anchor: view.anchorID, firstAvailable: view.firstAvailableID,
+		lastAvailable: view.lastAvailableID, screenStart: view.screenStartID,
+	}
+	a.historyViews[request.ViewID] = view
+	return semanticHistoryChunk(view.snapshot, 0)
+}
+
+func (a *SessionActor) createSemanticHistoryViewLocked(engine SemanticHistoryEngine, totalRows int) (semanticHistoryView, error) {
+	rows := []int{0, totalRows - 1, max(0, totalRows-a.geometry.Rows)}
+	anchors := make([]SemanticHistoryAnchor, 0, len(rows))
+	for _, row := range rows {
+		anchor, err := engine.TrackHistoryCell(0, row)
+		if err != nil {
+			for _, tracked := range anchors {
+				tracked.Close()
+			}
+			return semanticHistoryView{}, err
+		}
+		anchors = append(anchors, anchor)
+	}
+	nextID := func(prefix string) string {
+		a.nextHistoryTokenID++
+		return fmt.Sprintf("%s-%x", prefix, a.nextHistoryTokenID)
+	}
+	return semanticHistoryView{
+		anchorID:         nextID("ha"),
+		firstAvailableID: nextID("hf"), lastAvailableID: nextID("hl"), screenStartID: nextID("hs"),
+		firstAvailable: anchors[0], lastAvailable: anchors[1], screenStart: anchors[2],
 	}, nil
+}
+
+func (a *SessionActor) releaseAllHistoryLocked() {
+	for viewID, view := range a.historyViews {
+		view.close()
+		delete(a.historyViews, viewID)
+	}
 }
 
 func (a *SessionActor) ReleaseHistory(viewID string) {
@@ -349,7 +411,7 @@ func (a *SessionActor) ReleaseHistory(viewID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if view, ok := a.historyViews[viewID]; ok {
-		closeSemanticHistoryTokens(view.tokens)
+		view.close()
 		delete(a.historyViews, viewID)
 	}
 }
@@ -360,10 +422,7 @@ func (a *SessionActor) Close() {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for viewID, view := range a.historyViews {
-		closeSemanticHistoryTokens(view.tokens)
-		delete(a.historyViews, viewID)
-	}
+	a.releaseAllHistoryLocked()
 	if a.engine != nil {
 		a.engine.Close()
 		a.engine = nil

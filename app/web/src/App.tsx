@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import {
   RendererSurface,
+  HistoryViewportController,
   SEMANTIC_CELL_HEIGHT_CSS_PX,
   SEMANTIC_CELL_WIDTH_CSS_PX,
   SEMANTIC_TERMINAL_FONT_FAMILY,
@@ -9,8 +10,7 @@ import {
   isTerminalThemeName,
   presentationAdvances,
 	validatePresentation,
-	type SemanticHistoryDirection,
-	type SemanticHistoryPage,
+	type SemanticHistoryViewport,
 	type SemanticHistoryRequest,
 	type SemanticPresentation,
   type TerminalKeyInputIntent,
@@ -51,11 +51,9 @@ type FloetermPerfHarness = {
   hasSelection(): boolean;
   getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null;
 	getPresentationDiagnostics?(): SemanticPresentation | null;
-	readSemanticHistory(
-		direction: SemanticHistoryDirection,
-		anchor?: string,
-		limit?: number,
-	): Promise<SemanticHistoryPage>;
+	readSemanticHistory(request: Omit<SemanticHistoryRequest, 'viewportRows'> & {
+		viewportRows?: number;
+	}): Promise<SemanticHistoryViewport>;
   getResizeDiagnostics?(): readonly unknown[];
   getSnapshot(): TerminalInstanceSnapshot;
   forceResize(): void;
@@ -307,11 +305,9 @@ type SemanticViewportHandle = Readonly<{
   hasSelection(): boolean;
   getTerminalInfo(): { rows: number; cols: number; bufferLength: number } | null;
 	getPresentation(): SemanticPresentation | null;
-	readSemanticHistory(
-		direction: SemanticHistoryDirection,
-		anchor?: string,
-		limit?: number,
-	): Promise<SemanticHistoryPage>;
+	readSemanticHistory(request: Omit<SemanticHistoryRequest, 'viewportRows'> & {
+		viewportRows?: number;
+	}): Promise<SemanticHistoryViewport>;
   getSnapshot(): TerminalInstanceSnapshot;
   forceResize(): void;
   synchronizeSize(): Promise<void>;
@@ -419,15 +415,13 @@ const SemanticTerminalViewport = (props: {
       bufferLength: latestPresentation.frame.history.totalRows,
     }) : null,
 		getPresentation: () => latestPresentation,
-		readSemanticHistory: async (direction, anchor, limit) => {
+		readSemanticHistory: async request => {
 			const presentation = latestPresentation;
 			if (!presentation) throw new Error('terminal presentation is unavailable');
-			const request: SemanticHistoryRequest = {
-				direction,
-				limit: limit ?? presentation.frame.height,
-				...(anchor ? { anchor } : {}),
-			};
-			return await props.transport.semanticHistory(mountedSessionId, request);
+			return await props.transport.semanticHistory(mountedSessionId, {
+				...request,
+				viewportRows: request.viewportRows ?? presentation.frame.height,
+			});
 		},
     getSnapshot: () => ({
       ...initialTerminalSnapshot,
@@ -550,10 +544,11 @@ const SingleTerminalPane = (props: {
   let geometryDiagnostics = { generation: 0, presentationSequence: 0, cols: 0, rows: 0 };
 	let semanticCanvas: HTMLCanvasElement | undefined;
 	let semanticRenderer: RendererSurface | undefined;
+	let historyController: HistoryViewportController | undefined;
 	let inputController: TerminalInputBridge | undefined;
   const [presentationError, setPresentationError] = createSignal('');
 	const [historyError, setHistoryError] = createSignal('');
-	const [historyPage, setHistoryPage] = createSignal<SemanticHistoryPage | null>(null);
+	const [historyPage, setHistoryPage] = createSignal<SemanticHistoryViewport | null>(null);
 	const [historyProjected, setHistoryProjected] = createSignal(false);
 	const [historyHovered, setHistoryHovered] = createSignal(false);
 	const [historyDragging, setHistoryDragging] = createSignal(false);
@@ -561,7 +556,6 @@ const SingleTerminalPane = (props: {
   const [historySummary, setHistorySummary] = createSignal({ totalRows: 0, screenStartOffset: 0 });
   let liveConnected = false;
   let latestPresentation: SemanticPresentation | null = null;
-	let historyRequestEpoch = 0;
   const resizeDiagnostics: unknown[] = [];
   let attachRequestCount = 0;
   let lifecycleCloseCount = 0;
@@ -602,6 +596,7 @@ const SingleTerminalPane = (props: {
         rows: attached.rows,
       };
       recordResizeDiagnostic({ action: 'attach-applied', geometry });
+	  historyController?.setTransportGeneration(attached.runtimeAttachGeneration);
       return geometry;
     },
     resize: async dimensions => {
@@ -646,15 +641,13 @@ const SingleTerminalPane = (props: {
 		bufferLength: historySummary().totalRows,
 	  }) : null,
 			  getPresentationDiagnostics: () => latestPresentation,
-			  readSemanticHistory: async (direction, anchor, limit) => {
+			  readSemanticHistory: async request => {
 				const presentation = latestPresentation;
 				if (!presentation) throw new Error('terminal presentation is unavailable');
-				const request: SemanticHistoryRequest = {
-					direction,
-					limit: limit ?? presentation.frame.height,
-					...(anchor ? { anchor } : {}),
-				};
-				return await props.transport.semanticHistory(props.sessionId, request);
+				return await props.transport.semanticHistory(props.sessionId, {
+					...request,
+					viewportRows: request.viewportRows ?? presentation.frame.height,
+				});
 			  },
       getResizeDiagnostics: () => [
         { action: 'summary', attachRequestCount, lifecycleCloseCount },
@@ -677,11 +670,9 @@ const SingleTerminalPane = (props: {
     }
   });
 
-  const requestResize = async () => {
-    if (!semanticCanvas?.parentElement) return;
-	historyRequestEpoch += 1;
-	setHistoryProjected(false);
-	semanticRenderer?.project(null);
+	const requestResize = async () => {
+		if (!semanticCanvas?.parentElement) return;
+	historyController?.reset();
     await semanticResize.requestResize();
     inputController?.syncGeometry();
   };
@@ -696,65 +687,21 @@ const SingleTerminalPane = (props: {
   };
 
 	const showLatestPresentation = () => {
-		historyRequestEpoch += 1;
-		setHistoryProjected(false);
-		setHistoryError('');
-		semanticRenderer?.project(null);
-	};
-
-	const queryHistory = async (direction: SemanticHistoryDirection, project: boolean): Promise<SemanticHistoryPage | null> => {
-		if (!latestPresentation || historyBusy()) return null;
-		const current = historyPage();
-		if ((direction === 'forward' || direction === 'backward') && !current) return null;
-		const requestEpoch = ++historyRequestEpoch;
-		setHistoryBusy(true);
-		try {
-			const page = await props.transport.semanticHistory(props.sessionId, {
-				...(direction === 'forward' || direction === 'backward' ? { anchor: current!.anchor } : {}),
-				direction,
-				limit: latestPresentation.frame.height,
-			});
-			if (requestEpoch !== historyRequestEpoch) return null;
-			setHistoryPage(page);
-			setHistoryError('');
-			if (project && page.offset < page.screenStartOffset) {
-				setHistoryProjected(true);
-				semanticRenderer?.project(page.frame);
-			} else {
-				setHistoryProjected(false);
-				semanticRenderer?.project(null);
-			}
-			return page;
-		} catch (error) {
-			if (requestEpoch === historyRequestEpoch && !(error instanceof DOMException && error.name === 'AbortError')) {
-				setHistoryError(error instanceof Error ? error.message : String(error));
-			}
-			return null;
-		} finally {
-			if (requestEpoch === historyRequestEpoch) setHistoryBusy(false);
-		}
+		historyController?.showLatest();
 	};
 
 	const scrollHistory = async (direction: 'forward' | 'backward') => {
-		if (!latestPresentation || historyBusy()) return;
-		if (direction === 'forward' && !historyProjected()) return;
-		let current = historyPage();
-		if (!current) current = await queryHistory('end', false);
-		if (!current) return;
-		if (direction === 'backward' && !current.hasPrevious) return;
-		if (direction === 'forward' && !current.hasNext) {
-			showLatestPresentation();
-			return;
-		}
-		await queryHistory(direction, true);
+		if (!latestPresentation) return;
+		historyController?.scrollByRows(direction === 'backward'
+			? -latestPresentation.frame.height
+			: latestPresentation.frame.height);
 	};
 
 	const historyMaximum = createMemo(() => Math.max(0, historySummary().screenStartOffset));
 	const historyCurrent = createMemo(() => historyProjected() ? Math.min(historyMaximum(), historyPage()?.offset ?? historyMaximum()) : historyMaximum());
 	const historyThumbSize = createMemo(() => {
-		const page = historyPage();
-		const totalRows = page?.totalRows ?? historySummary().totalRows;
-		const visibleRows = page?.frame.height ?? latestPresentation?.frame.height ?? 0;
+		const totalRows = historySummary().totalRows;
+		const visibleRows = latestPresentation?.frame.height ?? historyPage()?.frame.height ?? 0;
 		if (totalRows <= 0 || visibleRows <= 0) return 100;
 		return Math.max(6, Math.min(100, visibleRows / totalRows * 100));
 	});
@@ -768,22 +715,29 @@ const SingleTerminalPane = (props: {
 		const rail = event.currentTarget as HTMLElement;
 		const bounds = rail.getBoundingClientRect();
 		const ratio = Math.max(0, Math.min(1, (event.clientY - bounds.top) / Math.max(1, bounds.height)));
-		if (ratio <= 0.25) {
-			void queryHistory('start', true);
-		} else if (ratio >= 0.75) {
+		if (ratio >= 0.995) {
 			showLatestPresentation();
-		} else if (ratio < 0.5) {
-			void scrollHistory('backward');
 		} else {
-			void scrollHistory('forward');
+			historyController?.showOffset(Math.round(ratio * historyMaximum()));
 		}
 	};
 
   onMount(() => {
 			if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas, error => {
-				setPresentationError(error.message);
+					setPresentationError(error.message);
+				});
+				semanticRenderer?.setPalette(getThemeColors(props.themeName));
+			if (semanticRenderer) historyController = new HistoryViewportController({
+				renderer: semanticRenderer,
+				request: request => props.transport.semanticHistory(props.sessionId, request),
+				onState: state => {
+					setHistoryBusy(state.busy);
+					setHistoryProjected(state.browsing);
+					setHistoryPage(historyController?.getViewport() ?? null);
+					setHistorySummary({ totalRows: state.totalRows, screenStartOffset: state.screenStartOffset });
+					setHistoryError(state.error?.message ?? '');
+				},
 			});
-			semanticRenderer?.setPalette(getThemeColors(props.themeName));
 		const semanticResizeObserver = semanticCanvas && typeof ResizeObserver !== 'undefined'
 			? new ResizeObserver(() => { void requestResize(); })
 			: undefined;
@@ -800,10 +754,7 @@ const SingleTerminalPane = (props: {
 				totalRows: presentation.frame.history.totalRows,
 				screenStartOffset: presentation.frame.history.screenStartOffset,
 			});
-			historyRequestEpoch += 1;
-			setHistoryBusy(false);
-			setHistoryProjected(false);
-			semanticRenderer?.apply(presentation);
+				historyController?.apply(presentation);
 			inputController?.syncGeometry();
 			setPresentationError('');
 		} catch (error) {
@@ -811,8 +762,9 @@ const SingleTerminalPane = (props: {
 		}
 	};
 	const unsubscribePresentation = props.eventSource.onTerminalPresentation?.(props.sessionId, value => { liveConnected = true; applyPresentation(value); });
-	const unsubscribeLifecycle = props.eventSource.onTerminalLiveAttachmentLifecycle?.(props.sessionId, event => {
-		if (event.state === 'attached') { semanticResize.handleAttached(); return; }
+		const unsubscribeLifecycle = props.eventSource.onTerminalLiveAttachmentLifecycle?.(props.sessionId, event => {
+			if (event.state === 'attached') { semanticResize.handleAttached(); return; }
+			historyController?.setTransportGeneration(null);
 		lifecycleCloseCount += 1;
 		recordResizeDiagnostic({ action: 'lifecycle-closed', reason: event.reason, attachRequestCount, lifecycleCloseCount });
 		semanticResize.handleClosed(event.reason);
@@ -830,13 +782,13 @@ const SingleTerminalPane = (props: {
       isController = event.isController;
     });
     onCleanup(() => {
-		historyRequestEpoch += 1;
-		unsubscribePresentation?.();
+			unsubscribePresentation?.();
 		unsubscribeLifecycle?.();
 		semanticResizeObserver?.disconnect();
 		window.removeEventListener('resize', handleWindowResize);
 		semanticResize.dispose();
-		semanticRenderer?.dispose();
+			historyController?.dispose();
+			semanticRenderer?.dispose();
       unsubscribeGeometry?.();
       unsubscribeController?.();
     });
@@ -884,10 +836,10 @@ const SingleTerminalPane = (props: {
       </Show>
       <div class="terminalContainer">
         <div class="terminalPane"
-		  onWheel={event => {
-			if (event.deltaY === 0) return;
-			if (event.deltaY < 0 || historyProjected()) event.preventDefault();
-			void scrollHistory(event.deltaY < 0 ? 'backward' : 'forward');
+			  onWheel={event => {
+				if (event.deltaY === 0) return;
+				if (event.deltaY < 0 || historyProjected()) event.preventDefault();
+				historyController?.handleWheel(event.deltaY, event.deltaMode);
 		  }}>
           <SemanticTerminalSurface
             canvasId="semantic-terminal-surface"
@@ -930,7 +882,7 @@ const SingleTerminalPane = (props: {
 			}}
 			onKeyDown={event => {
 				switch (event.key) {
-					case 'Home': event.preventDefault(); void queryHistory('start', true); break;
+					case 'Home': event.preventDefault(); historyController?.showStart(); break;
 					case 'End': event.preventDefault(); showLatestPresentation(); break;
 					case 'PageUp': case 'ArrowUp': event.preventDefault(); void scrollHistory('backward'); break;
 					case 'PageDown': case 'ArrowDown': event.preventDefault(); void scrollHistory('forward'); break;

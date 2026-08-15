@@ -91,9 +91,12 @@ type renameSessionRequest struct {
 type semanticHistoryRequest struct {
 	ConnectionID        string                            `json:"connectionId"`
 	TransportGeneration uint64                            `json:"transportGeneration"`
+	Continuation        string                            `json:"continuation,omitempty"`
 	Anchor              string                            `json:"anchor,omitempty"`
-	Direction           terminal.SemanticHistoryDirection `json:"direction"`
-	Limit               int                               `json:"limit"`
+	Direction           terminal.SemanticHistoryDirection `json:"direction,omitempty"`
+	Offset              int                               `json:"offset,omitempty"`
+	ScrollDeltaRows     int                               `json:"scrollDeltaRows,omitempty"`
+	ViewportRows        int                               `json:"viewportRows,omitempty"`
 }
 
 type semanticClearRequest struct {
@@ -320,7 +323,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		page, err := session.ReadSemanticHistory(request.ConnectionID, request.TransportGeneration, terminal.SemanticHistoryRequest{
-			Anchor: request.Anchor, Direction: request.Direction, Limit: request.Limit,
+			Continuation: request.Continuation, Anchor: request.Anchor, Direction: request.Direction,
+			Offset: request.Offset, ScrollDeltaRows: request.ScrollDeltaRows, ViewportRows: request.ViewportRows,
 		})
 		if err != nil {
 			status := http.StatusConflict

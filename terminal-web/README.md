@@ -10,14 +10,14 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.15.7
+npm install @floegence/floeterm-terminal-web@0.16.0
 ```
 
 ## Exports
 
 | Subpath | API |
 | --- | --- |
-| `./semantic` | `RendererSurface`, `TerminalInputBridge`, validators, semantic types, themes |
+| `./semantic` | `RendererSurface`, `HistoryViewportController`, `TerminalInputBridge`, validators, semantic types, themes |
 | `./live` | semantic WebSocket codec, client, transport, lifecycle and geometry events |
 | `./sessions` | session coordinator and display-only metadata normalization |
 | `.` | semantic aggregation plus shell-integration parsing utilities |
@@ -125,6 +125,21 @@ the native SessionActor clear control through the current transport generation a
 rejects a settlement if that generation was superseded.
 Unknown input is not replayed after a disconnect. A new transport generation does not
 write through an old connection.
+
+## Semantic History
+
+`HistoryViewportController` is the single view-local owner for scroll targets,
+wheel residuals, one serial request lane, and a bounded cache of complete semantic
+frames. The control plane returns bounded chunks from one actor-owned snapshot; the
+live transport verifies their identity, byte count, and SHA-256 digest before it
+decodes and returns one canonical-size viewport. Missing, stale, or corrupt chunks
+never replace the last complete frame.
+
+Normal live output continues to advance in the background while a view browses an
+immutable history frame. Returning to the bottom reveals the latest Presentation.
+Content epoch, geometry, attachment, and transport-generation changes invalidate the
+view-local cache; an observer's scrolling never sends input, resizes the PTY, or takes
+controller ownership.
 
 ## Session Metadata
 

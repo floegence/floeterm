@@ -1,3 +1,5 @@
+import { decodeSemanticFrameWire } from '../semantic/frameCodec.js';
+
 export const StreamKind = 'terminal/live_v1';
 export const FRAME_HEADER_BYTES = 8;
 export const MAX_FRAME_PAYLOAD_BYTES = 256 * 1024;
@@ -560,55 +562,11 @@ export const decodePresentation = (value: TerminalLiveFrame): unknown => {
   if (value.type !== TerminalLiveFrameType.Presentation) throw new Error('unexpected terminal live presentation frame');
   if (value.payload.byteLength === 0 || value.payload.byteLength > MAX_FRAME_PAYLOAD_BYTES) throw new Error('invalid terminal live presentation payload');
   const wire = JSON.parse(decoder.decode(value.payload)) as any;
-  if (wire?.v !== 1 || !Array.isArray(wire.frame?.styles) || !Array.isArray(wire.frame?.rows)) throw new Error('invalid terminal live presentation wire');
-  const styleInverses = wire.frame.styleInverses;
-  if (styleInverses !== undefined && (!Array.isArray(styleInverses)
-    || styleInverses.length !== wire.frame.styles.length
-    || styleInverses.some((inverse: unknown) => typeof inverse !== 'boolean'))) {
-    throw new Error('invalid terminal live presentation inverse styles');
-  }
-  const styles = wire.frame.styles.map((style: unknown, index: number) => {
-    if (!Array.isArray(style) || (style.length !== 5 && style.length !== 6)) throw new Error('invalid terminal live presentation style');
-    return { foreground: style[0], background: style[1], bold: style[2], italic: style[3], underline: style[4], inverse: style[5] ?? styleInverses?.[index] ?? false };
-  });
-  const graphics = decodePresentationGraphics(wire.frame.graphics);
+  if (wire?.v !== 1) throw new Error('invalid terminal live presentation wire');
   return {
     sequence: wire.sequence, geometry: wire.geometry, state: wire.state,
-    frame: {
-      width: wire.frame.width, height: wire.frame.height, bufferKind: wire.frame.bufferKind, cursor: wire.frame.cursor, history: wire.frame.history, graphics,
-      rows: wire.frame.rows.map((row: unknown) => {
-        if (!Array.isArray(row)) throw new Error('invalid terminal live presentation row');
-        return { cells: row.map((cell: unknown) => {
-          if (!Array.isArray(cell) || cell.length !== 4 || !Number.isInteger(cell[2]) || !styles[cell[2]]) throw new Error('invalid terminal live presentation cell');
-          return { text: cell[0], width: cell[1], style: styles[cell[2]], ...(cell[3] ? { hyperlink: cell[3] } : {}) };
-        }) };
-      }),
-    },
+    frame: decodeSemanticFrameWire(wire.frame),
   };
 };
-
-function decodePresentationGraphics(value: unknown): unknown {
-  if (typeof value !== 'object' || value === null) throw new Error('invalid terminal live presentation graphics');
-  const graphics = value as any;
-  if (!Array.isArray(graphics.images) || !Array.isArray(graphics.placements)) throw new Error('invalid terminal live presentation graphics');
-  return {
-    generation: graphics.generation,
-    images: graphics.images.map((image: any) => ({ ...image, pixels: decodeBase64Bytes(image?.pixels) })),
-    placements: graphics.placements,
-  };
-}
-
-function decodeBase64Bytes(value: unknown): Uint8Array {
-  if (typeof value !== 'string') throw new Error('invalid terminal live presentation graphic pixels');
-  try {
-    if (typeof globalThis.atob === 'function') {
-      const decoded = globalThis.atob(value);
-      return Uint8Array.from(decoded, character => character.charCodeAt(0));
-    }
-    return Uint8Array.from((globalThis as any).Buffer.from(value, 'base64'));
-  } catch {
-    throw new Error('invalid terminal live presentation graphic pixels');
-  }
-}
 
 export const decodeUtf8 = (value: Uint8Array): string => decoder.decode(value);

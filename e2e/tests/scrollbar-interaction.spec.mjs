@@ -123,6 +123,38 @@ test('uses real mouse, wheel, keyboard, focus, selection, and media preferences'
   expect(failures).toEqual([]);
 });
 
+test('projects a complete viewport atomically and keeps it stable while live output advances', async ({ page }) => {
+  const failures = captureBrowserFailures(page);
+  const { scrollbar, pane } = await openTerminalWithHistory(page);
+  const maximum = Number(await scrollbar.getAttribute('aria-valuemax'));
+
+  await pane.hover();
+  await page.mouse.wheel(0, -120);
+  await expect.poll(async () => Number(await scrollbar.getAttribute('aria-valuenow'))).toBeLessThan(maximum);
+  const historyOffset = Number(await scrollbar.getAttribute('aria-valuenow'));
+  const projected = await page.evaluate(() => ({
+    lines: window.__floetermPerfHarness.getVisibleLines(),
+    rows: window.__floetermPerfHarness.getTerminalInfo()?.rows ?? 0,
+  }));
+  expect(projected.lines).toHaveLength(projected.rows);
+  expect(projected.rows).toBeGreaterThan(9);
+
+  await page.evaluate(() => window.__floetermPerfHarness.sendInput("printf 'HISTORY_LIVE_ADVANCE\\n'\r"));
+  await page.waitForFunction(() => window.__floetermPerfHarness
+    ?.getPresentationDiagnostics?.().frame.rows
+    .some(row => row.cells.map(cell => cell.text).join('').includes('HISTORY_LIVE_ADVANCE')));
+
+  expect(Number(await scrollbar.getAttribute('aria-valuenow'))).toBe(historyOffset);
+  expect((await page.evaluate(() => window.__floetermPerfHarness.getVisibleLines().join('\n'))))
+    .not.toContain('HISTORY_LIVE_ADVANCE');
+
+  await scrollbar.focus();
+  await page.keyboard.press('End');
+  await expect.poll(() => page.evaluate(() => window.__floetermPerfHarness.serialize()))
+    .toContain('HISTORY_LIVE_ADVANCE');
+  expect(failures).toEqual([]);
+});
+
 test('keeps the right-edge scrollbar transparent to a real touchscreen hit test', async ({ browser }) => {
   const context = await browser.newContext({
     hasTouch: true,

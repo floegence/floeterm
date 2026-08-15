@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -63,11 +64,42 @@ func (e *fakeSemanticHistoryEngine) ReadHistory(anchor SemanticHistoryAnchor, li
 		return SemanticFrame{}, AnchorInvalid, nil
 	}
 	height := min(limit, e.totalRows-tracked.row)
-	frame := SemanticFrame{Width: 8, Height: height, BufferKind: "normal", Rows: make([]SemanticRow, height)}
+	width := e.frame.Width
+	if width <= 0 {
+		width = 8
+	}
+	frame := SemanticFrame{Width: width, Height: height, BufferKind: "normal", Rows: make([]SemanticRow, height)}
 	for row := range frame.Rows {
-		frame.Rows[row].Cells = []SemanticCell{{Text: fmt.Sprintf("row-%d", tracked.row+row), Width: 1}}
+		frame.Rows[row].Cells = make([]SemanticCell, width)
+		for column := range frame.Rows[row].Cells {
+			text := "history-payload"
+			if column == 0 {
+				text = fmt.Sprintf("row-%d", tracked.row+row)
+			}
+			frame.Rows[row].Cells[column] = SemanticCell{Text: text, Width: 1}
+		}
 	}
 	return frame, AnchorValid, nil
+}
+
+func historyChunkFirstText(t *testing.T, chunk SemanticHistoryChunk) string {
+	t.Helper()
+	if chunk.Continuation != "" {
+		t.Fatal("test helper requires a single history chunk")
+	}
+	var wire struct {
+		Frame struct {
+			Rows [][][]any `json:"rows"`
+		} `json:"frame"`
+	}
+	if err := json.Unmarshal(chunk.Payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Frame.Rows) == 0 || len(wire.Frame.Rows[0]) == 0 {
+		t.Fatal("history chunk has no rows")
+	}
+	text, _ := wire.Frame.Rows[0][0][0].(string)
+	return text
 }
 
 func (e *fakeSemanticEngine) ApplyOutput(data []byte) (TerminalState, error) {
@@ -173,7 +205,7 @@ func TestSessionActorClearResetsScreenHistoryAndPublishesOneAtomicCut(t *testing
 	if err := actor.PublishInitialPresentation(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view/1", Direction: HistoryStart, Limit: 3}); err != nil {
+	if _, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view/1", Direction: HistoryStart, ViewportRows: 3}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -300,12 +332,12 @@ func TestSessionActorReadsOwnedSemanticHistoryWithoutMovingPresentation(t *testi
 	before, _ := store.Latest()
 
 	page, err := actor.ReadHistory(SemanticHistoryRequest{
-		ViewID: "view-a", Direction: HistoryStart, Limit: 5,
+		ViewID: "view-a", Direction: HistoryStart, ViewportRows: 3,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Revision != before.Sequence || page.Frame.Height != 5 || page.Frame.Rows[0].Cells[0].Text != "row-0" {
+	if page.Revision != before.Sequence || page.Rows != 3 || historyChunkFirstText(t, page) != "row-0" {
 		t.Fatalf("history page=%+v", page)
 	}
 	if page.Anchor == "" || page.FirstAvailable == "" || page.LastAvailable == "" || page.ScreenStart == "" {
@@ -314,22 +346,23 @@ func TestSessionActorReadsOwnedSemanticHistoryWithoutMovingPresentation(t *testi
 	if page.HasPrevious || !page.HasNext {
 		t.Fatalf("history bounds=%+v", page)
 	}
-	page.Frame.Rows[0].Cells[0].Text = "mutated"
+	page.Payload[0] ^= 0xff
 	after, _ := store.Latest()
 	if after.Sequence != before.Sequence || after.Frame.Width != before.Frame.Width {
 		t.Fatalf("readonly history changed latest Presentation: before=%+v after=%+v", before, after)
 	}
 
 	next, err := actor.ReadHistory(SemanticHistoryRequest{
-		ViewID: "view-a", Anchor: page.Anchor, Direction: HistoryForward, Limit: 5,
+		ViewID: "view-a", Anchor: page.Anchor, Direction: HistoryForward,
+		Offset: page.Offset, ScrollDeltaRows: 3, ViewportRows: 3,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Frame.Rows[0].Cells[0].Text != "row-5" || !next.HasPrevious || !next.HasNext {
+	if historyChunkFirstText(t, next) != "row-3" || !next.HasPrevious || !next.HasNext {
 		t.Fatalf("next history page=%+v", next)
 	}
-	if got := strings.Join(engine.calls[len(engine.calls)-7:], ","); got != "history-total,history-anchor-row,history-track,history-track,history-track,history-track,history-read" {
+	if got := strings.Join(engine.calls[len(engine.calls)-4:], ","); got != "history-total,history-anchor-row,history-track,history-read" {
 		t.Fatalf("history actor order=%v", engine.calls)
 	}
 }
@@ -350,7 +383,7 @@ func TestSessionActorReadsHistoryAtCurrentCutAfterPresentationAdvances(t *testin
 	}
 
 	page, err := actor.ReadHistory(SemanticHistoryRequest{
-		ViewID: "view-a", Direction: HistoryEnd, Limit: 3,
+		ViewID: "view-a", Direction: HistoryEnd, ViewportRows: 3,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -366,24 +399,38 @@ func TestSessionActorReleasesSupersededHistoryAnchorsAndRejectsStaleTokens(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view-a", Direction: HistoryEnd, Limit: 3})
+	first, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view-a", Direction: HistoryEnd, ViewportRows: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstAnchors := append([]*fakeHistoryAnchor(nil), engine.anchors...)
-	second, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view-a", Anchor: first.Anchor, Direction: HistoryBackward, Limit: 3})
+	frontierAnchors := append([]*fakeHistoryAnchor(nil), engine.anchors[:3]...)
+	second, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view-a", Anchor: first.Anchor, Direction: HistoryBackward,
+		Offset: first.Offset, ScrollDeltaRows: 3, ViewportRows: 3,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Frame.Rows[0].Cells[0].Text != "row-3" {
+	if historyChunkFirstText(t, second) != "row-3" {
 		t.Fatalf("backward history page=%+v", second)
 	}
-	for _, anchor := range firstAnchors {
-		if !anchor.closed {
-			t.Fatal("superseded server-owned history anchor was not released")
+	for _, anchor := range frontierAnchors {
+		if anchor.closed {
+			t.Fatal("scrolling released the bounded view frontier")
 		}
 	}
-	if _, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view-a", Anchor: first.Anchor, Direction: HistoryForward, Limit: 3}); !errors.Is(err, ErrSemanticHistoryAnchor) {
+	if _, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view-a", Direction: HistoryStart, ViewportRows: 3}); err != nil {
+		t.Fatal(err)
+	}
+	for _, anchor := range frontierAnchors {
+		if !anchor.closed {
+			t.Fatal("superseded server-owned history frontier was not released")
+		}
+	}
+	if _, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view-a", Anchor: first.Anchor, Direction: HistoryForward,
+		Offset: first.Offset, ScrollDeltaRows: 3, ViewportRows: 3,
+	}); !errors.Is(err, ErrSemanticHistoryAnchor) {
 		t.Fatalf("stale anchor error=%v", err)
 	}
 	actor.ReleaseHistory("view-a")
@@ -398,10 +445,10 @@ func TestSessionActorBoundsSemanticHistoryRequests(t *testing.T) {
 	engine := &fakeSemanticHistoryEngine{totalRows: MaxSemanticHistoryRows + 1}
 	actor, _ := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
 	for _, request := range []SemanticHistoryRequest{
-		{ViewID: "", Direction: HistoryStart, Limit: 1},
-		{ViewID: "view", Direction: "sideways", Limit: 1},
-		{ViewID: "view", Direction: HistoryStart, Limit: 0},
-		{ViewID: "view", Direction: HistoryStart, Limit: MaxSemanticHistoryRows + 1},
+		{ViewID: "", Direction: HistoryStart, ViewportRows: 1},
+		{ViewID: "view", Direction: "sideways", ViewportRows: 1},
+		{ViewID: "view", Direction: HistoryStart, ViewportRows: 0},
+		{ViewID: "view", Direction: HistoryStart, ViewportRows: MaxSemanticHistoryRows + 1},
 	} {
 		if _, err := actor.ReadHistory(request); err == nil {
 			t.Fatalf("request %+v unexpectedly succeeded", request)

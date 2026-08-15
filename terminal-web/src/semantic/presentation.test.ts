@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { presentationAdvances, validateHistoryPage, validatePresentation } from './presentation';
+import {
+  assembleHistoryViewport,
+  presentationAdvances,
+  validateHistoryChunk,
+  validateHistoryViewport,
+  validatePresentation,
+} from './presentation';
 import type { SemanticFrame, SemanticPresentation } from './presentation';
 import { RendererSurface } from './RendererSurface';
 import { getThemeColors } from '../utils/config';
@@ -117,25 +123,41 @@ describe('semantic presentation', () => {
     expect(vi.getTimerCount()).toBe(0);
     renderer.dispose();
   });
-  it('validates bounded semantic history pages without raw replay fields', () => {
-    const page = {
-      revision: 4, anchor: 'page', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
+  it('validates and atomically assembles a compact semantic history snapshot', async () => {
+    const payload = new TextEncoder().encode(JSON.stringify({
+      v: 1,
+      frame: {
+        ...valid().frame,
+        history: { revision: 4, totalRows: 10, screenStartOffset: 9 },
+        styles: [['rgb:e5e7eb', 'indexed:1', false, false, false], ['default', 'default', false, false, false]],
+        styleInverses: [false, false],
+        rows: [[['A', 1, 0, ''], ['', 1, 1, '']]],
+      },
+    }));
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', payload))]
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const chunk = validateHistoryChunk({
+      snapshotId: 'snapshot', chunkIndex: 0, chunkCount: 1,
+      payloadBytes: payload.byteLength, payloadSha256: digest, payload,
+      revision: 4, transportGeneration: 2, contentEpoch: 0, geometryGeneration: 1,
+      cols: 2, rows: 1,
+      anchor: 'page', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
       offset: 3, totalRows: 10, screenStartOffset: 9, hasPrevious: true, hasNext: true,
-      frame: { ...valid().frame, history: { revision: 4, totalRows: 10, screenStartOffset: 9 } },
-    };
-    expect(validateHistoryPage(page)).toEqual(page);
-    expect(() => validateHistoryPage({ ...page, anchor: '' })).toThrow(/anchor/);
-    expect(() => validateHistoryPage({ ...page, frame: { ...page.frame, width: 3 } })).toThrow(/geometry|row width/);
+    });
+    const viewport = await assembleHistoryViewport([chunk]);
+    expect(viewport.frame.rows[0]!.cells[0]!.text).toBe('A');
+    expect(viewport.frame.height).toBe(1);
+    expect(() => validateHistoryChunk({ ...chunk, anchor: '' })).toThrow(/anchor/);
   });
-  it('validates transport-bounded history pages shorter than the live screen', () => {
-    const page = {
-      revision: 4, anchor: 'page', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
+  it('rejects a complete snapshot whose frame is shorter than its canonical viewport', () => {
+    const viewport = {
+      snapshotId: 'snapshot', revision: 4, transportGeneration: 2, contentEpoch: 0,
+      geometryGeneration: 1, cols: 2, rows: 2,
+      anchor: 'page', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
       offset: 3, totalRows: 10, screenStartOffset: 8, hasPrevious: true, hasNext: true,
       frame: { ...valid().frame, history: { revision: 4, totalRows: 10, screenStartOffset: 8 } },
     };
-    expect(page.frame.height).toBe(1);
-    expect(page.totalRows - page.screenStartOffset).toBe(2);
-    expect(validateHistoryPage(page)).toEqual(page);
+    expect(() => validateHistoryViewport(viewport)).toThrow(/viewport geometry/i);
   });
   it('rejects semantic cell widths outside narrow, wide, and continuation values', () => {
     const invalid = structuredClone(valid());
@@ -613,7 +635,7 @@ describe('semantic presentation', () => {
     expect(fillText).toHaveBeenLastCalledWith('A', 0, 14.76);
   });
 
-  it('projects a transport-bounded history frame shorter than the live grid', () => {
+  it('rejects a transport-bounded history frame shorter than the live grid', () => {
     const fillText = vi.fn();
     const fillRect = vi.fn();
     const context={clearRect:vi.fn(),fillRect,fillText,setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
@@ -629,9 +651,7 @@ describe('semantic presentation', () => {
 
     const history = structuredClone(valid().frame);
     history.rows[0]!.cells[0]!.text = 'H';
-    renderer.project(history);
-
-    expect(fillText).toHaveBeenLastCalledWith('H', 0, 14.76);
+    expect(() => renderer.project(history)).toThrow(/geometry/i);
     expect(fillRect).toHaveBeenCalledWith(0, 0, canvas.width, canvas.height);
   });
 

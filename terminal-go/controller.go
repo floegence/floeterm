@@ -247,21 +247,26 @@ func semanticHistoryViewID(attachmentID string, generation uint64) string {
 // ReadSemanticHistory validates the current transport and enters the same
 // actor ownership window as PTY output, input, and resize. The request never
 // reads Ghostty concurrently and never exposes native tracked references.
-func (s *Session) ReadSemanticHistory(attachmentID string, generation uint64, request SemanticHistoryRequest) (SemanticHistoryPage, error) {
+func (s *Session) ReadSemanticHistory(attachmentID string, generation uint64, request SemanticHistoryRequest) (SemanticHistoryChunk, error) {
 	if s == nil || attachmentID == "" || generation == 0 {
-		return SemanticHistoryPage{}, ErrControllerTransport
+		return SemanticHistoryChunk{}, ErrControllerTransport
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	attachment, ok := s.semanticAttachments[attachmentID]
 	if !ok || attachment.TransportGeneration != generation {
-		return SemanticHistoryPage{}, ErrControllerTransport
+		return SemanticHistoryChunk{}, ErrControllerTransport
 	}
 	if s.closed || s.semanticActor == nil {
-		return SemanticHistoryPage{}, errSessionClosed
+		return SemanticHistoryChunk{}, errSessionClosed
 	}
 	request.ViewID = semanticHistoryViewID(attachmentID, generation)
-	return s.semanticActor.ReadHistory(request)
+	chunk, err := s.semanticActor.ReadHistory(request)
+	if err != nil {
+		return SemanticHistoryChunk{}, err
+	}
+	chunk.TransportGeneration = generation
+	return chunk, nil
 }
 
 // Interact atomically validates transport/epoch and permits same-principal takeover.

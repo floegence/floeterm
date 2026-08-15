@@ -197,11 +197,11 @@ func TestSemanticHistoryRequiresCurrentAttachmentAndReleasesOnDetach(t *testing.
 	if err := session.AttachSemanticView("view", "principal", 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.ReadSemanticHistory("view", 1, SemanticHistoryRequest{Direction: HistoryStart, Limit: 3}); err != ErrControllerTransport {
+	if _, err := session.ReadSemanticHistory("view", 1, SemanticHistoryRequest{Direction: HistoryStart, ViewportRows: 3}); err != ErrControllerTransport {
 		t.Fatalf("stale transport history error=%v", err)
 	}
-	page, err := session.ReadSemanticHistory("view", 2, SemanticHistoryRequest{Direction: HistoryStart, Limit: 3})
-	if err != nil || page.Frame.Rows[0].Cells[0].Text != "row-0" {
+	page, err := session.ReadSemanticHistory("view", 2, SemanticHistoryRequest{Direction: HistoryStart, ViewportRows: 3})
+	if err != nil || historyChunkFirstText(t, page) != "row-0" || page.TransportGeneration != 2 {
 		t.Fatalf("semantic history page=%+v error=%v", page, err)
 	}
 	if !session.LogicalDetachSemanticView("view", 2) {
@@ -212,7 +212,7 @@ func TestSemanticHistoryRequiresCurrentAttachmentAndReleasesOnDetach(t *testing.
 			t.Fatal("detach retained native history anchor")
 		}
 	}
-	if _, err := session.ReadSemanticHistory("view", 2, SemanticHistoryRequest{Direction: HistoryStart, Limit: 3}); err != ErrControllerTransport {
+	if _, err := session.ReadSemanticHistory("view", 2, SemanticHistoryRequest{Direction: HistoryStart, ViewportRows: 3}); err != ErrControllerTransport {
 		t.Fatalf("detached history error=%v", err)
 	}
 }
@@ -464,7 +464,7 @@ func TestSemanticHistorySerializesWithPTYOutput(t *testing.T) {
 	historyWG.Add(1)
 	go func() {
 		defer historyWG.Done()
-		_, _ = session.ReadSemanticHistory("view", 1, SemanticHistoryRequest{Direction: HistoryStart, Limit: 3})
+		_, _ = session.ReadSemanticHistory("view", 1, SemanticHistoryRequest{Direction: HistoryStart, ViewportRows: 3})
 	}()
 	<-engine.entered
 	outputDone := make(chan struct{})

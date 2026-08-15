@@ -12,35 +12,9 @@ func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
 	if err := validateSemanticPresentationCursor(p); err != nil {
 		return nil, err
 	}
-	type wireCell [4]any
-	type wireStyle [5]any
-	styles := make([]wireStyle, 0, 16)
-	styleInverses := make([]bool, 0, 16)
-	styleIndex := make(map[SemanticStyle]int)
-	rows := make([][]wireCell, len(p.Frame.Rows))
-	for y, row := range p.Frame.Rows {
-		rows[y] = make([]wireCell, len(row.Cells))
-		for x, cell := range row.Cells {
-			index, ok := styleIndex[cell.Style]
-			if !ok {
-				index = len(styles)
-				styleIndex[cell.Style] = index
-				styles = append(styles, wireStyle{cell.Style.Foreground, cell.Style.Background, cell.Style.Bold, cell.Style.Italic, cell.Style.Underline})
-				styleInverses = append(styleInverses, cell.Style.Inverse)
-			}
-			rows[y][x] = wireCell{cell.Text, cell.Width, index, cell.Hyperlink}
-		}
-	}
-	graphics := p.Frame.Graphics
-	if graphics.Images == nil {
-		graphics.Images = []SemanticGraphicImage{}
-	}
-	if graphics.Placements == nil {
-		graphics.Placements = []SemanticGraphicPlacement{}
-	}
 	wire := map[string]any{
 		"v": 1, "sequence": p.Sequence, "geometry": p.Geometry, "state": p.State,
-		"frame": map[string]any{"width": p.Frame.Width, "height": p.Frame.Height, "bufferKind": p.Frame.BufferKind, "cursor": p.Frame.Cursor, "history": p.Frame.History, "graphics": graphics, "styles": styles, "styleInverses": styleInverses, "rows": rows},
+		"frame": semanticFrameWire(p.Frame),
 	}
 	data, err := json.Marshal(wire)
 	if err != nil {
@@ -50,6 +24,41 @@ func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
 		return nil, ErrPresentationBackpressure
 	}
 	return data, nil
+}
+
+type semanticWireCell [4]any
+type semanticWireStyle [5]any
+
+func semanticFrameWire(frame SemanticFrame) map[string]any {
+	styles := make([]semanticWireStyle, 0, 16)
+	styleInverses := make([]bool, 0, 16)
+	styleIndex := make(map[SemanticStyle]int)
+	rows := make([][]semanticWireCell, len(frame.Rows))
+	for y, row := range frame.Rows {
+		rows[y] = make([]semanticWireCell, len(row.Cells))
+		for x, cell := range row.Cells {
+			index, ok := styleIndex[cell.Style]
+			if !ok {
+				index = len(styles)
+				styleIndex[cell.Style] = index
+				styles = append(styles, semanticWireStyle{cell.Style.Foreground, cell.Style.Background, cell.Style.Bold, cell.Style.Italic, cell.Style.Underline})
+				styleInverses = append(styleInverses, cell.Style.Inverse)
+			}
+			rows[y][x] = semanticWireCell{cell.Text, cell.Width, index, cell.Hyperlink}
+		}
+	}
+	graphics := frame.Graphics
+	if graphics.Images == nil {
+		graphics.Images = []SemanticGraphicImage{}
+	}
+	if graphics.Placements == nil {
+		graphics.Placements = []SemanticGraphicPlacement{}
+	}
+	return map[string]any{
+		"width": frame.Width, "height": frame.Height, "bufferKind": frame.BufferKind,
+		"cursor": frame.Cursor, "history": frame.History, "graphics": graphics,
+		"styles": styles, "styleInverses": styleInverses, "rows": rows,
+	}
 }
 
 var semanticRGBPattern = regexp.MustCompile(`^rgb:[0-9a-fA-F]{6}$`)

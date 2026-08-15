@@ -5,8 +5,16 @@ export {
   SEMANTIC_TERMINAL_FONT_FAMILY,
 } from '../semantic/RendererSurface.js';
 export { TerminalInputBridge } from '../core/TerminalInputBridge.js';
+export { HistoryViewportController } from '../semantic/HistoryViewportController.js';
+export type { HistoryViewportControllerOptions, HistoryViewportState } from '../semantic/HistoryViewportController.js';
 export type { TerminalInputBridgeOptions, TerminalKeyInputIntent } from '../core/TerminalInputBridge.js';
-export { presentationAdvances, validateHistoryPage, validatePresentation } from '../semantic/presentation.js';
+export {
+  assembleHistoryViewport,
+  presentationAdvances,
+  validateHistoryChunk,
+  validateHistoryViewport,
+  validatePresentation,
+} from '../semantic/presentation.js';
 export {
   getDefaultTerminalConfig,
   getTerminalThemeDefinition,
@@ -25,9 +33,11 @@ export type {
 export type {
   SemanticCell,
   SemanticFrame,
+  SemanticHistoryChunk,
+  SemanticHistoryChunkRequest,
   SemanticHistoryDirection,
-  SemanticHistoryPage,
   SemanticHistoryRequest,
+  SemanticHistoryViewport,
   SemanticPresentation,
 } from '../semantic/presentation.js';
 export type {

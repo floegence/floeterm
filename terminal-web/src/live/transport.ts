@@ -1,4 +1,11 @@
-import type { SemanticHistoryPage, SemanticHistoryRequest } from '../semantic/presentation.js';
+import {
+  assembleHistoryViewport,
+  type SemanticHistoryChunk,
+  type SemanticHistoryChunkRequest,
+  type SemanticHistoryRequest,
+  type SemanticHistoryViewport,
+  validateHistoryChunk,
+} from '../semantic/presentation.js';
 import type { TerminalKeyInputIntent } from '../core/TerminalInputBridge.js';
 import type {
   TerminalExecutionContextUpdateEvent,
@@ -25,8 +32,8 @@ export type SemanticTerminalLiveControlPlane = Readonly<{
     sessionId: TerminalID,
     connectionId: string,
     transportGeneration: number,
-    request: SemanticHistoryRequest,
-  ): Promise<SemanticHistoryPage>;
+    request: SemanticHistoryChunkRequest,
+  ): Promise<SemanticHistoryChunk>;
   clearSemanticContent?(
     sessionId: TerminalID,
     connectionId: string,
@@ -127,7 +134,7 @@ export type SemanticTerminalLiveTransport = Readonly<{
   activate(sessionId: TerminalID, cols: number, rows: number): Promise<TerminalLiveActivationAppliedResult>;
   sendInput(sessionId: TerminalID, input: string): Promise<void>;
   sendInputIntent(sessionId: TerminalID, input: TerminalKeyInputIntent): Promise<void>;
-  semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryPage>;
+  semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryViewport>;
   clearSemanticContent?(sessionId: TerminalID): Promise<TerminalSemanticClearResult>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
   createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
@@ -322,15 +329,22 @@ export const createSemanticTerminalLiveTransport = (
       if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
         throw new Error('terminal live session is not attached');
       }
-      const page = await options.control.semanticHistory(
-        sessionId, options.connectionId, entry.generation, request,
-      );
-      if (!isCurrentGeneration(sessionId, entry.generation)) {
-        const error = new Error('terminal semantic history request was superseded');
-        error.name = 'AbortError';
-        throw error;
+      const chunks: SemanticHistoryChunk[] = [];
+      let chunkRequest: SemanticHistoryChunkRequest = request;
+      for (;;) {
+        const chunk = validateHistoryChunk(await options.control.semanticHistory(
+          sessionId, options.connectionId, entry.generation, chunkRequest,
+        ));
+        if (!isCurrentGeneration(sessionId, entry.generation) || chunk.transportGeneration !== entry.generation) {
+          const error = new Error('terminal semantic history request was superseded');
+          error.name = 'AbortError';
+          throw error;
+        }
+        chunks.push(chunk);
+        if (!chunk.continuation) break;
+        chunkRequest = { continuation: chunk.continuation };
       }
-      return page;
+      return assembleHistoryViewport(chunks);
     },
     clearSemanticContent: options.control.clearSemanticContent ? async sessionId => {
       const entry = entries.get(sessionId);

@@ -1,10 +1,11 @@
 import type {
-  SemanticHistoryPage,
+  SemanticHistoryChunk,
+  SemanticHistoryChunkRequest,
   SemanticHistoryRequest,
   SemanticPresentation,
 } from '@floegence/floeterm-terminal-web/semantic';
 import type { TerminalID, TerminalSessionInfo } from '@floegence/floeterm-terminal-web/sessions';
-import { validateHistoryPage, validatePresentation } from '@floegence/floeterm-terminal-web/semantic';
+import { validateHistoryChunk, validatePresentation } from '@floegence/floeterm-terminal-web/semantic';
 import {
   StreamKind,
   createSemanticTerminalLiveTransport,
@@ -81,8 +82,8 @@ export const createTerminalRuntime = (connId: string) => {
         sessionId: TerminalID,
         connectionId: string,
         transportGeneration: number,
-        request: SemanticHistoryRequest,
-      ): Promise<SemanticHistoryPage> => validateHistoryPage(await requestJson<unknown>(
+        request: SemanticHistoryChunkRequest,
+      ): Promise<SemanticHistoryChunk> => validateHistoryChunk(await requestJson<unknown>(
         `/api/sessions/${encodeURIComponent(sessionId)}/semantic-history`,
         {
           method: 'POST',

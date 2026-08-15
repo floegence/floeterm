@@ -1,11 +1,20 @@
 package terminal
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
-const MaxSemanticHistoryRows = 200
+const (
+	MaxSemanticHistoryRows              = 200
+	MaxSemanticHistoryChunkPayloadBytes = 60 * 1024
+	MaxSemanticHistorySnapshotBytes     = 16 * 1024 * 1024
+)
 
 var (
 	ErrSemanticHistoryAnchor = errors.New("semantic history anchor is invalid")
@@ -41,46 +50,94 @@ type SemanticHistoryEngine interface {
 }
 
 type SemanticHistoryRequest struct {
-	ViewID    string                   `json:"-"`
-	Anchor    string                   `json:"anchor,omitempty"`
-	Direction SemanticHistoryDirection `json:"direction"`
-	Limit     int                      `json:"limit"`
+	ViewID          string                   `json:"-"`
+	Anchor          string                   `json:"anchor,omitempty"`
+	Continuation    string                   `json:"continuation,omitempty"`
+	Direction       SemanticHistoryDirection `json:"direction,omitempty"`
+	Offset          int                      `json:"offset,omitempty"`
+	ScrollDeltaRows int                      `json:"scrollDeltaRows,omitempty"`
+	ViewportRows    int                      `json:"viewportRows,omitempty"`
 }
 
-// SemanticHistoryPage is a temporary, Go-owned projection. Anchor strings are
-// opaque capabilities scoped to one attached view and one actor.
-type SemanticHistoryPage struct {
-	Revision          uint64        `json:"revision"`
-	Anchor            string        `json:"anchor"`
-	FirstAvailable    string        `json:"firstAvailable"`
-	LastAvailable     string        `json:"lastAvailable"`
-	ScreenStart       string        `json:"screenStart"`
-	Offset            int           `json:"offset"`
-	TotalRows         int           `json:"totalRows"`
-	ScreenStartOffset int           `json:"screenStartOffset"`
-	HasPrevious       bool          `json:"hasPrevious"`
-	HasNext           bool          `json:"hasNext"`
-	Frame             SemanticFrame `json:"frame"`
+// SemanticHistoryChunk is one transport-bounded part of a complete immutable
+// viewport snapshot. All chunks share one identity and must be reassembled
+// before any frame becomes visible.
+type SemanticHistoryChunk struct {
+	SnapshotID          string `json:"snapshotId"`
+	Continuation        string `json:"continuation,omitempty"`
+	ChunkIndex          int    `json:"chunkIndex"`
+	ChunkCount          int    `json:"chunkCount"`
+	PayloadBytes        int    `json:"payloadBytes"`
+	PayloadSHA256       string `json:"payloadSha256"`
+	Payload             []byte `json:"payload"`
+	Revision            uint64 `json:"revision"`
+	TransportGeneration uint64 `json:"transportGeneration"`
+	ContentEpoch        uint64 `json:"contentEpoch"`
+	GeometryGeneration  uint64 `json:"geometryGeneration"`
+	Cols                int    `json:"cols"`
+	Rows                int    `json:"rows"`
+	Anchor              string `json:"anchor"`
+	FirstAvailable      string `json:"firstAvailable"`
+	LastAvailable       string `json:"lastAvailable"`
+	ScreenStart         string `json:"screenStart"`
+	Offset              int    `json:"offset"`
+	TotalRows           int    `json:"totalRows"`
+	ScreenStartOffset   int    `json:"screenStartOffset"`
+	HasPrevious         bool   `json:"hasPrevious"`
+	HasNext             bool   `json:"hasNext"`
 }
 
 type semanticHistoryView struct {
-	tokens map[string]SemanticHistoryAnchor
+	anchorID         string
+	firstAvailableID string
+	lastAvailableID  string
+	screenStartID    string
+	firstAvailable   SemanticHistoryAnchor
+	lastAvailable    SemanticHistoryAnchor
+	screenStart      SemanticHistoryAnchor
+	snapshot         semanticHistorySnapshot
+}
+
+type semanticHistorySnapshot struct {
+	id                 string
+	payload            []byte
+	payloadSHA256      string
+	revision           uint64
+	contentEpoch       uint64
+	geometryGeneration uint64
+	cols               int
+	rows               int
+	offset             int
+	totalRows          int
+	screenStartOffset  int
+	hasPrevious        bool
+	hasNext            bool
+	anchor             string
+	firstAvailable     string
+	lastAvailable      string
+	screenStart        string
 }
 
 func validateSemanticHistoryRequest(request SemanticHistoryRequest) error {
 	if request.ViewID == "" || len(request.ViewID) > 256 {
 		return errors.New("semantic history view id is invalid")
 	}
-	if request.Limit <= 0 || request.Limit > MaxSemanticHistoryRows {
-		return fmt.Errorf("semantic history limit must be between 1 and %d", MaxSemanticHistoryRows)
+	if request.Continuation != "" {
+		if len(request.Continuation) > 192 || request.Anchor != "" || request.Direction != "" || request.Offset != 0 || request.ScrollDeltaRows != 0 || request.ViewportRows != 0 {
+			return errors.New("semantic history continuation request is invalid")
+		}
+		return nil
+	}
+	if request.ViewportRows <= 0 || request.ViewportRows > MaxSemanticHistoryRows {
+		return fmt.Errorf("semantic history viewport rows must be between 1 and %d", MaxSemanticHistoryRows)
 	}
 	switch request.Direction {
 	case HistoryStart, HistoryEnd:
-		if request.Anchor != "" {
+		if request.Anchor != "" || request.Offset != 0 || request.ScrollDeltaRows != 0 {
 			return errors.New("semantic history boundary request cannot include an anchor")
 		}
 	case HistoryForward, HistoryBackward:
-		if request.Anchor == "" || len(request.Anchor) > 128 {
+		if request.Anchor == "" || len(request.Anchor) > 128 || request.Offset < 0 || request.ScrollDeltaRows <= 0 || request.ScrollDeltaRows > MaxSemanticHistoryRows {
 			return ErrSemanticHistoryAnchor
 		}
 	default:
@@ -89,8 +146,68 @@ func validateSemanticHistoryRequest(request SemanticHistoryRequest) error {
 	return nil
 }
 
-func closeSemanticHistoryTokens(tokens map[string]SemanticHistoryAnchor) {
-	for _, anchor := range tokens {
-		anchor.Close()
+func (view *semanticHistoryView) close() {
+	if view == nil {
+		return
 	}
+	for _, anchor := range []SemanticHistoryAnchor{view.firstAvailable, view.lastAvailable, view.screenStart} {
+		if anchor != nil {
+			anchor.Close()
+		}
+	}
+	view.firstAvailable = nil
+	view.lastAvailable = nil
+	view.screenStart = nil
+	view.snapshot.payload = nil
+}
+
+func encodeSemanticHistoryFrame(frame SemanticFrame) ([]byte, string, error) {
+	payload, err := json.Marshal(map[string]any{"v": 1, "frame": semanticFrameWire(frame)})
+	if err != nil {
+		return nil, "", err
+	}
+	if len(payload) == 0 || len(payload) > MaxSemanticHistorySnapshotBytes {
+		return nil, "", ErrPresentationBackpressure
+	}
+	digest := sha256.Sum256(payload)
+	return payload, hex.EncodeToString(digest[:]), nil
+}
+
+func semanticHistoryContinuation(snapshotID string, chunkIndex int) string {
+	return "hc-" + snapshotID + "-" + strconv.Itoa(chunkIndex)
+}
+
+func semanticHistoryContinuationIndex(snapshotID, continuation string) (int, bool) {
+	prefix := "hc-" + snapshotID + "-"
+	if !strings.HasPrefix(continuation, prefix) {
+		return 0, false
+	}
+	index, err := strconv.Atoi(strings.TrimPrefix(continuation, prefix))
+	return index, err == nil && index >= 0
+}
+
+func semanticHistoryChunk(snapshot semanticHistorySnapshot, chunkIndex int) (SemanticHistoryChunk, error) {
+	chunkCount := (len(snapshot.payload) + MaxSemanticHistoryChunkPayloadBytes - 1) / MaxSemanticHistoryChunkPayloadBytes
+	if chunkIndex < 0 || chunkIndex >= chunkCount || chunkCount <= 0 {
+		return SemanticHistoryChunk{}, ErrSemanticHistoryAnchor
+	}
+	start := chunkIndex * MaxSemanticHistoryChunkPayloadBytes
+	end := min(len(snapshot.payload), start+MaxSemanticHistoryChunkPayloadBytes)
+	continuation := ""
+	if chunkIndex+1 < chunkCount {
+		continuation = semanticHistoryContinuation(snapshot.id, chunkIndex+1)
+	}
+	return SemanticHistoryChunk{
+		SnapshotID: snapshot.id, Continuation: continuation,
+		ChunkIndex: chunkIndex, ChunkCount: chunkCount,
+		PayloadBytes: len(snapshot.payload), PayloadSHA256: snapshot.payloadSHA256,
+		Payload:  append([]byte(nil), snapshot.payload[start:end]...),
+		Revision: snapshot.revision, ContentEpoch: snapshot.contentEpoch,
+		GeometryGeneration: snapshot.geometryGeneration, Cols: snapshot.cols, Rows: snapshot.rows,
+		Anchor: snapshot.anchor, FirstAvailable: snapshot.firstAvailable,
+		LastAvailable: snapshot.lastAvailable, ScreenStart: snapshot.screenStart,
+		Offset: snapshot.offset, TotalRows: snapshot.totalRows,
+		ScreenStartOffset: snapshot.screenStartOffset,
+		HasPrevious:       snapshot.hasPrevious, HasNext: snapshot.hasNext,
+	}, nil
 }

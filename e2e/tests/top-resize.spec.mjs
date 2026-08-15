@@ -82,7 +82,7 @@ const waitForConvergence = async (page, previousGeneration) => {
 };
 
 const semanticHistoryContains = async (page, marker) => page.evaluate(async expected => {
-  const history = await window.__floetermPerfHarness?.readSemanticHistory('end');
+  const history = await window.__floetermPerfHarness?.readSemanticHistory({ direction: 'end' });
   return history?.frame.rows
     .map(row => row.cells.map(cell => cell.text).join(''))
     .join('\n')

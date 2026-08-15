@@ -40,6 +40,9 @@ Key contracts:
   sends Ctrl-L or clears only a browser canvas.
 - A Presentation contains matching state, geometry, frame, cursor, and graphics.
 - Live transport uses a bounded reliable FIFO plus one latest-Presentation slot.
+- History transport captures one actor-owned immutable viewport at canonical geometry.
+  It may split that snapshot into bounded chunks, but a browser validates and
+  reassembles every chunk before atomically projecting a complete viewport.
 - Only the current controller changes PTY geometry or sends input; observers remain
   render-only.
 - Resize acknowledgements mean canonical geometry was actually applied.
@@ -57,8 +60,8 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.10.5
-npm install @floegence/floeterm-terminal-web@0.15.7
+go get github.com/floegence/floeterm/terminal-go@v0.11.0
+npm install @floegence/floeterm-terminal-web@0.16.0
 ```
 
 ## Browser Integration
@@ -69,6 +72,7 @@ need:
 ```ts
 import {
   RendererSurface,
+  HistoryViewportController,
   TerminalInputBridge,
   getThemeColors,
   validatePresentation,
@@ -87,8 +91,13 @@ const bundle = createSemanticTerminalLiveTransport({
   control,
 });
 
+const history = new HistoryViewportController({
+  renderer,
+  request: request => bundle.transport.semanticHistory(sessionId, request),
+});
+
 const unsubscribe = bundle.eventSource.onTerminalPresentation(sessionId, value => {
-  renderer.apply(validatePresentation(value));
+  history.apply(validatePresentation(value));
 });
 
 // Invoke only for a real pointer/keyboard activation, before its input write.
