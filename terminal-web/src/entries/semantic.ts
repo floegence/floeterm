@@ -18,6 +18,7 @@ export {
 } from '../utils/config.js';
 export type {
   SemanticTerminalCellMetrics,
+  SemanticTerminalCursorRect,
   SemanticTerminalPalette,
   SemanticTerminalTypography,
 } from '../semantic/RendererSurface.js';

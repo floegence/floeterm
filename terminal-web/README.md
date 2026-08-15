@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.15.5
+npm install @floegence/floeterm-terminal-web@0.15.6
 ```
 
 ## Exports
@@ -71,7 +71,7 @@ const bridge = new TerminalInputBridge({
   inputElement: textarea,
   onData: data => transport.sendInput(sessionId, data),
   onInputIntent: intent => transport.sendInputIntent(sessionId, intent),
-  syncInputGeometry: () => positionTextarea(renderer.getCursorClientRect()),
+  syncInputGeometry: () => positionTextarea(renderer.getCursorLayoutRect()),
 });
 ```
 
@@ -83,8 +83,10 @@ resolves cursor modes, modifiers, and terminal escape sequences. Paste, dead-key
 input, copy shortcuts, focus, and controller ownership remain separate from composition
 state.
 
-The cursor rectangle uses CSS pixels. Canvas backing DPR is not multiplied into the
-IME anchor.
+Both cursor rectangle APIs use CSS pixels; canvas backing DPR is never multiplied
+into the IME anchor. Use `getCursorLayoutRect()` when the editable element is
+absolutely positioned in the canvas containing block. Use `getCursorClientRect()`
+only for a fixed or portal element positioned in viewport coordinates.
 
 ## Semantic Live Transport
 

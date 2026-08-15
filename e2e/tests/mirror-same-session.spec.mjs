@@ -76,14 +76,37 @@ const resetMirrorRenderDiagnostics = page => page.evaluate(() => {
 });
 
 const expectMirrorPresentationConverged = async page => {
-  await expect.poll(() => page.evaluate(() => {
-    const views = window.__floetermMirrorHarness?.getViews() ?? [];
-    if (views.length !== 2) return false;
-    const presentations = views.map(view => view.getPresentationDiagnostics?.());
-    if (presentations.some(value => !value)) return false;
-    return presentations.every(value => value.sequence === presentations[0].sequence)
-      && views.every(view => view.serialize() === views[0].serialize());
-  })).toBe(true);
+  let stableSequence = 0;
+  let stableSamples = 0;
+  let latest = [];
+  await expect.poll(async () => {
+    latest = await page.evaluate(() => {
+      const views = window.__floetermMirrorHarness?.getViews() ?? [];
+      return views.map(view => ({
+        stream: view.getStreamDiagnostics(),
+        presentationSequence: view.getPresentationDiagnostics?.()?.sequence ?? 0,
+        serialized: view.serialize(),
+      }));
+    });
+    const sequence = latest[0]?.presentationSequence ?? 0;
+    const converged = latest.length === 2
+      && sequence > 0
+      && latest.every(view => view.presentationSequence === sequence)
+      && latest.every(view => view.serialized === latest[0].serialized);
+    if (!converged) {
+      stableSequence = 0;
+      stableSamples = 0;
+      return stableSamples;
+    }
+    if (sequence !== stableSequence) {
+      stableSequence = sequence;
+      stableSamples = 1;
+    } else {
+      stableSamples += 1;
+    }
+    return stableSamples;
+  }, { intervals: [50, 50, 100, 100] }).toBeGreaterThanOrEqual(3);
+  return latest;
 };
 
 const expectMirrorGeometryConverged = async page => {
@@ -464,12 +487,7 @@ test('keeps long wrapped output and terminal state identical across different vi
   await page.waitForFunction(target => (
     window.__floetermMirrorHarness.getViews().every(view => view.serialize().replace(/\s/g, '').includes(target))
   ), wrapTarget);
-  await expectMirrorPresentationConverged(page);
-  const wrapped = await page.evaluate(() => window.__floetermMirrorHarness.getViews().map(view => ({
-    stream: view.getStreamDiagnostics(),
-    presentationSequence: view.getPresentationDiagnostics().sequence,
-    serialized: view.serialize(),
-  })));
+  const wrapped = await expectMirrorPresentationConverged(page);
   expect(wrapped.every(view => view.stream.sequenceGaps === 0 && view.stream.dataEvents > 0)).toBe(true);
   expect(wrapped[0].stream.lastSequence).toBe(wrapped[0].presentationSequence);
   expect(wrapped[1].stream.lastSequence).toBe(wrapped[1].presentationSequence);

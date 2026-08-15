@@ -118,7 +118,7 @@ func semanticFrameFromNative(f nativevt.Frame) (SemanticFrame, error) {
 			if widthErr != nil {
 				return SemanticFrame{}, widthErr
 			}
-			out.Rows[y].Cells[x] = SemanticCell{Text: c.Text, Hyperlink: c.Hyperlink, Width: width, Style: SemanticStyle{Foreground: semanticColor(c.Foreground), Background: semanticColor(c.Background), Bold: c.Bold, Italic: c.Italic}}
+			out.Rows[y].Cells[x] = SemanticCell{Text: c.Text, Hyperlink: c.Hyperlink, Width: width, Style: SemanticStyle{Foreground: semanticColor(c.Foreground), Background: semanticColor(c.Background), Bold: c.Bold, Italic: c.Italic, Inverse: c.Inverse}}
 		}
 	}
 	return out, nil

@@ -62,9 +62,11 @@ describe('reference app resize ownership', () => {
     expect(appSource).toContain('onInputIntent: props.sendInputIntent');
     expect(appSource).not.toContain('terminalKeyInput');
     expect(appSource).not.toContain('onKeyDown={event => {\n          const value =');
-    expect(appSource).toContain('renderer()?.getCursorClientRect()');
+    expect(appSource).toContain('renderer()?.getCursorLayoutRect()');
     expect(appSource).not.toContain('onInput={event =>');
-    expect(stylesSource).toMatch(/\.terminalInputBridge\s*\{[^}]*position:\s*fixed;/);
+    expect(stylesSource).toMatch(/\.terminalPane\s*\{[^}]*position:\s*relative;/);
+    expect(stylesSource).toMatch(/\.terminalInputBridge\s*\{[^}]*position:\s*absolute;/);
+    expect(stylesSource).not.toMatch(/\.terminalInputBridge\s*\{[^}]*position:\s*fixed;/);
     expect(stylesSource).not.toMatch(/\.terminalInputBridge\s*\{[^}]*inset:\s*0;/);
     expect(stylesSource).toMatch(/\.semanticTerminalSurface\s*\{[^}]*pointer-events:\s*auto;/);
   });

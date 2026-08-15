@@ -28,6 +28,33 @@ const presentation = (): SemanticPresentation => validatePresentation({
   },
 });
 
+const selectionPresentation = (): SemanticPresentation => validatePresentation({
+  sequence: 1,
+  geometry: { generation: 1, cols: 8, rows: 2 },
+  state: { sequence: 1 },
+  frame: {
+    width: 8,
+    height: 2,
+    bufferKind: 'normal',
+    history: { revision: 1, totalRows: 2, screenStartOffset: 0 },
+    graphics: { generation: 0, images: [], placements: [] },
+    rows: [
+      { cells: [
+        { text: 'A', width: 1 },
+        { text: '中', width: 2 },
+        { text: '', width: 0 },
+        { text: 'e\u0301', width: 1 },
+        { text: '👩‍💻', width: 2 },
+        { text: '', width: 0 },
+        { text: 'B', width: 1 },
+        { text: 'C', width: 1 },
+      ] },
+      { cells: 'DEFGHIJK'.split('').map(text => ({ text, width: 1 })) },
+    ],
+    cursor: { x: 4, y: 1, visible: true, shape: 'bar', blinking: false },
+  },
+});
+
 const hexToRgb = (hex: string): number[] => {
   const value = hex.replace(/^#/, '');
   return [0, 2, 4].map(offset => Number.parseInt(value.slice(offset, offset + 2), 16));
@@ -76,9 +103,41 @@ describe('semantic terminal browser surface', () => {
     renderer.dispose();
   });
 
-  it('anchors a real editable bridge at the semantic cursor and commits IME once', async () => {
+  it('preserves inverse cell colors when cursor blink repaints one cell', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    const palette = getThemeColors('dark');
+    renderer.setPalette(palette);
+    const inverse = presentation();
+    inverse.frame.rows[0]!.cells[0] = {
+      text: 'A',
+      width: 1,
+      style: { foreground: 'default', background: 'default', inverse: true },
+    };
+    inverse.frame.cursor = { x: 0, y: 0, visible: true, shape: 'bar', blinking: true };
+    renderer.apply(inverse);
+    await nextPaint();
+
+    const context = canvas.getContext('2d')!;
+    const metrics = renderer.getCellMetrics();
+    context.fillStyle = palette.background;
+    context.fillRect(0, 0, metrics.cellWidthCssPx, metrics.cellHeightCssPx);
+    (renderer as unknown as { repaintCursorCell(): void }).repaintCursorCell();
+
+    const sampleX = Math.max(2, Math.floor(metrics.cellWidthCssPx) - 1);
+    const pixel = context.getImageData(sampleX, 1, 1, 1).data;
+    expect(Array.from(pixel.slice(0, 3))).toEqual(hexToRgb(palette.foreground));
+
+    renderer.dispose();
+  });
+
+  it('anchors a real editable bridge at the semantic cursor and commits IME once', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px;transform-origin:0 0;transform:translate(23px, 17px) scale(0.35, 0.5)';
     const canvas = document.createElement('canvas');
     const input = document.createElement('textarea');
     input.setAttribute('aria-label', 'Terminal input');
@@ -95,11 +154,12 @@ describe('semantic terminal browser surface', () => {
     await nextPaint();
 
     const syncInputGeometry = (): void => {
-      const cursor = renderer.getCursorClientRect();
-      const bounds = host.getBoundingClientRect();
+      const cursor = renderer.getCursorLayoutRect();
       if (!cursor) return;
-      input.style.left = `${cursor.left - bounds.left}px`;
-      input.style.top = `${cursor.top - bounds.top}px`;
+      input.style.left = `${cursor.left}px`;
+      input.style.top = `${cursor.top}px`;
+      input.style.width = `${cursor.width}px`;
+      input.style.height = `${cursor.height}px`;
     };
     const emitted: string[] = [];
     const bridge = new TerminalInputBridge({ inputHost: host, inputElement: input, onData: data => emitted.push(data), syncInputGeometry });
@@ -110,7 +170,8 @@ describe('semantic terminal browser surface', () => {
     expect(cursor).not.toBeNull();
     expect(Math.abs(anchor.left - cursor!.left)).toBeLessThanOrEqual(1);
     expect(Math.abs(anchor.top - cursor!.top)).toBeLessThanOrEqual(1);
-    expect(cursor).toMatchObject({ width: metrics.cellWidthCssPx, height: metrics.cellHeightCssPx });
+    expect(cursor!.width).toBeCloseTo(metrics.cellWidthCssPx * 0.35, 3);
+    expect(cursor!.height).toBeCloseTo(metrics.cellHeightCssPx * 0.5, 3);
     expect(host.querySelectorAll('canvas')).toHaveLength(1);
 
     input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
@@ -207,5 +268,82 @@ describe('semantic terminal browser surface', () => {
     expect(Array.from(pixel.slice(0, 3))).toEqual(hexToRgb(getThemeColors('dark').selectionBackground));
 
     renderer.dispose();
+  });
+
+  it('maps transformed visual coordinates to logical cells and cursor anchors across DPR values', async () => {
+    const originalDpr = Object.getOwnPropertyDescriptor(globalThis, 'devicePixelRatio');
+    const transforms = [
+      { value: 'translate(37px, 23px) scale(0.25)', scaleX: 0.25, scaleY: 0.25 },
+      { value: 'translate(11px, 17px) scale(0.35)', scaleX: 0.35, scaleY: 0.35 },
+      { value: 'translate(29px, 13px) scale(0.5)', scaleX: 0.5, scaleY: 0.5 },
+      { value: 'translate(19px, 31px) scale(0.35, 0.5)', scaleX: 0.35, scaleY: 0.5 },
+      { value: 'translate(7px, 5px) scale(1)', scaleX: 1, scaleY: 1 },
+    ];
+
+    try {
+      for (const [index, transform] of transforms.entries()) {
+        const dpr = [1, 1.5, 2][index % 3]!;
+        Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, value: dpr });
+        const host = document.createElement('div');
+        host.style.cssText = `position:relative;width:180px;height:90px;transform-origin:0 0;transform:${transform.value}`;
+        const canvas = document.createElement('canvas');
+        host.append(canvas);
+        document.body.append(host);
+        const renderer = new RendererSurface(canvas);
+        renderer.apply(selectionPresentation());
+        await nextPaint();
+
+        const bounds = canvas.getBoundingClientRect();
+        const metrics = renderer.getCellMetrics();
+        const scaleX = bounds.width / canvas.clientWidth;
+        const scaleY = bounds.height / canvas.clientHeight;
+        expect(scaleX).toBeCloseTo(transform.scaleX, 4);
+        expect(scaleY).toBeCloseTo(transform.scaleY, 4);
+        expect(canvas.width).toBe(Math.round(canvas.clientWidth * dpr));
+        expect(canvas.height).toBe(Math.round(canvas.clientHeight * dpr));
+
+        const point = (col: number, row: number, xFraction = 0.5, yFraction = 0.5) => ({
+          x: bounds.left + ((col + xFraction) * metrics.cellWidthCssPx * scaleX),
+          y: bounds.top + ((row + yFraction) * metrics.cellHeightCssPx * scaleY),
+        });
+
+        const reverseStart = point(6, 0);
+        const reverseEnd = point(1, 0);
+        renderer.beginSelection(reverseStart.x, reverseStart.y);
+        renderer.updateSelection(reverseEnd.x, reverseEnd.y);
+        renderer.endSelection(reverseEnd.x, reverseEnd.y);
+        expect(renderer.getSelectionText()).toBe('中e\u0301👩‍💻B');
+
+        renderer.clearSelection();
+        const continuationStart = point(2, 0, 0.1, 0.1);
+        const continuationEnd = point(2, 0, 0.9, 0.9);
+        renderer.beginSelection(continuationStart.x, continuationStart.y);
+        renderer.updateSelection(continuationEnd.x, continuationEnd.y);
+        renderer.endSelection(continuationEnd.x, continuationEnd.y);
+        expect(renderer.getSelectionText()).toBe('中');
+
+        const padding = {
+          x: bounds.left + (canvas.clientWidth - 1) * scaleX,
+          y: bounds.top + metrics.cellHeightCssPx * 0.5 * scaleY,
+        };
+        renderer.beginSelection(padding.x, padding.y);
+        renderer.updateSelection(padding.x + 4, padding.y);
+        renderer.endSelection(padding.x + 4, padding.y);
+        expect(renderer.getSelectionText()).toBe('');
+
+        const cursor = renderer.getCursorClientRect();
+        expect(cursor).not.toBeNull();
+        expect(cursor!.left).toBeCloseTo(bounds.left + 4 * metrics.cellWidthCssPx * scaleX, 3);
+        expect(cursor!.top).toBeCloseTo(bounds.top + metrics.cellHeightCssPx * scaleY, 3);
+        expect(cursor!.width).toBeCloseTo(metrics.cellWidthCssPx * scaleX, 3);
+        expect(cursor!.height).toBeCloseTo(metrics.cellHeightCssPx * scaleY, 3);
+
+        renderer.dispose();
+        host.remove();
+      }
+    } finally {
+      if (originalDpr) Object.defineProperty(globalThis, 'devicePixelRatio', originalDpr);
+      else delete (globalThis as { devicePixelRatio?: number }).devicePixelRatio;
+    }
   });
 });

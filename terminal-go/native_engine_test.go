@@ -4,6 +4,7 @@ package terminal
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"testing"
 
@@ -84,12 +85,26 @@ func TestRealNativeActorProducesImmutablePresentation(t *testing.T) {
 	}
 }
 
-func TestRealNativeKeyEncoderUsesCurrentTerminalModes(t *testing.T) {
-	engine, err := NewNativeSemanticEngine(20, 4)
+func TestRealNativePresentationPreservesInverseCellStyle(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer engine.Close()
+	if _, err := engine.ApplyOutput([]byte("\x1b[31;44;7mX\x1b[0m")); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := engine.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := frame.Rows[0].Cells[0]
+	if cell.Text != "X" || !cell.Style.Inverse || cell.Style.Foreground != "indexed:1" || cell.Style.Background != "indexed:4" {
+		t.Fatalf("inverse semantic cell = %+v", cell)
+	}
+}
+
+func TestRealNativeKeyEncoderUsesCurrentTerminalModes(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		setup  string
@@ -99,10 +114,34 @@ func TestRealNativeKeyEncoderUsesCurrentTerminalModes(t *testing.T) {
 		{name: "enter", intent: SemanticInput{Kind: "key", Code: "Enter", Action: "press"}, want: "\r"},
 		{name: "normal cursor", intent: SemanticInput{Kind: "key", Code: "ArrowUp", Action: "press"}, want: "\x1b[A"},
 		{name: "application cursor", setup: "\x1b[?1h", intent: SemanticInput{Kind: "key", Code: "ArrowUp", Action: "press"}, want: "\x1bOA"},
-		{name: "control letter", intent: SemanticInput{Kind: "key", Code: "KeyC", Text: "c", Action: "press", Modifiers: SemanticModifierControl}, want: "\x03"},
+		{name: "control a readline start", intent: SemanticInput{Kind: "key", Code: "KeyA", Text: "a", Action: "press", Modifiers: SemanticModifierControl}, want: "\x01"},
+		{name: "control c interrupt", intent: SemanticInput{Kind: "key", Code: "KeyC", Text: "c", Action: "press", Modifiers: SemanticModifierControl}, want: "\x03"},
+		{name: "control d eof", intent: SemanticInput{Kind: "key", Code: "KeyD", Text: "d", Action: "press", Modifiers: SemanticModifierControl}, want: "\x04"},
+		{name: "control e readline end", intent: SemanticInput{Kind: "key", Code: "KeyE", Text: "e", Action: "press", Modifiers: SemanticModifierControl}, want: "\x05"},
+		{name: "control h backspace", intent: SemanticInput{Kind: "key", Code: "KeyH", Text: "h", Action: "press", Modifiers: SemanticModifierControl}, want: "\x08"},
+		{name: "control k kill end", intent: SemanticInput{Kind: "key", Code: "KeyK", Text: "k", Action: "press", Modifiers: SemanticModifierControl}, want: "\x0b"},
+		{name: "control l clear", intent: SemanticInput{Kind: "key", Code: "KeyL", Text: "l", Action: "press", Modifiers: SemanticModifierControl}, want: "\x0c"},
+		{name: "control p previous", intent: SemanticInput{Kind: "key", Code: "KeyP", Text: "p", Action: "press", Modifiers: SemanticModifierControl}, want: "\x10"},
+		{name: "control r search", intent: SemanticInput{Kind: "key", Code: "KeyR", Text: "r", Action: "press", Modifiers: SemanticModifierControl}, want: "\x12"},
+		{name: "control u kill start", intent: SemanticInput{Kind: "key", Code: "KeyU", Text: "u", Action: "press", Modifiers: SemanticModifierControl}, want: "\x15"},
+		{name: "control w delete word", intent: SemanticInput{Kind: "key", Code: "KeyW", Text: "w", Action: "press", Modifiers: SemanticModifierControl}, want: "\x17"},
+		{name: "control z suspend", intent: SemanticInput{Kind: "key", Code: "KeyZ", Text: "z", Action: "press", Modifiers: SemanticModifierControl}, want: "\x1a"},
 		{name: "alt letter", intent: SemanticInput{Kind: "key", Code: "KeyB", Text: "b", Action: "press", Modifiers: SemanticModifierAlt}, want: "\x1bb"},
+		{name: "home", intent: SemanticInput{Kind: "key", Code: "Home", Action: "press"}, want: "\x1b[H"},
+		{name: "end", intent: SemanticInput{Kind: "key", Code: "End", Action: "press"}, want: "\x1b[F"},
+		{name: "delete", intent: SemanticInput{Kind: "key", Code: "Delete", Action: "press"}, want: "\x1b[3~"},
+		{name: "page up", intent: SemanticInput{Kind: "key", Code: "PageUp", Action: "press"}, want: "\x1b[5~"},
+		{name: "page down", intent: SemanticInput{Kind: "key", Code: "PageDown", Action: "press"}, want: "\x1b[6~"},
+		{name: "shift tab", intent: SemanticInput{Kind: "key", Code: "Tab", Action: "press", Modifiers: SemanticModifierShift}, want: "\x1b[Z"},
+		{name: "control left", intent: SemanticInput{Kind: "key", Code: "ArrowLeft", Action: "press", Modifiers: SemanticModifierControl}, want: "\x1b[1;5D"},
+		{name: "control right", intent: SemanticInput{Kind: "key", Code: "ArrowRight", Action: "press", Modifiers: SemanticModifierControl}, want: "\x1b[1;5C"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			engine, err := NewNativeSemanticEngine(20, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer engine.Close()
 			if test.setup != "" {
 				if _, err := engine.ApplyOutput([]byte(test.setup)); err != nil {
 					t.Fatal(err)
@@ -113,6 +152,66 @@ func TestRealNativeKeyEncoderUsesCurrentTerminalModes(t *testing.T) {
 				t.Fatal(err)
 			}
 			if string(got) != test.want {
+				t.Fatalf("encoded key = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRealNativeKeyEncoderCoversEveryControlLetter(t *testing.T) {
+	for letter := byte('A'); letter <= 'Z'; letter++ {
+		t.Run(string(letter), func(t *testing.T) {
+			engine, err := NewNativeSemanticEngine(20, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer engine.Close()
+			got, err := engine.EncodeInput(SemanticInput{
+				Kind: "key", Code: "Key" + string(letter), Text: string(letter + ('a' - 'A')),
+				Action: "press", Modifiers: SemanticModifierControl,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []byte{letter & 0x1f}
+			switch letter {
+			case 'I', 'M':
+				want = []byte(fmt.Sprintf("\x1b[%d;5u", letter+('a'-'A')))
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("encoded Ctrl+%c = %q, want %q", letter, got, want)
+			}
+		})
+	}
+}
+
+func TestRealNativeKeyEncoderCoversTerminalControlPunctuation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		code, text string
+		modifiers  uint16
+		want       []byte
+	}{
+		{name: "control space", code: "Space", text: " ", modifiers: SemanticModifierControl, want: []byte{0}},
+		{name: "control bracket left", code: "BracketLeft", text: "[", modifiers: SemanticModifierControl, want: []byte("\x1b[91;5u")},
+		{name: "control backslash", code: "Backslash", text: "\\", modifiers: SemanticModifierControl, want: []byte{0x1c}},
+		{name: "control bracket right", code: "BracketRight", text: "]", modifiers: SemanticModifierControl, want: []byte{0x1d}},
+		{name: "control caret", code: "Digit6", text: "^", modifiers: SemanticModifierControl | SemanticModifierShift, want: []byte{0x1e}},
+		{name: "control underscore", code: "Minus", text: "_", modifiers: SemanticModifierControl | SemanticModifierShift, want: []byte{0x1f}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine, err := NewNativeSemanticEngine(20, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer engine.Close()
+			got, err := engine.EncodeInput(SemanticInput{
+				Kind: "key", Code: test.code, Text: test.text, Action: "press", Modifiers: test.modifiers,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, test.want) {
 				t.Fatalf("encoded key = %q, want %q", got, test.want)
 			}
 		})
@@ -131,6 +230,48 @@ func TestRealNativeKeyReleaseWithoutReportEventsProducesNoPTYBytes(t *testing.T)
 	}
 	if len(got) != 0 {
 		t.Fatalf("default key release encoded unexpected PTY bytes %q", got)
+	}
+}
+
+func TestRealNativeKeyEncoderReportsKittyKeyboardEvents(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(20, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	if _, err := engine.ApplyOutput([]byte("\x1b[>3u")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		code   string
+		text   string
+		action string
+		want   string
+	}{
+		{name: "control a press", code: "KeyA", text: "a", action: "press", want: "\x1b[97;5u"},
+		{name: "control a repeat", code: "KeyA", text: "a", action: "repeat", want: "\x1b[97;5:2u"},
+		{name: "control a release", code: "KeyA", text: "a", action: "release", want: "\x1b[97;5:3u"},
+		{name: "control c", code: "KeyC", text: "c", action: "press", want: "\x1b[99;5u"},
+		{name: "control e", code: "KeyE", text: "e", action: "press", want: "\x1b[101;5u"},
+		{name: "control k", code: "KeyK", text: "k", action: "press", want: "\x1b[107;5u"},
+		{name: "control u", code: "KeyU", text: "u", action: "press", want: "\x1b[117;5u"},
+		{name: "control w", code: "KeyW", text: "w", action: "press", want: "\x1b[119;5u"},
+		{name: "control z", code: "KeyZ", text: "z", action: "press", want: "\x1b[122;5u"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := engine.EncodeInput(SemanticInput{
+				Kind: "key", Code: test.code, Text: test.text, Action: test.action,
+				Modifiers: SemanticModifierControl,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != test.want {
+				t.Fatalf("encoded kitty key = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

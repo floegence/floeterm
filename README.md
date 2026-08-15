@@ -57,8 +57,8 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.10.4
-npm install @floegence/floeterm-terminal-web@0.15.5
+go get github.com/floegence/floeterm/terminal-go@v0.10.5
+npm install @floegence/floeterm-terminal-web@0.15.6
 ```
 
 ## Browser Integration
@@ -99,9 +99,14 @@ const input = new TerminalInputBridge({
   inputElement,
   onData: data => void bundle.transport.sendInput(sessionId, data),
   onInputIntent: intent => void bundle.transport.sendInputIntent(sessionId, intent),
-  syncInputGeometry: () => positionInputAt(renderer.getCursorClientRect()),
+  syncInputGeometry: () => positionInputAt(renderer.getCursorLayoutRect()),
 });
 ```
+
+`getCursorLayoutRect()` is for an absolutely positioned input bridge that shares
+the canvas containing block. A fixed or portal input bridge should instead use
+`getCursorClientRect()`. Both APIs return CSS pixels and already account for the
+appropriate transformed coordinate space.
 
 `RendererSurface` is the only canvas writer. Host bounds determine CSS size; the
 renderer updates DPR backing, fills the full background, and paints the latest

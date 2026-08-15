@@ -37,6 +37,7 @@ type Cell struct {
 	Text, Hyperlink string
 	Width           int
 	Bold, Italic    bool
+	Inverse         bool
 	Foreground      Color
 	Background      Color
 }
@@ -241,7 +242,7 @@ func frameFromNative(out *C.NativeFrame, cursor *C.FloetermCursorInfo) (Frame, e
 			}
 			f.Rows[y].Cells[x] = Cell{
 				Text: string(data[a:b]), Hyperlink: string(data[ha:hb]), Width: int(s.width),
-				Bold: s.bold != 0, Italic: s.italic != 0,
+				Bold: s.bold != 0, Italic: s.italic != 0, Inverse: s.inverse != 0,
 				Foreground: Color{Kind: int(s.foreground_kind), R: uint8(s.foreground_r), G: uint8(s.foreground_g), B: uint8(s.foreground_b), PaletteIndex: uint8(s.foreground_index)},
 				Background: Color{Kind: int(s.background_kind), R: uint8(s.background_r), G: uint8(s.background_g), B: uint8(s.background_b), PaletteIndex: uint8(s.background_index)},
 			}

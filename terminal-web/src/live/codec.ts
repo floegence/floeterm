@@ -561,9 +561,15 @@ export const decodePresentation = (value: TerminalLiveFrame): unknown => {
   if (value.payload.byteLength === 0 || value.payload.byteLength > MAX_FRAME_PAYLOAD_BYTES) throw new Error('invalid terminal live presentation payload');
   const wire = JSON.parse(decoder.decode(value.payload)) as any;
   if (wire?.v !== 1 || !Array.isArray(wire.frame?.styles) || !Array.isArray(wire.frame?.rows)) throw new Error('invalid terminal live presentation wire');
-  const styles = wire.frame.styles.map((style: unknown) => {
-    if (!Array.isArray(style) || style.length !== 5) throw new Error('invalid terminal live presentation style');
-    return { foreground: style[0], background: style[1], bold: style[2], italic: style[3], underline: style[4] };
+  const styleInverses = wire.frame.styleInverses;
+  if (styleInverses !== undefined && (!Array.isArray(styleInverses)
+    || styleInverses.length !== wire.frame.styles.length
+    || styleInverses.some((inverse: unknown) => typeof inverse !== 'boolean'))) {
+    throw new Error('invalid terminal live presentation inverse styles');
+  }
+  const styles = wire.frame.styles.map((style: unknown, index: number) => {
+    if (!Array.isArray(style) || (style.length !== 5 && style.length !== 6)) throw new Error('invalid terminal live presentation style');
+    return { foreground: style[0], background: style[1], bold: style[2], italic: style[3], underline: style[4], inverse: style[5] ?? styleInverses?.[index] ?? false };
   });
   const graphics = decodePresentationGraphics(wire.frame.graphics);
   return {

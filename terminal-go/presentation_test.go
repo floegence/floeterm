@@ -15,7 +15,7 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 		Frame: SemanticFrame{
 			Width: 2, Height: 1, BufferKind: "normal",
 			Cursor: SemanticCursor{X: 1, Y: 0, Visible: true, Shape: "bar", Blinking: true, Color: "rgb:010203"},
-			Rows:   []SemanticRow{{Cells: []SemanticCell{{Width: 1}, {Width: 1}}}},
+			Rows:   []SemanticRow{{Cells: []SemanticCell{{Width: 1, Style: SemanticStyle{Foreground: "default", Background: "default", Inverse: true}}, {Width: 1}}}},
 			Graphics: SemanticGraphics{
 				Generation: 3,
 				Images:     []SemanticGraphicImage{{ID: 7, Width: 1, Height: 1, Format: SemanticGraphicRGB, Generation: 2, Pixels: []byte{1, 2, 3}}},
@@ -42,6 +42,18 @@ func TestSemanticPresentationWireCarriesOwnedGraphicsAndFailsClosedWhenOversized
 	}
 	if wire.Frame.Cursor != p.Frame.Cursor {
 		t.Fatalf("wire cursor = %+v, want %+v", wire.Frame.Cursor, p.Frame.Cursor)
+	}
+	var compact struct {
+		Frame struct {
+			Styles        [][]any `json:"styles"`
+			StyleInverses []bool  `json:"styleInverses"`
+		} `json:"frame"`
+	}
+	if err := json.Unmarshal(data, &compact); err != nil {
+		t.Fatal(err)
+	}
+	if len(compact.Frame.Styles) == 0 || len(compact.Frame.Styles[0]) != 5 || len(compact.Frame.StyleInverses) == 0 || !compact.Frame.StyleInverses[0] {
+		t.Fatalf("inverse compact style = styles %#v inverses %#v", compact.Frame.Styles, compact.Frame.StyleInverses)
 	}
 	if wire.State.ContentEpoch != 4 {
 		t.Fatalf("wire content epoch = %d, want 4", wire.State.ContentEpoch)

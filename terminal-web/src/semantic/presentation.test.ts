@@ -259,12 +259,13 @@ describe('semantic presentation', () => {
       parentElement: host, style: {}, getContext: () => context,
     } as unknown as HTMLCanvasElement;
     const presentation = structuredClone(valid());
-    presentation.geometry.cols = 3;
-    presentation.frame.width = 3;
+    presentation.geometry.cols = 4;
+    presentation.frame.width = 4;
     presentation.frame.rows[0]!.cells = [
       { text: 'D', width: 1, style: { foreground: 'default', background: 'default' } },
       { text: 'R', width: 1, style: { foreground: 'rgb:112233', background: 'indexed:196' } },
       { text: 'I', width: 1, style: { foreground: 'indexed:1', background: 'default' } },
+      { text: 'V', width: 1, style: { foreground: 'default', background: 'default', inverse: true } },
     ];
     presentation.frame.cursor = { x: 0, y: 0, visible: true, shape: 'bar', blinking: false };
     const renderer = new RendererSurface(canvas);
@@ -275,9 +276,11 @@ describe('semantic presentation', () => {
     animationFrame?.(16);
     expect(fills).toContainEqual({ color: '#ffffff', rect: [0, 0, 180, 90] });
     expect(fills).toContainEqual({ color: '#ff0000', rect: [9, 0, 9.5, 18.5] });
+    expect(fills).toContainEqual({ color: '#333333', rect: [27, 0, 9.5, 18.5] });
     expect(texts).toContainEqual({ color: '#333333', text: 'D' });
     expect(texts).toContainEqual({ color: '#112233', text: 'R' });
     expect(texts).toContainEqual({ color: '#cd3131', text: 'I' });
+    expect(texts).toContainEqual({ color: '#ffffff', text: 'V' });
     expect(canvas.style.background).toBe('#ffffff');
 
     fills.length = 0;
@@ -288,11 +291,13 @@ describe('semantic presentation', () => {
     animationFrame?.(32);
     expect(fills).toContainEqual({ color: '#0b0f14', rect: [0, 0, 180, 90] });
     expect(fills).toContainEqual({ color: '#ff0000', rect: [9, 0, 9.5, 18.5] });
+    expect(fills).toContainEqual({ color: '#c9d1d9', rect: [27, 0, 9.5, 18.5] });
     expect(texts).toContainEqual({ color: '#c9d1d9', text: 'D' });
     expect(texts).toContainEqual({ color: '#112233', text: 'R' });
     expect(texts).toContainEqual({ color: '#ff5c57', text: 'I' });
+    expect(texts).toContainEqual({ color: '#0b0f14', text: 'V' });
     expect(presentation.sequence).toBe(1);
-    expect(presentation.geometry).toEqual({ generation: 1, cols: 3, rows: 1 });
+    expect(presentation.geometry).toEqual({ generation: 1, cols: 4, rows: 1 });
 
     fills.length = 0;
     renderer.setPalette(getThemeColors('light'));
@@ -613,8 +618,8 @@ describe('semantic presentation', () => {
     renderer.apply(validatePresentation(presentation));
 
     renderer.beginSelection(1, 10);
-    renderer.updateSelection(179, 10);
-    renderer.endSelection(179, 10);
+    renderer.updateSelection(12, 10);
+    renderer.endSelection(12, 10);
 
     expect(renderer.hasSelection()).toBe(true);
     expect(renderer.getSelectionText()).toBe('AB');

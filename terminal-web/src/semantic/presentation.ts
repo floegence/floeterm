@@ -1,4 +1,4 @@
-export type SemanticCell = { text: string; hyperlink?: string; width: number; style?: { foreground?: string; background?: string; bold?: boolean; italic?: boolean; underline?: boolean } };
+export type SemanticCell = { text: string; hyperlink?: string; width: number; style?: { foreground?: string; background?: string; bold?: boolean; italic?: boolean; underline?: boolean; inverse?: boolean } };
 export type SemanticCursorShape = 'bar' | 'block' | 'underline' | 'hollow';
 export type SemanticFrame = {
   width: number;
@@ -84,6 +84,7 @@ export function validatePresentation(value: unknown): SemanticPresentation {
         if (color !== 'default' && !/^rgb:[0-9a-fA-F]{6}$/.test(color)
           && !(indexed && Number(indexed[1]) <= 255)) throw new Error('invalid semantic color');
       }
+      if (cell.style?.inverse !== undefined && typeof cell.style.inverse !== 'boolean') throw new Error('invalid semantic inverse style');
     }
   }
   validateGraphics(p.frame.graphics, p.frame.width, p.frame.height);

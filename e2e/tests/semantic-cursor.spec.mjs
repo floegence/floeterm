@@ -28,6 +28,16 @@ const waitForCursor = async (page, expected) => {
   return readCursor(page);
 };
 
+const readSoftwareCursor = page => page.evaluate(() => {
+  const presentation = window.__floetermPerfHarness?.getPresentationDiagnostics?.();
+  if (!presentation) throw new Error('semantic presentation is unavailable');
+  const { cursor, rows } = presentation.frame;
+  return {
+    cursor,
+    cell: rows[cursor.y]?.cells[cursor.x],
+  };
+});
+
 const interruptHeldState = async page => {
   await page.evaluate(() => window.__floetermPerfHarness.sendInput('\x03'));
   await page.waitForTimeout(100);
@@ -48,6 +58,30 @@ const countCursorInk = (buffer, cursor) => {
   }
   return { bright, area: Math.max(1, (right - left) * (bottom - top)) };
 };
+
+test('renders an inverse-cell software cursor while the authoritative VT cursor stays hidden', async ({ page, request }) => {
+  const failures = captureBrowserFailures(page);
+  const response = await request.post('/api/sessions', { data: { name: `software-cursor-${Date.now()}`, workingDir: '' } });
+  expect(response.ok()).toBe(true);
+  const session = await response.json();
+  await page.goto(`/?mode=single&session=${encodeURIComponent(session.id)}&perf_probe=1`);
+  await page.waitForFunction(() => window.__floetermPerfHarness?.getSnapshot().connection.isConnected && window.__floetermPerfHarness.getTerminalInfo());
+  await waitForInteractiveShell(page, session.id);
+
+  await page.evaluate(command => window.__floetermPerfHarness.sendInput(command), holdTerminalState('\x1b[2J\x1b[H\x1b[?25l\x1b[4;8H\x1b[7m \x1b[27m\x1b[4;8H'));
+  try {
+    await expect.poll(async () => {
+      const state = await readSoftwareCursor(page);
+      return state.cursor.x === 7 && state.cursor.y === 3 && !state.cursor.visible && state.cell?.style?.inverse === true;
+    }).toBe(true);
+    const state = await readSoftwareCursor(page);
+    const pixels = countCursorInk(await page.locator('.semanticTerminalSurface').screenshot({ animations: 'disabled' }), state.cursor);
+    expect(pixels.bright).toBeGreaterThan(pixels.area * 0.8);
+  } finally {
+    await interruptHeldState(page);
+  }
+  expect(failures).toEqual([]);
+});
 
 test('renders the authoritative Ghostty cursor across modes, graphemes, alternate screen, resize, and views', async ({ page, context }) => {
   const failures = captureBrowserFailures(page);

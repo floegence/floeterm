@@ -197,12 +197,11 @@ const SemanticTerminalSurface = (props: {
 
   const syncInputGeometry = () => {
     if (!canvas || !input) return;
-    const canvasBounds = canvas.getBoundingClientRect();
-    const rect = props.renderer()?.getCursorClientRect() ?? {
-      left: canvasBounds.left,
-      top: canvasBounds.top,
-      width: Math.min(SEMANTIC_CELL_WIDTH_CSS_PX, Math.max(1, canvasBounds.width)),
-      height: Math.min(SEMANTIC_CELL_HEIGHT_CSS_PX, Math.max(1, canvasBounds.height)),
+    const rect = props.renderer()?.getCursorLayoutRect() ?? {
+      left: 0,
+      top: 0,
+      width: SEMANTIC_CELL_WIDTH_CSS_PX,
+      height: SEMANTIC_CELL_HEIGHT_CSS_PX,
     };
     input.style.left = `${rect.left}px`;
     input.style.top = `${rect.top}px`;

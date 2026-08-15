@@ -15,6 +15,7 @@ func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
 	type wireCell [4]any
 	type wireStyle [5]any
 	styles := make([]wireStyle, 0, 16)
+	styleInverses := make([]bool, 0, 16)
 	styleIndex := make(map[SemanticStyle]int)
 	rows := make([][]wireCell, len(p.Frame.Rows))
 	for y, row := range p.Frame.Rows {
@@ -25,6 +26,7 @@ func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
 				index = len(styles)
 				styleIndex[cell.Style] = index
 				styles = append(styles, wireStyle{cell.Style.Foreground, cell.Style.Background, cell.Style.Bold, cell.Style.Italic, cell.Style.Underline})
+				styleInverses = append(styleInverses, cell.Style.Inverse)
 			}
 			rows[y][x] = wireCell{cell.Text, cell.Width, index, cell.Hyperlink}
 		}
@@ -38,7 +40,7 @@ func EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
 	}
 	wire := map[string]any{
 		"v": 1, "sequence": p.Sequence, "geometry": p.Geometry, "state": p.State,
-		"frame": map[string]any{"width": p.Frame.Width, "height": p.Frame.Height, "bufferKind": p.Frame.BufferKind, "cursor": p.Frame.Cursor, "history": p.Frame.History, "graphics": graphics, "styles": styles, "rows": rows},
+		"frame": map[string]any{"width": p.Frame.Width, "height": p.Frame.Height, "bufferKind": p.Frame.BufferKind, "cursor": p.Frame.Cursor, "history": p.Frame.History, "graphics": graphics, "styles": styles, "styleInverses": styleInverses, "rows": rows},
 	}
 	data, err := json.Marshal(wire)
 	if err != nil {
@@ -120,6 +122,7 @@ type SemanticStyle struct {
 	Bold       bool   `json:"bold,omitempty"`
 	Italic     bool   `json:"italic,omitempty"`
 	Underline  bool   `json:"underline,omitempty"`
+	Inverse    bool   `json:"inverse,omitempty"`
 }
 type SemanticCursor struct {
 	X        int    `json:"x"`

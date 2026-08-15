@@ -468,7 +468,7 @@ body {
 }
 
 .terminalInputBridge {
-  position: fixed;
+  position: absolute;
   z-index: 4;
   opacity: 0;
   width: 9px;

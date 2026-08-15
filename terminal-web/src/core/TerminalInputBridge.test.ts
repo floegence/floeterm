@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TerminalInputBridge } from './TerminalInputBridge';
 
 const createInputEvent = (
@@ -15,6 +15,10 @@ const createInputEvent = (
 };
 
 describe('TerminalInputBridge', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const activateTerminal = (target: HTMLElement) => {
     target.dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
   };
@@ -165,6 +169,51 @@ describe('TerminalInputBridge', () => {
     ]);
     expect(enter.defaultPrevented).toBe(true);
     expect(controlC.defaultPrevented).toBe(true);
+    bridge.dispose();
+  });
+
+  it('keeps common terminal control chords on the structured input path', () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
+    const inputHost = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    inputHost.append(textarea);
+    document.body.append(inputHost);
+    const onInputIntent = vi.fn();
+    const copySelection = vi.fn();
+    const bridge = new TerminalInputBridge({
+      inputHost,
+      inputElement: textarea,
+      onData: vi.fn(),
+      onInputIntent,
+      hasSelection: () => true,
+      copySelection,
+    });
+    activateTerminal(inputHost);
+    const controlKeys = Array.from({ length: 26 }, (_, index) => String.fromCharCode('a'.charCodeAt(0) + index));
+
+    for (const key of controlKeys) {
+      const code = `Key${key.toUpperCase()}`;
+      textarea.dispatchEvent(new KeyboardEvent('keydown', {
+        key, code, ctrlKey: true, bubbles: true, cancelable: true,
+      }));
+      textarea.dispatchEvent(new KeyboardEvent('keyup', {
+        key, code, ctrlKey: true, bubbles: true, cancelable: true,
+      }));
+    }
+
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(onInputIntent).toHaveBeenCalledTimes(controlKeys.length * 2);
+    for (const [index, key] of controlKeys.entries()) {
+      const code = `Key${key.toUpperCase()}`;
+      expect(onInputIntent).toHaveBeenNthCalledWith(index * 2 + 1, expect.objectContaining({
+        code, text: key, action: 'press',
+        modifiers: expect.objectContaining({ control: true, super: false }),
+      }));
+      expect(onInputIntent).toHaveBeenNthCalledWith(index * 2 + 2, expect.objectContaining({
+        code, text: key, action: 'release',
+        modifiers: expect.objectContaining({ control: true, super: false }),
+      }));
+    }
     bridge.dispose();
   });
 
@@ -486,13 +535,88 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it('routes Cmd/Ctrl+C through the shared copy path when the terminal has a selection', async () => {
+  it('uses Cmd+C for selection copy on macOS', async () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
     const { container, copySelection } = setup('echo hi');
     activateTerminal(container);
 
     const event = new KeyboardEvent('keydown', {
       key: 'c',
       metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    document.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(copySelection).toHaveBeenCalledTimes(1);
+    expect(copySelection).toHaveBeenCalledWith('shortcut', null);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('routes Ctrl+C to terminal input on macOS even when a selection exists', async () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
+    const inputHost = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    inputHost.append(textarea);
+    document.body.append(inputHost);
+    const onInputIntent = vi.fn();
+    const copySelection = vi.fn();
+    const bridge = new TerminalInputBridge({
+      inputHost,
+      inputElement: textarea,
+      onData: vi.fn(),
+      onInputIntent,
+      hasSelection: () => true,
+      copySelection,
+    });
+
+    activateTerminal(inputHost);
+    const keydown = new KeyboardEvent('keydown', {
+      key: 'c',
+      code: 'KeyC',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const keyup = new KeyboardEvent('keyup', {
+      key: 'c',
+      code: 'KeyC',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    textarea.dispatchEvent(keydown);
+    textarea.dispatchEvent(keyup);
+    await Promise.resolve();
+
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(onInputIntent.mock.calls.map(([intent]) => intent)).toEqual([
+      expect.objectContaining({
+        code: 'KeyC', text: 'c', action: 'press',
+        modifiers: expect.objectContaining({ control: true, super: false }),
+      }),
+      expect.objectContaining({
+        code: 'KeyC', text: 'c', action: 'release',
+        modifiers: expect.objectContaining({ control: true, super: false }),
+      }),
+    ]);
+    expect(keydown.defaultPrevented).toBe(true);
+    expect(keyup.defaultPrevented).toBe(true);
+    bridge.dispose();
+  });
+
+  it('uses Ctrl+Shift+C for selection copy outside macOS', async () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Linux x86_64');
+    const { container, copySelection } = setup('echo hi');
+    activateTerminal(container);
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      code: 'KeyC',
+      ctrlKey: true,
+      shiftKey: true,
       bubbles: true,
       cancelable: true,
     });
@@ -598,7 +722,8 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it('treats a contenteditable terminal host as terminal-owned for Cmd/Ctrl+C copy', async () => {
+  it('treats a contenteditable terminal host as terminal-owned for macOS Cmd+C copy', async () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
     const { container, copySelection } = setup('terminal selection');
     container.setAttribute('contenteditable', 'true');
     activateTerminal(container);
@@ -618,7 +743,8 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('treats the inner ghostty contenteditable input host as terminal-owned for Cmd/Ctrl+C copy', async () => {
+  it('treats the inner ghostty contenteditable input host as terminal-owned for Ctrl+Shift+C copy', async () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Linux x86_64');
     const { container, copySelection } = setup('terminal selection');
     const terminalInputHost = document.createElement('div');
     terminalInputHost.setAttribute('contenteditable', 'true');
@@ -629,6 +755,7 @@ describe('TerminalInputBridge', () => {
     const event = new KeyboardEvent('keydown', {
       key: 'c',
       ctrlKey: true,
+      shiftKey: true,
       bubbles: true,
       cancelable: true,
     });

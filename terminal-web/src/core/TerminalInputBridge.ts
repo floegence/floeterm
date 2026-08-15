@@ -37,16 +37,18 @@ const isPlainPrintableKey = (event: KeyboardEvent): boolean => {
   return event.key.length === 1;
 };
 
-const isPrimaryCopyShortcut = (event: KeyboardEvent): boolean => {
-  if (event.altKey || event.shiftKey) {
-    return false;
+const isMacOSNavigator = (navigator: Navigator | undefined): boolean => {
+  const platform = navigator?.platform ?? '';
+  const userAgent = navigator?.userAgent ?? '';
+  return /Mac|iPhone|iPad|iPod/u.test(platform) || /Macintosh/u.test(userAgent);
+};
+
+const isPrimaryCopyShortcut = (event: KeyboardEvent, navigator: Navigator | undefined): boolean => {
+  if (event.altKey || event.key.toLowerCase() !== 'c') return false;
+  if (isMacOSNavigator(navigator)) {
+    return event.metaKey && !event.ctrlKey && !event.shiftKey;
   }
-
-  const usesPrimaryModifier =
-    (event.metaKey && !event.ctrlKey) ||
-    (event.ctrlKey && !event.metaKey);
-
-  return usesPrimaryModifier && event.key.toLowerCase() === 'c';
+  return event.ctrlKey && event.shiftKey && !event.metaKey;
 };
 
 const createSuppressionTokenFromKeydown = (event: KeyboardEvent): input_suppression_token | null => {
@@ -571,7 +573,7 @@ export class TerminalInputBridge {
       return false;
     }
 
-    if (!isPrimaryCopyShortcut(event)) {
+    if (!isPrimaryCopyShortcut(event, this.inputHost.ownerDocument.defaultView?.navigator)) {
       return false;
     }
 
@@ -774,7 +776,7 @@ const getDocumentShortcutCoordinator = (document: Document): terminal_document_s
       coordinator.activeBridge = resolveBridgeForTarget(coordinator.bridges, event.target);
     },
     keydownListener: (event) => {
-      if (event.defaultPrevented || !isPrimaryCopyShortcut(event)) {
+      if (event.defaultPrevented || !isPrimaryCopyShortcut(event, document.defaultView?.navigator)) {
         return;
       }
 

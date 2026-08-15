@@ -277,6 +277,35 @@ static int floeterm_key_from_w3c_code(const uint8_t *code, size_t code_len,
   return 0;
 }
 
+static uint32_t floeterm_unshifted_codepoint_from_w3c_code(
+    const uint8_t *code, size_t code_len) {
+  if (code == NULL || code_len == 0) return 0;
+  if (code_len == 4 && memcmp(code, "KeyA", 3) == 0 &&
+      code[3] >= 'A' && code[3] <= 'Z')
+    return (uint32_t)('a' + (code[3] - 'A'));
+  if (code_len == 6 && memcmp(code, "Digit", 5) == 0 &&
+      code[5] >= '0' && code[5] <= '9')
+    return (uint32_t)code[5];
+#define FLOETERM_CODEPOINT(value, mapped)                                      \
+  if (code_len == sizeof(value) - 1 &&                                        \
+      memcmp(code, value, sizeof(value) - 1) == 0)                            \
+    return (uint32_t)(mapped);
+  FLOETERM_CODEPOINT("Backquote", '`')
+  FLOETERM_CODEPOINT("Backslash", '\\')
+  FLOETERM_CODEPOINT("BracketLeft", '[')
+  FLOETERM_CODEPOINT("BracketRight", ']')
+  FLOETERM_CODEPOINT("Comma", ',')
+  FLOETERM_CODEPOINT("Equal", '=')
+  FLOETERM_CODEPOINT("Minus", '-')
+  FLOETERM_CODEPOINT("Period", '.')
+  FLOETERM_CODEPOINT("Quote", '\'')
+  FLOETERM_CODEPOINT("Semicolon", ';')
+  FLOETERM_CODEPOINT("Slash", '/')
+  FLOETERM_CODEPOINT("Space", ' ')
+#undef FLOETERM_CODEPOINT
+  return 0;
+}
+
 int floeterm_native_encode_key(NativeEngine *engine, const uint8_t *code,
                                size_t code_len, int action, uint16_t mods,
                                const uint8_t *text, size_t text_len,
@@ -303,6 +332,8 @@ int floeterm_native_encode_key(NativeEngine *engine, const uint8_t *code,
   ghostty_key_event_set_key(event, mapped_key);
   ghostty_key_event_set_action(event, mapped_action);
   ghostty_key_event_set_mods(event, mods);
+  ghostty_key_event_set_unshifted_codepoint(
+      event, floeterm_unshifted_codepoint_from_w3c_code(code, code_len));
   ghostty_key_event_set_utf8(event, (const char *)text, text_len);
   size_t required = 0;
   GhosttyResult result = ghostty_key_encoder_encode(engine->key_encoder, event,

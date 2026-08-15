@@ -16,6 +16,20 @@ export type SemanticTerminalCellMetrics = Readonly<{
   cellWidthCssPx: number;
   cellHeightCssPx: number;
 }>;
+export type SemanticTerminalCursorRect = Readonly<{
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}>;
+
+type CanvasCoordinateSpace = Readonly<{
+  bounds: DOMRect;
+  layoutWidth: number;
+  layoutHeight: number;
+  scaleX: number;
+  scaleY: number;
+}>;
 
 const SELECTION_DRAG_THRESHOLD_CSS_PX = 3;
 
@@ -158,7 +172,10 @@ export class RendererSurface {
   }
   beginSelection(clientX: number, clientY: number): void {
     const point = this.pointFromClient(clientX, clientY);
-    if (!point) return;
+    if (!point) {
+      this.clearSelection();
+      return;
+    }
     const hadSelection = this.selectionAnchor !== null || this.selectionFocus !== null;
     this.selectionAnchor = null;
     this.selectionFocus = null;
@@ -210,24 +227,34 @@ export class RendererSurface {
     }
     return lines.join('\n').replace(/\n+$/, '');
   }
-  getCursorClientRect(): Readonly<{ left: number; top: number; width: number; height: number }> | null {
+  getCursorLayoutRect(): SemanticTerminalCursorRect | null {
     const frame = this.latest?.frame;
     if (!frame) return null;
-    const bounds = this.canvas.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0) return null;
+    const coordinates = this.measureCoordinateSpace();
+    if (!coordinates) return null;
+    return this.cursorLayoutRect(frame, coordinates);
+  }
+  getCursorClientRect(): SemanticTerminalCursorRect | null {
+    const frame = this.latest?.frame;
+    if (!frame) return null;
+    const coordinates = this.measureCoordinateSpace();
+    if (!coordinates) return null;
+    const layoutRect = this.cursorLayoutRect(frame, coordinates);
+    return {
+      left: coordinates.bounds.left + layoutRect.left * coordinates.scaleX,
+      top: coordinates.bounds.top + layoutRect.top * coordinates.scaleY,
+      width: layoutRect.width * coordinates.scaleX,
+      height: layoutRect.height * coordinates.scaleY,
+    };
+  }
+  private cursorLayoutRect(frame: SemanticFrame, coordinates: CanvasCoordinateSpace): SemanticTerminalCursorRect {
     const cursorX = Math.max(0, Math.min(frame.width - 1, frame.cursor.x));
     const cursorY = Math.max(0, Math.min(frame.height - 1, frame.cursor.y));
     const { cellWidthCssPx, cellHeightCssPx } = this.cellMetrics;
-    const width = Math.min(cellWidthCssPx, bounds.width);
-    const height = Math.min(cellHeightCssPx, bounds.height);
-    const left = Math.max(bounds.left, Math.min(
-      bounds.left + cursorX * cellWidthCssPx,
-      bounds.left + bounds.width - width,
-    ));
-    const top = Math.max(bounds.top, Math.min(
-      bounds.top + cursorY * cellHeightCssPx,
-      bounds.top + bounds.height - height,
-    ));
+    const width = Math.min(cellWidthCssPx, coordinates.layoutWidth);
+    const height = Math.min(cellHeightCssPx, coordinates.layoutHeight);
+    const left = Math.max(0, Math.min(cursorX * cellWidthCssPx, coordinates.layoutWidth - width));
+    const top = Math.max(0, Math.min(cursorY * cellHeightCssPx, coordinates.layoutHeight - height));
     return { left, top, width, height };
   }
   resize(): void {
@@ -332,17 +359,13 @@ export class RendererSurface {
     context.textBaseline = 'alphabetic';
     frame.rows.forEach((row, y) => {
       row.cells.forEach((cell, x) => {
-        const background = this.isCellSelected(y, x)
-          ? palette.selectionBackground
-          : resolveColor(cell.style?.background, palette.background, palette);
+        const { background } = resolveCellColors(cell, this.isCellSelected(y, x), palette);
         context.fillStyle = background;
         context.fillRect(x * cellWidth, y * cellHeight, cellWidth + 0.5, cellHeight + 0.5);
       });
       row.cells.forEach((cell, x) => {
         if (!cell.text || cell.width === 0) return;
-        const foreground = this.isCellSelected(y, x)
-          ? palette.selectionForeground
-          : resolveColor(cell.style?.foreground, palette.foreground, palette);
+        const { foreground } = resolveCellColors(cell, this.isCellSelected(y, x), palette);
         this.paintCellText(context, cell, x, y, cellWidth, cellHeight, foreground);
       });
     });
@@ -422,16 +445,11 @@ export class RendererSurface {
     const cell = frame.rows[y]?.cells[x];
     const context = this.getContext();
     const palette = this.palette;
-    const background = this.isCellSelected(y, x)
-      ? palette.selectionBackground
-      : resolveColor(cell?.style?.background, palette.background, palette);
+    const { background, foreground } = resolveCellColors(cell, this.isCellSelected(y, x), palette);
     context.fillStyle = background;
     const { cellWidthCssPx, cellHeightCssPx } = this.cellMetrics;
     context.fillRect(x * cellWidthCssPx, y * cellHeightCssPx, cellWidthCssPx + 0.5, cellHeightCssPx + 0.5);
     if (cell?.text) {
-      const foreground = this.isCellSelected(y, x)
-        ? palette.selectionForeground
-        : resolveColor(cell.style?.foreground, palette.foreground, palette);
       this.paintCellText(context, cell, x, y, cellWidthCssPx, cellHeightCssPx, foreground);
     }
     this.paintCursor(context, frame, frame.cursor, cellWidthCssPx, cellHeightCssPx, palette);
@@ -593,12 +611,36 @@ export class RendererSurface {
   private pointFromClient(clientX: number, clientY: number): { row: number; col: number } | null {
     const frame = this.currentFrame();
     if (!frame) return null;
+    const coordinates = this.measureCoordinateSpace();
+    if (!coordinates) return null;
+    const logicalX = (clientX - coordinates.bounds.left) / coordinates.scaleX;
+    const logicalY = (clientY - coordinates.bounds.top) / coordinates.scaleY;
+    if (logicalX < 0 || logicalY < 0
+      || logicalX >= frame.width * this.cellMetrics.cellWidthCssPx
+      || logicalY >= frame.height * this.cellMetrics.cellHeightCssPx) return null;
+    const col = Math.floor(logicalX / this.cellMetrics.cellWidthCssPx);
+    const row = Math.floor(logicalY / this.cellMetrics.cellHeightCssPx);
+    return { row, col: this.selectionLeadingColumn(frame, row, col) };
+  }
+
+  private selectionLeadingColumn(frame: SemanticFrame, row: number, col: number): number {
+    if (frame.rows[row]?.cells[col]?.width !== 0) return col;
+    for (let candidate = col - 1; candidate >= 0; candidate -= 1) {
+      const width = frame.rows[row]?.cells[candidate]?.width ?? 0;
+      if (width > 0) return candidate + width > col ? candidate : col;
+    }
+    return col;
+  }
+
+  private measureCoordinateSpace(): CanvasCoordinateSpace | null {
     const bounds = this.canvas.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0) return null;
-    return {
-      col: Math.max(0, Math.min(frame.width - 1, Math.floor((clientX - bounds.left) / this.cellMetrics.cellWidthCssPx))),
-      row: Math.max(0, Math.min(frame.height - 1, Math.floor((clientY - bounds.top) / this.cellMetrics.cellHeightCssPx))),
-    };
+    const layoutWidth = this.canvas.clientWidth;
+    const layoutHeight = this.canvas.clientHeight;
+    if (bounds.width <= 0 || bounds.height <= 0 || layoutWidth <= 0 || layoutHeight <= 0) return null;
+    const scaleX = bounds.width / layoutWidth;
+    const scaleY = bounds.height / layoutHeight;
+    if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return null;
+    return { bounds, layoutWidth, layoutHeight, scaleX, scaleY };
   }
 
   private selectionRange(): { start: { row: number; col: number }; end: { row: number; col: number } } | null {
@@ -651,6 +693,29 @@ function resolveColor(value: string | undefined, fallback: string, palette: Sema
     return resolveIndexedColor(index, palette) ?? fallback;
   }
   return fallback;
+}
+
+function resolveCellColors(
+  cell: SemanticFrame['rows'][number]['cells'][number] | undefined,
+  selected: boolean,
+  palette: SemanticTerminalPalette,
+): Readonly<{ background: string; foreground: string }> {
+  if (selected) {
+    return {
+      background: palette.selectionBackground,
+      foreground: palette.selectionForeground,
+    };
+  }
+  if (cell?.style?.inverse) {
+    return {
+      background: resolveColor(cell.style.foreground, palette.foreground, palette),
+      foreground: resolveColor(cell.style.background, palette.background, palette),
+    };
+  }
+  return {
+    background: resolveColor(cell?.style?.background, palette.background, palette),
+    foreground: resolveColor(cell?.style?.foreground, palette.foreground, palette),
+  };
 }
 
 function resolveIndexedColor(index: number, palette: SemanticTerminalPalette): string | undefined {

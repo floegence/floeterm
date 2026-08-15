@@ -89,6 +89,7 @@ describe('semantic terminal live codec', () => {
         cursor: { x: 0, y: 0, visible: true, shape: 'block', blinking: false },
         history: { revision: 1, totalRows: 1, screenStartOffset: 0 },
         styles: [['default', 'default', false, false, false]],
+        styleInverses: [true],
         rows: [[['中', 2, 0, '']]],
         graphics: { generation: 3, images: [{ id: 7, width: 1, height: 1, format: 0, generation: 2, pixels: 'AQID' }], placements: [] },
       },
@@ -96,7 +97,7 @@ describe('semantic terminal live codec', () => {
     const decodedFrame = new TerminalLiveDecoder().push(encoded)[0]!;
     const decoded = decodePresentation(decodedFrame) as any;
     expect(decoded.state.contentEpoch).toBe(4);
-    expect(decoded.frame.rows[0].cells[0]).toMatchObject({ text: '中', width: 2 });
+    expect(decoded.frame.rows[0].cells[0]).toMatchObject({ text: '中', width: 2, style: { inverse: true } });
     expect(decoded.frame.graphics.images[0].pixels).toEqual(new Uint8Array([1, 2, 3]));
 
     const raw = new Uint8Array(8);
