@@ -65,6 +65,133 @@ afterEach(() => {
 });
 
 describe('semantic terminal browser surface', () => {
+  it('paints every search occurrence and distinguishes the active occurrence', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(selectionPresentation());
+    renderer.setSearchDecorations([
+      { row: 0, startColumn: 0, endColumnExclusive: 1, active: false, matchId: 'ordinary' },
+      { row: 0, startColumn: 3, endColumnExclusive: 5, active: true, matchId: 'active' },
+    ]);
+    await nextPaint();
+
+    const context = canvas.getContext('2d')!;
+    const metrics = renderer.getCellMetrics();
+    const backingScaleX = canvas.width / canvas.clientWidth;
+    const backingScaleY = canvas.height / canvas.clientHeight;
+    const sample = (column: number) => context.getImageData(
+      Math.floor((column * metrics.cellWidthCssPx + 1) * backingScaleX),
+      Math.floor(metrics.cellHeightCssPx * 0.1 * backingScaleY),
+      1,
+      1,
+    ).data;
+    const native = sample(1);
+    const ordinary = sample(0);
+    const active = sample(3);
+    expect(Array.from(ordinary)).not.toEqual(Array.from(native));
+    expect(Array.from(active)).not.toEqual(Array.from(ordinary));
+
+    const bounds = canvas.getBoundingClientRect();
+    renderer.beginSelection(bounds.left + 1, bounds.top + 4);
+    renderer.updateSelection(bounds.left + 7, bounds.top + 9);
+    renderer.endSelection(bounds.left + 7, bounds.top + 9);
+    await nextPaint();
+    expect(renderer.getSelectionText()).toBe('A');
+    expect(Array.from(sample(0).slice(0, 3))).toEqual(hexToRgb(getThemeColors('dark').selectionBackground));
+
+    renderer.clearSelection();
+    await nextPaint();
+    expect(Array.from(sample(0))).toEqual(Array.from(ordinary));
+
+    renderer.setPalette(getThemeColors('light'));
+    await nextPaint();
+    const lightNative = sample(1);
+    const lightOrdinary = sample(0);
+    const lightActive = sample(3);
+    expect(Array.from(lightOrdinary)).not.toEqual(Array.from(lightNative));
+    expect(Array.from(lightActive)).not.toEqual(Array.from(lightOrdinary));
+
+    renderer.setPalette({
+      ...getThemeColors('dark'),
+      background: '#123456',
+      foreground: '#f4f7fb',
+      selectionBackground: '#d64a7f',
+      selectionForeground: '#ffffff',
+    });
+    await nextPaint();
+    const customNative = sample(1);
+    const customOrdinary = sample(0);
+    const customActive = sample(3);
+    expect(Array.from(customOrdinary)).not.toEqual(Array.from(customNative));
+    expect(Array.from(customActive)).not.toEqual(Array.from(customOrdinary));
+
+    renderer.clearSearchDecorations();
+    await nextPaint();
+    expect(Array.from(sample(0))).toEqual(Array.from(sample(1)));
+
+    renderer.dispose();
+  });
+
+  it('keeps history decorations during live output and drops stale live decorations', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    const live = presentation();
+    renderer.apply(live);
+    renderer.setSearchDecorations([
+      { row: 0, startColumn: 0, endColumnExclusive: 1, active: true, matchId: 'live' },
+    ]);
+    await nextPaint();
+
+    const context = canvas.getContext('2d')!;
+    const metrics = renderer.getCellMetrics();
+    const scaleX = canvas.width / canvas.clientWidth;
+    const scaleY = canvas.height / canvas.clientHeight;
+    const pixel = () => Array.from(context.getImageData(
+      Math.floor(scaleX),
+      Math.floor(metrics.cellHeightCssPx * 0.1 * scaleY),
+      1,
+      1,
+    ).data);
+    const decorated = pixel();
+
+    const advancedLive = structuredClone(live);
+    advancedLive.sequence = 2;
+    advancedLive.state.sequence = 2;
+    advancedLive.frame.history.revision = 2;
+    advancedLive.frame.rows[0]!.cells[0]!.text = 'B';
+    renderer.apply(validatePresentation(advancedLive));
+    await nextPaint();
+    expect(pixel()).not.toEqual(decorated);
+
+    const history = structuredClone(advancedLive.frame);
+    history.rows[0]!.cells[0]!.text = 'H';
+    renderer.project(history);
+    renderer.setSearchDecorations([
+      { row: 0, startColumn: 0, endColumnExclusive: 1, active: false, matchId: 'history' },
+    ]);
+    await nextPaint();
+    const historyDecorated = pixel();
+
+    const nextLive = structuredClone(advancedLive);
+    nextLive.sequence = 3;
+    nextLive.state.sequence = 3;
+    nextLive.frame.history.revision = 3;
+    nextLive.frame.rows[0]!.cells[0]!.text = 'C';
+    renderer.apply(validatePresentation(nextLive));
+    await nextPaint();
+    expect(pixel()).toEqual(historyDecorated);
+
+    renderer.dispose();
+  });
+
   it('keeps one canvas while DPR backing and view-local palette repaint atomically', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px';

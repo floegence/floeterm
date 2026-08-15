@@ -1,5 +1,6 @@
 import { presentationAdvances, type SemanticFrame, type SemanticPresentation } from './presentation.js';
 import { getThemeColors } from '../utils/config.js';
+import { contrastRatio, deriveContrastingThemeColor, formatThemeColor, parseThemeColor, type RgbColor } from '../utils/themeColor.js';
 import type { TerminalThemeColors } from '../types.js';
 
 export const SEMANTIC_CELL_WIDTH_CSS_PX = 9;
@@ -21,6 +22,13 @@ export type SemanticTerminalCursorRect = Readonly<{
   top: number;
   width: number;
   height: number;
+}>;
+export type SemanticTerminalSearchDecoration = Readonly<{
+  row: number;
+  startColumn: number;
+  endColumnExclusive: number;
+  active: boolean;
+  matchId: string;
 }>;
 
 type CanvasCoordinateSpace = Readonly<{
@@ -51,6 +59,8 @@ export class RendererSurface {
     anchor: { row: number; col: number };
     active: boolean;
   } | null = null;
+  private searchDecorations: readonly SemanticTerminalSearchDecoration[] = Object.freeze([]);
+  private searchDecorationCells = new Map<number, SemanticTerminalSearchDecoration>();
   private renderGeneration = 0;
   private failed = false;
   private context: CanvasRenderingContext2D | null | undefined;
@@ -113,6 +123,7 @@ export class RendererSurface {
       return;
     }
     const cursorChanged = !this.latest || !sameCursor(this.latest.frame.cursor, presentation.frame.cursor);
+    const wasShowingLive = this.viewportFrame === null;
     const contentChanged = this.latest !== null
       && (this.latest.state.contentEpoch ?? 0) !== (presentation.state.contentEpoch ?? 0);
     const geometryChanged = this.latest !== null && (
@@ -126,6 +137,11 @@ export class RendererSurface {
       this.selectionAnchor = null;
       this.selectionFocus = null;
       this.selectionGesture = null;
+      this.searchDecorations = Object.freeze([]);
+      this.searchDecorationCells.clear();
+    } else if (wasShowingLive) {
+      this.searchDecorations = Object.freeze([]);
+      this.searchDecorationCells.clear();
     }
     if (cursorChanged) {
       this.cursorBlinkPhaseVisible = true;
@@ -175,7 +191,41 @@ export class RendererSurface {
     }
     this.viewportFrame = frame;
     this.clearSelection();
+    this.clearSearchDecorations();
     this.syncCursorBlinkTimer();
+    this.scheduleRender();
+  }
+  setSearchDecorations(decorations: readonly SemanticTerminalSearchDecoration[]): void {
+    if (this.failed || this.disposed) return;
+    const frame = this.currentFrame();
+    if (!frame && decorations.length > 0) throw new Error('semantic search decorations require a visible frame');
+    const width = frame?.width ?? 0;
+    const height = frame?.height ?? 0;
+    const normalized = decorations.map(decoration => {
+      if (!Number.isInteger(decoration.row) || decoration.row < 0 || decoration.row >= height
+        || !Number.isInteger(decoration.startColumn) || !Number.isInteger(decoration.endColumnExclusive)
+        || decoration.startColumn < 0 || decoration.endColumnExclusive <= decoration.startColumn
+        || decoration.endColumnExclusive > width || typeof decoration.active !== 'boolean'
+        || typeof decoration.matchId !== 'string' || decoration.matchId.length === 0) {
+        throw new Error('semantic search decoration is invalid for the visible frame');
+      }
+      return Object.freeze({ ...decoration });
+    });
+    const cells = new Map<number, SemanticTerminalSearchDecoration>();
+    for (const decoration of normalized) {
+      for (let column = decoration.startColumn; column < decoration.endColumnExclusive; column += 1) {
+        const key = decoration.row * 1_000_000 + column;
+        if (decoration.active || !cells.has(key)) cells.set(key, decoration);
+      }
+    }
+    this.searchDecorations = Object.freeze(normalized);
+    this.searchDecorationCells = cells;
+    this.scheduleRender();
+  }
+  clearSearchDecorations(): void {
+    if (this.searchDecorations.length === 0) return;
+    this.searchDecorations = Object.freeze([]);
+    this.searchDecorationCells.clear();
     this.scheduleRender();
   }
   beginSelection(clientX: number, clientY: number): void {
@@ -316,6 +366,8 @@ export class RendererSurface {
     this.selectionAnchor = null;
     this.selectionFocus = null;
     this.selectionGesture = null;
+    this.searchDecorations = Object.freeze([]);
+    this.searchDecorationCells.clear();
     this.canvas.style.visibility = 'hidden';
   }
   private scheduleRender(): void {
@@ -363,17 +415,18 @@ export class RendererSurface {
     // that grid, so preserve one CSS cell metric and crop/pad locally instead
     // of stretching the shared frame to fit an observer viewport.
     const { cellWidthCssPx: cellWidth, cellHeightCssPx: cellHeight } = this.cellMetrics;
+    const searchColors = resolveSearchColors(palette);
     context.font = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
     context.textBaseline = 'alphabetic';
     frame.rows.forEach((row, y) => {
       row.cells.forEach((cell, x) => {
-        const { background } = resolveCellColors(cell, this.isCellSelected(y, x), palette);
+        const { background } = resolveCellColors(cell, this.isCellSelected(y, x), this.searchDecorationAt(y, x), palette, searchColors);
         context.fillStyle = background;
         context.fillRect(x * cellWidth, y * cellHeight, cellWidth + 0.5, cellHeight + 0.5);
       });
       row.cells.forEach((cell, x) => {
         if (!cell.text || cell.width === 0) return;
-        const { foreground } = resolveCellColors(cell, this.isCellSelected(y, x), palette);
+        const { foreground } = resolveCellColors(cell, this.isCellSelected(y, x), this.searchDecorationAt(y, x), palette, searchColors);
         this.paintCellText(context, cell, x, y, cellWidth, cellHeight, foreground);
       });
     });
@@ -453,7 +506,7 @@ export class RendererSurface {
     const cell = frame.rows[y]?.cells[x];
     const context = this.getContext();
     const palette = this.palette;
-    const { background, foreground } = resolveCellColors(cell, this.isCellSelected(y, x), palette);
+    const { background, foreground } = resolveCellColors(cell, this.isCellSelected(y, x), this.searchDecorationAt(y, x), palette, resolveSearchColors(palette));
     context.fillStyle = background;
     const { cellWidthCssPx, cellHeightCssPx } = this.cellMetrics;
     context.fillRect(x * cellWidthCssPx, y * cellHeightCssPx, cellWidthCssPx + 0.5, cellHeightCssPx + 0.5);
@@ -669,6 +722,10 @@ export class RendererSurface {
     return true;
   }
 
+  private searchDecorationAt(row: number, col: number): SemanticTerminalSearchDecoration | null {
+    return this.searchDecorationCells.get(row * 1_000_000 + col) ?? null;
+  }
+
   private measureViewport(): { cssWidth: number; cssHeight: number; dpr: number } | null {
     const host = this.canvas.parentElement;
     const cssWidth = host?.clientWidth || this.canvas.clientWidth || 0;
@@ -706,13 +763,18 @@ function resolveColor(value: string | undefined, fallback: string, palette: Sema
 function resolveCellColors(
   cell: SemanticFrame['rows'][number]['cells'][number] | undefined,
   selected: boolean,
+  decoration: SemanticTerminalSearchDecoration | null,
   palette: SemanticTerminalPalette,
+  searchColors: ReturnType<typeof resolveSearchColors>,
 ): Readonly<{ background: string; foreground: string }> {
   if (selected) {
     return {
       background: palette.selectionBackground,
       foreground: palette.selectionForeground,
     };
+  }
+  if (decoration) {
+    return decoration.active ? searchColors.active : searchColors.ordinary;
   }
   if (cell?.style?.inverse) {
     return {
@@ -724,6 +786,41 @@ function resolveCellColors(
     background: resolveColor(cell?.style?.background, palette.background, palette),
     foreground: resolveColor(cell?.style?.foreground, palette.foreground, palette),
   };
+}
+
+function resolveSearchColors(palette: SemanticTerminalPalette): Readonly<{
+  ordinary: { background: string; foreground: string };
+  active: { background: string; foreground: string };
+}> {
+  const background = parseThemeColor(palette.background) ?? { r: 0, g: 0, b: 0 };
+  const selection = parseThemeColor(palette.selectionBackground) ?? background;
+  const foreground = parseThemeColor(palette.foreground) ?? { r: 255, g: 255, b: 255 };
+  let ordinaryBackground = mixRgb(background, selection, 0.5);
+  let activeBackground = selection;
+  if (sameRgb(ordinaryBackground, activeBackground)) {
+    ordinaryBackground = mixRgb(background, foreground, 0.35);
+  }
+  if (sameRgb(activeBackground, background)) {
+    activeBackground = mixRgb(background, foreground, 0.65);
+  }
+  const ordinaryForeground = deriveContrastingThemeColor(ordinaryBackground, 4.5);
+  const activeSelection = parseThemeColor(palette.selectionForeground) ?? foreground;
+  const activeForeground = contrastRatio(activeSelection, activeBackground) >= 4.5
+    ? activeSelection
+    : deriveContrastingThemeColor(activeBackground, 4.5);
+  return {
+    ordinary: { background: formatThemeColor(ordinaryBackground), foreground: formatThemeColor(ordinaryForeground) },
+    active: { background: formatThemeColor(activeBackground), foreground: formatThemeColor(activeForeground) },
+  };
+}
+
+function mixRgb(source: RgbColor, target: RgbColor, amount: number): RgbColor {
+  const channel = (left: number, right: number): number => Math.round(left + ((right - left) * amount));
+  return { r: channel(source.r, target.r), g: channel(source.g, target.g), b: channel(source.b, target.b) };
+}
+
+function sameRgb(left: RgbColor, right: RgbColor): boolean {
+  return left.r === right.r && left.g === right.g && left.b === right.b;
 }
 
 function resolveIndexedColor(index: number, palette: SemanticTerminalPalette): string | undefined {

@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.16.1
+npm install @floegence/floeterm-terminal-web@0.16.2
 ```
 
 ## Exports
@@ -140,6 +140,11 @@ a direct scrollbar seek is one server capture regardless of distance and a stale
 response cannot overwrite a newer target. `HistorySearchController` owns a separate,
 bounded server search lane. Search never replaces the navigation frontier, and every
 resolved match is returned as one complete atomic viewport before it can be projected.
+Search results identify every occurrence with its absolute row and exact semantic cell
+span, including wide and multi-code-unit cells. Use
+`semanticHistorySearchDecorationsForViewport()` with the active match ID, then pass the
+result to `renderer.setSearchDecorations()`. Decorations remain view-local, do not alter
+selection or copy state, and distinguish all visible matches from the active match.
 Caches account for semantic bytes as well as cells, use a 4 MiB per-view budget and a
 16 MiB global soft budget, and evict hidden-view extras first.
 

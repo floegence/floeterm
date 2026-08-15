@@ -6,12 +6,17 @@ import type {
 } from './presentation.js';
 import { SemanticHistoryError, validateHistoryViewport } from './presentation.js';
 import { runSemanticHistoryRequest } from './historyRequestScheduler.js';
+import type { SemanticTerminalSearchDecoration } from './RendererSurface.js';
 
 export type SemanticHistorySearchMatch = Readonly<{
   searchId: number;
+  matchId: string;
   viewportOffset: number;
   line: number;
   live: boolean;
+  absoluteRow: number;
+  startColumn: number;
+  endColumnExclusive: number;
 }>;
 
 export type SemanticHistorySearchResult = Readonly<{
@@ -24,6 +29,59 @@ export type HistorySearchControllerOptions = Readonly<{
   request: (request: SemanticHistoryRequest) => Promise<SemanticHistoryViewport>;
   maxMatches?: number;
 }>;
+
+export function semanticHistoryRowMatches(
+  frame: SemanticFrame,
+  line: number,
+  query: string,
+): ReadonlyArray<Readonly<{ startColumn: number; endColumnExclusive: number }>> {
+  const needle = query.toLocaleLowerCase();
+  if (!needle) return [];
+  const row = frame.rows[line];
+  if (!row) return [];
+  const segments: Array<{ start: number; end: number; column: number; width: number }> = [];
+  let folded = '';
+  row.cells.forEach((cell, column) => {
+    if (cell.width === 0) return;
+    const value = cell.text.toLocaleLowerCase();
+    if (value.length === 0) return;
+    const start = folded.length;
+    folded += value;
+    segments.push({ start, end: folded.length, column, width: Math.max(1, cell.width) });
+  });
+  const matches: Array<Readonly<{ startColumn: number; endColumnExclusive: number }>> = [];
+  for (let index = folded.indexOf(needle); index >= 0; index = folded.indexOf(needle, index + Math.max(1, needle.length))) {
+    const end = index + needle.length;
+    const covered = segments.filter(segment => segment.end > index && segment.start < end);
+    if (covered.length === 0) continue;
+    const first = covered[0]!;
+    const last = covered[covered.length - 1]!;
+    matches.push(Object.freeze({
+      startColumn: first.column,
+      endColumnExclusive: last.column + last.width,
+    }));
+  }
+  return matches;
+}
+
+export function semanticHistorySearchDecorationsForViewport(
+  matches: readonly SemanticHistorySearchMatch[],
+  viewportOffset: number,
+  viewportRows: number,
+  activeMatchId: string | null,
+): ReadonlyArray<SemanticTerminalSearchDecoration> {
+  return matches.flatMap(match => {
+    const row = match.absoluteRow - viewportOffset;
+    if (row < 0 || row >= viewportRows) return [];
+    return [Object.freeze({
+      row,
+      startColumn: match.startColumn,
+      endColumnExclusive: match.endColumnExclusive,
+      active: match.matchId === activeMatchId,
+      matchId: match.matchId,
+    })];
+  });
+}
 
 // Owns the isolated server-side search frontier. Search never borrows or
 // replaces the viewport controller's navigation frontier.
@@ -131,12 +189,24 @@ export class HistorySearchController {
         const absoluteRow = viewportOffset + line;
         if (absoluteRow >= upperBound || seenRows.has(absoluteRow)) continue;
         seenRows.add(absoluteRow);
-        if (!semanticHistoryRowText(frame, line).toLocaleLowerCase().includes(needle)) continue;
-        if (matches.length >= maxMatches) {
-          truncated = true;
-          continue;
+        const rowMatches = semanticHistoryRowMatches(frame, line, needle);
+        for (const rowMatch of rowMatches) {
+          if (matches.length >= maxMatches) {
+            truncated = true;
+            continue;
+          }
+          const matchId = `${searchId}:${absoluteRow}:${rowMatch.startColumn}:${rowMatch.endColumnExclusive}`;
+          matches.push(Object.freeze({
+            searchId,
+            matchId,
+            viewportOffset,
+            line,
+            live,
+            absoluteRow,
+            startColumn: rowMatch.startColumn,
+            endColumnExclusive: rowMatch.endColumnExclusive,
+          }));
         }
-        matches.push(Object.freeze({ searchId, viewportOffset, line, live }));
       }
     };
 
@@ -198,8 +268,4 @@ export class HistorySearchController {
       throw new SemanticHistoryError('transport_stale', 'stale terminal search transport generation');
     }
   }
-}
-
-function semanticHistoryRowText(frame: SemanticFrame, line: number): string {
-  return frame.rows[line]?.cells.map(cell => cell.text).join('').trimEnd() ?? '';
 }

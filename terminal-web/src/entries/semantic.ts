@@ -11,7 +11,11 @@ export type {
   HistoryViewportControllerOptions,
   HistoryViewportState,
 } from '../semantic/HistoryViewportController.js';
-export { HistorySearchController } from '../semantic/HistorySearchController.js';
+export {
+  HistorySearchController,
+  semanticHistoryRowMatches,
+  semanticHistorySearchDecorationsForViewport,
+} from '../semantic/HistorySearchController.js';
 export type {
   HistorySearchControllerOptions,
   SemanticHistorySearchMatch,
@@ -43,6 +47,7 @@ export type {
   SemanticTerminalCellMetrics,
   SemanticTerminalCursorRect,
   SemanticTerminalPalette,
+  SemanticTerminalSearchDecoration,
   SemanticTerminalTypography,
 } from '../semantic/RendererSurface.js';
 export type {

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HistorySearchController } from './HistorySearchController';
+import {
+  HistorySearchController,
+  semanticHistoryRowMatches,
+  semanticHistorySearchDecorationsForViewport,
+} from './HistorySearchController';
 import type {
   SemanticFrame,
   SemanticHistoryRequest,
@@ -66,6 +70,89 @@ function viewport(
 }
 
 describe('HistorySearchController', () => {
+  it('maps Unicode string matches back to complete semantic cell spans', () => {
+    const unicode: SemanticFrame = {
+      width: 9,
+      height: 1,
+      bufferKind: 'normal',
+      cursor: { x: 0, y: 0, visible: false, shape: 'block', blinking: false },
+      history: { revision: 1, totalRows: 1, screenStartOffset: 0 },
+      graphics: { generation: 0, images: [], placements: [] },
+      rows: [{ cells: [
+        { text: 'A', width: 1 },
+        { text: '中', width: 2 },
+        { text: '', width: 0 },
+        { text: 'e\u0301', width: 1 },
+        { text: '👩‍💻', width: 2 },
+        { text: '', width: 0 },
+        { text: 'a', width: 1 },
+        { text: 'B', width: 1 },
+        { text: '', width: 1 },
+      ] }],
+    };
+
+    expect(semanticHistoryRowMatches(unicode, 0, '中e\u0301👩‍💻')).toEqual([
+      { startColumn: 1, endColumnExclusive: 6 },
+    ]);
+    expect(semanticHistoryRowMatches(unicode, 0, '👩‍💻')).toEqual([
+      { startColumn: 4, endColumnExclusive: 6 },
+    ]);
+    expect(semanticHistoryRowMatches(unicode, 0, 'AB')).toEqual([
+      { startColumn: 6, endColumnExclusive: 8 },
+    ]);
+  });
+
+  it('returns occurrence-level cell spans for repeated matches in one row', async () => {
+    const searchFrame: SemanticFrame = {
+      width: 12,
+      height: 1,
+      bufferKind: 'normal',
+      cursor: { x: 0, y: 0, visible: false, shape: 'block', blinking: false },
+      history: { revision: 1, totalRows: 1, screenStartOffset: 0 },
+      graphics: { generation: 0, images: [], placements: [] },
+      rows: [{ cells: 'match match'.split('').map(text => ({ text, width: 1 }))
+        .concat([{ text: '', width: 1 }]) }],
+    };
+    const searchPresentation: SemanticPresentation = {
+      sequence: 1,
+      geometry: { generation: 1, cols: 12, rows: 1 },
+      state: { sequence: 1, contentEpoch: 0 },
+      frame: searchFrame,
+    };
+    const request = vi.fn(async (value: SemanticHistoryRequest) => ({
+      ...viewport(value.direction === 'start' ? 0 : value.targetOffset ?? 0, 1, 'search-frontier', 1),
+      cols: 12,
+      rows: 1,
+      screenStartOffset: 0,
+      frame: searchFrame,
+    }));
+    const controller = new HistorySearchController({ request });
+    controller.apply(searchPresentation);
+
+    const result = await controller.search('MATCH');
+
+    expect(result.matches).toHaveLength(2);
+    expect(result.matches.map(match => ({
+      start: match.startColumn,
+      end: match.endColumnExclusive,
+      row: match.absoluteRow,
+    }))).toEqual([
+      { start: 0, end: 5, row: 0 },
+      { start: 6, end: 11, row: 0 },
+    ]);
+    expect(result.matches[0]?.matchId).not.toBe(result.matches[1]?.matchId);
+    expect(semanticHistorySearchDecorationsForViewport(
+      result.matches,
+      0,
+      1,
+      result.matches[1]!.matchId,
+    )).toEqual([
+      { row: 0, startColumn: 0, endColumnExclusive: 5, active: false, matchId: result.matches[0]!.matchId },
+      { row: 0, startColumn: 6, endColumnExclusive: 11, active: true, matchId: result.matches[1]!.matchId },
+    ]);
+    controller.dispose();
+  });
+
   it('uses an isolated search lane and completes against a bounded scrollback frontier while live revisions advance', async () => {
     let revision = 0;
     const requests: SemanticHistoryRequest[] = [];
