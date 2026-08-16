@@ -51,6 +51,14 @@ const isPrimaryCopyShortcut = (event: KeyboardEvent, navigator: Navigator | unde
   return event.ctrlKey && event.shiftKey && !event.metaKey;
 };
 
+const isPrimaryPasteShortcut = (event: KeyboardEvent, navigator: Navigator | undefined): boolean => {
+  if (event.altKey || event.key.toLowerCase() !== 'v') return false;
+  if (isMacOSNavigator(navigator)) {
+    return event.metaKey && !event.ctrlKey;
+  }
+  return event.ctrlKey && event.shiftKey && !event.metaKey;
+};
+
 const createSuppressionTokenFromKeydown = (event: KeyboardEvent): input_suppression_token | null => {
   if (event.key === 'Enter') return { kind: 'linebreak' };
   if (event.key === 'Backspace') return { kind: 'backspace' };
@@ -187,7 +195,6 @@ type terminal_document_shortcut_coordinator = {
   bridges: Set<TerminalInputBridge>;
   pointerDownListener: (event: Event) => void;
   focusInListener: (event: FocusEvent) => void;
-  keydownListener: (event: KeyboardEvent) => void;
   copyListener: (event: ClipboardEvent) => void;
 };
 
@@ -202,6 +209,7 @@ export type TerminalInputBridgeOptions = {
   inputHost: HTMLElement;
   inputElement: HTMLTextAreaElement;
   onData: (data: string) => void;
+  onPaste?: (data: string) => void;
   onInputIntent?: (intent: TerminalKeyInputIntent) => void;
   logger?: Logger;
   hasSelection?: () => boolean;
@@ -231,6 +239,7 @@ export class TerminalInputBridge {
   private readonly inputHost: HTMLElement;
   private readonly inputElement: HTMLTextAreaElement;
   private readonly onData: (data: string) => void;
+  private readonly onPaste: (data: string) => void;
   private readonly onInputIntent: ((intent: TerminalKeyInputIntent) => void) | undefined;
   private readonly logger: Logger;
   private readonly hasSelection: () => boolean;
@@ -265,6 +274,10 @@ export class TerminalInputBridge {
     this.handleInput();
   };
 
+  private readonly pasteListener = (event: ClipboardEvent) => {
+    this.handlePaste(event);
+  };
+
   private readonly compositionStartListener = () => {
     this.handleCompositionStart();
   };
@@ -297,6 +310,7 @@ export class TerminalInputBridge {
     this.inputHost = options.inputHost;
     this.inputElement = options.inputElement;
     this.onData = options.onData;
+    this.onPaste = options.onPaste ?? options.onData;
     this.onInputIntent = options.onInputIntent;
     this.logger = options.logger ?? noopLogger;
     this.hasSelection = options.hasSelection ?? (() => false);
@@ -333,6 +347,7 @@ export class TerminalInputBridge {
     this.inputElement.removeEventListener('keyup', this.keyupListener);
     this.inputElement.removeEventListener('beforeinput', this.beforeInputListener as EventListener, true);
     this.inputElement.removeEventListener('input', this.inputListener);
+    this.inputElement.removeEventListener('paste', this.pasteListener);
     this.inputElement.removeEventListener('compositionstart', this.compositionStartListener);
     this.inputElement.removeEventListener('compositionend', this.compositionEndListener as EventListener);
     this.inputElement.removeEventListener('focus', this.focusListener);
@@ -349,6 +364,7 @@ export class TerminalInputBridge {
     // the server-side Ghostty encoder when the caller supplies that channel.
     this.inputElement.addEventListener('beforeinput', this.beforeInputListener as EventListener, true);
     this.inputElement.addEventListener('input', this.inputListener);
+    this.inputElement.addEventListener('paste', this.pasteListener);
     this.inputElement.addEventListener('compositionstart', this.compositionStartListener);
     this.inputElement.addEventListener('compositionend', this.compositionEndListener as EventListener);
     this.inputElement.addEventListener('focus', this.focusListener);
@@ -400,6 +416,11 @@ export class TerminalInputBridge {
     }
 
     if (BROWSER_TEXT_COMPOSITION_KEYS.has(event.key)) {
+      return;
+    }
+
+    const navigator = this.inputHost.ownerDocument.defaultView?.navigator;
+    if (isPrimaryCopyShortcut(event, navigator) || isPrimaryPasteShortcut(event, navigator)) {
       return;
     }
 
@@ -513,6 +534,22 @@ export class TerminalInputBridge {
     this.clearInputValue();
   }
 
+  private handlePaste(event: ClipboardEvent): void {
+    if (event.defaultPrevented) {
+      return;
+    }
+    const data = event.clipboardData?.getData('text/plain') ?? '';
+    if (!data) {
+      return;
+    }
+
+    this.resetCompositionState();
+    this.clearInputValue();
+    this.onPaste(data);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
   private handleCompositionStart(): void {
     this.syncInputGeometry();
     this.clearEphemeralStateResetTimer();
@@ -566,29 +603,6 @@ export class TerminalInputBridge {
     return target === this.inputElement
       || this.inputElement.contains(target)
       || this.inputHost.contains(target);
-  }
-
-  tryHandleDocumentCopyShortcut(event: KeyboardEvent): boolean {
-    if (this.isComposing || event.isComposing || event.keyCode === 229) {
-      return false;
-    }
-
-    if (!isPrimaryCopyShortcut(event, this.inputHost.ownerDocument.defaultView?.navigator)) {
-      return false;
-    }
-
-    if (this.shouldBypassClipboardInterception(event.target)) {
-      return false;
-    }
-
-    if (!this.hasSelection()) {
-      return false;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    this.requestSelectionCopy('shortcut');
-    return true;
   }
 
   tryHandleDocumentCopyEvent(event: ClipboardEvent): boolean {
@@ -775,14 +789,6 @@ const getDocumentShortcutCoordinator = (document: Document): terminal_document_s
     focusInListener: (event) => {
       coordinator.activeBridge = resolveBridgeForTarget(coordinator.bridges, event.target);
     },
-    keydownListener: (event) => {
-      if (event.defaultPrevented || !isPrimaryCopyShortcut(event, document.defaultView?.navigator)) {
-        return;
-      }
-
-      const bridge = resolveBridgeForTarget(coordinator.bridges, event.target) ?? coordinator.activeBridge;
-      bridge?.tryHandleDocumentCopyShortcut(event);
-    },
     copyListener: (event) => {
       if (event.defaultPrevented) {
         return;
@@ -795,7 +801,6 @@ const getDocumentShortcutCoordinator = (document: Document): terminal_document_s
 
   document.addEventListener('pointerdown', coordinator.pointerDownListener, true);
   document.addEventListener('focusin', coordinator.focusInListener, true);
-  document.addEventListener('keydown', coordinator.keydownListener, true);
   document.addEventListener('copy', coordinator.copyListener, true);
 
   documentShortcutCoordinators.set(document, coordinator);
@@ -823,7 +828,6 @@ function registerDocumentShortcutBridge(document: Document, bridge: TerminalInpu
 
     document.removeEventListener('pointerdown', current.pointerDownListener, true);
     document.removeEventListener('focusin', current.focusInListener, true);
-    document.removeEventListener('keydown', current.keydownListener, true);
     document.removeEventListener('copy', current.copyListener, true);
     documentShortcutCoordinators.delete(document);
   };

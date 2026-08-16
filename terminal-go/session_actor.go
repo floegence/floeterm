@@ -9,6 +9,8 @@ import (
 
 var ErrSemanticClearUnavailable = errors.New("semantic terminal clear is unavailable")
 
+const MaxSemanticPasteBytes = 8 * 1024 * 1024
+
 type SemanticEngine interface {
 	ApplyOutput([]byte) (TerminalState, error)
 	CaptureFrame() (SemanticFrame, error)
@@ -243,6 +245,10 @@ func validateSemanticInput(intent SemanticInput) error {
 	case "text":
 		if intent.Text == "" || !utf8.ValidString(intent.Text) {
 			return errors.New("semantic text input is empty")
+		}
+	case "paste":
+		if len(intent.Data) == 0 || len(intent.Data) > MaxSemanticPasteBytes || !utf8.Valid(intent.Data) {
+			return errors.New("semantic paste input is invalid")
 		}
 	case "key":
 		if intent.Code == "" || !utf8.ValidString(intent.Code) || !utf8.ValidString(intent.Text) ||

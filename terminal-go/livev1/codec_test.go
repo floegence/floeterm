@@ -40,6 +40,19 @@ func TestSemanticCodecRoundTrip(t *testing.T) {
 		t.Fatalf("input intent = %+v, err = %v", intent, err)
 	}
 
+	pasteBytes, err := EncodePasteChunk(PasteChunk{Sequence: 3, Start: true, End: true, Data: []byte("paste")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pasteFrame, err := ReadFrame(bytes.NewReader(pasteBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paste, err := DecodePasteChunk(pasteFrame)
+	if err != nil || paste.Sequence != 3 || !paste.Start || !paste.End || string(paste.Data) != "paste" {
+		t.Fatalf("paste chunk = %+v, err = %v", paste, err)
+	}
+
 	attachedBytes, err := EncodeAttached(Attached{PresentationSequence: 9, GeometryGeneration: 3, ControllerEpoch: 4, Cols: 100, Rows: 30, IsController: true})
 	if err != nil {
 		t.Fatal(err)
@@ -110,6 +123,7 @@ func TestTerminalLiveV1VectorsMatchCodec(t *testing.T) {
 	encoded["attach"], _ = EncodeAttach(Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: "s1", ConnectionID: "c1"})
 	encoded["input"], _ = EncodeInput(Input{Sequence: 1, Data: []byte("abc")})
 	encoded["input_intent"], _ = EncodeInputIntent(InputIntent{Sequence: 2, Code: "ArrowUp", Action: KeyActionRepeat, Modifiers: KeyModifierShift | KeyModifierControl})
+	encoded["paste"], _ = EncodePasteChunk(PasteChunk{Sequence: 3, Start: true, End: true, Data: []byte("paste")})
 	encoded["resize"], _ = EncodeResize(Resize{Sequence: 7, Cols: 80, Rows: 24})
 	encoded["activate"], _ = EncodeActivate(Activate{Sequence: 1, ControllerEpoch: 1, Cols: 80, Rows: 24})
 	encoded["attached"], _ = EncodeAttached(Attached{PresentationSequence: 42, GeometryGeneration: 3, ControllerEpoch: 1, Cols: 80, Rows: 24, IsController: true})

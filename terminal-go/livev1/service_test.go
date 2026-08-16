@@ -1,7 +1,9 @@
 package livev1
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ type semanticBackend struct {
 	subscriber            Subscriber
 	inputs                []Input
 	intents               []InputIntent
+	pastes                []PasteInput
 	activations           []Activate
 	rejectFirstActivation bool
 }
@@ -26,6 +29,10 @@ func (b *semanticBackend) WriteInput(_ context.Context, _ Attach, input Input) e
 }
 func (b *semanticBackend) WriteInputIntent(_ context.Context, _ Attach, input InputIntent) error {
 	b.intents = append(b.intents, input)
+	return nil
+}
+func (b *semanticBackend) WritePaste(_ context.Context, _ Attach, input PasteInput) error {
+	b.pastes = append(b.pastes, input)
 	return nil
 }
 func (*semanticBackend) Resize(_ context.Context, _ Attach, resize Resize) (EffectiveGeometry, error) {
@@ -150,6 +157,124 @@ func TestServiceAdmitsOrderedTextAndStructuredInputOnOneSequence(t *testing.T) {
 	}
 	if len(backend.inputs) != 1 || string(backend.inputs[0].Data) != "x" || len(backend.intents) != 1 || backend.intents[0].Code != "Enter" {
 		t.Fatalf("text=%+v intents=%+v", backend.inputs, backend.intents)
+	}
+}
+
+func TestServiceReassemblesPasteBeforeOneBackendAdmission(t *testing.T) {
+	backend := &semanticBackend{}
+	server, client := net.Pipe()
+	defer client.Close()
+	done := make(chan error, 1)
+	go func() { done <- NewService(backend).Serve(context.Background(), server) }()
+
+	attach, _ := EncodeAttach(Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: "session", ConnectionID: "view"})
+	_, _ = client.Write(attach)
+	if _, err := ReadFrame(client); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("p"), MaxInputBytes+17)
+	first, _ := EncodePasteChunk(PasteChunk{Sequence: 1, Start: true, Data: payload[:MaxInputBytes]})
+	last, _ := EncodePasteChunk(PasteChunk{Sequence: 2, End: true, Data: payload[MaxInputBytes:]})
+	_, _ = client.Write(first)
+	_, _ = client.Write(last)
+	detach, _ := EncodeFrame(Frame{Type: FrameDetach})
+	_, _ = client.Write(detach)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("service did not stop")
+	}
+	if len(backend.pastes) != 1 || backend.pastes[0].Sequence != 2 || !bytes.Equal(backend.pastes[0].Data, payload) {
+		t.Fatalf("pastes=%+v", backend.pastes)
+	}
+}
+
+func TestServiceRejectsIncompletePasteWithoutBackendAdmission(t *testing.T) {
+	tests := []struct {
+		name   string
+		frames func() [][]byte
+	}{
+		{
+			name: "missing start",
+			frames: func() [][]byte {
+				frame, _ := EncodePasteChunk(PasteChunk{Sequence: 1, End: true, Data: []byte("tail")})
+				return [][]byte{frame}
+			},
+		},
+		{
+			name: "duplicate start",
+			frames: func() [][]byte {
+				first, _ := EncodePasteChunk(PasteChunk{Sequence: 1, Start: true, Data: []byte("first")})
+				second, _ := EncodePasteChunk(PasteChunk{Sequence: 2, Start: true, End: true, Data: []byte("second")})
+				return [][]byte{first, second}
+			},
+		},
+		{
+			name: "sequence gap",
+			frames: func() [][]byte {
+				first, _ := EncodePasteChunk(PasteChunk{Sequence: 1, Start: true, Data: []byte("first")})
+				second, _ := EncodePasteChunk(PasteChunk{Sequence: 3, End: true, Data: []byte("second")})
+				return [][]byte{first, second}
+			},
+		},
+		{
+			name: "interrupted by input",
+			frames: func() [][]byte {
+				first, _ := EncodePasteChunk(PasteChunk{Sequence: 1, Start: true, Data: []byte("first")})
+				input, _ := EncodeInput(Input{Sequence: 2, Data: []byte("x")})
+				return [][]byte{first, input}
+			},
+		},
+		{
+			name: "over size limit",
+			frames: func() [][]byte {
+				frames := make([][]byte, 0, MaxPasteBytes/MaxInputBytes+1)
+				chunk := bytes.Repeat([]byte("p"), MaxInputBytes)
+				for sequence := uint64(1); sequence <= MaxPasteBytes/MaxInputBytes; sequence++ {
+					frame, _ := EncodePasteChunk(PasteChunk{Sequence: sequence, Start: sequence == 1, Data: chunk})
+					frames = append(frames, frame)
+				}
+				last, _ := EncodePasteChunk(PasteChunk{Sequence: uint64(MaxPasteBytes/MaxInputBytes + 1), End: true, Data: []byte("x")})
+				return append(frames, last)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &semanticBackend{}
+			server, client := net.Pipe()
+			defer client.Close()
+			done := make(chan error, 1)
+			go func() { done <- NewService(backend).Serve(context.Background(), server) }()
+
+			attach, _ := EncodeAttach(Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: "session", ConnectionID: "view"})
+			_, _ = client.Write(attach)
+			if _, err := ReadFrame(client); err != nil {
+				t.Fatal(err)
+			}
+			for _, frame := range test.frames() {
+				_, _ = client.Write(frame)
+			}
+			if frame, err := ReadFrame(client); err != nil || frame.Type != FrameError {
+				t.Fatalf("protocol error frame=%+v err=%v", frame, err)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrProtocolViolation) {
+					t.Fatalf("service error=%v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("service did not stop")
+			}
+			if len(backend.pastes) != 0 || len(backend.inputs) != 0 || len(backend.intents) != 0 {
+				t.Fatalf("partial input reached backend: pastes=%d inputs=%d intents=%d", len(backend.pastes), len(backend.inputs), len(backend.intents))
+			}
+		})
 	}
 }
 

@@ -68,6 +68,35 @@ func TestStructuredKeyInputUsesActorEncoderAndRejectsStaleTransport(t *testing.T
 	}
 }
 
+func TestStructuredPasteUsesActorEncoderAndRejectsStaleTransport(t *testing.T) {
+	engine := &fakeSemanticEngine{}
+	actor, err := NewSessionActor(engine, 80, 24, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writes [][]byte
+	session := &Session{config: newSessionConfig(ManagerConfig{Logger: NopLogger{}}), PTY: &os.File{}, semanticActor: actor, writePTY: func(data []byte) (int, error) {
+		writes = append(writes, append([]byte(nil), data...))
+		return len(data), nil
+	}}
+	if err := session.AttachSemanticView("view", "principal", 3); err != nil {
+		t.Fatal(err)
+	}
+	intent := SemanticInput{Kind: "paste", Data: []byte("first\nsecond")}
+	if err := session.InteractSemantic("view", "principal", 3, 0, intent); err != nil {
+		t.Fatal(err)
+	}
+	if len(writes) != 1 || string(writes[0]) != "encoded-paste:first\nsecond" {
+		t.Fatalf("writes=%q", writes)
+	}
+	if err := session.InteractSemantic("view", "principal", 2, session.Controller().Epoch, intent); err != ErrControllerTransport {
+		t.Fatalf("stale structured paste error=%v", err)
+	}
+	if len(writes) != 1 {
+		t.Fatalf("stale structured paste wrote %d times", len(writes))
+	}
+}
+
 func TestFramedByteInputPreservesSplitUTF8ThroughActor(t *testing.T) {
 	engine := &fakeSemanticEngine{}
 	actor, _ := NewSessionActor(engine, 80, 24, NewPresentationStore(1))

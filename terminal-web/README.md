@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.16.2
+npm install @floegence/floeterm-terminal-web@0.16.3
 ```
 
 ## Exports
@@ -71,6 +71,7 @@ const bridge = new TerminalInputBridge({
   inputElement: textarea,
   onData: data => transport.sendInput(sessionId, data),
   onInputIntent: intent => transport.sendInputIntent(sessionId, intent),
+  onPaste: data => transport.sendPaste(sessionId, data),
   syncInputGeometry: () => positionTextarea(renderer.getCursorLayoutRect()),
 });
 ```
@@ -81,7 +82,10 @@ sent exactly once across Chrome/Safari event orderings. Non-text keys are emitte
 structured W3C key intents so the actor-owned native Ghostty encoder, not the browser,
 resolves cursor modes, modifiers, and terminal escape sequences. Paste, dead-key/emoji
 input, copy shortcuts, focus, and controller ownership remain separate from composition
-state.
+state. Supply `onPaste` so the live transport can send one bounded paste transaction;
+the SessionActor-owned native encoder applies the current bracketed-paste mode and
+newline rules. Selection copy handles the browser `copy` event synchronously when its
+`clipboardData` argument is present, preserving native `Cmd+C` / `Ctrl+Shift+C` behavior.
 
 Both cursor rectangle APIs use CSS pixels; canvas backing DPR is never multiplied
 into the IME anchor. Use `getCursorLayoutRect()` when the editable element is

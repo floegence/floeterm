@@ -142,6 +142,9 @@ func (e *fakeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 	if i.Kind == "bytes" {
 		return append([]byte(nil), i.Data...), nil
 	}
+	if i.Kind == "paste" {
+		return append([]byte("encoded-paste:"), i.Data...), nil
+	}
 	if i.Text == "" {
 		return nil, errors.New("empty")
 	}

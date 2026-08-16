@@ -60,8 +60,8 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.11.1
-npm install @floegence/floeterm-terminal-web@0.16.2
+go get github.com/floegence/floeterm/terminal-go@v0.11.2
+npm install @floegence/floeterm-terminal-web@0.16.3
 ```
 
 ## Browser Integration
@@ -115,6 +115,7 @@ const input = new TerminalInputBridge({
   inputElement,
   onData: data => void bundle.transport.sendInput(sessionId, data),
   onInputIntent: intent => void bundle.transport.sendInputIntent(sessionId, intent),
+  onPaste: data => void bundle.transport.sendPaste(sessionId, data),
   syncInputGeometry: () => positionInputAt(renderer.getCursorLayoutRect()),
 });
 ```

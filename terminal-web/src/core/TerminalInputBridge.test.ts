@@ -116,6 +116,7 @@ describe('TerminalInputBridge', () => {
   });
 
   it('emits semantic key intents without a host-owned escape encoder', () => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
     const container = document.createElement('div');
     const textarea = document.createElement('textarea');
     container.appendChild(textarea);
@@ -535,24 +536,77 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it('uses Cmd+C for selection copy on macOS', async () => {
+  it('keeps Cmd+C on the synchronous copy-event path on macOS', async () => {
     vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
-    const { container, copySelection } = setup('echo hi');
+    const { container, textarea, copySelection } = setup('echo hi');
     activateTerminal(container);
 
-    const event = new KeyboardEvent('keydown', {
+    const keydown = new KeyboardEvent('keydown', {
       key: 'c',
+      code: 'KeyC',
       metaKey: true,
       bubbles: true,
       cancelable: true,
     });
+    textarea.dispatchEvent(keydown);
 
-    document.dispatchEvent(event);
+    const setData = vi.fn();
+    const copy = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(copy, 'clipboardData', { value: { setData } });
+    if (!keydown.defaultPrevented) textarea.dispatchEvent(copy);
+
     await Promise.resolve();
 
     expect(copySelection).toHaveBeenCalledTimes(1);
-    expect(copySelection).toHaveBeenCalledWith('shortcut', null);
-    expect(event.defaultPrevented).toBe(true);
+    expect(copySelection).toHaveBeenCalledWith('copy_event', expect.objectContaining({ setData }));
+    expect(keydown.defaultPrevented).toBe(false);
+    expect(copy.defaultPrevented).toBe(true);
+  });
+
+  it('commits a clipboard paste exactly once through the terminal input owner', () => {
+    const { textarea, onData } = setup();
+    const clipboardData = { getData: vi.fn(() => 'line one\n\u4e2d\ud83d\ude42') };
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', { value: clipboardData });
+
+    textarea.dispatchEvent(paste);
+
+    expect(clipboardData.getData).toHaveBeenCalledWith('text/plain');
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenCalledWith('line one\n\u4e2d\ud83d\ude42');
+    expect(paste.defaultPrevented).toBe(true);
+    expect(textarea.value).toBe('');
+  });
+
+  it.each([
+    { platform: 'MacIntel', shortcut: { metaKey: true } },
+    { platform: 'Linux x86_64', shortcut: { ctrlKey: true, shiftKey: true } },
+  ])('keeps the platform paste shortcut on the native paste-event path for $platform', async ({ platform, shortcut }) => {
+    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue(platform);
+    const container = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    container.append(textarea);
+    document.body.append(container);
+    const onData = vi.fn();
+    const onInputIntent = vi.fn();
+    const bridge = new TerminalInputBridge({ inputHost: container, inputElement: textarea, onData, onInputIntent });
+    activateTerminal(container);
+    const keydown = new KeyboardEvent('keydown', {
+      key: 'v', code: 'KeyV', ...shortcut, bubbles: true, cancelable: true,
+    });
+
+    textarea.dispatchEvent(keydown);
+    const paste = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(paste, 'clipboardData', { value: { getData: () => 'clipboard' } });
+    if (!keydown.defaultPrevented) textarea.dispatchEvent(paste);
+    await Promise.resolve();
+
+    expect(keydown.defaultPrevented).toBe(false);
+    expect(paste.defaultPrevented).toBe(true);
+    expect(onInputIntent).not.toHaveBeenCalled();
+    expect(onData).toHaveBeenCalledTimes(1);
+    expect(onData).toHaveBeenCalledWith('clipboard');
+    bridge.dispose();
   });
 
   it('routes Ctrl+C to terminal input on macOS even when a selection exists', async () => {
@@ -610,9 +664,22 @@ describe('TerminalInputBridge', () => {
 
   it('uses Ctrl+Shift+C for selection copy outside macOS', async () => {
     vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Linux x86_64');
-    const { container, copySelection } = setup('echo hi');
+    const container = document.createElement('div');
+    const textarea = document.createElement('textarea');
+    container.append(textarea);
+    document.body.append(container);
+    const copySelection = vi.fn().mockResolvedValue({ copied: true, textLength: 7, source: 'copy_event' });
+    const onInputIntent = vi.fn();
+    const bridge = new TerminalInputBridge({
+      inputHost: container,
+      inputElement: textarea,
+      onData: vi.fn(),
+      onInputIntent,
+      hasSelection: () => true,
+      copySelection,
+    });
     activateTerminal(container);
-    const event = new KeyboardEvent('keydown', {
+    const keydown = new KeyboardEvent('keydown', {
       key: 'c',
       code: 'KeyC',
       ctrlKey: true,
@@ -620,13 +687,20 @@ describe('TerminalInputBridge', () => {
       bubbles: true,
       cancelable: true,
     });
+    textarea.dispatchEvent(keydown);
+    const setData = vi.fn();
+    const copy = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(copy, 'clipboardData', { value: { setData } });
+    if (!keydown.defaultPrevented) textarea.dispatchEvent(copy);
 
-    document.dispatchEvent(event);
     await Promise.resolve();
 
     expect(copySelection).toHaveBeenCalledTimes(1);
-    expect(copySelection).toHaveBeenCalledWith('shortcut', null);
-    expect(event.defaultPrevented).toBe(true);
+    expect(copySelection).toHaveBeenCalledWith('copy_event', expect.objectContaining({ setData }));
+    expect(keydown.defaultPrevented).toBe(false);
+    expect(copy.defaultPrevented).toBe(true);
+    expect(onInputIntent).not.toHaveBeenCalled();
+    bridge.dispose();
   });
 
   it('routes Ctrl+C to the terminal input host when the terminal has no selection', async () => {
@@ -688,12 +762,8 @@ describe('TerminalInputBridge', () => {
     activateTerminal(container);
     outside.dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
 
-    const event = new KeyboardEvent('keydown', {
-      key: 'c',
-      metaKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', { value: { setData: vi.fn() } });
 
     document.dispatchEvent(event);
     await Promise.resolve();
@@ -708,12 +778,8 @@ describe('TerminalInputBridge', () => {
     container.appendChild(extraInput);
     activateTerminal(extraInput);
 
-    const event = new KeyboardEvent('keydown', {
-      key: 'c',
-      metaKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', { value: { setData: vi.fn() } });
 
     extraInput.dispatchEvent(event);
     await Promise.resolve();
@@ -722,29 +788,24 @@ describe('TerminalInputBridge', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it('treats a contenteditable terminal host as terminal-owned for macOS Cmd+C copy', async () => {
-    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
+  it('treats a contenteditable terminal host as terminal-owned for copy events', async () => {
     const { container, copySelection } = setup('terminal selection');
     container.setAttribute('contenteditable', 'true');
     activateTerminal(container);
 
-    const event = new KeyboardEvent('keydown', {
-      key: 'c',
-      metaKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
+    const setData = vi.fn();
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', { value: { setData } });
 
     container.dispatchEvent(event);
     await Promise.resolve();
 
     expect(copySelection).toHaveBeenCalledTimes(1);
-    expect(copySelection).toHaveBeenCalledWith('shortcut', null);
+    expect(copySelection).toHaveBeenCalledWith('copy_event', expect.objectContaining({ setData }));
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('treats the inner ghostty contenteditable input host as terminal-owned for Ctrl+Shift+C copy', async () => {
-    vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Linux x86_64');
+  it('treats the inner ghostty contenteditable input host as terminal-owned for copy events', async () => {
     const { container, copySelection } = setup('terminal selection');
     const terminalInputHost = document.createElement('div');
     terminalInputHost.setAttribute('contenteditable', 'true');
@@ -752,19 +813,15 @@ describe('TerminalInputBridge', () => {
     container.appendChild(terminalInputHost);
     activateTerminal(terminalInputHost);
 
-    const event = new KeyboardEvent('keydown', {
-      key: 'c',
-      ctrlKey: true,
-      shiftKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
+    const setData = vi.fn();
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', { value: { setData } });
 
     terminalInputHost.dispatchEvent(event);
     await Promise.resolve();
 
     expect(copySelection).toHaveBeenCalledTimes(1);
-    expect(copySelection).toHaveBeenCalledWith('shortcut', null);
+    expect(copySelection).toHaveBeenCalledWith('copy_event', expect.objectContaining({ setData }));
     expect(event.defaultPrevented).toBe(true);
   });
 
@@ -775,12 +832,8 @@ describe('TerminalInputBridge', () => {
     container.appendChild(editor);
     activateTerminal(editor);
 
-    const event = new KeyboardEvent('keydown', {
-      key: 'c',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(event, 'clipboardData', { value: { setData: vi.fn() } });
 
     editor.dispatchEvent(event);
     await Promise.resolve();

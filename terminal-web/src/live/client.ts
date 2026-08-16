@@ -1,5 +1,6 @@
 import {
   MAX_INPUT_BYTES,
+  MAX_PASTE_BYTES,
   StreamKind,
   TerminalLiveDecoder,
   TerminalLiveFrameType,
@@ -15,6 +16,7 @@ import {
   encodeActivate,
   encodeInput,
   encodeInputIntent,
+  encodePasteChunk,
   encodeResize,
   type Attached,
   type Activated,
@@ -103,6 +105,7 @@ export type TerminalLiveConnection = Readonly<{
   controller: TerminalLiveController;
   sendInput(data: Uint8Array): Promise<void>;
   sendInputIntent(intent: Omit<InputIntent, 'sequence'>): Promise<void>;
+  sendPaste(data: Uint8Array): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
   resizeWithEffectiveGeometry(cols: number, rows: number): Promise<TerminalLiveResizeResult>;
   activateWithEffectiveGeometry(cols: number, rows: number): Promise<TerminalLiveActivationResult>;
@@ -242,6 +245,34 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
       await this.enqueueWrite(() => this.stream.write(encodeInputIntent({ sequence, ...intent })));
     } finally {
       this.queuedInputBytes -= queuedBytes;
+    }
+  }
+
+  async sendPaste(data: Uint8Array): Promise<void> {
+    if (this.closed) throw new Error('terminal live connection is closed');
+    if (data.byteLength === 0) return;
+    if (data.byteLength > MAX_PASTE_BYTES || this.queuedInputBytes + data.byteLength > MAX_QUEUED_INPUT_BYTES) {
+      throw new Error('terminal live paste queue limit exceeded');
+    }
+
+    const frameCount = Math.ceil(data.byteLength / MAX_INPUT_BYTES);
+    const firstSequence = this.inputSequence + 1n;
+    this.inputSequence += BigInt(frameCount);
+    this.queuedInputBytes += data.byteLength;
+    try {
+      await this.enqueueWrite(async () => {
+        for (let frameIndex = 0, offset = 0; offset < data.byteLength; frameIndex += 1, offset += MAX_INPUT_BYTES) {
+          const end = Math.min(data.byteLength, offset + MAX_INPUT_BYTES);
+          await this.stream.write(encodePasteChunk({
+            sequence: firstSequence + BigInt(frameIndex),
+            start: offset === 0,
+            end: end === data.byteLength,
+            data: data.subarray(offset, end),
+          }));
+        }
+      });
+    } finally {
+      this.queuedInputBytes -= data.byteLength;
     }
   }
 

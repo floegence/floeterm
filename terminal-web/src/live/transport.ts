@@ -138,6 +138,7 @@ export type SemanticTerminalLiveTransport = Readonly<{
   activate(sessionId: TerminalID, cols: number, rows: number): Promise<TerminalLiveActivationAppliedResult>;
   sendInput(sessionId: TerminalID, input: string): Promise<void>;
   sendInputIntent(sessionId: TerminalID, input: TerminalKeyInputIntent): Promise<void>;
+  sendPaste(sessionId: TerminalID, input: string): Promise<void>;
   semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryViewport>;
   clearSemanticContent?(sessionId: TerminalID): Promise<TerminalSemanticClearResult>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
@@ -327,6 +328,13 @@ export const createSemanticTerminalLiveTransport = (
         action: input.action,
         modifiers,
       });
+    },
+    sendPaste: async (sessionId, input) => {
+      const entry = entries.get(sessionId);
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+        throw new Error('terminal live session is not attached');
+      }
+      await entry.connection.sendPaste(textEncoder.encode(String(input ?? '')));
     },
     semanticHistory: async (sessionId, request) => {
       const entry = entries.get(sessionId);

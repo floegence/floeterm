@@ -51,6 +51,10 @@ type InputIntentBackend interface {
 	WriteInputIntent(ctx context.Context, attachment Attach, input InputIntent) error
 }
 
+type PasteInputBackend interface {
+	WritePaste(ctx context.Context, attachment Attach, input PasteInput) error
+}
+
 type ActivationBackend interface {
 	Activate(ctx context.Context, attachment Attach, activate Activate) (Activated, error)
 }
@@ -234,6 +238,7 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 	var lastInputSequence uint64
 	var lastResizeSequence uint64
 	var lastActivationSequence uint64
+	var pasteBuffer []byte
 	for {
 		frame, readErr := ReadFrame(stream)
 		if readErr != nil {
@@ -248,6 +253,9 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 				return nil
 			}
 			return readErr
+		}
+		if pasteBuffer != nil && frame.Type != FramePaste {
+			return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "paste input was interrupted", ErrProtocolViolation)
 		}
 		switch frame.Type {
 		case FrameInput:
@@ -272,6 +280,38 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal input intent failed", err)
 			}
 			lastInputSequence = input.Sequence
+		case FramePaste:
+			chunk, decodeErr := DecodePasteChunk(frame)
+			if decodeErr != nil || chunk.Sequence <= lastInputSequence {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "invalid paste input sequence", ErrProtocolViolation)
+			}
+			if pasteBuffer != nil && chunk.Sequence != lastInputSequence+1 {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "non-contiguous paste input sequence", ErrProtocolViolation)
+			}
+			if chunk.Start {
+				if pasteBuffer != nil {
+					return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "duplicate paste start", ErrProtocolViolation)
+				}
+				pasteBuffer = make([]byte, 0, min(len(chunk.Data), MaxPasteBytes))
+			} else if pasteBuffer == nil {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "paste continuation has no start", ErrProtocolViolation)
+			}
+			if len(chunk.Data) > MaxPasteBytes-len(pasteBuffer) {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "paste input exceeds limit", ErrProtocolViolation)
+			}
+			pasteBuffer = append(pasteBuffer, chunk.Data...)
+			lastInputSequence = chunk.Sequence
+			if chunk.End {
+				backend, ok := s.backend.(PasteInputBackend)
+				if !ok {
+					return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal paste input is unavailable", ErrActivationFailed)
+				}
+				input := PasteInput{Sequence: chunk.Sequence, Data: pasteBuffer}
+				pasteBuffer = nil
+				if err := backend.WritePaste(ctx, attachment, input); err != nil {
+					return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal paste input failed", err)
+				}
+			}
 		case FrameResize:
 			resize, decodeErr := DecodeResize(frame)
 			if decodeErr != nil || resize.Sequence <= lastResizeSequence {

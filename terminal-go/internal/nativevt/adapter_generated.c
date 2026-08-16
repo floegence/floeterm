@@ -89,6 +89,16 @@ int floeterm_native_anchor_screen_row(NativeAnchor *anchor, uint32_t *row) {
   return 1;
 }
 
+int floeterm_native_encode_paste(NativeEngine *engine, const uint8_t *data,
+                                 size_t len, NativeBytes *output) {
+  if (engine == NULL || output == NULL || (data == NULL && len != 0)) return 0;
+  GhosttyTerminalModeConfig bracketed = {.mode = GHOSTTY_MODE_BRACKETED_PASTE};
+  if (ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_MODE,
+                          &bracketed) != GHOSTTY_SUCCESS)
+    return 0;
+  return native_encode_paste(data, len, bracketed.value, output);
+}
+
 static int floeterm_key_from_w3c_code(const uint8_t *code, size_t code_len,
                                       GhosttyKey *key) {
   if (code == NULL || code_len == 0 || key == NULL) return 0;

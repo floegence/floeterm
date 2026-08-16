@@ -8,6 +8,7 @@ import {
   decodeActivationRejected,
   decodeInput,
   decodeInputIntent,
+  decodePasteChunk,
   decodePresentation,
   decodeResize,
   encodeAttach,
@@ -15,6 +16,7 @@ import {
   encodeActivationRejected,
   encodeInput,
   encodeInputIntent,
+  encodePasteChunk,
   encodeResize,
 } from './codec.js';
 
@@ -28,7 +30,7 @@ const presentationFrame = (value: unknown): Uint8Array => {
 };
 
 describe('semantic terminal live codec', () => {
-  it('round trips client attach, text input, structured key input, and resize frames', () => {
+  it('round trips client attach, text input, structured key input, paste chunks, and resize frames', () => {
     const decoder = new TerminalLiveDecoder();
     const frames = [
       encodeAttach({ attachGeneration: 2n, cols: 80, rows: 24, sessionId: 's', connectionId: 'c' }),
@@ -40,6 +42,7 @@ describe('semantic terminal live codec', () => {
         action: 'repeat',
         modifiers: 0x03,
       }),
+      encodePasteChunk({ sequence: 3n, start: true, end: true, data: new TextEncoder().encode('paste') }),
       encodeResize({ sequence: 2n, cols: 120, rows: 40 }),
       encodeActivate({ sequence: 3n, controllerEpoch: 4n, cols: 140, rows: 50 }),
     ].flatMap(encoded => decoder.push(encoded));
@@ -52,8 +55,11 @@ describe('semantic terminal live codec', () => {
       action: 'repeat',
       modifiers: 0x03,
     });
-    expect(decodeResize(frames[3]!)).toEqual({ sequence: 2n, cols: 120, rows: 40 });
-    expect(decodeActivate(frames[4]!)).toEqual({ sequence: 3n, controllerEpoch: 4n, cols: 140, rows: 50 });
+    expect(decodePasteChunk(frames[3]!)).toEqual({
+      sequence: 3n, start: true, end: true, data: new TextEncoder().encode('paste'),
+    });
+    expect(decodeResize(frames[4]!)).toEqual({ sequence: 2n, cols: 120, rows: 40 });
+    expect(decodeActivate(frames[5]!)).toEqual({ sequence: 3n, controllerEpoch: 4n, cols: 140, rows: 50 });
   });
 
   it('rejects malformed structured key intent payloads', () => {

@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const expectedVersion = '0.16.2';
+const expectedVersion = '0.16.3';
 const expectedExports = ['.', './live', './semantic', './sessions'];
 const forbiddenContent = [
   '@floegence/ghostty-web',
@@ -122,17 +122,25 @@ import {
   RendererSurface,
   TerminalInputBridge,
   type TerminalKeyInputIntent,
+  type TerminalInputBridgeOptions,
   type SemanticPresentation,
   type SemanticTerminalCursorRect,
   type SemanticTerminalPalette,
 } from '@floegence/floeterm-terminal-web/semantic';
-import { createSemanticTerminalLiveTransport } from '@floegence/floeterm-terminal-web/live';
+import {
+  createSemanticTerminalLiveTransport,
+  type SemanticTerminalLiveTransport,
+} from '@floegence/floeterm-terminal-web/live';
 import { TerminalSessionsCoordinator } from '@floegence/floeterm-terminal-web/sessions';
 void [HistorySearchController, HistoryViewportController, RendererSurface, TerminalInputBridge, createSemanticTerminalLiveTransport, TerminalSessionsCoordinator];
 const presentation = {} as SemanticPresentation;
 const cursorRect = {} as SemanticTerminalCursorRect;
 const palette = {} as SemanticTerminalPalette;
 const intent = {} as TerminalKeyInputIntent;
+const bridgeOptions = {} as TerminalInputBridgeOptions;
+const transport = {} as SemanticTerminalLiveTransport;
+void bridgeOptions.onPaste;
+void transport.sendPaste('session', 'paste');
 void [presentation, cursorRect, palette, intent];
 `);
   await writeFile(path.join(installRoot, 'tsconfig.json'), JSON.stringify({

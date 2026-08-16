@@ -188,6 +188,7 @@ const SemanticTerminalSurface = (props: {
   activate?(): void;
   sendInput(value: string): void;
   sendInputIntent(value: TerminalKeyInputIntent): void;
+  sendPaste(value: string): void;
 }) => {
   let canvas: HTMLCanvasElement | undefined;
   let input: HTMLTextAreaElement | undefined;
@@ -216,6 +217,7 @@ const SemanticTerminalSurface = (props: {
       inputElement: input,
       onData: props.sendInput,
       onInputIntent: props.sendInputIntent,
+      onPaste: props.sendPaste,
       syncInputGeometry,
       hasSelection: () => props.renderer()?.hasSelection() ?? false,
       copySelection: async (source, clipboardData) => {
@@ -284,13 +286,6 @@ const SemanticTerminalSurface = (props: {
         spellcheck={false}
         autocapitalize="off"
         autocomplete="off"
-        onPaste={event => {
-          const value = event.clipboardData?.getData('text/plain') ?? '';
-          if (!value) return;
-          event.preventDefault();
-          props.sendInput(value);
-          event.currentTarget.value = '';
-        }}
       />
     </>
   );
@@ -515,6 +510,7 @@ const SemanticTerminalViewport = (props: {
         activate={activateView}
         sendInput={value => { void props.transport.sendInput(mountedSessionId, value); }}
         sendInputIntent={value => { void props.transport.sendInputIntent(mountedSessionId, value); }}
+        sendPaste={value => { void props.transport.sendPaste(mountedSessionId, value); }}
       />
       <Show when={presentationError()}>
         {message => (
@@ -850,6 +846,7 @@ const SingleTerminalPane = (props: {
             activate={activateView}
             sendInput={value => { void props.transport.sendInput(props.sessionId, value); }}
             sendInputIntent={value => { void props.transport.sendInputIntent(props.sessionId, value); }}
+            sendPaste={value => { void props.transport.sendPaste(props.sessionId, value); }}
           />
 		  <div
 			class="semanticHistoryRail"

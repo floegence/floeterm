@@ -24,6 +24,8 @@ int floeterm_native_encode_key(NativeEngine *engine, const uint8_t *code,
                                size_t code_len, int action, uint16_t mods,
                                const uint8_t *text, size_t text_len,
                                NativeBytes *output);
+int floeterm_native_encode_paste(NativeEngine *engine, const uint8_t *data,
+                                 size_t len, NativeBytes *output);
 */
 import "C"
 
@@ -178,6 +180,23 @@ func (e *Engine) EncodeKey(event KeyEvent) ([]byte, error) {
 	}
 	defer C.native_bytes_free(&output)
 	runtime.KeepAlive(event)
+	return C.GoBytes(unsafe.Pointer(output.data), C.int(output.len)), nil
+}
+func (e *Engine) EncodePaste(data []byte) ([]byte, error) {
+	if e == nil || e.handle == nil || len(data) == 0 {
+		return nil, errors.New("invalid native paste input")
+	}
+	var output C.NativeBytes
+	if C.floeterm_native_encode_paste(
+		e.handle,
+		(*C.uint8_t)(unsafe.Pointer(&data[0])),
+		C.size_t(len(data)),
+		&output,
+	) == 0 {
+		return nil, errors.New("encode native paste input")
+	}
+	defer C.native_bytes_free(&output)
+	runtime.KeepAlive(data)
 	return C.GoBytes(unsafe.Pointer(output.data), C.int(output.len)), nil
 }
 func (e *Engine) Capture() (Frame, error) {

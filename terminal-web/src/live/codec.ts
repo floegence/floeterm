@@ -4,6 +4,7 @@ export const StreamKind = 'terminal/live_v1';
 export const FRAME_HEADER_BYTES = 8;
 export const MAX_FRAME_PAYLOAD_BYTES = 256 * 1024;
 export const MAX_INPUT_BYTES = 64 * 1024;
+export const MAX_PASTE_BYTES = 8 * 1024 * 1024;
 export const MAX_IDENTIFIER_BYTES = 256;
 
 export enum TerminalLiveFrameType {
@@ -13,6 +14,7 @@ export enum TerminalLiveFrameType {
   Detach = 0x04,
   InputIntent = 0x05,
   Activate = 0x06,
+  Paste = 0x07,
   Attached = 0x81,
   ResizeApplied = 0x83,
   SessionClosed = 0x84,
@@ -45,6 +47,12 @@ export type InputIntent = Readonly<{
   text: string;
   action: 'press' | 'repeat' | 'release';
   modifiers: number;
+}>;
+export type PasteChunk = Readonly<{
+  sequence: bigint;
+  start: boolean;
+  end: boolean;
+  data: Uint8Array;
 }>;
 export type Resize = Readonly<{ sequence: bigint; cols: number; rows: number }>;
 export type Activate = Readonly<{
@@ -299,6 +307,35 @@ export const decodeInputIntent = (value: TerminalLiveFrame): InputIntent => {
     text: decoder.decode(value.payload.subarray(16 + codeLength)),
     action: decodeKeyAction(value.payload[8]!),
     modifiers,
+  };
+};
+
+export const encodePasteChunk = (value: PasteChunk): Uint8Array => {
+  assertPositiveUint64(value.sequence, 'sequence');
+  if (value.data.byteLength === 0 || value.data.byteLength > MAX_INPUT_BYTES) {
+    throw new Error('terminal live paste chunk has an invalid length');
+  }
+  const payload = new Uint8Array(10 + value.data.byteLength);
+  const view = new DataView(payload.buffer);
+  view.setBigUint64(0, value.sequence, false);
+  payload[8] = (value.start ? 1 : 0) | (value.end ? 2 : 0);
+  payload.set(value.data, 10);
+  return frame(TerminalLiveFrameType.Paste, payload);
+};
+
+export const decodePasteChunk = (value: TerminalLiveFrame): PasteChunk => {
+  if (value.type !== TerminalLiveFrameType.Paste) throw new Error('unexpected terminal live frame type');
+  if (value.payload.byteLength <= 10 || value.payload.byteLength - 10 > MAX_INPUT_BYTES
+    || (value.payload[8]! & ~0x03) !== 0 || value.payload[9] !== 0) {
+    throw new Error('invalid terminal live paste chunk');
+  }
+  const sequence = new DataView(value.payload.buffer, value.payload.byteOffset).getBigUint64(0, false);
+  assertPositiveUint64(sequence, 'sequence');
+  return {
+    sequence,
+    start: (value.payload[8]! & 1) !== 0,
+    end: (value.payload[8]! & 2) !== 0,
+    data: value.payload.slice(10),
   };
 };
 

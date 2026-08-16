@@ -49,7 +49,7 @@ test('preserves a 2 MiB Unicode native paste through the live protocol and real 
 
     const expectedPaste = buildExpectedPaste();
     expect(Buffer.byteLength(expectedPaste)).toBe(PASTE_BYTES);
-    const expectedHash = createHash('sha256').update(expectedPaste).digest('hex');
+    const expectedHash = createHash('sha256').update(expectedPaste.replaceAll('\n', '\r')).digest('hex');
     const dispatch = await page.evaluate(({ bytes, pattern, patternBytes }) => {
       const textarea = document.querySelector('textarea[aria-label="Terminal input"]');
       if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('terminal input textarea is unavailable');

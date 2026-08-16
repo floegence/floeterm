@@ -187,6 +187,10 @@ func (b *ManagerBackend) WriteInputIntent(_ context.Context, attachment Attach, 
 	})
 }
 
+func (b *ManagerBackend) WritePaste(_ context.Context, attachment Attach, input PasteInput) error {
+	return b.writeSemanticInput(attachment, terminal.SemanticInput{Kind: "paste", Data: input.Data})
+}
+
 func (b *ManagerBackend) writeSemanticInput(attachment Attach, input terminal.SemanticInput) error {
 	if b == nil || b.manager == nil {
 		return errors.New("terminal manager is required")

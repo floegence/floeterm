@@ -5,6 +5,7 @@ import {
   decodeActivate,
   decodeInput,
   decodeInputIntent,
+  decodePasteChunk,
   encodeActivated,
   encodeAttached,
   encodeControllerChanged,
@@ -221,12 +222,20 @@ describe('semantic terminal live transport', () => {
     expect(decodeInputIntent(intentFrame)).toEqual({
       sequence: 2n, code: 'Enter', text: '', action: 'press', modifiers: 0,
     });
+    await bundle.transport.sendPaste('session', 'paste');
+    const pasteFrame = new TerminalLiveDecoder().push(streams[0]!.writes[3]!)[0]!;
+    expect(decodePasteChunk(pasteFrame)).toEqual({
+      sequence: 3n,
+      start: true,
+      end: true,
+      data: new TextEncoder().encode('paste'),
+    });
 
     const replacing = bundle.transport.attachWithPresentation('session', 120, 40);
     await waitUntil(() => streams.length === 2 && streams[1]!.writes.length === 1);
     streams[1]!.push(encodeAttached({ presentationSequence: 2n, geometryGeneration: 2n, controllerEpoch: 2n, cols: 120, rows: 40, isController: true }));
     await expect(replacing).resolves.toMatchObject({ runtimeAttachGeneration: 2, cols: 120, rows: 40 });
-    expect(streams[0]!.writes).toHaveLength(3);
+    expect(streams[0]!.writes).toHaveLength(4);
 
     await expect(bundle.transport.clearSemanticContent?.('session')).resolves.toEqual({
       presentationSequence: 2,

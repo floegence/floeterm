@@ -14,6 +14,7 @@ const (
 	HeaderSize           = 8
 	MaxFramePayloadBytes = 256 * 1024
 	MaxInputBytes        = 64 * 1024
+	MaxPasteBytes        = 8 * 1024 * 1024
 	MaxIdentifierBytes   = 256
 )
 
@@ -34,6 +35,7 @@ const (
 	FrameDetach      FrameType = 0x04
 	FrameInputIntent FrameType = 0x05
 	FrameActivate    FrameType = 0x06
+	FramePaste       FrameType = 0x07
 
 	FrameAttached           FrameType = 0x81
 	FrameResizeApplied      FrameType = 0x83
@@ -92,6 +94,17 @@ type InputIntent struct {
 	Text      string
 	Action    KeyAction
 	Modifiers KeyModifiers
+}
+
+type PasteChunk struct {
+	Sequence   uint64
+	Start, End bool
+	Data       []byte
+}
+
+type PasteInput struct {
+	Sequence uint64
+	Data     []byte
 }
 
 type Resize struct {
@@ -157,7 +170,7 @@ type ProtocolError struct {
 
 func validFrameType(frameType FrameType) bool {
 	switch frameType {
-	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent, FrameActivate,
+	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent, FrameActivate, FramePaste,
 		FrameAttached, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation,
 		FrameActivated, FrameControllerChanged, FrameActivationRejected, FrameError:
 		return true
@@ -406,6 +419,41 @@ func DecodeInputIntent(frame Frame) (InputIntent, error) {
 	if value.Sequence == 0 || !validKeyAction(value.Action) || value.Modifiers&^allKeyModifiers != 0 ||
 		!utf8.ValidString(value.Code) || !utf8.ValidString(value.Text) {
 		return InputIntent{}, ErrInvalidPayload
+	}
+	return value, nil
+}
+
+func EncodePasteChunk(value PasteChunk) ([]byte, error) {
+	if value.Sequence == 0 || len(value.Data) == 0 || len(value.Data) > MaxInputBytes {
+		return nil, ErrInvalidPayload
+	}
+	payload := make([]byte, 10+len(value.Data))
+	binary.BigEndian.PutUint64(payload[:8], value.Sequence)
+	if value.Start {
+		payload[8] |= 1
+	}
+	if value.End {
+		payload[8] |= 2
+	}
+	copy(payload[10:], value.Data)
+	return EncodeFrame(Frame{Type: FramePaste, Payload: payload})
+}
+
+func DecodePasteChunk(frame Frame) (PasteChunk, error) {
+	if frame.Type != FramePaste {
+		return PasteChunk{}, ErrUnexpectedFrameType
+	}
+	if len(frame.Payload) <= 10 || len(frame.Payload)-10 > MaxInputBytes || frame.Payload[8]&^byte(3) != 0 || frame.Payload[9] != 0 {
+		return PasteChunk{}, ErrInvalidPayload
+	}
+	value := PasteChunk{
+		Sequence: binary.BigEndian.Uint64(frame.Payload[:8]),
+		Start:    frame.Payload[8]&1 != 0,
+		End:      frame.Payload[8]&2 != 0,
+		Data:     append([]byte(nil), frame.Payload[10:]...),
+	}
+	if value.Sequence == 0 {
+		return PasteChunk{}, ErrInvalidPayload
 	}
 	return value, nil
 }

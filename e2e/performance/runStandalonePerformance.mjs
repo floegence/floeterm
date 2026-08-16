@@ -471,10 +471,10 @@ try {
   ].join('');
   await page.evaluate(value => window.__floetermPerfHarness.sendInput(`${value}\r`), pasteCommand);
   await page.waitForFunction(marker => window.__floetermPerfHarness.serialize().includes(marker), pasteReadyMarker);
-  const expectedPasteHash = hash(
+  const expectedPasteHash = hash((
     pastePattern.repeat(Math.floor(pasteBytes / pastePatternBytes))
-      + 'X'.repeat(pasteBytes % pastePatternBytes),
-  );
+      + 'X'.repeat(pasteBytes % pastePatternBytes)
+  ).replaceAll('\n', '\r'));
   await page.evaluate(({ bytes, pattern, patternBytes }) => {
     const repetitions = Math.floor(bytes / patternBytes);
     window.__floetermPastePayload = pattern.repeat(repetitions) + 'X'.repeat(bytes - repetitions * patternBytes);

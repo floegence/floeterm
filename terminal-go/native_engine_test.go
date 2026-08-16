@@ -159,6 +159,37 @@ func TestRealNativeKeyEncoderUsesCurrentTerminalModes(t *testing.T) {
 	}
 }
 
+func TestRealNativePasteEncoderUsesCurrentTerminalMode(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup string
+		want  string
+	}{
+		{name: "normal", want: "first\rsecond"},
+		{name: "bracketed", setup: "\x1b[?2004h", want: "\x1b[200~first\nsecond\x1b[201~"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine, err := NewNativeSemanticEngine(20, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer engine.Close()
+			if test.setup != "" {
+				if _, err := engine.ApplyOutput([]byte(test.setup)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := engine.EncodeInput(SemanticInput{Kind: "paste", Data: []byte("first\nsecond")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != test.want {
+				t.Fatalf("encoded paste = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRealNativeKeyEncoderCoversEveryControlLetter(t *testing.T) {
 	for letter := byte('A'); letter <= 'Z'; letter++ {
 		t.Run(string(letter), func(t *testing.T) {

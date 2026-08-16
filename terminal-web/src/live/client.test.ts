@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   TerminalLiveDecoder,
   TerminalLiveFrameType,
+  MAX_INPUT_BYTES,
   decodeInput,
   decodeInputIntent,
+  decodePasteChunk,
   decodeActivate,
   decodeResize,
   encodeAttached,
@@ -13,7 +15,7 @@ import {
   encodeControllerChanged,
   encodeResizeApplied,
 } from './codec.js';
-import { connectTerminalLive, type TerminalByteStream } from './client.js';
+import { MAX_QUEUED_INPUT_BYTES, connectTerminalLive, type TerminalByteStream } from './client.js';
 
 class FakeStream implements TerminalByteStream {
   readonly writes: Uint8Array[] = [];
@@ -64,6 +66,46 @@ describe('semantic terminal live client', () => {
     stream.push(encodeResizeApplied({ sequence: 1n, geometryGeneration: 2n, presentationSequence: 4n, cols: 120, rows: 40 }));
     await expect(resizing).resolves.toMatchObject({ effective: { generation: 2, cols: 120, rows: 40 } });
     expect(geometries).toHaveLength(2);
+  });
+
+  it('sends one bounded paste as ordered start and end chunks', async () => {
+    const stream = new FakeStream();
+    const connecting = connectTerminalLive({
+      openStream: async () => stream,
+      attach: { sessionId: 's', connectionId: 'c', attachGeneration: 1, cols: 80, rows: 24 },
+    });
+    await waitUntil(() => stream.writes.length === 1);
+    stream.push(encodeAttached({ presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n, cols: 80, rows: 24, isController: true }));
+    const connection = await connecting;
+    const payload = new Uint8Array(MAX_INPUT_BYTES + 17).fill(0x70);
+
+    await connection.sendPaste(payload);
+
+    expect(stream.writes).toHaveLength(3);
+    const first = decodePasteChunk(new TerminalLiveDecoder().push(stream.writes[1]!)[0]!);
+    const last = decodePasteChunk(new TerminalLiveDecoder().push(stream.writes[2]!)[0]!);
+    expect(first).toMatchObject({ sequence: 1n, start: true, end: false });
+    expect(first.data).toHaveLength(MAX_INPUT_BYTES);
+    expect(last).toMatchObject({ sequence: 2n, start: false, end: true });
+    expect(last.data).toHaveLength(17);
+    const joined = new Uint8Array(first.data.byteLength + last.data.byteLength);
+    joined.set(first.data);
+    joined.set(last.data, first.data.byteLength);
+    expect(joined).toEqual(payload);
+  });
+
+  it('rejects an oversized paste before writing any chunk', async () => {
+    const stream = new FakeStream();
+    const connecting = connectTerminalLive({
+      openStream: async () => stream,
+      attach: { sessionId: 's', connectionId: 'c', attachGeneration: 1, cols: 80, rows: 24 },
+    });
+    await waitUntil(() => stream.writes.length === 1);
+    stream.push(encodeAttached({ presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n, cols: 80, rows: 24, isController: true }));
+    const connection = await connecting;
+
+    await expect(connection.sendPaste(new Uint8Array(MAX_QUEUED_INPUT_BYTES + 1))).rejects.toThrow(/paste queue limit/i);
+    expect(stream.writes).toHaveLength(1);
   });
 
   it('fails closed when a removed raw output frame is received', async () => {

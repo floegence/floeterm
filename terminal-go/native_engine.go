@@ -171,6 +171,8 @@ func (e *nativeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 		return append([]byte(nil), i.Data...), nil
 	case "text":
 		return e.engine.EncodeText(i.Text)
+	case "paste":
+		return e.engine.EncodePaste(i.Data)
 	case "key":
 		action := 0
 		switch i.Action {
