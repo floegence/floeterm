@@ -453,6 +453,46 @@ describe('semantic terminal browser surface', () => {
     renderer.dispose();
   });
 
+  it('selects words and rows from repeated clicks in transformed visual coordinates', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px;transform-origin:0 0;transform:translate(23px, 11px) scale(0.35)';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    renderer.apply(selectionPresentation());
+    await nextPaint();
+
+    const bounds = canvas.getBoundingClientRect();
+    const metrics = renderer.getCellMetrics();
+    const scaleX = bounds.width / canvas.clientWidth;
+    const scaleY = bounds.height / canvas.clientHeight;
+    const point = (column: number, row: number) => ({
+      x: bounds.left + (column + 0.5) * metrics.cellWidthCssPx * scaleX,
+      y: bounds.top + (row + 0.5) * metrics.cellHeightCssPx * scaleY,
+    });
+
+    const wideContinuation = point(2, 0);
+    renderer.beginSelection(wideContinuation.x, wideContinuation.y, 2);
+    renderer.endSelection(wideContinuation.x, wideContinuation.y);
+    await nextPaint();
+    expect(renderer.getSelectionText()).toBe('中');
+    const selectedPixel = canvas.getContext('2d')!.getImageData(
+      Math.floor((1 * metrics.cellWidthCssPx + 1) * (canvas.width / canvas.clientWidth)),
+      1,
+      1,
+      1,
+    ).data;
+    expect(Array.from(selectedPixel.slice(0, 3))).toEqual(hexToRgb(getThemeColors('dark').selectionBackground));
+
+    const row = point(4, 1);
+    renderer.beginSelection(row.x, row.y, 3);
+    renderer.endSelection(row.x, row.y);
+    expect(renderer.getSelectionText()).toBe('DEFGHIJK');
+
+    renderer.dispose();
+  });
+
   it('maps transformed visual coordinates to logical cells and cursor anchors across DPR values', async () => {
     const originalDpr = Object.getOwnPropertyDescriptor(globalThis, 'devicePixelRatio');
     const transforms = [

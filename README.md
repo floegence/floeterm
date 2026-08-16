@@ -61,7 +61,7 @@ Install the released packages:
 
 ```bash
 go get github.com/floegence/floeterm/terminal-go@v0.11.2
-npm install @floegence/floeterm-terminal-web@0.16.3
+npm install @floegence/floeterm-terminal-web@0.16.4
 ```
 
 ## Browser Integration

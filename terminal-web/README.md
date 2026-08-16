@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.16.3
+npm install @floegence/floeterm-terminal-web@0.16.4
 ```
 
 ## Exports
@@ -50,6 +50,14 @@ for glyphs, graphics, selection hit-testing, cursor painting, and IME anchoring.
 Use the same metrics to calculate desired columns and rows before sending a canonical
 resize request. Font changes repaint the latest Presentation without replacing the
 canvas or creating terminal state in the browser.
+
+Pointer events continue to call `beginSelection()`, `updateSelection()`, and
+`endSelection()` for drag selection. Because `pointerdown.detail` is always zero,
+handle the completed `click` event separately: when `MouseEvent.detail` is at least
+two, pass it as the third argument to `beginSelection()` and immediately call
+`endSelection()`. A double click selects the semantic word and a triple click selects
+the logical row. Both preserve wide-cell boundaries and use the same transformed
+coordinate mapping as drag selection.
 
 For keep-mounted panes, call `renderer.setVisible(false)` before hiding the host.
 After the active host has its real content-box bounds, call `renderer.setVisible(true)`.

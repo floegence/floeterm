@@ -76,6 +76,12 @@ test('uses macOS Cmd+C and Cmd+V for exact terminal clipboard operations', async
       }
       throw new Error('copy marker is not visible');
     }, copyMarker);
+    await page.mouse.dblclick(selection.startX, selection.y);
+    await expect.poll(async () => page.evaluate(() => window.__floetermPerfHarness.getSelectionText())).toBe(copyMarker);
+
+    await page.mouse.click(selection.startX, selection.y, { clickCount: 3 });
+    await expect.poll(async () => page.evaluate(() => window.__floetermPerfHarness.getSelectionText())).toBe(copyMarker);
+
     await page.mouse.move(selection.startX, selection.y);
     await page.mouse.down();
     await page.mouse.move(selection.endX, selection.y, { steps: 4 });

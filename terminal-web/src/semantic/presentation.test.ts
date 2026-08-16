@@ -705,6 +705,62 @@ describe('semantic presentation', () => {
     expect(renderer.getSelectionText()).toBe('A');
   });
 
+  it('selects semantic words on double click and the logical row on triple click', () => {
+    const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText:vi.fn(),setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};
+    const host={clientWidth:225,clientHeight:36};
+    const canvas={
+      width:0,height:0,clientWidth:225,clientHeight:36,parentElement:host,style:{},
+      getBoundingClientRect:()=>({ left: 0, top: 0, width: 225, height: 36 }),
+      getContext:()=>context,
+    } as unknown as HTMLCanvasElement;
+    const renderer = new RendererSurface(canvas);
+    const cells = [
+      ...'foo_2'.split('').map(text => ({ text, width: 1 })),
+      { text: ' ', width: 1 },
+      ...'/tmp/x'.split('').map(text => ({ text, width: 1 })),
+      { text: ' ', width: 1 },
+      ...'!!'.split('').map(text => ({ text, width: 1 })),
+      { text: ' ', width: 1 },
+      { text: '中', width: 2 }, { text: '', width: 0 },
+      { text: '文', width: 2 }, { text: '', width: 0 },
+      { text: ' ', width: 1 },
+      { text: 'e\u0301', width: 1 },
+      { text: ' ', width: 1 },
+      { text: '👩‍💻', width: 2 }, { text: '', width: 0 },
+    ];
+    const value = validatePresentation({
+      sequence: 1,
+      geometry: { generation: 1, cols: 25, rows: 2 },
+      state: { sequence: 1 },
+      frame: {
+        width: 25,
+        height: 2,
+        bufferKind: 'normal',
+        history: { revision: 1, totalRows: 2, screenStartOffset: 0 },
+        graphics: { generation: 0, images: [], placements: [] },
+        rows: [
+          { cells },
+          { cells: Array.from({ length: 25 }, () => ({ text: '', width: 1 })) },
+        ],
+        cursor: { x: 0, y: 1, visible: true, shape: 'bar', blinking: false },
+      },
+    });
+    renderer.apply(value);
+    const select = (column: number, clickCount: number) => {
+      renderer.beginSelection(column * 9 + 2, 9, clickCount);
+      renderer.endSelection(column * 9 + 2, 9);
+      return renderer.getSelectionText();
+    };
+
+    expect(select(2, 2)).toBe('foo_2');
+    expect(select(8, 2)).toBe('/tmp/x');
+    expect(select(13, 2)).toBe('!!');
+    expect(select(17, 2)).toBe('中文');
+    expect(select(21, 2)).toBe('e\u0301');
+    expect(select(24, 2)).toBe('👩‍💻');
+    expect(select(8, 3)).toBe('foo_2 /tmp/x !! 中文 e\u0301 👩‍💻');
+  });
+
   it('drops selection and a readonly history projection when content epoch advances', () => {
     const fillText = vi.fn();
     const context={clearRect:vi.fn(),fillRect:vi.fn(),fillText,setTransform:vi.fn(),font:'',textBaseline:'',fillStyle:''};

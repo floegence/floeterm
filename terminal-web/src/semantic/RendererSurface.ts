@@ -39,6 +39,13 @@ type CanvasCoordinateSpace = Readonly<{
   scaleY: number;
 }>;
 
+type SemanticSelectionPoint = Readonly<{ row: number; col: number }>;
+type SemanticSelectionRange = Readonly<{
+  start: SemanticSelectionPoint;
+  end: SemanticSelectionPoint;
+}>;
+type SemanticSelectionGranularity = 'cell' | 'word' | 'line';
+
 const SELECTION_DRAG_THRESHOLD_CSS_PX = 3;
 
 const PALETTE_KEYS = [
@@ -56,7 +63,8 @@ export class RendererSurface {
   private selectionGesture: {
     clientX: number;
     clientY: number;
-    anchor: { row: number; col: number };
+    base: SemanticSelectionRange;
+    granularity: SemanticSelectionGranularity;
     active: boolean;
   } | null = null;
   private searchDecorations: readonly SemanticTerminalSearchDecoration[] = Object.freeze([]);
@@ -228,16 +236,28 @@ export class RendererSurface {
     this.searchDecorationCells.clear();
     this.scheduleRender();
   }
-  beginSelection(clientX: number, clientY: number): void {
+  beginSelection(clientX: number, clientY: number, clickCount = 1): void {
     const point = this.pointFromClient(clientX, clientY);
     if (!point) {
       this.clearSelection();
       return;
     }
+    const normalizedClickCount = Number.isFinite(clickCount) ? Math.max(1, Math.floor(clickCount)) : 1;
+    const granularity: SemanticSelectionGranularity = normalizedClickCount >= 3
+      ? 'line'
+      : normalizedClickCount === 2 ? 'word' : 'cell';
+    const frame = this.currentFrame();
+    const base = frame ? this.selectionRangeAt(frame, point, granularity) : null;
     const hadSelection = this.selectionAnchor !== null || this.selectionFocus !== null;
     this.selectionAnchor = null;
     this.selectionFocus = null;
-    this.selectionGesture = { clientX, clientY, anchor: point, active: false };
+    this.selectionGesture = base ? { clientX, clientY, base, granularity, active: false } : null;
+    if (base && granularity !== 'cell') {
+      this.selectionAnchor = base.start;
+      this.selectionFocus = base.end;
+      this.scheduleRender();
+      return;
+    }
     if (!hadSelection) return;
     this.scheduleRender();
   }
@@ -251,9 +271,20 @@ export class RendererSurface {
       const deltaY = clientY - gesture.clientY;
       if ((deltaX * deltaX) + (deltaY * deltaY) < SELECTION_DRAG_THRESHOLD_CSS_PX ** 2) return;
       gesture.active = true;
-      this.selectionAnchor = gesture.anchor;
     }
-    this.selectionFocus = point;
+    const frame = this.currentFrame();
+    const target = frame ? this.selectionRangeAt(frame, point, gesture.granularity) : null;
+    if (!target) return;
+    if (compareSelectionPoints(target.end, gesture.base.start) < 0) {
+      this.selectionAnchor = gesture.base.end;
+      this.selectionFocus = target.start;
+    } else if (compareSelectionPoints(target.start, gesture.base.end) > 0) {
+      this.selectionAnchor = gesture.base.start;
+      this.selectionFocus = target.end;
+    } else {
+      this.selectionAnchor = gesture.base.start;
+      this.selectionFocus = gesture.base.end;
+    }
     this.scheduleRender();
   }
   endSelection(clientX: number, clientY: number): void {
@@ -693,6 +724,52 @@ export class RendererSurface {
     return col;
   }
 
+  private selectionRangeAt(
+    frame: SemanticFrame,
+    point: SemanticSelectionPoint,
+    granularity: SemanticSelectionGranularity,
+  ): SemanticSelectionRange | null {
+    if (granularity === 'cell') return { start: point, end: point };
+    const cells = frame.rows[point.row]?.cells;
+    if (!cells) return null;
+    if (granularity === 'line') {
+      let endColumn = -1;
+      cells.forEach((cell, column) => {
+        if (cell.width > 0 && cell.text.length > 0) {
+          endColumn = Math.min(frame.width - 1, column + cell.width - 1);
+        }
+      });
+      return endColumn < 0
+        ? null
+        : { start: { row: point.row, col: 0 }, end: { row: point.row, col: endColumn } };
+    }
+
+    const segments: Array<Readonly<{ start: number; end: number; kind: string }>> = [];
+    cells.forEach((cell, column) => {
+      if (cell.width === 0) return;
+      segments.push({
+        start: column,
+        end: Math.min(frame.width - 1, column + Math.max(1, cell.width) - 1),
+        kind: semanticSelectionCellKind(cell.text),
+      });
+    });
+    const selectedIndex = segments.findIndex(segment => point.col >= segment.start && point.col <= segment.end);
+    const selected = segments[selectedIndex];
+    if (!selected || selected.kind === 'empty') return null;
+    let first = selectedIndex;
+    let last = selectedIndex;
+    while (first > 0
+      && segments[first - 1]!.end + 1 === segments[first]!.start
+      && segments[first - 1]!.kind === selected.kind) first -= 1;
+    while (last + 1 < segments.length
+      && segments[last]!.end + 1 === segments[last + 1]!.start
+      && segments[last + 1]!.kind === selected.kind) last += 1;
+    return {
+      start: { row: point.row, col: segments[first]!.start },
+      end: { row: point.row, col: segments[last]!.end },
+    };
+  }
+
   private measureCoordinateSpace(): CanvasCoordinateSpace | null {
     const bounds = this.canvas.getBoundingClientRect();
     const layoutWidth = this.canvas.clientWidth;
@@ -704,7 +781,7 @@ export class RendererSurface {
     return { bounds, layoutWidth, layoutHeight, scaleX, scaleY };
   }
 
-  private selectionRange(): { start: { row: number; col: number }; end: { row: number; col: number } } | null {
+  private selectionRange(): SemanticSelectionRange | null {
     if (!this.selectionAnchor || !this.selectionFocus) return null;
     const anchorIndex = this.selectionAnchor.row * 1_000_000 + this.selectionAnchor.col;
     const focusIndex = this.selectionFocus.row * 1_000_000 + this.selectionFocus.col;
@@ -758,6 +835,22 @@ function resolveColor(value: string | undefined, fallback: string, palette: Sema
     return resolveIndexedColor(index, palette) ?? fallback;
   }
   return fallback;
+}
+
+function compareSelectionPoints(left: SemanticSelectionPoint, right: SemanticSelectionPoint): number {
+  return left.row === right.row ? left.col - right.col : left.row - right.row;
+}
+
+function semanticSelectionCellKind(text: string): string {
+  if (text.length === 0) return 'empty';
+  if (/^\s+$/u.test(text)) return 'space';
+  if (/\p{Script=Han}/u.test(text)) return 'word-han';
+  if (/\p{Script=Hiragana}/u.test(text)) return 'word-hiragana';
+  if (/\p{Script=Katakana}/u.test(text)) return 'word-katakana';
+  if (/\p{Script=Hangul}/u.test(text)) return 'word-hangul';
+  if (/[\p{Letter}\p{Mark}\p{Number}_]/u.test(text) || /^[-./~:@%+=]+$/u.test(text)) return 'word';
+  if (/\p{Extended_Pictographic}/u.test(text)) return 'symbol';
+  return 'punctuation';
 }
 
 function resolveCellColors(

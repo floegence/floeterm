@@ -277,6 +277,11 @@ const SemanticTerminalSurface = (props: {
           props.renderer()?.endSelection(event.clientX, event.clientY);
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         }}
+        onClick={event => {
+          if (event.detail < 2) return;
+          props.renderer()?.beginSelection(event.clientX, event.clientY, event.detail);
+          props.renderer()?.endSelection(event.clientX, event.clientY);
+        }}
       />
       <textarea
         id={props.inputId}

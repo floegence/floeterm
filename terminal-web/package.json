@@ -1,6 +1,6 @@
 {
   "name": "@floegence/floeterm-terminal-web",
-  "version": "0.16.3",
+  "version": "0.16.4",
   "description": "Framework-neutral semantic terminal renderer, input bridge, live transport, and session metadata utilities.",
   "license": "MIT",
   "publishConfig": {
