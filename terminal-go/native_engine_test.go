@@ -105,6 +105,68 @@ func TestRealNativePresentationPreservesInverseCellStyle(t *testing.T) {
 	}
 }
 
+func TestRealNativePresentationKeepsRegionalIndicatorGraphemeTogether(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(16, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	if _, err := engine.ApplyOutput([]byte("1234567\U0001F1E8\U0001F1F3")); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := engine.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := frame.Rows[0].Cells[7]; got.Text != "\U0001F1E8\U0001F1F3" || got.Width != 2 {
+		t.Fatalf("regional indicator cell = %+v, want one width-2 grapheme", got)
+	}
+	if got := frame.Rows[0].Cells[8]; got.Text != "" || got.Width != 0 {
+		t.Fatalf("regional indicator continuation = %+v, want empty width-0 cell", got)
+	}
+	resetEngine, ok := engine.(SemanticResetEngine)
+	if !ok {
+		t.Fatal("native semantic engine does not expose reset")
+	}
+	if err := resetEngine.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.ApplyOutput([]byte("1234567\U0001F1E8\U0001F1F3")); err != nil {
+		t.Fatal(err)
+	}
+	resetFrame, err := engine.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resetFrame.Rows[0].Cells[7]; got.Text != "\U0001F1E8\U0001F1F3" || got.Width != 2 {
+		t.Fatalf("regional indicator after reset = %+v, want one width-2 grapheme", got)
+	}
+
+	// Pi's differential renderer clears and rewrites the same line inside
+	// synchronized output. A complete grapheme must not change the row math.
+	if _, err := engine.ApplyOutput([]byte("\x1b[?2026h\r\x1b[2K1234567\U0001F1E8\U0001F1F3A\x1b[?2026l")); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := engine.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := updated.Rows[0].Cells[7]; got.Text != "\U0001F1E8\U0001F1F3" || got.Width != 2 {
+		t.Fatalf("redrawn regional indicator cell = %+v", got)
+	}
+	if got := updated.Rows[0].Cells[9]; got.Text != "A" || got.Width != 1 {
+		t.Fatalf("redrawn suffix cell = %+v", got)
+	}
+	for row := 1; row < updated.Height; row++ {
+		for column, cell := range updated.Rows[row].Cells {
+			if cell.Text != "" {
+				t.Fatalf("redraw leaked to row %d column %d: %+v", row, column, cell)
+			}
+		}
+	}
+}
+
 func TestRealNativeKeyEncoderUsesCurrentTerminalModes(t *testing.T) {
 	for _, test := range []struct {
 		name   string

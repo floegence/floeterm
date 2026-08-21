@@ -115,6 +115,17 @@ NativeEngine *native_engine_new(uint16_t width, uint16_t height) {
     native_engine_free(engine);
     return NULL;
   }
+  GhosttyTerminalModeConfig grapheme_cluster = {
+      .mode = GHOSTTY_MODE_GRAPHEME_CLUSTER,
+      .value = true,
+  };
+  if (ghostty_terminal_set(engine->terminal, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT,
+                           &grapheme_cluster) != GHOSTTY_SUCCESS ||
+      ghostty_terminal_set(engine->terminal, GHOSTTY_TERMINAL_OPT_MODE,
+                           &grapheme_cluster) != GHOSTTY_SUCCESS) {
+    native_engine_free(engine);
+    return NULL;
+  }
   uint64_t graphics_limit = 64 * 1024 * 1024;
   if (ghostty_terminal_set(engine->terminal,
                           GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
