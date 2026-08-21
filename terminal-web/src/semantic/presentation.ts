@@ -63,6 +63,8 @@ export type SemanticHistoryRequest = Readonly<{
   scrollDeltaRows?: number;
   targetOffset?: number;
   viewportRows: number;
+  /** Internal fast-path marker. The wire request uses viewportRows for the window size. */
+  windowRows?: number;
 }>;
 export type SemanticHistoryChunkRequest = SemanticHistoryRequest | Readonly<{
   continuation: string;
@@ -112,7 +114,10 @@ export type SemanticHistoryViewport = Readonly<{
   hasPrevious: boolean;
   hasNext: boolean;
   frame: SemanticFrame;
+  window?: boolean;
 }>;
+
+export type SemanticHistoryWindow = SemanticHistoryViewport & Readonly<{ window: true }>;
 
 export function presentationAdvances(
   current: SemanticPresentation | null,
@@ -252,6 +257,14 @@ export function validateHistoryChunk(value: unknown): SemanticHistoryChunk {
 }
 
 export async function assembleHistoryViewport(chunks: readonly SemanticHistoryChunk[]): Promise<SemanticHistoryViewport> {
+  return validateHistoryViewport(await assembleHistorySnapshot(chunks));
+}
+
+export async function assembleHistoryWindow(chunks: readonly SemanticHistoryChunk[]): Promise<SemanticHistoryWindow> {
+  return validateHistoryWindow(await assembleHistorySnapshot(chunks));
+}
+
+async function assembleHistorySnapshot(chunks: readonly SemanticHistoryChunk[]): Promise<SemanticHistoryViewport> {
   if (chunks.length === 0) throw new Error('semantic history snapshot has no chunks');
   const first = chunks[0]!;
   if (first.chunkIndex !== 0 || first.chunkCount > SEMANTIC_HISTORY_MAX_CHUNKS || chunks.length !== first.chunkCount) throw new Error('semantic history snapshot is incomplete');
@@ -279,7 +292,7 @@ export async function assembleHistoryViewport(chunks: readonly SemanticHistoryCh
   if (digest !== first.payloadSha256) throw new Error('semantic history snapshot integrity check failed');
   const decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload)) as any;
   if (decoded?.v !== 1) throw new Error('invalid semantic history snapshot wire');
-  return validateHistoryViewport({
+  return {
     snapshotId: first.snapshotId,
     lane: first.lane,
     revision: first.revision,
@@ -298,13 +311,14 @@ export async function assembleHistoryViewport(chunks: readonly SemanticHistoryCh
     hasPrevious: first.hasPrevious,
     hasNext: first.hasNext,
     frame: decodeSemanticFrameWire(decoded.frame),
-  });
+  };
 }
 
 export function validateHistoryViewport(value: unknown): SemanticHistoryViewport {
   if (typeof value !== 'object' || value === null) throw new Error('invalid semantic history viewport');
   const wire = value as SemanticHistoryViewport;
   const viewport = { ...wire, lane: wire.lane ?? 'viewport' } as SemanticHistoryViewport;
+  if (viewport.window === true) throw new Error('semantic history window requires window validation');
   if (viewport.lane !== 'viewport' && viewport.lane !== 'search') {
     throw new Error('invalid semantic history viewport lane');
   }
@@ -344,6 +358,47 @@ export function validateHistoryViewport(value: unknown): SemanticHistoryViewport
     throw new Error('semantic history viewport geometry does not match its frame');
   }
   return viewport;
+}
+
+export function validateHistoryWindow(value: unknown): SemanticHistoryWindow {
+  if (typeof value !== 'object' || value === null) throw new Error('invalid semantic history window');
+  const wire = value as SemanticHistoryWindow;
+  const window = { ...wire, lane: wire.lane ?? 'viewport', window: true } as SemanticHistoryWindow;
+  if (window.lane !== 'viewport' && window.lane !== 'search') throw new Error('invalid semantic history window lane');
+  for (const identifier of [window.snapshotId, window.anchor, window.firstAvailable, window.lastAvailable, window.screenStart]) {
+    if (typeof identifier !== 'string' || identifier.length === 0 || identifier.length > 192) throw new Error('invalid semantic history window anchor');
+  }
+  for (const [name, number] of Object.entries({
+    revision: window.revision,
+    transportGeneration: window.transportGeneration,
+    contentEpoch: window.contentEpoch,
+    geometryGeneration: window.geometryGeneration,
+    cols: window.cols,
+    rows: window.rows,
+    offset: window.offset,
+    totalRows: window.totalRows,
+    screenStartOffset: window.screenStartOffset,
+  })) {
+    if (!Number.isSafeInteger(number) || number < 0) throw new Error(`invalid semantic history window ${name}`);
+  }
+  if (window.transportGeneration <= 0 || window.geometryGeneration <= 0
+    || window.cols < 1 || window.cols > MAX_COLS || window.rows < 1 || window.rows > MAX_ROWS
+    || window.totalRows < window.rows || window.offset + window.rows > window.totalRows
+    || window.screenStartOffset !== window.totalRows - window.rows
+    || typeof window.hasPrevious !== 'boolean' || typeof window.hasNext !== 'boolean'
+    || window.hasPrevious !== (window.offset > 0)
+    || window.hasNext !== (window.offset < window.screenStartOffset)) {
+    throw new Error('invalid semantic history window bounds');
+  }
+  validateFrame(window.frame);
+  if (window.frame.width !== window.cols || window.frame.height !== window.rows
+    || window.frame.rows.length !== window.rows
+    || window.frame.history.revision !== window.revision
+    || window.frame.history.totalRows !== window.totalRows
+    || window.frame.history.screenStartOffset !== window.screenStartOffset) {
+    throw new Error('semantic history window geometry does not match its frame');
+  }
+  return window;
 }
 
 function decodeHistoryPayload(value: unknown): Uint8Array {

@@ -60,6 +60,7 @@ export type {
   SemanticHistoryLane,
   SemanticHistoryRequest,
   SemanticHistoryViewport,
+  SemanticHistoryWindow,
   SemanticPresentation,
 } from '../semantic/presentation.js';
 export type {

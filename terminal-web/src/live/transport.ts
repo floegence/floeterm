@@ -1,5 +1,6 @@
 import {
   assembleHistoryViewport,
+  assembleHistoryWindow,
   SEMANTIC_HISTORY_MAX_CHUNK_BYTES,
   SEMANTIC_HISTORY_MAX_CHUNKS,
   SEMANTIC_HISTORY_MAX_SNAPSHOT_BYTES,
@@ -343,7 +344,16 @@ export const createSemanticTerminalLiveTransport = (
       }
       const chunks: SemanticHistoryChunk[] = [];
       const lane = request.lane ?? 'viewport';
-      let chunkRequest: SemanticHistoryChunkRequest = { ...request, lane };
+      const isWindow = request.windowRows !== undefined;
+      if (isWindow && (!Number.isSafeInteger(request.windowRows) || request.windowRows < request.viewportRows)) {
+        throw new SemanticHistoryError('malformed_snapshot', 'semantic history window size is invalid');
+      }
+      const { windowRows, ...wireRequest } = request;
+      let chunkRequest: SemanticHistoryChunkRequest = {
+        ...wireRequest,
+        ...(isWindow ? { viewportRows: windowRows } : {}),
+        lane,
+      };
       const seenContinuations = new Set<string>();
       let expectedIndex = 0;
       let expectedChunkCount = 0;
@@ -357,15 +367,36 @@ export const createSemanticTerminalLiveTransport = (
         if (!isCurrentGeneration(sessionId, entry.generation)) {
           throw new SemanticHistoryError('transport_stale', 'terminal semantic history request was superseded');
         }
-        const rawChunk = await options.control.semanticHistory(
-          sessionId, options.connectionId, entry.generation, chunkRequest,
-        );
+        let rawChunk: SemanticHistoryChunk;
+        try {
+          rawChunk = await options.control.semanticHistory(
+            sessionId, options.connectionId, entry.generation, chunkRequest,
+          );
+        } catch (cause) {
+          throw normalizeSemanticHistoryControlError(cause);
+        }
         let chunk: SemanticHistoryChunk;
         try {
           chunk = validateHistoryChunk(rawChunk);
         } catch (cause) {
           throw new SemanticHistoryError('malformed_snapshot', 'invalid semantic history chunk', { cause });
-        }
+}
+
+function normalizeSemanticHistoryControlError(cause: unknown): unknown {
+  if (cause instanceof SemanticHistoryError || !(cause instanceof Error)) return cause;
+  const code = Number((cause as Error & { code?: unknown }).code);
+  const message = cause.message.toLowerCase();
+  if (code === 409 && message.includes('terminal history anchor expired')) {
+    return new SemanticHistoryError('anchor_invalid', 'terminal history anchor expired', { cause });
+  }
+  if (code === 409 && message.includes('terminal attachment changed')) {
+    return new SemanticHistoryError('attachment_invalid', 'terminal attachment changed', { cause });
+  }
+  if (code === 412 && message.includes('terminal history snapshot was superseded')) {
+    return new SemanticHistoryError('snapshot_superseded', 'terminal history snapshot was superseded', { cause });
+  }
+  return cause;
+}
         if (!isCurrentGeneration(sessionId, entry.generation) || chunk.transportGeneration !== entry.generation) {
           throw new SemanticHistoryError('transport_stale', 'terminal semantic history request was superseded');
         }
@@ -409,7 +440,7 @@ export const createSemanticTerminalLiveTransport = (
       if (!complete || chunks.length !== expectedChunkCount) {
         throw new SemanticHistoryError('malformed_snapshot', 'semantic history continuation did not terminate');
       }
-      return assembleHistoryViewport(chunks);
+      return isWindow ? assembleHistoryWindow(chunks) : assembleHistoryViewport(chunks);
     },
     clearSemanticContent: options.control.clearSemanticContent ? async sessionId => {
       const entry = entries.get(sessionId);

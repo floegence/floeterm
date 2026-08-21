@@ -288,6 +288,40 @@ func TestSessionActorHistoryScrollDeltaDoesNotChangeViewportHeight(t *testing.T)
 	}
 }
 
+func TestSessionActorHistorySupportsBoundedWindowRows(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 30}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	window, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/window", Direction: HistoryEnd, ViewportRows: 9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Rows != 9 || window.Offset != 21 || window.ScreenStartOffset != 21 {
+		t.Fatalf("history window=%+v, want rows=9 offset=21", window)
+	}
+	if got := historyChunkFirstText(t, window); got != "row-21" {
+		t.Fatalf("history window first row=%q, want row-21", got)
+	}
+
+	target := 10
+	next, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/window", Anchor: window.Anchor, SnapshotID: window.SnapshotID,
+		Direction: HistoryBackward, Offset: window.Offset, TargetOffset: &target, ViewportRows: 9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Rows != 9 || next.Offset != target || next.ScreenStartOffset != 21 {
+		t.Fatalf("scrolled history window=%+v, want rows=9 offset=%d", next, target)
+	}
+}
+
 func TestSessionActorDirectHistoryTargetIsOneNativeCapture(t *testing.T) {
 	engine := &fakeSemanticHistoryEngine{totalRows: 1_000_037}
 	engine.frame = SemanticFrame{Width: 8, Height: 3}
@@ -313,6 +347,46 @@ func TestSessionActorDirectHistoryTargetIsOneNativeCapture(t *testing.T) {
 	}
 	if got := strings.Join(engine.calls, ","); got != "history-total,history-anchor-row,history-track,history-read,history-anchor-row" {
 		t.Fatalf("direct seek engine calls=%q", got)
+	}
+}
+
+func TestSessionActorBoundaryHistoryTargetIsOneNativeCaptureAndClamps(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 1_000_037}
+	engine.frame = SemanticFrame{Width: 8, Height: 3}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := 500_000
+	window, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/boundary-direct", Direction: HistoryEnd, TargetOffset: &target, ViewportRows: 9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Offset != target || historyChunkFirstText(t, window) != "row-500000" {
+		t.Fatalf("direct boundary history target=%+v", window)
+	}
+	if got := strings.Join(engine.calls, ","); got != "history-total,history-track,history-track,history-read,history-anchor-row" {
+		t.Fatalf("direct boundary engine calls=%q", got)
+	}
+
+	beyondEnd := 2_000_000
+	clamped, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/boundary-direct", Direction: HistoryEnd, TargetOffset: &beyondEnd, ViewportRows: 9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := engine.totalRows - 9; clamped.Offset != want {
+		t.Fatalf("clamped boundary offset=%d, want %d", clamped.Offset, want)
+	}
+
+	negative := -1
+	if _, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/boundary-direct", Direction: HistoryStart, TargetOffset: &negative, ViewportRows: 9,
+	}); !errors.Is(err, ErrSemanticHistoryAnchor) {
+		t.Fatalf("negative boundary target error=%v", err)
 	}
 }
 

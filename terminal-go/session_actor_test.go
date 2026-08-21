@@ -511,6 +511,24 @@ func TestSessionActorBoundsSemanticHistoryRequests(t *testing.T) {
 	}
 }
 
+func TestSessionActorAllowsAdaptiveTwentyViewportHistoryWindow(t *testing.T) {
+	const rows = 37 * 20
+	engine := &fakeSemanticHistoryEngine{totalRows: rows + 100}
+	actor, err := NewSessionActor(engine, 8, 37, NewPresentationStore(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk, err := actor.ReadHistory(SemanticHistoryRequest{
+		ViewID: "view/adaptive", Direction: HistoryStart, ViewportRows: rows,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunk.Rows != rows {
+		t.Fatalf("adaptive history rows=%d, want %d", chunk.Rows, rows)
+	}
+}
+
 func TestSessionActorHistoryEncodingDoesNotBlockPTYOutput(t *testing.T) {
 	engine := &fakeSemanticHistoryEngine{totalRows: 8}
 	engine.frame = SemanticFrame{Width: 8, Height: 3}

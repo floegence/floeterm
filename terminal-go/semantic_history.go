@@ -11,7 +11,10 @@ import (
 )
 
 const (
-	MaxSemanticHistoryRows              = 200
+	// A remote client may fetch a bounded multi-viewport window and slice it
+	// locally. The encoded snapshot byte limit remains the authoritative payload
+	// guard; 4,000 rows covers a 20x window at the maximum terminal height.
+	MaxSemanticHistoryRows              = 4000
 	MaxSemanticHistoryChunkPayloadBytes = 60 * 1024
 	MaxSemanticHistorySnapshotBytes     = 16 * 1024 * 1024
 )
@@ -158,8 +161,11 @@ func validateSemanticHistoryRequest(request SemanticHistoryRequest) error {
 	}
 	switch request.Direction {
 	case HistoryStart, HistoryEnd:
-		if request.Anchor != "" || request.SnapshotID != "" || request.Offset != 0 || request.ScrollDeltaRows != 0 || request.TargetOffset != nil {
+		if request.Anchor != "" || request.SnapshotID != "" || request.Offset != 0 || request.ScrollDeltaRows != 0 {
 			return errors.New("semantic history boundary request cannot include an anchor")
+		}
+		if request.TargetOffset != nil && *request.TargetOffset < 0 {
+			return ErrSemanticHistoryAnchor
 		}
 	case HistoryForward, HistoryBackward:
 		if request.Anchor == "" || len(request.Anchor) > 128 || request.SnapshotID == "" || len(request.SnapshotID) > 128 || request.Offset < 0 {

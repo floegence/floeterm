@@ -61,6 +61,22 @@ const malformedChunk = (chunkIndex: number, chunkCount: number, continuation?: s
 });
 
 describe('semantic terminal live transport', () => {
+  it.each([
+    [409, 'terminal history anchor expired', 'anchor_invalid'],
+    [409, 'terminal attachment changed', 'attachment_invalid'],
+    [412, 'terminal history snapshot was superseded', 'snapshot_superseded'],
+  ] as const)('maps history RPC %s failures into %s recovery semantics', async (code, message, kind) => {
+    const semanticHistory = vi.fn(async () => {
+      throw Object.assign(new Error(message), { code });
+    });
+    const { bundle } = await attachHistoryTransport(semanticHistory);
+
+    await expect(bundle.transport.semanticHistory('session', {
+      direction: 'end', viewportRows: 1,
+    })).rejects.toMatchObject({ kind });
+    bundle.transport.dispose();
+  });
+
   it('reassembles one transport-bounded snapshot before returning a complete viewport', async () => {
     const streams: FakeStream[] = [];
     const payload = new TextEncoder().encode(JSON.stringify({
@@ -109,6 +125,25 @@ describe('semantic terminal live transport', () => {
     expect(semanticHistory.mock.calls[1]?.[3]).toEqual({ continuation: 'hc-snapshot-1', lane: 'viewport' });
     expect(result.frame.rows[0]!.cells.map(cell => cell.text).join('')).toBe('HI');
     expect(result.frame.height).toBe(1);
+    bundle.transport.dispose();
+  });
+
+  it('keeps the local history window marker out of the control-plane request', async () => {
+    const semanticHistory = vi.fn(async (
+      _sessionId: string,
+      _connectionId: string,
+      _generation: number,
+      request: Parameters<SemanticTerminalLiveControlPlane['semanticHistory']>[3],
+    ) => {
+      expect(request).toEqual({ lane: 'viewport', direction: 'start', viewportRows: 3 });
+      return malformedChunk(0, 1);
+    });
+    const { bundle } = await attachHistoryTransport(semanticHistory);
+
+    await expect(bundle.transport.semanticHistory('session', {
+      direction: 'start', viewportRows: 1, windowRows: 3,
+    })).rejects.toThrow();
+    expect(semanticHistory).toHaveBeenCalledTimes(1);
     bundle.transport.dispose();
   });
 

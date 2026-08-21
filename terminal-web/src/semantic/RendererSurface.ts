@@ -8,6 +8,14 @@ export const SEMANTIC_CELL_HEIGHT_CSS_PX = 18;
 export const SEMANTIC_TERMINAL_FONT_FAMILY = '"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans Mono CJK SC", monospace';
 
 export type SemanticTerminalPalette = TerminalThemeColors;
+type SemanticDebugTraceEvent = Readonly<Record<string, unknown>>;
+
+function emitSemanticDebugTrace(event: SemanticDebugTraceEvent): void {
+  const target = globalThis as typeof globalThis & {
+    __floetermSemanticTrace?: (event: SemanticDebugTraceEvent) => void;
+  };
+  target.__floetermSemanticTrace?.(event);
+}
 export type SemanticTerminalTypography = Readonly<{
   fontSizeCssPx: number;
   fontFamily: string;
@@ -16,6 +24,16 @@ export type SemanticTerminalTypography = Readonly<{
 export type SemanticTerminalCellMetrics = Readonly<{
   cellWidthCssPx: number;
   cellHeightCssPx: number;
+}>;
+export type SemanticTerminalRenderMetrics = Readonly<{
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  sequence: number;
+  projected: boolean;
+  projectionChanged: boolean;
+  rows: number;
+  cols: number;
 }>;
 export type SemanticTerminalCursorRect = Readonly<{
   left: number;
@@ -70,6 +88,8 @@ export class RendererSurface {
   private searchDecorations: readonly SemanticTerminalSearchDecoration[] = Object.freeze([]);
   private searchDecorationCells = new Map<number, SemanticTerminalSearchDecoration>();
   private renderGeneration = 0;
+  private projectionGeneration = 0;
+  private renderedProjectionGeneration = 0;
   private failed = false;
   private context: CanvasRenderingContext2D | null | undefined;
   private cursorBlinkTimer: ReturnType<typeof setTimeout> | null = null;
@@ -113,6 +133,7 @@ export class RendererSurface {
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly onError: (error: Error) => void = () => {},
+    private readonly onRender: (metrics: SemanticTerminalRenderMetrics) => void = () => {},
   ) {
     this.canvas.style.visibility = 'hidden';
     this.canvas.style.background = this.palette.background;
@@ -191,6 +212,23 @@ export class RendererSurface {
     return { ...this.cellMetrics };
   }
   project(frame: SemanticFrame | null): void {
+    this.updateProjection(frame);
+    this.scheduleRender();
+  }
+  projectInCurrentAnimationFrame(frame: SemanticFrame | null): void {
+    this.updateProjection(frame);
+    if (this.failed || !this.latest) return;
+    if (this.animationFrame !== null && typeof globalThis.cancelAnimationFrame === 'function') {
+      globalThis.cancelAnimationFrame(this.animationFrame);
+      this.animationFrame = null;
+    }
+    try {
+      this.render(this.latest);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+  private updateProjection(frame: SemanticFrame | null): void {
     if (frame && (!this.latest
       || frame.width !== this.latest.frame.width
       || frame.height !== this.latest.frame.height
@@ -198,10 +236,15 @@ export class RendererSurface {
       throw new Error('semantic history frame does not match the current presentation geometry');
     }
     this.viewportFrame = frame;
+    this.projectionGeneration += 1;
+    emitSemanticDebugTrace({
+      kind: 'history-project',
+      at: performance.now(),
+      projected: frame !== null,
+    });
     this.clearSelection();
     this.clearSearchDecorations();
     this.syncCursorBlinkTimer();
-    this.scheduleRender();
   }
   setSearchDecorations(decorations: readonly SemanticTerminalSearchDecoration[]): void {
     if (this.failed || this.disposed) return;
@@ -422,12 +465,14 @@ export class RendererSurface {
     });
   }
   private render(presentation: SemanticPresentation): void {
+    const startedAt = performance.now();
     const viewport = this.measureViewport();
     if (!this.viewVisible || !viewport) {
       this.canvas.style.visibility = 'hidden';
       return;
     }
     const renderGeneration = ++this.renderGeneration;
+    const projectionGeneration = this.projectionGeneration;
     const frame = this.viewportFrame ?? presentation.frame;
     const palette = this.palette;
     const context = this.getContext();
@@ -465,6 +510,28 @@ export class RendererSurface {
     void this.paintGraphics(context, frame, cellWidth, cellHeight, renderGeneration, palette)
       .catch(error => this.fail(error));
     this.canvas.style.visibility = 'visible';
+    const completedAt = performance.now();
+    const metrics: SemanticTerminalRenderMetrics = Object.freeze({
+      startedAt,
+      completedAt,
+      durationMs: completedAt - startedAt,
+      sequence: presentation.sequence,
+      projected: this.viewportFrame !== null,
+      projectionChanged: projectionGeneration !== this.renderedProjectionGeneration,
+      rows: frame.height,
+      cols: frame.width,
+    });
+    this.renderedProjectionGeneration = projectionGeneration;
+    emitSemanticDebugTrace({
+      kind: 'render',
+      at: completedAt,
+      ...metrics,
+    });
+    try {
+      this.onRender(metrics);
+    } catch {
+      // Measurement consumers must never be able to fail the terminal renderer.
+    }
   }
 
   private paintCursor(

@@ -304,10 +304,13 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 		a.mu.Unlock()
 		return chunk, err
 	}
-	if request.ViewportRows != a.geometry.Rows {
+	// A history request normally returns the canonical viewport. Fast remote
+	// scrolling may request a larger, bounded window; the client slices that
+	// immutable window locally while preserving the same anchor lineage.
+	if request.ViewportRows < a.geometry.Rows || request.ViewportRows > MaxSemanticHistoryRows {
 		a.releaseHistoryViewLocked(request.ViewID)
 		a.mu.Unlock()
-		return SemanticHistoryChunk{}, errors.New("semantic history viewport must match canonical geometry")
+		return SemanticHistoryChunk{}, errors.New("semantic history window must cover the canonical viewport")
 	}
 
 	totalRows, err := engine.HistoryTotalRows()
@@ -367,6 +370,9 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 			targetRow = max(0, request.Offset-request.ScrollDeltaRows)
 		}
 	}
+	if (request.Direction == HistoryStart || request.Direction == HistoryEnd) && request.TargetOffset != nil {
+		targetRow = min(maxStart, max(0, *request.TargetOffset))
+	}
 
 	if !exists || request.Direction == HistoryStart || request.Direction == HistoryEnd {
 		created, createErr := a.createSemanticHistoryViewLocked(engine)
@@ -401,12 +407,12 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 		}
 		return SemanticHistoryChunk{}, ErrSemanticHistoryAnchor
 	}
-	if frame.Width != a.geometry.Cols || frame.Height != a.geometry.Rows || len(frame.Rows) != a.geometry.Rows {
+	if frame.Width != a.geometry.Cols || frame.Height != request.ViewportRows || len(frame.Rows) != request.ViewportRows {
 		a.releaseHistoryViewLocked(request.ViewID)
 		a.mu.Unlock()
 		return SemanticHistoryChunk{}, errors.New("semantic history viewport geometry is invalid")
 	}
-	screenStartOffset := max(0, totalRows-a.geometry.Rows)
+	screenStartOffset := max(0, totalRows-request.ViewportRows)
 	frame.History = SemanticHistorySummary{
 		Revision: a.sequence, TotalRows: totalRows,
 		ScreenStartOffset: screenStartOffset,
@@ -415,7 +421,7 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 	snapshot := semanticHistorySnapshot{
 		id: fmt.Sprintf("hs-%x", a.nextHistoryTokenID), lane: request.Lane,
 		revision: a.sequence, contentEpoch: a.contentEpoch,
-		geometryGeneration: a.geometry.Generation, cols: a.geometry.Cols, rows: a.geometry.Rows,
+		geometryGeneration: a.geometry.Generation, cols: a.geometry.Cols, rows: request.ViewportRows,
 		offset: targetRow, totalRows: totalRows, screenStartOffset: screenStartOffset,
 		hasPrevious: targetRow > 0, hasNext: targetRow < maxStart,
 		anchor: view.anchorID, firstAvailable: view.firstAvailableID,
@@ -439,7 +445,7 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 	if !exists || current.requestEpoch != reservation || current.anchorID != view.anchorID ||
 		a.contentEpoch != snapshot.contentEpoch ||
 		a.geometry.Generation != snapshot.geometryGeneration ||
-		a.geometry.Cols != snapshot.cols || a.geometry.Rows != snapshot.rows {
+		a.geometry.Cols != snapshot.cols {
 		a.mu.Unlock()
 		return SemanticHistoryChunk{}, ErrSemanticHistorySuperseded
 	}

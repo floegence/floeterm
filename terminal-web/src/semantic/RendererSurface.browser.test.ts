@@ -254,6 +254,41 @@ describe('semantic terminal browser surface', () => {
     renderer.dispose();
   });
 
+  it('replaces a pending projection and paints history in the current animation frame', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderMetrics: Array<{ projectionChanged: boolean; projected: boolean; durationMs: number }> = [];
+    const renderer = new RendererSurface(canvas, undefined, metrics => renderMetrics.push(metrics));
+    const live = presentation();
+    renderer.apply(live);
+    await nextPaint();
+
+    const pending = structuredClone(live.frame);
+    pending.rows[0]!.cells[0]!.style = { background: 'rgb:112233' };
+    renderer.project(pending);
+    const current = structuredClone(live.frame);
+    current.rows[0]!.cells[0]!.style = { background: 'rgb:445566' };
+    const before = (renderer as unknown as { renderGeneration: number }).renderGeneration;
+
+    renderer.projectInCurrentAnimationFrame(current);
+
+    expect((renderer as unknown as { renderGeneration: number }).renderGeneration).toBe(before + 1);
+    expect(renderMetrics[renderMetrics.length - 1]).toMatchObject({ projectionChanged: true, projected: true });
+    expect(renderMetrics[renderMetrics.length - 1]!.durationMs).toBeGreaterThanOrEqual(0);
+    const context = canvas.getContext('2d')!;
+    const scaleX = canvas.width / canvas.clientWidth;
+    const scaleY = canvas.height / canvas.clientHeight;
+    const pixel = context.getImageData(Math.max(1, Math.floor(scaleX)), Math.max(1, Math.floor(scaleY)), 1, 1).data;
+    expect(Array.from(pixel.slice(0, 3))).toEqual([0x44, 0x55, 0x66]);
+    await nextPaint();
+    expect((renderer as unknown as { renderGeneration: number }).renderGeneration).toBe(before + 1);
+
+    renderer.dispose();
+  });
+
   it('keeps an immutable full history viewport while newer live presentations advance', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px';
