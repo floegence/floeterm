@@ -76,9 +76,13 @@ func (i *historyLatencyInjector) complete(requestID, priority, lane string, offs
 	if i == nil {
 		return
 	}
+	var targetOffset any
+	if target != nil {
+		targetOffset = *target
+	}
 	i.logger.Info("semantic history request completed",
 		"requestID", requestID, "priority", priority, "lane", lane, "offset", offset,
-		"targetOffset", target, "delay", delay, "bytes", bytes,
+		"targetOffset", targetOffset, "delay", delay, "bytes", bytes,
 		"duration", time.Since(started), "error", err,
 	)
 }
