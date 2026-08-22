@@ -494,18 +494,22 @@ export class RendererSurface {
     const searchColors = resolveSearchColors(palette);
     context.font = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
     context.textBaseline = 'alphabetic';
-    frame.rows.forEach((row, y) => {
-      row.cells.forEach((cell, x) => {
-        const { background } = resolveCellColors(cell, this.isCellSelected(y, x), this.searchDecorationAt(y, x), palette, searchColors);
-        context.fillStyle = background;
-        context.fillRect(x * cellWidth, y * cellHeight, cellWidth + 0.5, cellHeight + 0.5);
+    if (frame.history.pending) {
+      this.paintPendingHistory(context, frame, cellWidth, cellHeight, palette);
+    } else {
+      frame.rows.forEach((row, y) => {
+        row.cells.forEach((cell, x) => {
+          const { background } = resolveCellColors(cell, this.isCellSelected(y, x), this.searchDecorationAt(y, x), palette, searchColors);
+          context.fillStyle = background;
+          context.fillRect(x * cellWidth, y * cellHeight, cellWidth + 0.5, cellHeight + 0.5);
+        });
+        row.cells.forEach((cell, x) => {
+          if (!cell.text || cell.width === 0) return;
+          const { foreground } = resolveCellColors(cell, this.isCellSelected(y, x), this.searchDecorationAt(y, x), palette, searchColors);
+          this.paintCellText(context, cell, x, y, cellWidth, cellHeight, foreground);
+        });
       });
-      row.cells.forEach((cell, x) => {
-        if (!cell.text || cell.width === 0) return;
-        const { foreground } = resolveCellColors(cell, this.isCellSelected(y, x), this.searchDecorationAt(y, x), palette, searchColors);
-        this.paintCellText(context, cell, x, y, cellWidth, cellHeight, foreground);
-      });
-    });
+    }
     this.paintCursor(context, frame, frame.cursor, cellWidth, cellHeight, palette);
     void this.paintGraphics(context, frame, cellWidth, cellHeight, renderGeneration, palette)
       .catch(error => this.fail(error));
@@ -835,6 +839,29 @@ export class RendererSurface {
       start: { row: point.row, col: segments[first]!.start },
       end: { row: point.row, col: segments[last]!.end },
     };
+  }
+
+  private paintPendingHistory(
+    context: CanvasRenderingContext2D,
+    frame: SemanticFrame,
+    cellWidth: number,
+    cellHeight: number,
+    palette: SemanticTerminalPalette,
+  ): void {
+    // Keep the terminal background untouched. A few static, theme-aware text
+    // baselines communicate that the target is pending without producing the
+    // full-surface color flash caused by treating the skeleton as cell fill.
+    context.save();
+    context.globalAlpha = 0.11;
+    context.fillStyle = palette.foreground;
+    const widthRatios = [0.58, 0.76, 0.44, 0.67, 0.51, 0.72, 0.39, 0.63];
+    for (let row = 0; row < frame.height; row += 1) {
+      const ratio = widthRatios[row % widthRatios.length] ?? 0.58;
+      const width = Math.max(cellWidth, Math.floor(frame.width * cellWidth * ratio));
+      const baseline = Math.round(row * cellHeight + cellHeight * 0.72);
+      context.fillRect(0, baseline, width, 1);
+    }
+    context.restore();
   }
 
   private measureCoordinateSpace(): CanvasCoordinateSpace | null {

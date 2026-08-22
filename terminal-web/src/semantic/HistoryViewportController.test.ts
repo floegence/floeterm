@@ -185,8 +185,9 @@ describe('HistoryViewportController', () => {
     expect(controller.getState()).toMatchObject({ browsing: true, busy: true, offset: 700 });
     expect(renderer.project).toHaveBeenLastCalledWith(expect.objectContaining({
       rows: expect.arrayContaining([expect.objectContaining({
-        cells: expect.arrayContaining([expect.objectContaining({ text: ' ', style: { background: 'indexed:8' } })]),
+        cells: expect.arrayContaining([expect.objectContaining({ text: '' })]),
       })]),
+      history: expect.objectContaining({ pending: true }),
     }));
 
     resolveRequest(viewport(700, 1, 1_000));
@@ -404,8 +405,9 @@ describe('HistoryViewportController', () => {
     expect(renderer.project.mock.calls[renderer.project.mock.calls.length - 1]?.[0]).not.toBe(visible);
     expect(renderer.project.mock.calls[renderer.project.mock.calls.length - 1]?.[0]).toMatchObject({
       rows: expect.arrayContaining([expect.objectContaining({
-        cells: expect.arrayContaining([expect.objectContaining({ text: ' ', width: 1 })]),
+        cells: expect.arrayContaining([expect.objectContaining({ text: '', width: 1 })]),
       })]),
+      history: expect.objectContaining({ pending: true }),
     });
 
     fail = false;

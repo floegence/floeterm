@@ -1119,13 +1119,12 @@ function createPendingViewport(
   const rows = source.height;
   const marker = `pending-${sequence}`;
   const skeletonRow = Array.from({ length: source.width }, () => ({
-    text: ' ',
+    text: '',
     width: 1,
-    style: { background: 'indexed:8' },
   }));
   const frame: SemanticFrame = {
     ...source,
-    rows: Array.from({ length: rows }, () => ({ cells: skeletonRow.map(cell => ({ ...cell, style: { ...cell.style } })) })),
+    rows: Array.from({ length: rows }, () => ({ cells: skeletonRow.map(cell => ({ ...cell })) })),
     cursor: { ...source.cursor, visible: false },
     history: {
       revision: source.history.revision,
@@ -1136,6 +1135,7 @@ function createPendingViewport(
       screenStartRowOrdinal: source.history.firstRowOrdinal === undefined
         ? source.history.screenStartRowOrdinal
         : source.history.firstRowOrdinal + totalRows - rows,
+      pending: true,
     },
     graphics: { generation: source.graphics.generation, images: [], placements: [] },
   };

@@ -289,6 +289,35 @@ describe('semantic terminal browser surface', () => {
     renderer.dispose();
   });
 
+  it('renders pending history as quiet theme-aware baselines instead of a full-surface fill', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    const pending = structuredClone(presentation());
+    pending.frame.history.pending = true;
+    pending.frame.rows[0]!.cells = pending.frame.rows[0]!.cells.map(() => ({ text: '', width: 1 }));
+    renderer.apply(pending);
+    await nextPaint();
+
+    const context = canvas.getContext('2d')!;
+    const background = hexToRgb(getThemeColors('dark').background);
+    const scaleX = canvas.width / canvas.clientWidth;
+    const scaleY = canvas.height / canvas.clientHeight;
+    const at = (x: number, y: number): number[] => Array.from(context.getImageData(
+      Math.floor(x * scaleX), Math.floor(y * scaleY), 1, 1,
+    ).data.slice(0, 3));
+    const untouched = at(17, 2);
+    const baseline = at(2, 13);
+    expect(untouched).toEqual(background);
+    expect(baseline).not.toEqual(background);
+    expect(baseline.every((channel, index) => Math.abs(channel - background[index]!) < 40)).toBe(true);
+
+    renderer.dispose();
+  });
+
   it('keeps an immutable full history viewport while newer live presentations advance', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px';

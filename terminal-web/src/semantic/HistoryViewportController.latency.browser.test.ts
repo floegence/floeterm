@@ -71,8 +71,9 @@ describe('HistoryViewportController remote latency', () => {
     expect(controller.getState()).toMatchObject({ browsing: true, busy: true, offset: target });
     expect(projectInCurrentAnimationFrame).toHaveBeenCalledWith(expect.objectContaining({
       rows: expect.arrayContaining([expect.objectContaining({
-        cells: expect.arrayContaining([expect.objectContaining({ text: ' ', style: { background: 'indexed:8' } })]),
+        cells: expect.arrayContaining([expect.objectContaining({ text: '' })]),
       })]),
+      history: expect.objectContaining({ pending: true }),
     }));
 
     await wait(1550);
