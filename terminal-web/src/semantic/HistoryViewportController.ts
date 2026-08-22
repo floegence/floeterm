@@ -1136,6 +1136,7 @@ function createPendingViewport(
         ? source.history.screenStartRowOrdinal
         : source.history.firstRowOrdinal + totalRows - rows,
       pending: true,
+      pendingOffset: offset,
     },
     graphics: { generation: source.graphics.generation, images: [], placements: [] },
   };

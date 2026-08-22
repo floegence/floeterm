@@ -21,6 +21,9 @@ export type SemanticTerminalTypography = Readonly<{
   fontFamily: string;
   lineHeightCssPx?: number;
 }>;
+export type SemanticTerminalLabels = Readonly<{
+  historyLoading: string;
+}>;
 export type SemanticTerminalCellMetrics = Readonly<{
   cellWidthCssPx: number;
   cellHeightCssPx: number;
@@ -105,6 +108,7 @@ export class RendererSurface {
     cellHeightCssPx: SEMANTIC_CELL_HEIGHT_CSS_PX,
   });
   private typographyConfigured = false;
+  private labels: SemanticTerminalLabels = Object.freeze({ historyLoading: 'Loading history...' });
   private dprMediaQuery: MediaQueryList | null = null;
   private readonly fontSet: FontFaceSet | undefined;
   private disposed = false;
@@ -207,6 +211,17 @@ export class RendererSurface {
     this.cursorBlinkPhaseVisible = true;
     this.scheduleRender();
     return metrics;
+  }
+  setLabels(labels: Partial<SemanticTerminalLabels>): void {
+    if (this.failed || this.disposed) return;
+    if (labels.historyLoading === undefined) return;
+    const historyLoading = String(labels.historyLoading);
+    if (!historyLoading || historyLoading.length > 128 || /[\r\n\0]/u.test(historyLoading)) {
+      throw new Error('semantic terminal history loading label is invalid');
+    }
+    if (historyLoading === this.labels.historyLoading) return;
+    this.labels = Object.freeze({ ...this.labels, historyLoading });
+    this.scheduleRender();
   }
   getCellMetrics(): SemanticTerminalCellMetrics {
     return { ...this.cellMetrics };
@@ -496,6 +511,7 @@ export class RendererSurface {
     context.textBaseline = 'alphabetic';
     if (frame.history.pending) {
       this.paintPendingHistory(context, frame, cellWidth, cellHeight, palette);
+      this.paintHistoryLoadingIndicator(context, frame, cellWidth, cellHeight, palette);
     } else {
       frame.rows.forEach((row, y) => {
         row.cells.forEach((cell, x) => {
@@ -855,12 +871,47 @@ export class RendererSurface {
     context.globalAlpha = 0.11;
     context.fillStyle = palette.foreground;
     const widthRatios = [0.58, 0.76, 0.44, 0.67, 0.51, 0.72, 0.39, 0.63];
+    const pendingOffset = frame.history.pendingOffset ?? frame.history.screenStartOffset;
     for (let row = 0; row < frame.height; row += 1) {
-      const ratio = widthRatios[row % widthRatios.length] ?? 0.58;
+      // Key the quiet line pattern to the absolute target row. As the wheel
+      // target advances, the same rows move through the viewport instead of
+      // repainting an identical placeholder pattern in place.
+      const patternRow = positiveModulo(pendingOffset + row, widthRatios.length);
+      const ratio = widthRatios[patternRow] ?? 0.58;
       const width = Math.max(cellWidth, Math.floor(frame.width * cellWidth * ratio));
       const baseline = Math.round(row * cellHeight + cellHeight * 0.72);
       context.fillRect(0, baseline, width, 1);
     }
+    context.restore();
+  }
+
+  private paintHistoryLoadingIndicator(
+    context: CanvasRenderingContext2D,
+    frame: SemanticFrame,
+    cellWidth: number,
+    cellHeight: number,
+    palette: SemanticTerminalPalette,
+  ): void {
+    const label = this.labels.historyLoading;
+    if (!label) return;
+    const centerX = frame.width * cellWidth / 2;
+    const centerY = frame.height * cellHeight / 2;
+    const maxWidth = Math.max(cellWidth, frame.width * cellWidth - cellWidth * 2);
+    const measuredWidth = context.measureText(label).width;
+    const paddingX = Math.max(6, Math.round(cellWidth * 0.75));
+    const panelWidth = Math.min(maxWidth, measuredWidth + paddingX * 2);
+    const panelHeight = Math.max(cellHeight, Math.round(cellHeight * 1.35));
+    context.save();
+    // A quiet backing plate keeps the message legible over the placeholder
+    // baselines without introducing a bright animated badge.
+    context.globalAlpha = 0.78;
+    context.fillStyle = palette.background;
+    context.fillRect(centerX - panelWidth / 2, centerY - panelHeight / 2, panelWidth, panelHeight);
+    context.globalAlpha = 0.62;
+    context.fillStyle = palette.foreground;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(label, centerX, centerY, maxWidth);
     context.restore();
   }
 
@@ -1036,6 +1087,10 @@ function rgbHex(red: number, green: number, blue: number): string {
 
 function samePalette(left: SemanticTerminalPalette, right: SemanticTerminalPalette): boolean {
   return PALETTE_KEYS.every(key => left[key] === right[key]);
+}
+
+function positiveModulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor;
 }
 
 function sameCursor(left: SemanticFrame['cursor'], right: SemanticFrame['cursor']): boolean {

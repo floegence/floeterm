@@ -48,6 +48,7 @@ export type {
   SemanticTerminalCursorRect,
   SemanticTerminalPalette,
   SemanticTerminalSearchDecoration,
+  SemanticTerminalLabels,
   SemanticTerminalTypography,
 } from '../semantic/RendererSurface.js';
 export type {

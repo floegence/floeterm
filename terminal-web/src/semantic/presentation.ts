@@ -16,6 +16,8 @@ export type SemanticFrame = {
     firstRowOrdinal?: number;
     screenStartRowOrdinal?: number;
     pending?: boolean;
+    /** Absolute history offset represented by a local pending projection. */
+    pendingOffset?: number;
   };
   graphics: SemanticGraphics;
 };
@@ -188,7 +190,7 @@ export function validateFrame(frame: SemanticFrame): void {
   if (!Number.isInteger(frame?.width) || !Number.isInteger(frame?.height) || frame.width < 1 || frame.height < 1 || frame.width > MAX_COLS || frame.height > MAX_ROWS || !Array.isArray(frame.rows) || frame.rows.length !== frame.height) throw new Error('invalid semantic frame geometry');
   const cursor = frame.cursor;
   if (!cursor || !Number.isInteger(cursor.x) || !Number.isInteger(cursor.y) || cursor.x < 0 || cursor.x >= frame.width || cursor.y < 0 || cursor.y >= frame.height || typeof cursor.visible !== 'boolean' || !['bar', 'block', 'underline', 'hollow'].includes(cursor.shape) || typeof cursor.blinking !== 'boolean' || (cursor.wideTail !== undefined && typeof cursor.wideTail !== 'boolean') || (cursor.color !== undefined && !/^rgb:[0-9a-fA-F]{6}$/.test(cursor.color))) throw new Error('invalid semantic cursor');
-  if (!Number.isSafeInteger(frame.history?.revision) || frame.history.revision < 0 || !Number.isSafeInteger(frame.history?.totalRows) || frame.history.totalRows < frame.height || !Number.isSafeInteger(frame.history?.screenStartOffset) || frame.history.screenStartOffset < 0 || frame.history.screenStartOffset >= frame.history.totalRows || (frame.history.pending !== undefined && typeof frame.history.pending !== 'boolean')) throw new Error('invalid semantic history summary');
+  if (!Number.isSafeInteger(frame.history?.revision) || frame.history.revision < 0 || !Number.isSafeInteger(frame.history?.totalRows) || frame.history.totalRows < frame.height || !Number.isSafeInteger(frame.history?.screenStartOffset) || frame.history.screenStartOffset < 0 || frame.history.screenStartOffset >= frame.history.totalRows || (frame.history.pending !== undefined && typeof frame.history.pending !== 'boolean') || (frame.history.pendingOffset !== undefined && (!Number.isSafeInteger(frame.history.pendingOffset) || frame.history.pendingOffset < 0 || frame.history.pendingOffset > frame.history.screenStartOffset))) throw new Error('invalid semantic history summary');
   validateHistoryIdentity(frame.history);
   for (const row of frame.rows) {
     if (!Array.isArray(row.cells) || row.cells.length !== frame.width) throw new Error('invalid semantic row width');

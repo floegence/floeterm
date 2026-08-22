@@ -49,6 +49,33 @@ const viewport = (offset: number): SemanticHistoryViewport => ({
 const wait = (duration: number): Promise<void> => new Promise(resolve => setTimeout(resolve, duration));
 
 describe('HistoryViewportController remote latency', () => {
+  it('advances the pending skeleton phase with each wheel target while the request is in flight', async () => {
+    const projectInCurrentAnimationFrame = vi.fn();
+    const renderer = {
+      apply: vi.fn(),
+      project: vi.fn(),
+      projectInCurrentAnimationFrame,
+      getCellMetrics: () => ({ cellWidthCssPx: 9, cellHeightCssPx: 18 }),
+    };
+    const request = vi.fn(() => new Promise<SemanticHistoryViewport>(() => {}));
+    const controller = new HistoryViewportController({ renderer, request });
+    controller.apply(presentation());
+
+    controller.handleWheel(-1, 1);
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    const firstPending = projectInCurrentAnimationFrame.mock.lastCall?.[0] as SemanticFrame;
+
+    controller.handleWheel(-1, 1);
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    const secondPending = projectInCurrentAnimationFrame.mock.lastCall?.[0] as SemanticFrame;
+
+    expect(firstPending.history.pending).toBe(true);
+    expect(secondPending.history.pending).toBe(true);
+    expect(secondPending.history.pendingOffset).toBe(firstPending.history.pendingOffset! - 1);
+    expect(secondPending.history.pendingOffset).not.toBe(firstPending.history.pendingOffset);
+    controller.dispose();
+  });
+
   it('projects the wheel target before a 1.5 second history response arrives', async () => {
     const projectInCurrentAnimationFrame = vi.fn();
     const renderer = {

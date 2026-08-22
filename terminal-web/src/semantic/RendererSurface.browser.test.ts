@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TerminalInputBridge } from '../core/TerminalInputBridge.js';
 import { getThemeColors } from '../utils/config.js';
@@ -314,6 +314,32 @@ describe('semantic terminal browser surface', () => {
     expect(untouched).toEqual(background);
     expect(baseline).not.toEqual(background);
     expect(baseline.every((channel, index) => Math.abs(channel - background[index]!) < 40)).toBe(true);
+
+    renderer.dispose();
+  });
+
+  it('renders a centered replaceable loading label without adding terminal cells', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    renderer.setLabels({ historyLoading: 'Loading scrollback...' });
+    const pending = structuredClone(presentation());
+    pending.frame.history.pending = true;
+    pending.frame.history.pendingOffset = 0;
+    pending.frame.rows[0]!.cells = pending.frame.rows[0]!.cells.map(() => ({ text: '', width: 1 }));
+    renderer.apply(pending);
+    const context = canvas.getContext('2d')!;
+    const fillText = vi.spyOn(context, 'fillText');
+    await nextPaint();
+
+    const loadingCall = fillText.mock.calls.find(([text]) => text === 'Loading scrollback...');
+    expect(loadingCall).toBeDefined();
+    expect(loadingCall?.[1]).toBeCloseTo(9, 4);
+    expect(loadingCall?.[2]).toBeCloseTo(9, 4);
+    expect(pending.frame.rows[0]!.cells.every(cell => cell.text === '')).toBe(true);
 
     renderer.dispose();
   });
