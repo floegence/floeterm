@@ -27,6 +27,9 @@ func main() {
 	var historyLatencyMin time.Duration
 	var historyLatencyMax time.Duration
 	var historyLatencySeed int64
+	var transportLatencyMin time.Duration
+	var transportLatencyMax time.Duration
+	var transportLatencySeed int64
 	flag.StringVar(&addr, "addr", ":8080", "HTTP listen address")
 	flag.StringVar(&staticDir, "static", "", "path to app/web dist directory")
 	flag.StringVar(&stateDir, "state-dir", "", "path to durable FloeTerm state (defaults to the user config directory)")
@@ -35,6 +38,9 @@ func main() {
 	flag.DurationVar(&historyLatencyMin, "history-latency-min", 0, "example-only minimum delay for each semantic history request")
 	flag.DurationVar(&historyLatencyMax, "history-latency-max", 0, "example-only maximum delay for each semantic history request")
 	flag.Int64Var(&historyLatencySeed, "history-latency-seed", 1, "deterministic seed for example semantic history latency")
+	flag.DurationVar(&transportLatencyMin, "transport-latency-min", 0, "example-only minimum delay for every HTTP/WebSocket data direction")
+	flag.DurationVar(&transportLatencyMax, "transport-latency-max", 0, "example-only maximum delay for every HTTP/WebSocket data direction")
+	flag.Int64Var(&transportLatencySeed, "transport-latency-seed", 1, "deterministic seed for example transport latency")
 	flag.Parse()
 
 	if staticDir == "" {
@@ -68,6 +74,9 @@ func main() {
 		HistoryLatencyMin:            historyLatencyMin,
 		HistoryLatencyMax:            historyLatencyMax,
 		HistoryLatencySeed:           historyLatencySeed,
+		TransportLatencyMin:          transportLatencyMin,
+		TransportLatencyMax:          transportLatencyMax,
+		TransportLatencySeed:         transportLatencySeed,
 		ManagerConfig: terminal.ManagerConfig{
 			Logger: logger,
 			ShellArgsProvider: terminal.DefaultShellArgsProvider{
@@ -94,6 +103,9 @@ func main() {
 	logger.Info("using durable state", "stateDir", paths.Root)
 	if historyLatencyMax > 0 {
 		logger.Info("semantic history latency simulation enabled", "min", historyLatencyMin, "max", historyLatencyMax, "seed", historyLatencySeed)
+	}
+	if transportLatencyMax > 0 {
+		logger.Info("example transport latency simulation enabled", "min", transportLatencyMin, "max", transportLatencyMax, "seed", transportLatencySeed)
 	}
 	if staticDir != "" {
 		logger.Info("serving web", "staticDir", staticDir)

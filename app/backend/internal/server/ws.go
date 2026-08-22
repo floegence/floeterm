@@ -15,6 +15,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(8 * 1024 * 1024)
 	stream := websocket.NetConn(r.Context(), conn, websocket.MessageBinary)
+	if s.transportLatency != nil {
+		stream = &delayedTransportConn{Conn: stream, ctx: r.Context(), injector: s.transportLatency}
+	}
 	if err := s.live.Serve(r.Context(), stream); err != nil {
 		s.logger.Debug("terminal live websocket closed", "error", err)
 	}

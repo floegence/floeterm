@@ -29,6 +29,12 @@ type Config struct {
 	HistoryLatencyMin  time.Duration
 	HistoryLatencyMax  time.Duration
 	HistoryLatencySeed int64
+
+	// TransportLatencyMin/Max are example-only controls for delaying every HTTP
+	// request and WebSocket read/write. A zero max keeps the default path unchanged.
+	TransportLatencyMin  time.Duration
+	TransportLatencyMax  time.Duration
+	TransportLatencySeed int64
 }
 
 // Server is a runnable HTTP/WebSocket server that bridges terminal-go sessions to terminal-web clients.
@@ -40,6 +46,7 @@ type Server struct {
 	live                   *livev1.Service
 	performanceDiagnostics bool
 	historyLatency         *historyLatencyInjector
+	transportLatency       *transportLatencyInjector
 }
 
 func New(cfg Config) *Server {
@@ -56,6 +63,7 @@ func New(cfg Config) *Server {
 		live:                   livev1.NewService(livev1.NewManagerBackend(manager, livev1.ManagerBackendOptions{})),
 		performanceDiagnostics: cfg.EnablePerformanceDiagnostics,
 		historyLatency:         newHistoryLatencyInjector(cfg.HistoryLatencyMin, cfg.HistoryLatencyMax, cfg.HistoryLatencySeed, logger),
+		transportLatency:       newTransportLatencyInjector(cfg.TransportLatencyMin, cfg.TransportLatencyMax, cfg.TransportLatencySeed, logger),
 	}
 	return s
 }
@@ -74,7 +82,10 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", spaFileServer(s.staticDir))
 	}
 
-	return mux
+	if s.transportLatency == nil {
+		return mux
+	}
+	return delayedTransportHandler{next: mux, injector: s.transportLatency}
 }
 
 func (s *Server) Close() {
