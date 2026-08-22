@@ -26,6 +26,20 @@ const (
 	HistorySearchLane   SemanticHistoryLane = "search"
 )
 
+type SemanticHistoryPriority string
+
+const (
+	HistoryDemandPriority   SemanticHistoryPriority = "demand"
+	HistoryPrefetchPriority SemanticHistoryPriority = "prefetch"
+)
+
+func normalizeSemanticHistoryPriority(priority SemanticHistoryPriority) SemanticHistoryPriority {
+	if priority == "" {
+		return HistoryDemandPriority
+	}
+	return priority
+}
+
 func normalizeSemanticHistoryLane(lane SemanticHistoryLane) SemanticHistoryLane {
 	if lane == "" {
 		return HistoryViewportLane
@@ -70,6 +84,7 @@ type SemanticHistoryEngine interface {
 type SemanticHistoryRequest struct {
 	ViewID          string                   `json:"-"`
 	Lane            SemanticHistoryLane      `json:"lane,omitempty"`
+	Priority        SemanticHistoryPriority  `json:"priority,omitempty"`
 	Anchor          string                   `json:"anchor,omitempty"`
 	SnapshotID      string                   `json:"snapshotId,omitempty"`
 	Continuation    string                   `json:"continuation,omitempty"`
@@ -84,29 +99,32 @@ type SemanticHistoryRequest struct {
 // viewport snapshot. All chunks share one identity and must be reassembled
 // before any frame becomes visible.
 type SemanticHistoryChunk struct {
-	SnapshotID          string              `json:"snapshotId"`
-	Continuation        string              `json:"continuation,omitempty"`
-	Lane                SemanticHistoryLane `json:"lane"`
-	ChunkIndex          int                 `json:"chunkIndex"`
-	ChunkCount          int                 `json:"chunkCount"`
-	PayloadBytes        int                 `json:"payloadBytes"`
-	PayloadSHA256       string              `json:"payloadSha256"`
-	Payload             []byte              `json:"payload"`
-	Revision            uint64              `json:"revision"`
-	TransportGeneration uint64              `json:"transportGeneration"`
-	ContentEpoch        uint64              `json:"contentEpoch"`
-	GeometryGeneration  uint64              `json:"geometryGeneration"`
-	Cols                int                 `json:"cols"`
-	Rows                int                 `json:"rows"`
-	Anchor              string              `json:"anchor"`
-	FirstAvailable      string              `json:"firstAvailable"`
-	LastAvailable       string              `json:"lastAvailable"`
-	ScreenStart         string              `json:"screenStart"`
-	Offset              int                 `json:"offset"`
-	TotalRows           int                 `json:"totalRows"`
-	ScreenStartOffset   int                 `json:"screenStartOffset"`
-	HasPrevious         bool                `json:"hasPrevious"`
-	HasNext             bool                `json:"hasNext"`
+	SnapshotID            string              `json:"snapshotId"`
+	Continuation          string              `json:"continuation,omitempty"`
+	Lane                  SemanticHistoryLane `json:"lane"`
+	ChunkIndex            int                 `json:"chunkIndex"`
+	ChunkCount            int                 `json:"chunkCount"`
+	PayloadBytes          int                 `json:"payloadBytes"`
+	PayloadSHA256         string              `json:"payloadSha256"`
+	Payload               []byte              `json:"payload"`
+	Revision              uint64              `json:"revision"`
+	TransportGeneration   uint64              `json:"transportGeneration"`
+	ContentEpoch          uint64              `json:"contentEpoch"`
+	GeometryGeneration    uint64              `json:"geometryGeneration"`
+	Cols                  int                 `json:"cols"`
+	Rows                  int                 `json:"rows"`
+	Anchor                string              `json:"anchor"`
+	FirstAvailable        string              `json:"firstAvailable"`
+	LastAvailable         string              `json:"lastAvailable"`
+	ScreenStart           string              `json:"screenStart"`
+	Offset                int                 `json:"offset"`
+	TotalRows             int                 `json:"totalRows"`
+	ScreenStartOffset     int                 `json:"screenStartOffset"`
+	HistoryEpoch          uint64              `json:"historyEpoch"`
+	FirstRowOrdinal       uint64              `json:"firstRowOrdinal"`
+	ScreenStartRowOrdinal uint64              `json:"screenStartRowOrdinal"`
+	HasPrevious           bool                `json:"hasPrevious"`
+	HasNext               bool                `json:"hasNext"`
 }
 
 type semanticHistoryView struct {
@@ -122,25 +140,28 @@ type semanticHistoryView struct {
 }
 
 type semanticHistorySnapshot struct {
-	id                 string
-	lane               SemanticHistoryLane
-	payload            []byte
-	payloadSHA256      string
-	nextChunkIndex     int
-	revision           uint64
-	contentEpoch       uint64
-	geometryGeneration uint64
-	cols               int
-	rows               int
-	offset             int
-	totalRows          int
-	screenStartOffset  int
-	hasPrevious        bool
-	hasNext            bool
-	anchor             string
-	firstAvailable     string
-	lastAvailable      string
-	screenStart        string
+	id                    string
+	lane                  SemanticHistoryLane
+	payload               []byte
+	payloadSHA256         string
+	nextChunkIndex        int
+	revision              uint64
+	contentEpoch          uint64
+	geometryGeneration    uint64
+	cols                  int
+	rows                  int
+	offset                int
+	totalRows             int
+	screenStartOffset     int
+	historyEpoch          uint64
+	firstRowOrdinal       uint64
+	screenStartRowOrdinal uint64
+	hasPrevious           bool
+	hasNext               bool
+	anchor                string
+	firstAvailable        string
+	lastAvailable         string
+	screenStart           string
 }
 
 func validateSemanticHistoryRequest(request SemanticHistoryRequest) error {
@@ -149,6 +170,9 @@ func validateSemanticHistoryRequest(request SemanticHistoryRequest) error {
 	}
 	if request.Lane != "" && request.Lane != HistoryViewportLane && request.Lane != HistorySearchLane {
 		return errors.New("semantic history lane is invalid")
+	}
+	if request.Priority != "" && request.Priority != HistoryDemandPriority && request.Priority != HistoryPrefetchPriority {
+		return errors.New("semantic history priority is invalid")
 	}
 	if request.Continuation != "" {
 		if len(request.Continuation) > 192 || request.Anchor != "" || request.SnapshotID != "" || request.Direction != "" || request.Offset != 0 || request.ScrollDeltaRows != 0 || request.TargetOffset != nil || request.ViewportRows != 0 {
@@ -247,6 +271,8 @@ func semanticHistoryChunk(snapshot semanticHistorySnapshot, chunkIndex int) (Sem
 		LastAvailable: snapshot.lastAvailable, ScreenStart: snapshot.screenStart,
 		Offset: snapshot.offset, TotalRows: snapshot.totalRows,
 		ScreenStartOffset: snapshot.screenStartOffset,
-		HasPrevious:       snapshot.hasPrevious, HasNext: snapshot.hasNext,
+		HistoryEpoch:      snapshot.historyEpoch, FirstRowOrdinal: snapshot.firstRowOrdinal,
+		ScreenStartRowOrdinal: snapshot.screenStartRowOrdinal,
+		HasPrevious:           snapshot.hasPrevious, HasNext: snapshot.hasNext,
 	}, nil
 }

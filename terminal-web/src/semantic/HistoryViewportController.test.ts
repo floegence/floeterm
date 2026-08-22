@@ -49,6 +49,27 @@ function presentation(sequence = 1, totalRows = 100): SemanticPresentation {
   };
 }
 
+function presentationWithHistoryIdentity(
+  sequence: number,
+  totalRows: number,
+  historyEpoch: number,
+  firstRowOrdinal: number,
+): SemanticPresentation {
+  const value = presentation(sequence, totalRows);
+  return {
+    ...value,
+    frame: {
+      ...value.frame,
+      history: {
+        ...value.frame.history,
+        historyEpoch,
+        firstRowOrdinal,
+        screenStartRowOrdinal: firstRowOrdinal + totalRows - ROWS,
+      },
+    },
+  };
+}
+
 function viewport(offset: number, revision = 1, totalRows = 100, anchor = 'frontier'): SemanticHistoryViewport {
   const screenStartOffset = totalRows - ROWS;
   return {
@@ -96,6 +117,38 @@ function windowViewport(offset: number, windowRows: number, revision = 1, totalR
   };
 }
 
+function windowWithHistoryIdentity(
+  offset: number,
+  windowRows: number,
+  revision: number,
+  totalRows: number,
+  historyEpoch: number,
+  firstRowOrdinal: number,
+): SemanticHistoryViewport {
+  const value = windowViewport(offset, windowRows, revision, totalRows);
+  return {
+    ...value,
+    historyEpoch,
+    firstRowOrdinal,
+    screenStartRowOrdinal: firstRowOrdinal + totalRows - windowRows,
+    frame: {
+      ...value.frame,
+      rows: Array.from({ length: windowRows }, (_, row) => ({
+        cells: Array.from({ length: COLS }, (_, column) => ({
+          text: column === 0 ? `ordinal-${firstRowOrdinal + offset + row}` : '',
+          width: 1,
+        })),
+      })),
+      history: {
+        ...value.frame.history,
+        historyEpoch,
+        firstRowOrdinal,
+        screenStartRowOrdinal: firstRowOrdinal + totalRows - windowRows,
+      },
+    },
+  };
+}
+
 function windowForRequest(
   request: SemanticHistoryRequest,
   totalRows: number,
@@ -117,6 +170,34 @@ async function settle(controller: HistoryViewportController): Promise<void> {
 }
 
 describe('HistoryViewportController', () => {
+  it('projects a geometry-stable skeleton in the same turn as a cold scroll', async () => {
+    let resolveRequest!: (value: SemanticHistoryViewport) => void;
+    const request = vi.fn(() => new Promise<SemanticHistoryViewport>(resolve => {
+      resolveRequest = resolve;
+    }));
+    const renderer = { apply: vi.fn(), project: vi.fn(), getCellMetrics: () => ({ cellWidthCssPx: 9, cellHeightCssPx: 18 }) };
+    const controller = new HistoryViewportController({ renderer, request });
+    controller.apply(presentation(1, 1_000));
+
+    controller.showOffset(700);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(controller.getState()).toMatchObject({ browsing: true, busy: true, offset: 700 });
+    expect(renderer.project).toHaveBeenLastCalledWith(expect.objectContaining({
+      rows: expect.arrayContaining([expect.objectContaining({
+        cells: expect.arrayContaining([expect.objectContaining({ text: ' ', style: { background: 'indexed:8' } })]),
+      })]),
+    }));
+
+    resolveRequest(viewport(700, 1, 1_000));
+    await settle(controller);
+    expect(controller.getViewport()).toMatchObject({ offset: 700, snapshotId: 'snapshot-700-1' });
+    expect(renderer.project).toHaveBeenLastCalledWith(expect.objectContaining({
+      rows: expect.arrayContaining([expect.objectContaining({ cells: expect.arrayContaining([{ text: 'row-700', width: 1 }]) })]),
+    }));
+    controller.dispose();
+  });
+
   it('slices a remote history window locally while the target remains inside it', async () => {
     const totalRows = 1_000;
     const request = vi.fn(async (value: SemanticHistoryRequest) => windowForRequest(value, totalRows));
@@ -167,7 +248,7 @@ describe('HistoryViewportController', () => {
     controller.dispose();
   });
 
-  it('rejects a retained hidden window after the live history revision changes', async () => {
+  it('reuses a retained hidden window while the content epoch is stable', async () => {
     const totalRows = 1_000;
     let revision = 1;
     const request = vi.fn(async (value: SemanticHistoryRequest) => windowForRequest(value, totalRows, revision));
@@ -187,8 +268,8 @@ describe('HistoryViewportController', () => {
     controller.scrollByRows(-20);
     await settle(controller);
 
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(controller.getViewport()).toMatchObject({ revision: 2, offset: totalRows - ROWS - 20 });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(controller.getViewport()).toMatchObject({ revision: 1, offset: totalRows - ROWS - 20 });
     expect(controller.getState().error).toBeNull();
     controller.dispose();
   });
@@ -320,7 +401,12 @@ describe('HistoryViewportController', () => {
     await settle(controller);
 
     expect(controller.getState()).toMatchObject({ browsing: true, busy: false, error: expect.any(Error) });
-    expect(renderer.project.mock.calls[renderer.project.mock.calls.length - 1]?.[0]).toBe(visible);
+    expect(renderer.project.mock.calls[renderer.project.mock.calls.length - 1]?.[0]).not.toBe(visible);
+    expect(renderer.project.mock.calls[renderer.project.mock.calls.length - 1]?.[0]).toMatchObject({
+      rows: expect.arrayContaining([expect.objectContaining({
+        cells: expect.arrayContaining([expect.objectContaining({ text: ' ', width: 1 })]),
+      })]),
+    });
 
     fail = false;
     anchor = 'retry-frontier';
@@ -526,7 +612,7 @@ describe('HistoryViewportController', () => {
     await settle(controller);
 
     expect(request).toHaveBeenCalledTimes(1);
-    expect(controller.getState()).toMatchObject({ browsing: false, busy: false, error: expect.any(Error) });
+    expect(controller.getState()).toMatchObject({ browsing: true, busy: false, error: expect.any(Error) });
     controller.dispose();
   });
 
@@ -710,8 +796,8 @@ describe('HistoryViewportController', () => {
 
     const requestedRows = request.mock.calls[0]?.[0].windowRows ?? 0;
     expect(requestedRows).toBeGreaterThanOrEqual(ROWS);
-    expect(requestedRows).toBeLessThan(WINDOW_ROWS);
-    expect(controller.getCacheMetrics().extraBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(requestedRows).toBeLessThanOrEqual(WINDOW_ROWS);
+    expect(controller.getCacheMetrics().extraBytes).toBeLessThanOrEqual(32 * 1024 * 1024);
     controller.dispose();
   });
 
@@ -818,7 +904,7 @@ describe('HistoryViewportController', () => {
     }
 
     expect(request.mock.calls.length).toBeLessThanOrEqual(coldRequestCount + 1);
-    expect(controller.getCacheMetrics().extraBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(controller.getCacheMetrics().extraBytes).toBeLessThanOrEqual(32 * 1024 * 1024);
     controller.dispose();
   });
 
@@ -862,9 +948,9 @@ describe('HistoryViewportController', () => {
   });
 
   it('does not project a stale response that is behind a forced top-boundary scroll', async () => {
-    let resolveRequest!: (value: SemanticHistoryViewport) => void;
+    const resolvers: Array<(value: SemanticHistoryViewport) => void> = [];
     const request = vi.fn(() => new Promise<SemanticHistoryViewport>(resolve => {
-      resolveRequest = resolve;
+      resolvers.push(resolve);
     }));
     const renderer = { apply: vi.fn(), project: vi.fn(), getCellMetrics: () => ({ cellWidthCssPx: 9, cellHeightCssPx: 18 }) };
     const controller = new HistoryViewportController({ renderer, request });
@@ -873,16 +959,20 @@ describe('HistoryViewportController', () => {
     controller.showOffset(150);
     await Promise.resolve();
     controller.showOffset(0);
-    resolveRequest(viewport(150, 1, 300));
+    resolvers[0]!(viewport(150, 1, 300));
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(controller.getViewport()?.offset).toBe(200);
+    expect(controller.getViewport()?.offset).toBe(0);
     expect(renderer.project.mock.calls.map(([value]) => value?.history?.screenStartOffset ?? null)).not.toContain(150);
+    for (let attempt = 0; attempt < 20 && resolvers.length < 2; attempt += 1) await Promise.resolve();
+    resolvers[1]!(viewport(0, 1, 300));
+    await settle(controller);
+    expect(controller.getViewport()?.offset).toBe(0);
     controller.dispose();
   });
 
-  it('never reuses displayed history after live revision or total-row identity changes', async () => {
+  it('reuses displayed history across live revisions while rows remain valid', async () => {
     let revision = 1;
     let totalRows = 300;
     const request = vi.fn(async (value: SemanticHistoryRequest) => windowForRequest(value, totalRows, revision));
@@ -897,16 +987,16 @@ describe('HistoryViewportController', () => {
     controller.apply(presentation(revision, totalRows));
     controller.showOffset(100);
     await settle(controller);
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(controller.getViewport()).toMatchObject({ revision: 2, totalRows: 300, offset: 100 });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(controller.getViewport()).toMatchObject({ revision: 1, totalRows: 300, offset: 100 });
 
     revision = 3;
     totalRows = 301;
     controller.apply(presentation(revision, totalRows));
     controller.showOffset(100);
     await settle(controller);
-    expect(request).toHaveBeenCalledTimes(3);
-    expect(controller.getViewport()).toMatchObject({ revision: 3, totalRows: 301, offset: 100 });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(controller.getViewport()).toMatchObject({ revision: 1, totalRows: 300, offset: 100 });
     controller.dispose();
   });
 
@@ -957,12 +1047,8 @@ describe('HistoryViewportController', () => {
     controller.showOffset(200);
     await settle(controller);
 
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(request.mock.calls[1]?.[0]).toMatchObject({
-      direction: 'end', targetOffset: 0, viewportRows: 301,
-    });
-    expect(request.mock.calls[1]?.[0]).not.toHaveProperty('anchor');
-    expect(controller.getViewport()).toMatchObject({ revision: 2, totalRows: 301, offset: 200 });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(controller.getViewport()).toMatchObject({ revision: 1, totalRows: 300, offset: 200 });
     controller.dispose();
   });
 
@@ -1001,12 +1087,8 @@ describe('HistoryViewportController', () => {
     controller.scrollByRows(9);
     await settle(controller);
 
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(request.mock.calls[1]?.[0]).toMatchObject({
-      direction: 'end', targetOffset: 0, viewportRows: 301,
-    });
-    expect(request.mock.calls[1]?.[0]).not.toHaveProperty('anchor');
-    expect(controller.getViewport()).toMatchObject({ revision: 2, totalRows: 301, offset: 209 });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(controller.getViewport()).toMatchObject({ revision: 1, totalRows: 300, offset: 209 });
     controller.dispose();
   });
 
@@ -1034,6 +1116,58 @@ describe('HistoryViewportController', () => {
 
     expect(request).toHaveBeenCalledTimes(2);
     expect(controller.getViewport()).toMatchObject({ geometryGeneration: 2, offset: 100 });
+    controller.dispose();
+  });
+
+  it('reuses cached rows by stable ordinal after the live history drops its head', async () => {
+    const totalRows = 300;
+    const request = vi.fn(async (value: SemanticHistoryRequest) => windowWithHistoryIdentity(
+      value.targetOffset ?? 0,
+      value.windowRows ?? value.viewportRows,
+      1,
+      totalRows,
+      7,
+      1_000,
+    ));
+    const renderer = { apply: vi.fn(), project: vi.fn(), getCellMetrics: () => ({ cellWidthCssPx: 9, cellHeightCssPx: 18 }) };
+    const controller = new HistoryViewportController({ renderer, request });
+    controller.apply(presentationWithHistoryIdentity(1, totalRows, 7, 1_000));
+    controller.showOffset(100);
+    await settle(controller);
+    expect(controller.getViewport()?.frame.rows[0]?.cells[0]?.text).toBe('ordinal-1100');
+
+    controller.apply(presentationWithHistoryIdentity(2, totalRows, 7, 1_020));
+    expect(controller.getState().offset).toBe(80);
+    expect(controller.getViewport()?.frame.rows[0]?.cells[0]?.text).toBe('ordinal-1100');
+
+    controller.showOffset(80);
+    await settle(controller);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(controller.getViewport()?.frame.rows[0]?.cells[0]?.text).toBe('ordinal-1100');
+    controller.dispose();
+  });
+
+  it('invalidates the visible history cache when the history epoch changes', async () => {
+    const request = vi.fn(async (value: SemanticHistoryRequest) => windowWithHistoryIdentity(
+      value.targetOffset ?? 0,
+      value.windowRows ?? value.viewportRows,
+      1,
+      300,
+      3,
+      500,
+    ));
+    const renderer = { apply: vi.fn(), project: vi.fn(), getCellMetrics: () => ({ cellWidthCssPx: 9, cellHeightCssPx: 18 }) };
+    const controller = new HistoryViewportController({ renderer, request });
+    controller.apply(presentationWithHistoryIdentity(1, 300, 3, 500));
+    controller.showOffset(100);
+    await settle(controller);
+    expect(controller.getState().browsing).toBe(true);
+
+    controller.apply(presentationWithHistoryIdentity(2, 300, 4, 500));
+
+    expect(controller.getState().browsing).toBe(false);
+    expect(controller.getCacheMetrics().entries).toBe(0);
+    expect(renderer.project).toHaveBeenLastCalledWith(null);
     controller.dispose();
   });
 
@@ -1136,7 +1270,7 @@ describe('HistoryViewportController', () => {
     const controllers: HistoryViewportController[] = [];
     const heavyViewport = (offset: number): SemanticHistoryViewport => {
       const value = viewport(offset);
-      const hyperlink = `https://cache.test/${'a'.repeat(600)}`;
+      const hyperlink = `https://cache.test/${'a'.repeat(5000)}`;
       return {
         ...value,
         frame: {
@@ -1199,7 +1333,7 @@ describe('HistoryViewportController', () => {
     const request = vi.fn(async (value: SemanticHistoryRequest) => {
       if (value.direction === 'end') serverOffset = 63;
       else if (value.targetOffset !== undefined) serverOffset = value.targetOffset;
-      const valueText = `https://cache.test/${'a'.repeat(600)}`;
+      const valueText = `https://cache.test/${'a'.repeat(5000)}`;
       const base = viewport(serverOffset);
       return {
         ...base,

@@ -24,11 +24,17 @@ func main() {
 	var stateDir string
 	var logLevel string
 	var performanceDiagnostics bool
+	var historyLatencyMin time.Duration
+	var historyLatencyMax time.Duration
+	var historyLatencySeed int64
 	flag.StringVar(&addr, "addr", ":8080", "HTTP listen address")
 	flag.StringVar(&staticDir, "static", "", "path to app/web dist directory")
 	flag.StringVar(&stateDir, "state-dir", "", "path to durable FloeTerm state (defaults to the user config directory)")
 	flag.StringVar(&logLevel, "log-level", "info", "log level: debug|info|warn|error")
 	flag.BoolVar(&performanceDiagnostics, "performance-diagnostics", false, "enable loopback performance diagnostics endpoint")
+	flag.DurationVar(&historyLatencyMin, "history-latency-min", 0, "example-only minimum delay for each semantic history request")
+	flag.DurationVar(&historyLatencyMax, "history-latency-max", 0, "example-only maximum delay for each semantic history request")
+	flag.Int64Var(&historyLatencySeed, "history-latency-seed", 1, "deterministic seed for example semantic history latency")
 	flag.Parse()
 
 	if staticDir == "" {
@@ -59,6 +65,9 @@ func main() {
 	srv := server.New(server.Config{
 		StaticDir:                    staticDir,
 		EnablePerformanceDiagnostics: performanceDiagnostics,
+		HistoryLatencyMin:            historyLatencyMin,
+		HistoryLatencyMax:            historyLatencyMax,
+		HistoryLatencySeed:           historyLatencySeed,
 		ManagerConfig: terminal.ManagerConfig{
 			Logger: logger,
 			ShellArgsProvider: terminal.DefaultShellArgsProvider{
@@ -74,18 +83,28 @@ func main() {
 	})
 	defer srv.Close()
 
-	logger.Info("floeterm server listening", "addr", addr)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("floeterm server failed to listen", "addr", addr, "error", err)
+		os.Exit(1)
+	}
+	defer listener.Close()
+	actualAddr := listener.Addr().String()
+	logger.Info("floeterm server listening", "addr", actualAddr)
 	logger.Info("using durable state", "stateDir", paths.Root)
+	if historyLatencyMax > 0 {
+		logger.Info("semantic history latency simulation enabled", "min", historyLatencyMin, "max", historyLatencyMax, "seed", historyLatencySeed)
+	}
 	if staticDir != "" {
 		logger.Info("serving web", "staticDir", staticDir)
-		if url := displayLocalAccessURL(addr); url != "" {
+		if url := displayLocalAccessURL(actualAddr); url != "" {
 			logger.Info("open in browser", "url", url)
 		}
 	} else {
 		logger.Info("no static dir configured; API only")
 	}
 
-	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
+	if err := http.Serve(listener, srv.Handler()); err != nil {
 		logger.Error("http server exited", "error", err)
 		os.Exit(1)
 	}

@@ -110,7 +110,7 @@ describe('HistoryViewportController performance bounds', () => {
       cold.push(performance.now() - start);
     }
     expect(percentile(cold, 0.95)).toBeLessThan(150);
-    expect(controller.getCacheMetrics().extraBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(controller.getCacheMetrics().extraBytes).toBeLessThanOrEqual(32 * 1024 * 1024);
     controller.dispose();
   });
 

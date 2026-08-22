@@ -111,9 +111,12 @@ type SemanticFrame struct {
 // the frame. It gives views bounded rail geometry without exposing row IDs or
 // native anchors; page content still requires an attachment-bound opaque token.
 type SemanticHistorySummary struct {
-	Revision          uint64 `json:"revision"`
-	TotalRows         int    `json:"totalRows"`
-	ScreenStartOffset int    `json:"screenStartOffset"`
+	Revision              uint64 `json:"revision"`
+	TotalRows             int    `json:"totalRows"`
+	ScreenStartOffset     int    `json:"screenStartOffset"`
+	HistoryEpoch          uint64 `json:"historyEpoch"`
+	FirstRowOrdinal       uint64 `json:"firstRowOrdinal"`
+	ScreenStartRowOrdinal uint64 `json:"screenStartRowOrdinal"`
 }
 
 type SemanticRow struct {

@@ -86,12 +86,14 @@ export const createTerminalRuntime = (connId: string) => {
         transportGeneration: number,
         request: SemanticHistoryChunkRequest,
       ): Promise<SemanticHistoryChunk> => {
+        const { signal, requestId, priority, ...wireRequest } = request;
         try {
           return validateHistoryChunk(await requestJson<unknown>(
             `/api/sessions/${encodeURIComponent(sessionId)}/semantic-history`,
             {
               method: 'POST',
-              body: JSON.stringify({ connectionId, transportGeneration, ...request }),
+              signal,
+              body: JSON.stringify({ connectionId, transportGeneration, requestId, priority, ...wireRequest }),
             },
           ));
         } catch (cause) {
@@ -99,6 +101,40 @@ export const createTerminalRuntime = (connId: string) => {
           if (status === 409) throw new SemanticHistoryError('anchor_invalid', 'semantic history anchor is invalid', { cause });
           if (status === 412) throw new SemanticHistoryError('snapshot_superseded', 'semantic history snapshot was superseded', { cause });
           if (status === 404 || status === 410) throw new SemanticHistoryError('session_detached', 'terminal history session is detached', { cause });
+          throw cause;
+        }
+      },
+      semanticHistoryBatch: async (
+        sessionId: TerminalID,
+        connectionId: string,
+        transportGeneration: number,
+        request: SemanticHistoryRequest,
+      ): Promise<readonly SemanticHistoryChunk[]> => {
+        const { windowRows, signal, ...wireRequest } = request;
+        try {
+          const response = await requestJson<{ chunks: unknown[] }>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/semantic-history-v2`,
+            {
+              method: 'POST',
+              signal,
+              body: JSON.stringify({
+                connectionId,
+                transportGeneration,
+                ...wireRequest,
+                ...(windowRows === undefined ? {} : { viewportRows: windowRows }),
+              }),
+            },
+          );
+          if (!Array.isArray(response.chunks)) throw new Error('invalid semantic history batch response');
+          return response.chunks.map(chunk => validateHistoryChunk(chunk));
+        } catch (cause) {
+          const status = Number((cause as Error & { status?: number }).status);
+          if (status === 404 || status === 405) {
+            throw Object.assign(new Error('semantic history batch endpoint unavailable'), { code: status });
+          }
+          if (status === 409) throw new SemanticHistoryError('anchor_invalid', 'semantic history anchor is invalid', { cause });
+          if (status === 412) throw new SemanticHistoryError('snapshot_superseded', 'semantic history snapshot was superseded', { cause });
+          if (status === 410) throw new SemanticHistoryError('session_detached', 'terminal history session is detached', { cause });
           throw cause;
         }
       },

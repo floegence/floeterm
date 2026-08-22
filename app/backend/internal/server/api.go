@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strings"
+	"time"
 
 	terminal "github.com/floegence/floeterm/terminal-go"
 )
@@ -91,6 +92,8 @@ type renameSessionRequest struct {
 type semanticHistoryRequest struct {
 	ConnectionID        string                            `json:"connectionId"`
 	TransportGeneration uint64                            `json:"transportGeneration"`
+	RequestID           string                            `json:"requestId,omitempty"`
+	Priority            string                            `json:"priority,omitempty"`
 	Continuation        string                            `json:"continuation,omitempty"`
 	Lane                terminal.SemanticHistoryLane      `json:"lane,omitempty"`
 	Anchor              string                            `json:"anchor,omitempty"`
@@ -110,6 +113,10 @@ type semanticClearRequest struct {
 type semanticClearResponse struct {
 	PresentationSequence uint64 `json:"presentationSequence"`
 	ContentEpoch         uint64 `json:"contentEpoch"`
+}
+
+type semanticHistoryBatchResponse struct {
+	Chunks []terminal.SemanticHistoryChunk `json:"chunks"`
 }
 
 func toAPISessionInfo(info terminal.TerminalSessionInfo) apiSessionInfo {
@@ -325,10 +332,22 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
+		requestID, delay := s.historyLatency.begin(request.RequestID)
+		started := time.Now()
+		if err := s.historyLatency.wait(r.Context(), requestID, delay); err != nil {
+			s.historyLatency.complete(requestID, request.Priority, string(request.Lane), request.Offset, request.TargetOffset, 0, delay, started, err)
+			http.Error(w, "semantic history request canceled", http.StatusRequestTimeout)
+			return
+		}
 		page, err := session.ReadSemanticHistory(request.ConnectionID, request.TransportGeneration, terminal.SemanticHistoryRequest{
-			Continuation: request.Continuation, Lane: request.Lane, Anchor: request.Anchor, SnapshotID: request.SnapshotID, Direction: request.Direction,
+			Continuation: request.Continuation, Lane: request.Lane, Priority: terminal.SemanticHistoryPriority(request.Priority), Anchor: request.Anchor, SnapshotID: request.SnapshotID, Direction: request.Direction,
 			Offset: request.Offset, ScrollDeltaRows: request.ScrollDeltaRows, TargetOffset: request.TargetOffset, ViewportRows: request.ViewportRows,
 		})
+		bytes := 0
+		if err == nil {
+			bytes = page.PayloadBytes
+		}
+		s.historyLatency.complete(requestID, request.Priority, string(request.Lane), request.Offset, request.TargetOffset, bytes, delay, started, err)
 		if err != nil {
 			status := http.StatusConflict
 			if errors.Is(err, terminal.ErrControllerTransport) {
@@ -342,6 +361,75 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, page)
+		return
+
+	case "semantic-history-v2":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var request semanticHistoryRequest
+		if err := readJSON(w, r, &request, maxJSONBodyBytesDefault); err != nil {
+			http.Error(w, "invalid semantic history request", http.StatusBadRequest)
+			return
+		}
+		session, ok := s.manager.GetSession(sessionID)
+		if !ok {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		requestID, delay := s.historyLatency.begin(request.RequestID)
+		started := time.Now()
+		if err := s.historyLatency.wait(r.Context(), requestID, delay); err != nil {
+			s.historyLatency.complete(requestID, request.Priority, string(request.Lane), request.Offset, request.TargetOffset, 0, delay, started, err)
+			http.Error(w, "semantic history request canceled", http.StatusRequestTimeout)
+			return
+		}
+		chunks := make([]terminal.SemanticHistoryChunk, 0, 4)
+		next := request
+		var readErr error
+		for index := 0; index < 512; index++ {
+			var page terminal.SemanticHistoryChunk
+			page, readErr = session.ReadSemanticHistory(next.ConnectionID, next.TransportGeneration, terminal.SemanticHistoryRequest{
+				Continuation: next.Continuation, Lane: next.Lane, Priority: terminal.SemanticHistoryPriority(next.Priority), Anchor: next.Anchor, SnapshotID: next.SnapshotID,
+				Direction: next.Direction, Offset: next.Offset, ScrollDeltaRows: next.ScrollDeltaRows,
+				TargetOffset: next.TargetOffset, ViewportRows: next.ViewportRows,
+			})
+			if readErr != nil {
+				break
+			}
+			chunks = append(chunks, page)
+			if page.Continuation == "" {
+				break
+			}
+			next = semanticHistoryRequest{
+				ConnectionID: request.ConnectionID, TransportGeneration: request.TransportGeneration,
+				RequestID: request.RequestID, Priority: request.Priority,
+				Continuation: page.Continuation, Lane: request.Lane,
+			}
+		}
+		bytes := 0
+		for _, chunk := range chunks {
+			bytes += len(chunk.Payload)
+		}
+		s.historyLatency.complete(requestID, request.Priority, string(request.Lane), request.Offset, request.TargetOffset, bytes, delay, started, readErr)
+		if readErr != nil {
+			status := http.StatusConflict
+			if errors.Is(readErr, terminal.ErrControllerTransport) {
+				status = http.StatusGone
+			} else if errors.Is(readErr, terminal.ErrSemanticHistorySuperseded) {
+				status = http.StatusPreconditionFailed
+			} else if !errors.Is(readErr, terminal.ErrSemanticHistoryAnchor) {
+				status = http.StatusBadRequest
+			}
+			http.Error(w, readErr.Error(), status)
+			return
+		}
+		if len(chunks) == 0 || chunks[len(chunks)-1].Continuation != "" {
+			http.Error(w, "semantic history batch did not terminate", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, semanticHistoryBatchResponse{Chunks: chunks})
 		return
 
 	case "semantic-clear":

@@ -60,7 +60,115 @@ const malformedChunk = (chunkIndex: number, chunkCount: number, continuation?: s
   offset: 3, totalRows: 10, screenStartOffset: 9, hasPrevious: true, hasNext: true,
 });
 
+const validHistoryChunks = async () => {
+  const payload = new TextEncoder().encode(JSON.stringify({
+    v: 1,
+    frame: {
+      width: 2, height: 1, bufferKind: 'normal',
+      cursor: { x: 0, y: 0, visible: false, shape: 'block', blinking: false },
+      history: { revision: 4, totalRows: 10, screenStartOffset: 9 },
+      graphics: { generation: 0, images: [], placements: [] },
+      styles: [['default', 'default', false, false, false]],
+      styleInverses: [false],
+      rows: [[['H', 1, 0, ''], ['I', 1, 0, '']]],
+    },
+  }));
+  const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', payload))]
+    .map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const split = Math.floor(payload.byteLength / 2);
+  return [payload.slice(0, split), payload.slice(split)].map((part, chunkIndex) => ({
+    snapshotId: 'snapshot',
+    ...(chunkIndex === 0 ? { continuation: 'hc-snapshot-1' } : {}),
+    lane: 'viewport' as const,
+    chunkIndex, chunkCount: 2, payloadBytes: payload.byteLength, payloadSha256: digest, payload: part,
+    revision: 4, transportGeneration: 1, contentEpoch: 0, geometryGeneration: 1,
+    cols: 2, rows: 1,
+    anchor: 'anchor', firstAvailable: 'first', lastAvailable: 'last', screenStart: 'screen',
+    offset: 3, totalRows: 10, screenStartOffset: 9, hasPrevious: true, hasNext: true,
+  }));
+};
+
 describe('semantic terminal live transport', () => {
+  it('prefers one complete v2 batch over legacy continuation calls', async () => {
+    const rawChunks = await validHistoryChunks();
+    const semanticHistory = vi.fn();
+    const semanticHistoryBatch = vi.fn(async () => rawChunks);
+    const streams: FakeStream[] = [];
+    const bundle = createSemanticTerminalLiveTransport({
+      connectionId: 'view',
+      openStream: async () => { const stream = new FakeStream(); streams.push(stream); return stream; },
+      control: { semanticHistory, semanticHistoryBatch },
+    });
+    const attaching = bundle.transport.attachWithPresentation('session', 2, 1);
+    await waitUntil(() => streams[0]?.writes.length === 1);
+    streams[0]!.push(encodeAttached({
+      presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n,
+      cols: 2, rows: 1, isController: true,
+    }));
+    await attaching;
+
+    const result = await bundle.transport.semanticHistory('session', {
+      requestId: 'demand-1', priority: 'demand', direction: 'start', viewportRows: 1,
+    });
+
+    expect(semanticHistoryBatch).toHaveBeenCalledTimes(1);
+    expect(semanticHistory).not.toHaveBeenCalled();
+    expect(result.frame.rows[0]!.cells.map(cell => cell.text).join('')).toBe('HI');
+    bundle.transport.dispose();
+  });
+
+  it.each([404, 405])('falls back to legacy history when v2 responds with %s', async code => {
+    const rawChunks = await validHistoryChunks();
+    const semanticHistoryBatch = vi.fn(async () => {
+      throw Object.assign(new Error('unsupported'), { code });
+    });
+    const semanticHistory = vi.fn(async (_sessionId, _connectionId, _generation, request) => (
+      'continuation' in request ? rawChunks[1]! : rawChunks[0]!
+    ));
+    const streams: FakeStream[] = [];
+    const bundle = createSemanticTerminalLiveTransport({
+      connectionId: 'view',
+      openStream: async () => { const stream = new FakeStream(); streams.push(stream); return stream; },
+      control: { semanticHistory, semanticHistoryBatch },
+    });
+    const attaching = bundle.transport.attachWithPresentation('session', 2, 1);
+    await waitUntil(() => streams[0]?.writes.length === 1);
+    streams[0]!.push(encodeAttached({
+      presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n,
+      cols: 2, rows: 1, isController: true,
+    }));
+    await attaching;
+
+    await expect(bundle.transport.semanticHistory('session', { direction: 'start', viewportRows: 1 }))
+      .resolves.toMatchObject({ offset: 3 });
+    expect(semanticHistoryBatch).toHaveBeenCalledTimes(1);
+    expect(semanticHistory).toHaveBeenCalledTimes(2);
+    bundle.transport.dispose();
+  });
+
+  it('rejects a successful empty v2 batch without silently retrying legacy', async () => {
+    const semanticHistory = vi.fn();
+    const semanticHistoryBatch = vi.fn(async () => []);
+    const streams: FakeStream[] = [];
+    const bundle = createSemanticTerminalLiveTransport({
+      connectionId: 'view',
+      openStream: async () => { const stream = new FakeStream(); streams.push(stream); return stream; },
+      control: { semanticHistory, semanticHistoryBatch },
+    });
+    const attaching = bundle.transport.attachWithPresentation('session', 2, 1);
+    await waitUntil(() => streams[0]?.writes.length === 1);
+    streams[0]!.push(encodeAttached({
+      presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n,
+      cols: 2, rows: 1, isController: true,
+    }));
+    await attaching;
+
+    await expect(bundle.transport.semanticHistory('session', { direction: 'start', viewportRows: 1 }))
+      .rejects.toMatchObject({ kind: 'malformed_snapshot' });
+    expect(semanticHistory).not.toHaveBeenCalled();
+    bundle.transport.dispose();
+  });
+
   it.each([
     [409, 'terminal history anchor expired', 'anchor_invalid'],
     [409, 'terminal attachment changed', 'attachment_invalid'],

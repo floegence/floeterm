@@ -8,7 +8,14 @@ export type SemanticFrame = {
   bufferKind: string;
   rows: Array<{ cells: SemanticCell[] }>;
   cursor: { x: number; y: number; visible: boolean; shape: SemanticCursorShape; blinking: boolean; wideTail?: boolean; color?: string };
-  history: { revision: number; totalRows: number; screenStartOffset: number };
+  history: {
+    revision: number;
+    totalRows: number;
+    screenStartOffset: number;
+    historyEpoch?: number;
+    firstRowOrdinal?: number;
+    screenStartRowOrdinal?: number;
+  };
   graphics: SemanticGraphics;
 };
 export type SemanticGraphicImage = { id: number; width: number; height: number; format: 0 | 1 | 3 | 4; generation: number; pixels: Uint8Array };
@@ -55,6 +62,12 @@ export function isStructuralSemanticHistoryError(error: unknown): error is Seman
 }
 
 export type SemanticHistoryRequest = Readonly<{
+  /** Stable client request identity used for cancellation, tracing, and isolated prefetch views. */
+  requestId?: string;
+  /** Demand requests outrank background prefetch; omitted means demand. */
+  priority?: 'demand' | 'prefetch';
+  /** Local cancellation only; never serialized onto the history wire. */
+  signal?: AbortSignal;
   lane?: SemanticHistoryLane;
   anchor?: string;
   snapshotId?: string;
@@ -69,6 +82,9 @@ export type SemanticHistoryRequest = Readonly<{
 export type SemanticHistoryChunkRequest = SemanticHistoryRequest | Readonly<{
   continuation: string;
   lane?: SemanticHistoryLane;
+  requestId?: string;
+  priority?: 'demand' | 'prefetch';
+  signal?: AbortSignal;
 }>;
 export type SemanticHistoryChunk = Readonly<{
   snapshotId: string;
@@ -92,6 +108,9 @@ export type SemanticHistoryChunk = Readonly<{
   offset: number;
   totalRows: number;
   screenStartOffset: number;
+  historyEpoch?: number;
+  firstRowOrdinal?: number;
+  screenStartRowOrdinal?: number;
   hasPrevious: boolean;
   hasNext: boolean;
 }>;
@@ -111,6 +130,9 @@ export type SemanticHistoryViewport = Readonly<{
   offset: number;
   totalRows: number;
   screenStartOffset: number;
+  historyEpoch?: number;
+  firstRowOrdinal?: number;
+  screenStartRowOrdinal?: number;
   hasPrevious: boolean;
   hasNext: boolean;
   frame: SemanticFrame;
@@ -156,6 +178,7 @@ export function validatePresentation(value: unknown): SemanticPresentation {
   if (!Number.isInteger(p.geometry?.cols) || !Number.isInteger(p.geometry?.rows) || p.geometry.cols < 1 || p.geometry.rows < 1 || p.geometry.cols > MAX_COLS || p.geometry.rows > MAX_ROWS) throw new Error('invalid presentation geometry');
   if (p.frame?.width !== p.geometry.cols || p.frame?.height !== p.geometry.rows || !Array.isArray(p.frame.rows) || p.frame.rows.length !== p.frame.height) throw new Error('presentation frame does not match geometry');
   validateFrame(p.frame);
+  validateHistoryIdentity(p.frame.history);
   if (p.frame.history.revision !== p.sequence || p.frame.history.screenStartOffset !== p.frame.history.totalRows - p.frame.height) throw new Error('invalid presentation history summary');
   return p;
 }
@@ -165,6 +188,7 @@ export function validateFrame(frame: SemanticFrame): void {
   const cursor = frame.cursor;
   if (!cursor || !Number.isInteger(cursor.x) || !Number.isInteger(cursor.y) || cursor.x < 0 || cursor.x >= frame.width || cursor.y < 0 || cursor.y >= frame.height || typeof cursor.visible !== 'boolean' || !['bar', 'block', 'underline', 'hollow'].includes(cursor.shape) || typeof cursor.blinking !== 'boolean' || (cursor.wideTail !== undefined && typeof cursor.wideTail !== 'boolean') || (cursor.color !== undefined && !/^rgb:[0-9a-fA-F]{6}$/.test(cursor.color))) throw new Error('invalid semantic cursor');
   if (!Number.isSafeInteger(frame.history?.revision) || frame.history.revision < 0 || !Number.isSafeInteger(frame.history?.totalRows) || frame.history.totalRows < frame.height || !Number.isSafeInteger(frame.history?.screenStartOffset) || frame.history.screenStartOffset < 0 || frame.history.screenStartOffset >= frame.history.totalRows) throw new Error('invalid semantic history summary');
+  validateHistoryIdentity(frame.history);
   for (const row of frame.rows) {
     if (!Array.isArray(row.cells) || row.cells.length !== frame.width) throw new Error('invalid semantic row width');
     for (const cell of row.cells) {
@@ -253,6 +277,7 @@ export function validateHistoryChunk(value: unknown): SemanticHistoryChunk {
     || (chunk.chunkIndex + 1 < chunk.chunkCount) !== Boolean(chunk.continuation)) {
     throw new Error('invalid semantic history bounds');
   }
+  validateHistoryIdentity(chunk);
   return chunk;
 }
 
@@ -308,6 +333,9 @@ async function assembleHistorySnapshot(chunks: readonly SemanticHistoryChunk[]):
     offset: first.offset,
     totalRows: first.totalRows,
     screenStartOffset: first.screenStartOffset,
+    historyEpoch: first.historyEpoch,
+    firstRowOrdinal: first.firstRowOrdinal,
+    screenStartRowOrdinal: first.screenStartRowOrdinal,
     hasPrevious: first.hasPrevious,
     hasNext: first.hasNext,
     frame: decodeSemanticFrameWire(decoded.frame),
@@ -349,6 +377,7 @@ export function validateHistoryViewport(value: unknown): SemanticHistoryViewport
     || viewport.hasNext !== (viewport.offset < viewport.screenStartOffset)) {
     throw new Error('invalid semantic history viewport bounds');
   }
+  validateHistoryIdentity(viewport);
   validateFrame(viewport.frame);
   if (viewport.frame.width !== viewport.cols || viewport.frame.height !== viewport.rows
     || viewport.frame.rows.length !== viewport.rows
@@ -390,6 +419,7 @@ export function validateHistoryWindow(value: unknown): SemanticHistoryWindow {
     || window.hasNext !== (window.offset < window.screenStartOffset)) {
     throw new Error('invalid semantic history window bounds');
   }
+  validateHistoryIdentity(window);
   validateFrame(window.frame);
   if (window.frame.width !== window.cols || window.frame.height !== window.rows
     || window.frame.rows.length !== window.rows
@@ -428,8 +458,26 @@ function historyChunkSignature(chunk: SemanticHistoryChunk): string {
     chunk.revision, chunk.transportGeneration, chunk.contentEpoch, chunk.geometryGeneration,
     chunk.cols, chunk.rows, chunk.anchor, chunk.firstAvailable, chunk.lastAvailable,
     chunk.screenStart, chunk.offset, chunk.totalRows, chunk.screenStartOffset,
+    chunk.historyEpoch, chunk.firstRowOrdinal, chunk.screenStartRowOrdinal,
     chunk.hasPrevious, chunk.hasNext,
   ]);
+}
+
+function validateHistoryIdentity(value: Readonly<{
+  historyEpoch?: number;
+  firstRowOrdinal?: number;
+  screenStartRowOrdinal?: number;
+  totalRows: number;
+  screenStartOffset: number;
+}>): void {
+  const fields = [value.historyEpoch, value.firstRowOrdinal, value.screenStartRowOrdinal];
+  if (fields.every(field => field === undefined)) return;
+  if (fields.some(field => !Number.isSafeInteger(field) || (field as number) < 0)
+    || value.historyEpoch === 0
+    || value.screenStartRowOrdinal !== (value.firstRowOrdinal as number) + value.screenStartOffset
+    || (value.firstRowOrdinal as number) + value.totalRows > Number.MAX_SAFE_INTEGER) {
+    throw new Error('invalid semantic history identity');
+  }
 }
 
 async function sha256Hex(payload: Uint8Array): Promise<string> {

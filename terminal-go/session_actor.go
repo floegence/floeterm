@@ -46,15 +46,20 @@ const (
 
 // SessionActor is the single mutable owner of PTY admission and the VT engine.
 type SessionActor struct {
-	mu                 sync.Mutex
-	engine             SemanticEngine
-	store              *PresentationStore
-	geometry           TerminalGeometry
-	sequence           uint64
-	contentEpoch       uint64
-	historyViews       map[string]semanticHistoryView
-	nextHistoryTokenID uint64
-	historyEncoder     func(SemanticFrame) ([]byte, string, error)
+	mu                    sync.Mutex
+	engine                SemanticEngine
+	store                 *PresentationStore
+	geometry              TerminalGeometry
+	sequence              uint64
+	contentEpoch          uint64
+	historyEpoch          uint64
+	historyFirstRow       uint64
+	historyTotalRows      int
+	historyIdentitySet    bool
+	historyIdentityAnchor SemanticHistoryAnchor
+	historyViews          map[string]semanticHistoryView
+	nextHistoryTokenID    uint64
+	historyEncoder        func(SemanticFrame) ([]byte, string, error)
 }
 
 func NewSessionActor(engine SemanticEngine, cols, rows int, store *PresentationStore) (*SessionActor, error) {
@@ -81,6 +86,7 @@ func (a *SessionActor) PublishInitialPresentation() error {
 	}
 	a.sequence = 1
 	frame.History.Revision = a.sequence
+	a.updateHistoryIdentityLocked(&frame, false)
 	a.geometry.PresentationSequence = a.sequence
 	return a.store.Publish(SemanticPresentation{Sequence: 1, Geometry: a.geometry, State: TerminalState{Sequence: 1, ContentEpoch: a.contentEpoch}, Frame: frame})
 }
@@ -98,6 +104,7 @@ func (a *SessionActor) ApplyPTYOutput(data []byte) (SemanticPresentation, error)
 	}
 	a.sequence++
 	frame.History.Revision = a.sequence
+	a.updateHistoryIdentityLocked(&frame, false)
 	state.Sequence = a.sequence
 	state.ContentEpoch = a.contentEpoch
 	geometry := a.geometry
@@ -156,6 +163,7 @@ func (a *SessionActor) resizeToGeometryLocked(geometry TerminalGeometry) (Semant
 	nextSequence := a.sequence + 1
 	geometry.PresentationSequence = nextSequence
 	frame.History.Revision = nextSequence
+	a.updateHistoryIdentityLocked(&frame, true)
 	presentation := SemanticPresentation{Sequence: nextSequence, Geometry: geometry, State: TerminalState{Sequence: nextSequence, ContentEpoch: a.contentEpoch}, Frame: frame}
 	if err := a.store.Publish(presentation); err != nil {
 		return SemanticPresentation{}, a.rollbackResizeLocked(previousGeometry, err)
@@ -195,6 +203,7 @@ func (a *SessionActor) Clear() (SemanticPresentation, error) {
 	geometry := a.geometry
 	geometry.PresentationSequence = nextSequence
 	frame.History.Revision = nextSequence
+	a.updateHistoryIdentityLocked(&frame, true)
 	presentation := SemanticPresentation{
 		Sequence: nextSequence,
 		Geometry: geometry,
@@ -208,6 +217,48 @@ func (a *SessionActor) Clear() (SemanticPresentation, error) {
 	a.contentEpoch = nextEpoch
 	a.geometry = geometry
 	return presentation, nil
+}
+
+func (a *SessionActor) updateHistoryIdentityLocked(frame *SemanticFrame, structural bool) {
+	totalRows := frame.History.TotalRows
+	if totalRows < frame.Height {
+		totalRows = frame.Height
+		frame.History.TotalRows = totalRows
+		frame.History.ScreenStartOffset = totalRows - frame.Height
+	}
+	engine, hasHistory := a.engine.(SemanticHistoryEngine)
+	if !structural && hasHistory && a.historyIdentitySet {
+		if a.historyIdentityAnchor == nil {
+			structural = true
+		} else {
+			row, status, err := engine.HistoryAnchorScreenRow(a.historyIdentityAnchor)
+			if err != nil || status != AnchorValid || row != 0 {
+				structural = true
+			}
+		}
+	}
+	a.releaseHistoryIdentityAnchorLocked()
+	if !a.historyIdentitySet || structural {
+		a.historyEpoch++
+		if a.historyEpoch == 0 {
+			a.historyEpoch = 1
+		}
+		a.historyFirstRow = 0
+		a.historyIdentitySet = true
+	} else {
+		if totalRows < a.historyTotalRows {
+			a.historyFirstRow += uint64(a.historyTotalRows - totalRows)
+		}
+	}
+	a.historyTotalRows = totalRows
+	if hasHistory {
+		if anchor, err := engine.TrackHistoryCell(0, 0); err == nil {
+			a.historyIdentityAnchor = anchor
+		}
+	}
+	frame.History.HistoryEpoch = a.historyEpoch
+	frame.History.FirstRowOrdinal = a.historyFirstRow
+	frame.History.ScreenStartRowOrdinal = a.historyFirstRow + uint64(frame.History.ScreenStartOffset)
 }
 
 func (a *SessionActor) rollbackResizeLocked(previous TerminalGeometry, cause error) error {
@@ -324,6 +375,17 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 		a.mu.Unlock()
 		return SemanticHistoryChunk{}, errors.New("semantic history cannot fill the canonical viewport")
 	}
+	// History may be requested before the first presentation is published in
+	// metadata-only consumers. Establish the same stable identity used by live
+	// frames so the first snapshot is still addressable by ordinal.
+	if !a.historyIdentitySet {
+		a.historyEpoch = 1
+		a.historyFirstRow = 0
+		a.historyIdentitySet = true
+	} else if totalRows < a.historyTotalRows {
+		a.historyFirstRow += uint64(a.historyTotalRows - totalRows)
+	}
+	a.historyTotalRows = totalRows
 	maxStart := max(0, totalRows-request.ViewportRows)
 	targetRow := 0
 	view, exists := a.historyViews[request.ViewID]
@@ -415,7 +477,10 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 	screenStartOffset := max(0, totalRows-request.ViewportRows)
 	frame.History = SemanticHistorySummary{
 		Revision: a.sequence, TotalRows: totalRows,
-		ScreenStartOffset: screenStartOffset,
+		ScreenStartOffset:     screenStartOffset,
+		HistoryEpoch:          a.historyEpoch,
+		FirstRowOrdinal:       a.historyFirstRow,
+		ScreenStartRowOrdinal: a.historyFirstRow + uint64(screenStartOffset),
 	}
 	a.nextHistoryTokenID++
 	snapshot := semanticHistorySnapshot{
@@ -423,7 +488,9 @@ func (a *SessionActor) ReadHistory(request SemanticHistoryRequest) (SemanticHist
 		revision: a.sequence, contentEpoch: a.contentEpoch,
 		geometryGeneration: a.geometry.Generation, cols: a.geometry.Cols, rows: request.ViewportRows,
 		offset: targetRow, totalRows: totalRows, screenStartOffset: screenStartOffset,
-		hasPrevious: targetRow > 0, hasNext: targetRow < maxStart,
+		historyEpoch: a.historyEpoch, firstRowOrdinal: a.historyFirstRow,
+		screenStartRowOrdinal: a.historyFirstRow + uint64(screenStartOffset),
+		hasPrevious:           targetRow > 0, hasNext: targetRow < maxStart,
 		anchor: view.anchorID, firstAvailable: view.firstAvailableID,
 		lastAvailable: view.lastAvailableID, screenStart: view.screenStartID,
 	}
@@ -510,6 +577,13 @@ func (a *SessionActor) releaseAllHistoryLocked() {
 	}
 }
 
+func (a *SessionActor) releaseHistoryIdentityAnchorLocked() {
+	if a.historyIdentityAnchor != nil {
+		a.historyIdentityAnchor.Close()
+		a.historyIdentityAnchor = nil
+	}
+}
+
 func (a *SessionActor) ReleaseHistory(viewID string) {
 	if a == nil || viewID == "" {
 		return
@@ -526,6 +600,7 @@ func (a *SessionActor) Close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.releaseAllHistoryLocked()
+	a.releaseHistoryIdentityAnchorLocked()
 	if a.engine != nil {
 		a.engine.Close()
 		a.engine = nil

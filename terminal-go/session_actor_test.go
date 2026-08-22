@@ -221,6 +221,7 @@ func TestSessionActorClearResetsScreenHistoryAndPublishesOneAtomicCut(t *testing
 	if _, err := actor.ReadHistory(SemanticHistoryRequest{ViewID: "view/1", Direction: HistoryStart, ViewportRows: 3}); err != nil {
 		t.Fatal(err)
 	}
+	anchorsBeforeClear := append([]*fakeHistoryAnchor(nil), engine.anchors...)
 
 	presentation, err := actor.Clear()
 	if err != nil {
@@ -238,14 +239,93 @@ func TestSessionActorClearResetsScreenHistoryAndPublishesOneAtomicCut(t *testing
 	if got := presentation.Frame.Rows[0].Cells[0].Text; got != "" {
 		t.Fatalf("clear retained screen text %q", got)
 	}
-	for _, anchor := range engine.anchors {
+	for _, anchor := range anchorsBeforeClear {
 		if !anchor.closed {
-			t.Fatal("clear retained a native history anchor")
+			t.Fatal("clear retained a pre-reset native history anchor")
 		}
 	}
 	stored, ok := store.Latest()
 	if !ok || stored.Sequence != presentation.Sequence || stored.State.ContentEpoch != 1 {
 		t.Fatalf("stored clear presentation=%+v", stored)
+	}
+}
+
+func TestSessionActorHistoryIdentityTracksEvictionAndStructuralReset(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 12}
+	engine.frame = SemanticFrame{
+		Width: 8, Height: 3,
+		History: SemanticHistorySummary{TotalRows: 12, ScreenStartOffset: 9},
+	}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	initial, ok := actor.store.Latest()
+	if !ok || initial.Frame.History.HistoryEpoch == 0 || initial.Frame.History.FirstRowOrdinal != 0 {
+		t.Fatalf("initial history identity=%+v", initial.Frame.History)
+	}
+
+	engine.totalRows = 9
+	engine.frame.History = SemanticHistorySummary{TotalRows: 9, ScreenStartOffset: 6}
+	advanced, err := actor.ApplyPTYOutput([]byte("evict"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advanced.Frame.History.HistoryEpoch != initial.Frame.History.HistoryEpoch ||
+		advanced.Frame.History.FirstRowOrdinal != 3 ||
+		advanced.Frame.History.ScreenStartRowOrdinal != 9 {
+		t.Fatalf("eviction history identity=%+v, want epoch=%d first=3 screen=9",
+			advanced.Frame.History, initial.Frame.History.HistoryEpoch)
+	}
+
+	engine.totalRows = 3
+	engine.frame.History = SemanticHistorySummary{TotalRows: 3, ScreenStartOffset: 0}
+	cleared, err := actor.Clear()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Frame.History.HistoryEpoch <= advanced.Frame.History.HistoryEpoch ||
+		cleared.Frame.History.FirstRowOrdinal != 0 ||
+		cleared.Frame.History.ScreenStartRowOrdinal != 0 {
+		t.Fatalf("structural history identity=%+v, want new epoch and zero origin", cleared.Frame.History)
+	}
+}
+
+func TestSessionActorHistoryIdentityAdvancesEpochWhenFirstRowContinuityIsLost(t *testing.T) {
+	engine := &fakeSemanticHistoryEngine{totalRows: 12}
+	engine.frame = SemanticFrame{
+		Width: 8, Height: 3,
+		History: SemanticHistorySummary{TotalRows: 12, ScreenStartOffset: 9},
+	}
+	actor, err := NewSessionActor(engine, 8, 3, NewPresentationStore(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := actor.PublishInitialPresentation(); err != nil {
+		t.Fatal(err)
+	}
+	initial, _ := actor.store.Latest()
+	if len(engine.anchors) != 1 {
+		t.Fatalf("identity anchors=%d, want 1", len(engine.anchors))
+	}
+	engine.anchors[0].closed = true
+
+	advanced, err := actor.ApplyPTYOutput([]byte("bounded-eviction"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advanced.Frame.History.TotalRows != initial.Frame.History.TotalRows {
+		t.Fatalf("total rows changed=%d, want bounded %d", advanced.Frame.History.TotalRows, initial.Frame.History.TotalRows)
+	}
+	if advanced.Frame.History.HistoryEpoch <= initial.Frame.History.HistoryEpoch {
+		t.Fatalf("history epoch=%d, want newer than %d after continuity loss",
+			advanced.Frame.History.HistoryEpoch, initial.Frame.History.HistoryEpoch)
+	}
+	if advanced.Frame.History.FirstRowOrdinal != 0 {
+		t.Fatalf("new epoch first ordinal=%d, want 0", advanced.Frame.History.FirstRowOrdinal)
 	}
 }
 

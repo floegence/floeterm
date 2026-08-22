@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	terminal "github.com/floegence/floeterm/terminal-go"
 	"github.com/floegence/floeterm/terminal-go/livev1"
@@ -22,6 +23,12 @@ type Config struct {
 
 	// EnablePerformanceDiagnostics exposes process-local metrics for controlled test runs.
 	EnablePerformanceDiagnostics bool
+
+	// HistoryLatencyMin/Max are example-only controls for simulating a remote
+	// history data plane. A zero max keeps the production/default path unchanged.
+	HistoryLatencyMin  time.Duration
+	HistoryLatencyMax  time.Duration
+	HistoryLatencySeed int64
 }
 
 // Server is a runnable HTTP/WebSocket server that bridges terminal-go sessions to terminal-web clients.
@@ -32,6 +39,7 @@ type Server struct {
 	logger                 terminal.Logger
 	live                   *livev1.Service
 	performanceDiagnostics bool
+	historyLatency         *historyLatencyInjector
 }
 
 func New(cfg Config) *Server {
@@ -47,6 +55,7 @@ func New(cfg Config) *Server {
 		logger:                 logger,
 		live:                   livev1.NewService(livev1.NewManagerBackend(manager, livev1.ManagerBackendOptions{})),
 		performanceDiagnostics: cfg.EnablePerformanceDiagnostics,
+		historyLatency:         newHistoryLatencyInjector(cfg.HistoryLatencyMin, cfg.HistoryLatencyMax, cfg.HistoryLatencySeed, logger),
 	}
 	return s
 }

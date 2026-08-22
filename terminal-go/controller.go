@@ -245,8 +245,9 @@ func semanticHistoryViewID(attachmentID string, generation uint64, lane Semantic
 }
 
 func releaseSemanticHistoryViews(actor *SessionActor, attachmentID string, generation uint64) {
-	actor.ReleaseHistory(semanticHistoryViewID(attachmentID, generation, HistoryViewportLane))
-	actor.ReleaseHistory(semanticHistoryViewID(attachmentID, generation, HistorySearchLane))
+	for _, lane := range []SemanticHistoryLane{HistoryViewportLane, HistorySearchLane} {
+		actor.ReleaseHistory(semanticHistoryViewID(attachmentID, generation, lane))
+	}
 }
 
 // ReadSemanticHistory validates the current transport and enters the same
@@ -268,6 +269,7 @@ func (s *Session) ReadSemanticHistory(attachmentID string, generation uint64, re
 	}
 	actor := s.semanticActor
 	request.Lane = normalizeSemanticHistoryLane(request.Lane)
+	request.Priority = normalizeSemanticHistoryPriority(request.Priority)
 	request.ViewID = semanticHistoryViewID(attachmentID, generation, request.Lane)
 	s.mu.Unlock()
 

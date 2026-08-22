@@ -2,6 +2,7 @@ import type { RendererSurface } from './RendererSurface.js';
 import type {
   SemanticHistoryRequest,
   SemanticHistoryViewport,
+  SemanticFrame,
   SemanticPresentation,
 } from './presentation.js';
 import {
@@ -53,7 +54,8 @@ type CachedViewport = Readonly<{
 }>;
 // History is owned by a single terminal session. Keep the budget local to the
 // controller so one busy session cannot evict another session's history.
-const MAX_SESSION_HISTORY_CACHE_BYTES = 4 * 1024 * 1024;
+const MAX_SESSION_HISTORY_CACHE_BYTES = 32 * 1024 * 1024;
+const MAX_PAGE_HISTORY_CACHE_BYTES = 128 * 1024 * 1024;
 const HISTORY_WINDOW_CACHE_TARGET_BYTES = Math.floor(MAX_SESSION_HISTORY_CACHE_BYTES * 0.85);
 const HISTORY_WINDOW_BASE_MULTIPLIER = 10;
 const HISTORY_WINDOW_FAST_MULTIPLIER = 20;
@@ -62,8 +64,12 @@ const HISTORY_SCROLL_BURST_GAP_MS = 250;
 const HISTORY_SCROLL_BURST_DECAY_MS = 500;
 const HISTORY_SCROLL_BURST_VIEWPORTS = 2;
 const HISTORY_WINDOW_FORWARD_BIAS = 0.7;
+const HISTORY_PREFETCH_DELAY_MS = 500;
+const HISTORY_PREFETCH_SCREENS = 100;
+const HISTORY_PREFETCH_FRONT_SCREENS = 80;
 
 export class HistoryViewportController {
+  private static readonly instances = new Set<HistoryViewportController>();
   private latest: SemanticPresentation | null = null;
   private visible: SemanticHistoryViewport | null = null;
   private frontier: SemanticHistoryViewport | null = null;
@@ -86,11 +92,18 @@ export class HistoryViewportController {
   private scrollBurstRows = 0;
   private scrollBurstAt = 0;
   private estimatedHistoryRowBytes = 0;
+  private pendingProjection = false;
+  private skeletonSequence = 0;
   private readonly requestFrame: (callback: FrameRequestCallback) => number;
   private readonly cancelFrame: (handle: number) => void;
   private readonly now: () => number;
+  private nextRequestID = 0;
+  private prefetchTimer: ReturnType<typeof setTimeout> | null = null;
+  private prefetchAbort: AbortController | null = null;
+  private prefetchTask: Promise<void> | null = null;
 
   constructor(private readonly options: HistoryViewportControllerOptions) {
+    HistoryViewportController.instances.add(this);
     this.requestFrame = options.requestAnimationFrame
       ?? globalThis.requestAnimationFrame?.bind(globalThis)
       ?? (callback => globalThis.setTimeout(() => callback(performance.now()), 0) as unknown as number);
@@ -102,15 +115,23 @@ export class HistoryViewportController {
 
   apply(presentation: SemanticPresentation): void {
     if (this.disposed) return;
-    const invalidated = this.latest !== null && (
-      (this.latest.state.contentEpoch ?? 0) !== (presentation.state.contentEpoch ?? 0)
-      || this.latest.geometry.generation !== presentation.geometry.generation
-      || this.latest.geometry.cols !== presentation.geometry.cols
-      || this.latest.geometry.rows !== presentation.geometry.rows
+    const previous = this.latest;
+    const invalidated = previous !== null && (
+      (previous.state.contentEpoch ?? 0) !== (presentation.state.contentEpoch ?? 0)
+      || previous.geometry.generation !== presentation.geometry.generation
+      || previous.geometry.cols !== presentation.geometry.cols
+      || previous.geometry.rows !== presentation.geometry.rows
+      || (previous.frame.history.historyEpoch !== undefined
+        && presentation.frame.history.historyEpoch !== undefined
+        && previous.frame.history.historyEpoch !== presentation.frame.history.historyEpoch)
     );
     this.latest = presentation;
     this.options.renderer.apply(presentation);
-    if (invalidated) this.resetHistory(true);
+    if (invalidated) {
+      this.resetHistory(true);
+    } else if (previous) {
+      this.remapActiveHistory(previous);
+    }
     this.emitState();
   }
 
@@ -158,6 +179,7 @@ export class HistoryViewportController {
     // Invalidate any history request that was started before returning to the
     // live frontier. Its response must never re-enter the visible surface.
     this.epoch += 1;
+    this.cancelPrefetch();
     this.desiredOffset = null;
     this.preferExactViewport = false;
     this.visible = null;
@@ -170,6 +192,7 @@ export class HistoryViewportController {
   showOffset(offset: number): void {
     if (!this.latest || this.disposed || !Number.isFinite(offset)) return;
     const target = clamp(Math.trunc(offset), 0, this.latest.frame.history.screenStartOffset);
+    this.cancelPrefetch();
     const current = this.currentIntentOffset();
     this.recordScrollIntent(target - current);
     emitSemanticDebugTrace({ kind: 'history-cache-check', at: performance.now(), target,
@@ -191,18 +214,22 @@ export class HistoryViewportController {
     const frontierWindow = this.frontier;
     if (frontierWindow && this.isReusableWindow(frontierWindow, target, this.latest.geometry.rows)) {
       this.desiredOffset = null;
-      this.display(sliceHistoryWindow(frontierWindow, target, this.latest.geometry.rows));
+      this.display(this.sliceWindow(frontierWindow, target, this.latest.geometry.rows));
       return;
     }
     const window = this.findCachedWindow(target, this.latest.geometry.rows);
     if (window) {
       this.desiredOffset = null;
       this.putCache(window);
-      this.display(sliceHistoryWindow(window, target, this.latest.geometry.rows));
+      this.display(this.sliceWindow(window, target, this.latest.geometry.rows));
       return;
     }
     this.desiredOffset = target;
     this.error = null;
+    // Project a geometry-stable placeholder before the first remote byte
+    // arrives. This keeps the wheel gesture visible in the same animation
+    // frame instead of leaving the old viewport on screen during the RTT.
+    this.projectPending(target);
     this.startLane();
     this.emitState();
   }
@@ -296,6 +323,8 @@ export class HistoryViewportController {
     if (this.disposed) return;
     this.disposed = true;
     this.epoch += 1;
+    this.cancelPrefetch();
+    HistoryViewportController.instances.delete(this);
     if (this.wheelFrame !== null) this.cancelFrame(this.wheelFrame);
     this.wheelFrame = null;
     this.clearCache();
@@ -342,7 +371,7 @@ export class HistoryViewportController {
             this.desiredOffset = null;
           }
           this.putCache(cachedWindow);
-          const viewport = sliceHistoryWindow(cachedWindow, target, this.latest.geometry.rows);
+          const viewport = this.sliceWindow(cachedWindow, target, this.latest.geometry.rows);
           if (isCurrentTarget || this.shouldDisplayIntermediate(viewport.offset, desiredOffset)) {
             this.display(viewport);
           }
@@ -356,7 +385,7 @@ export class HistoryViewportController {
         if (isCurrentTarget) {
           this.desiredOffset = null;
         }
-        if (isCurrentTarget || this.shouldDisplayIntermediate(viewport.offset, desiredOffset)) {
+        if (isCurrentTarget || (!this.pendingProjection && this.shouldDisplayIntermediate(viewport.offset, desiredOffset))) {
           this.display(viewport);
         }
       }
@@ -385,7 +414,6 @@ export class HistoryViewportController {
     if (!this.latest) throw new Error('terminal history requires a live Presentation');
     const rows = this.latest.geometry.rows;
     const totalRows = this.latest.frame.history.totalRows;
-    const revision = this.latest.frame.history.revision;
     const preferExactViewport = this.preferExactViewport;
     // A large wheel delta needs one exact target request, but must not poison
     // the rest of the session. Subsequent small deltas should use a reusable
@@ -394,9 +422,9 @@ export class HistoryViewportController {
     const windowRows = preferExactViewport ? rows : this.adaptiveWindowRows(rows, totalRows);
     if (windowRows <= rows) return this.fetchExactFromBoundary(target, rows);
     const cachedWindow = this.findCachedWindow(target, rows);
-    if (cachedWindow) return sliceHistoryWindow(cachedWindow, target, rows);
+    if (cachedWindow) return this.sliceWindow(cachedWindow, target, rows);
     let frontier = this.frontier;
-    if (frontier && (frontier.revision !== revision || frontier.totalRows !== totalRows)) {
+    if (frontier && !this.isCompatibleWindow(frontier)) {
       this.frontier = null;
       frontier = null;
     }
@@ -404,7 +432,7 @@ export class HistoryViewportController {
       frontier = await this.fetchWindow(target, rows, windowRows);
     }
     if (frontier.window !== true) return frontier;
-    return sliceHistoryWindow(frontier, target, rows);
+    return this.sliceWindow(frontier, target, rows);
   }
 
   private async fetchExactFromBoundary(target: number, rows: number): Promise<SemanticHistoryViewport> {
@@ -488,7 +516,7 @@ export class HistoryViewportController {
       // project the nearest viewport that is actually present in this atomic
       // snapshot instead of issuing a directionally invalid anchored request.
       const nearest = clamp(target, current.offset, current.offset + current.rows - rows);
-      return sliceHistoryWindow(current, nearest, rows);
+      return this.sliceWindow(current, nearest, rows);
     }
     if (!current) throw new Error('terminal history window is unavailable');
     if (this.isReusableWindow(current, target, rows)) {
@@ -595,15 +623,67 @@ export class HistoryViewportController {
   }
 
   private windowCovers(window: SemanticHistoryViewport, target: number, rows: number): boolean {
-    return target >= window.offset && target + rows <= window.offset + window.rows;
+    return this.windowCoversOrdinal(window, target, rows);
+  }
+
+  private windowCoversOrdinal(window: SemanticHistoryViewport, target: number, rows: number): boolean {
+    const targetOrdinal = this.offsetToOrdinal(target);
+    if (targetOrdinal === null || window.firstRowOrdinal === undefined) {
+      return target >= window.offset && target + rows <= window.offset + window.rows;
+    }
+    const windowStart = window.firstRowOrdinal + window.offset;
+    return targetOrdinal >= windowStart && targetOrdinal + rows <= windowStart + window.rows;
+  }
+
+  private offsetToOrdinal(offset: number): number | null {
+    const latest = this.latest?.frame.history;
+    if (!latest || latest.firstRowOrdinal === undefined) return null;
+    return latest.firstRowOrdinal + offset;
+  }
+
+  private sliceWindow(
+    window: SemanticHistoryViewport,
+    target: number,
+    rows: number,
+  ): SemanticHistoryViewport {
+    const remapped = remapViewportOffset(window, target, this.latest);
+    if (!remapped) {
+      throw new SemanticHistoryError('snapshot_superseded', 'semantic history window no longer covers its target ordinal');
+    }
+    return sliceHistoryWindow(remapped, target, rows);
+  }
+
+  private remapActiveHistory(previous: SemanticPresentation): void {
+    if (!this.latest) return;
+    const previousHistory = previous.frame.history;
+    const currentHistory = this.latest.frame.history;
+    if (previousHistory.historyEpoch === undefined || currentHistory.historyEpoch === undefined
+      || previousHistory.firstRowOrdinal === undefined || currentHistory.firstRowOrdinal === undefined
+      || previousHistory.historyEpoch !== currentHistory.historyEpoch) return;
+    const previousFirstRowOrdinal = previousHistory.firstRowOrdinal;
+    const currentFirstRowOrdinal = currentHistory.firstRowOrdinal;
+
+    const remapOffset = (offset: number): number => clamp(
+      previousFirstRowOrdinal + offset - currentFirstRowOrdinal,
+      0,
+      currentHistory.screenStartOffset,
+    );
+    if (this.desiredOffset !== null) this.desiredOffset = remapOffset(this.desiredOffset);
+    if (!this.visible) return;
+
+    const target = remapOffset(this.visible.offset);
+    const remapped = remapViewportOffset(this.visible, target, this.latest);
+    if (remapped) this.visible = remapped;
   }
 
   private display(viewport: SemanticHistoryViewport): void {
     this.visible = viewport;
+    this.pendingProjection = false;
     this.error = null;
     this.putCache(viewport);
     this.projectFrame(viewport.frame);
     this.evictCache();
+    this.schedulePrefetch();
     this.emitState();
   }
 
@@ -620,6 +700,15 @@ export class HistoryViewportController {
     this.options.renderer.project(frame);
   }
 
+  private projectPending(target: number): void {
+    if (!this.latest) return;
+    this.pendingProjection = true;
+    const pending = createPendingViewport(this.latest, target, this.transportGeneration ?? 1, ++this.skeletonSequence);
+    this.visible = pending;
+    emitSemanticDebugTrace({ kind: 'history-pending', at: performance.now(), target });
+    this.projectFrame(pending.frame);
+  }
+
   private evictCache(): void {
     for (;;) {
       const candidates = [...this.cache.entries()]
@@ -634,6 +723,117 @@ export class HistoryViewportController {
     emitSemanticDebugTrace({ kind: 'history-cache-state', at: performance.now(),
       cacheEntries: this.cache.size, cacheBytes: this.cacheBytes,
       cacheExtraBytes: this.cacheExtraBytes() });
+    HistoryViewportController.evictGlobalCaches();
+  }
+
+  private static evictGlobalCaches(): void {
+    const extraBytes = (): number => [...HistoryViewportController.instances]
+      .reduce((sum, controller) => sum + controller.cacheExtraBytes(), 0);
+    while (extraBytes() > MAX_PAGE_HISTORY_CACHE_BYTES) {
+      let oldest: HistoryViewportController | null = null;
+      let oldestTouched = Number.POSITIVE_INFINITY;
+      for (const controller of HistoryViewportController.instances) {
+        const touched = controller.oldestExtraTouched();
+        if (touched < oldestTouched) {
+          oldestTouched = touched;
+          oldest = controller;
+        }
+      }
+      if (!oldest || !Number.isFinite(oldestTouched)) break;
+      oldest.removeOldestExtra();
+    }
+  }
+
+  private oldestExtraTouched(): number {
+    let oldest = Number.POSITIVE_INFINITY;
+    for (const item of this.cache.values()) {
+      if (item.viewport !== this.visible) oldest = Math.min(oldest, item.touched);
+    }
+    return oldest;
+  }
+
+  private removeOldestExtra(): void {
+    let key: string | null = null;
+    let touched = Number.POSITIVE_INFINITY;
+    for (const [entryKey, item] of this.cache.entries()) {
+      if (item.viewport !== this.visible && item.touched < touched) {
+        key = entryKey;
+        touched = item.touched;
+      }
+    }
+    if (key !== null) this.removeCacheEntry(key);
+  }
+
+  private schedulePrefetch(): void {
+    if (this.disposed || !this.frontier || this.frontier.window !== true) return;
+    if (this.prefetchTimer !== null) clearTimeout(this.prefetchTimer);
+    const epoch = this.epoch;
+    this.prefetchTimer = setTimeout(() => {
+      this.prefetchTimer = null;
+      void this.runPrefetch(epoch);
+    }, HISTORY_PREFETCH_DELAY_MS);
+  }
+
+  private cancelPrefetch(): void {
+    if (this.prefetchTimer !== null) clearTimeout(this.prefetchTimer);
+    this.prefetchTimer = null;
+    this.prefetchAbort?.abort();
+    this.prefetchAbort = null;
+    this.prefetchTask = null;
+  }
+
+  private async runPrefetch(epoch: number): Promise<void> {
+    const current = this.frontier;
+    const latest = this.latest;
+    if (this.disposed || epoch !== this.epoch || !latest || !current || current.window !== true) return;
+    const rows = latest.geometry.rows;
+    const direction = this.scrollDirection || -1;
+    const totalRows = latest.frame.history.totalRows;
+    const windowRows = Math.min(
+      totalRows,
+      HISTORY_WINDOW_MAX_ROWS,
+      Math.max(rows, rows * HISTORY_PREFETCH_SCREENS),
+    );
+    const frontRows = rows * HISTORY_PREFETCH_FRONT_SCREENS;
+    const target = clamp(
+      current.offset + (direction < 0 ? -frontRows : frontRows),
+      0,
+      Math.max(0, totalRows - rows),
+    );
+    const windowStart = this.windowStart(target, rows, windowRows, direction);
+    const abort = new AbortController();
+    this.prefetchAbort = abort;
+    const requestID = `prefetch-${++this.nextRequestID}`;
+    this.prefetchTask = runSemanticHistoryRequest(
+      async () => validateHistoryWindow(await this.options.request({
+        requestId: requestID,
+        priority: 'prefetch',
+        signal: abort.signal,
+        lane: 'viewport',
+        direction: windowStart < current.offset ? 'backward' : 'forward',
+        anchor: current.anchor,
+        snapshotId: current.snapshotId,
+        offset: current.offset,
+        targetOffset: windowStart,
+        viewportRows: windowRows,
+        windowRows,
+      })),
+      { priority: 'prefetch', signal: abort.signal },
+    ).then(next => {
+      if (this.disposed || epoch !== this.epoch || abort.signal.aborted) return;
+      this.assertTransportGeneration(next);
+      this.acceptLineage(next);
+      this.frontier = next;
+      this.cacheWindow(next);
+    }).catch(error => {
+      if (!abort.signal.aborted) {
+        emitSemanticDebugTrace({ kind: 'history-prefetch-error', at: performance.now(), error });
+      }
+    }).finally(() => {
+      if (this.prefetchAbort === abort) this.prefetchAbort = null;
+      this.prefetchTask = null;
+    });
+    await this.prefetchTask;
   }
 
   private cacheExtraBytes(): number {
@@ -644,6 +844,7 @@ export class HistoryViewportController {
 
   private isCompatible(viewport: SemanticHistoryViewport): boolean {
     return Boolean(this.latest
+      && historyIdentityCompatible(viewport, this.latest)
       && viewport.contentEpoch === (this.latest.state.contentEpoch ?? 0)
       && viewport.geometryGeneration === this.latest.geometry.generation
       && (this.transportGeneration === null || viewport.transportGeneration === this.transportGeneration)
@@ -657,13 +858,13 @@ export class HistoryViewportController {
   private isReusableViewport(viewport: SemanticHistoryViewport): boolean {
     return Boolean(this.latest
       && this.isCompatible(viewport)
-      && viewport.totalRows === this.latest.frame.history.totalRows
-      && viewport.revision === this.latest.frame.history.revision);
+      && historyViewportRangeCompatible(viewport, this.latest));
   }
 
   private isCompatibleWindow(viewport: SemanticHistoryViewport): boolean {
     return Boolean(this.latest
       && viewport.window === true
+      && historyIdentityCompatible(viewport, this.latest)
       && viewport.contentEpoch === (this.latest.state.contentEpoch ?? 0)
       && viewport.geometryGeneration === this.latest.geometry.generation
       && (this.transportGeneration === null || viewport.transportGeneration === this.transportGeneration)
@@ -676,9 +877,9 @@ export class HistoryViewportController {
   private isReusableWindow(viewport: SemanticHistoryViewport, target: number, rows: number): boolean {
     return Boolean(this.latest
       && this.isCompatibleWindow(viewport)
-      && viewport.totalRows === this.latest.frame.history.totalRows
+      && historyViewportRangeCompatible(viewport, this.latest)
       && this.windowCovers(viewport, target, rows)
-      && viewport.revision === this.latest.frame.history.revision);
+      && viewport.revision <= this.latest.frame.history.revision);
   }
 
   private assertTransportGeneration(viewport: SemanticHistoryViewport): void {
@@ -693,9 +894,11 @@ export class HistoryViewportController {
 
   private resetHistory(projectLatest: boolean, error: Error | null = null): void {
     this.epoch += 1;
+    this.cancelPrefetch();
     this.clearCache();
     this.frontier = null;
     this.visible = null;
+    this.pendingProjection = false;
     this.desiredOffset = null;
     this.preferExactViewport = false;
     this.scrollDirection = 0;
@@ -710,7 +913,7 @@ export class HistoryViewportController {
   }
 
   private shouldDisplayIntermediate(target: number, desiredOffset: number | null): boolean {
-    if (desiredOffset === null || this.visible === null) return false;
+    if (this.pendingProjection || desiredOffset === null || this.visible === null) return false;
     const currentOffset = this.visible.offset;
     const minimum = Math.min(currentOffset, desiredOffset);
     const maximum = Math.max(currentOffset, desiredOffset);
@@ -720,7 +923,9 @@ export class HistoryViewportController {
 
   private findCachedViewport(offset: number): SemanticHistoryViewport | null {
     for (const item of this.cache.values()) {
-      if (item.viewport.offset === offset && this.isReusableViewport(item.viewport)) return item.viewport;
+      if (!this.isReusableViewport(item.viewport)) continue;
+      const remapped = remapViewportOffset(item.viewport, offset, this.latest);
+      if (remapped) return remapped;
     }
     return null;
   }
@@ -732,7 +937,7 @@ export class HistoryViewportController {
       if (this.isReusableWindow(item.viewport, offset, rows)
         && (!candidate || item.touched > candidate.touched)) candidate = item;
     }
-    return candidate?.viewport ?? null;
+    return candidate ? remapViewportOffset(candidate.viewport, offset, this.latest) : null;
   }
 
   private cacheWindow(viewport: SemanticHistoryViewport): void {
@@ -807,6 +1012,158 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+function historyIdentityCompatible(
+  viewport: SemanticHistoryViewport,
+  latest: SemanticPresentation,
+): boolean {
+  const current = latest.frame.history;
+  if (viewport.historyEpoch === undefined || current.historyEpoch === undefined
+    || viewport.firstRowOrdinal === undefined || current.firstRowOrdinal === undefined) {
+    return true;
+  }
+  if (viewport.historyEpoch !== current.historyEpoch) return false;
+  const start = viewport.firstRowOrdinal + viewport.offset;
+  const latestStart = current.firstRowOrdinal;
+  const latestEnd = latestStart + current.totalRows;
+  return start >= latestStart && start + viewport.rows <= latestEnd;
+}
+
+function historyViewportRangeCompatible(
+  viewport: SemanticHistoryViewport,
+  latest: SemanticPresentation,
+): boolean {
+  const current = latest.frame.history;
+  if (viewport.firstRowOrdinal === undefined || current.firstRowOrdinal === undefined) {
+    return viewport.offset + viewport.rows <= current.totalRows && viewport.totalRows <= current.totalRows;
+  }
+  const start = viewport.firstRowOrdinal + viewport.offset;
+  const end = start + viewport.rows;
+  const latestStart = current.firstRowOrdinal;
+  return start >= latestStart && end <= latestStart + current.totalRows;
+}
+
+function remapViewportOffset(
+  viewport: SemanticHistoryViewport,
+  targetOffset: number,
+  latest: SemanticPresentation | null,
+): SemanticHistoryViewport | null {
+  if (!latest) return null;
+  const current = latest.frame.history;
+  if (viewport.historyEpoch !== undefined && current.historyEpoch !== undefined
+    && viewport.firstRowOrdinal !== undefined && current.firstRowOrdinal !== undefined) {
+    const sourceOrdinal = viewport.firstRowOrdinal + viewport.offset;
+    const targetOrdinal = current.firstRowOrdinal + targetOffset;
+    if (viewport.window === true) {
+      const windowStart = viewport.firstRowOrdinal + viewport.offset;
+      if (targetOrdinal < windowStart || targetOrdinal + latest.geometry.rows > windowStart + viewport.rows) return null;
+      const remappedOffset = windowStart - current.firstRowOrdinal;
+      if (remappedOffset === viewport.offset
+        && viewport.firstRowOrdinal === current.firstRowOrdinal
+        && viewport.totalRows === current.totalRows) return viewport;
+      const remapped = {
+        ...viewport,
+        offset: remappedOffset,
+        totalRows: current.totalRows,
+        screenStartOffset: current.totalRows - viewport.rows,
+        firstRowOrdinal: current.firstRowOrdinal,
+        screenStartRowOrdinal: current.firstRowOrdinal + current.totalRows - viewport.rows,
+        frame: {
+          ...viewport.frame,
+          history: {
+            ...viewport.frame.history,
+            totalRows: current.totalRows,
+            screenStartOffset: current.totalRows - viewport.rows,
+            firstRowOrdinal: current.firstRowOrdinal,
+            screenStartRowOrdinal: current.firstRowOrdinal + current.totalRows - viewport.rows,
+          },
+        },
+      };
+      return remapped;
+    }
+    if (sourceOrdinal !== targetOrdinal) return null;
+    if (viewport.offset === targetOffset
+      && viewport.firstRowOrdinal === current.firstRowOrdinal
+      && viewport.totalRows === current.totalRows) return viewport;
+    return {
+      ...viewport,
+      offset: targetOffset,
+      totalRows: current.totalRows,
+      screenStartOffset: current.totalRows - viewport.rows,
+      firstRowOrdinal: current.firstRowOrdinal,
+      screenStartRowOrdinal: current.firstRowOrdinal + current.totalRows - viewport.rows,
+      frame: {
+        ...viewport.frame,
+        history: {
+          ...viewport.frame.history,
+          totalRows: current.totalRows,
+          screenStartOffset: current.totalRows - viewport.rows,
+          firstRowOrdinal: current.firstRowOrdinal,
+          screenStartRowOrdinal: current.firstRowOrdinal + current.totalRows - viewport.rows,
+        },
+      },
+    };
+  }
+  if (viewport.window === true) return viewport;
+  if (viewport.offset !== targetOffset) return null;
+  return viewport;
+}
+
+function createPendingViewport(
+  presentation: SemanticPresentation,
+  offset: number,
+  transportGeneration: number,
+  sequence: number,
+): SemanticHistoryViewport {
+  const source = presentation.frame;
+  const totalRows = source.history.totalRows;
+  const rows = source.height;
+  const marker = `pending-${sequence}`;
+  const skeletonRow = Array.from({ length: source.width }, () => ({
+    text: ' ',
+    width: 1,
+    style: { background: 'indexed:8' },
+  }));
+  const frame: SemanticFrame = {
+    ...source,
+    rows: Array.from({ length: rows }, () => ({ cells: skeletonRow.map(cell => ({ ...cell, style: { ...cell.style } })) })),
+    cursor: { ...source.cursor, visible: false },
+    history: {
+      revision: source.history.revision,
+      totalRows,
+      screenStartOffset: totalRows - rows,
+      historyEpoch: source.history.historyEpoch,
+      firstRowOrdinal: source.history.firstRowOrdinal,
+      screenStartRowOrdinal: source.history.firstRowOrdinal === undefined
+        ? source.history.screenStartRowOrdinal
+        : source.history.firstRowOrdinal + totalRows - rows,
+    },
+    graphics: { generation: source.graphics.generation, images: [], placements: [] },
+  };
+  return {
+    snapshotId: marker,
+    lane: 'viewport',
+    revision: source.history.revision,
+    transportGeneration,
+    contentEpoch: presentation.state.contentEpoch ?? 0,
+    geometryGeneration: presentation.geometry.generation,
+    cols: source.width,
+    rows,
+    anchor: marker,
+    firstAvailable: marker,
+    lastAvailable: marker,
+    screenStart: marker,
+    offset,
+    totalRows,
+    screenStartOffset: totalRows - rows,
+    historyEpoch: source.history.historyEpoch,
+    firstRowOrdinal: source.history.firstRowOrdinal,
+    screenStartRowOrdinal: source.history.screenStartRowOrdinal,
+    hasPrevious: offset > 0,
+    hasNext: offset < totalRows - rows,
+    frame,
+  };
+}
+
 function isLegacyBoundaryTargetRejection(cause: unknown): boolean {
   if (!(cause instanceof Error)) return false;
   const code = Number((cause as Error & { code?: unknown }).code);
@@ -874,6 +1231,11 @@ function sliceHistoryWindow(
       revision: window.revision,
       totalRows: window.totalRows,
       screenStartOffset: window.totalRows - rows,
+      historyEpoch: window.historyEpoch,
+      firstRowOrdinal: window.firstRowOrdinal,
+      screenStartRowOrdinal: window.firstRowOrdinal === undefined
+        ? window.screenStartRowOrdinal
+        : window.firstRowOrdinal + window.totalRows - rows,
     },
     graphics: { ...frame.graphics, placements },
   };
@@ -893,6 +1255,11 @@ function sliceHistoryWindow(
     offset,
     totalRows: window.totalRows,
     screenStartOffset,
+    historyEpoch: window.historyEpoch,
+    firstRowOrdinal: window.firstRowOrdinal,
+    screenStartRowOrdinal: window.firstRowOrdinal === undefined
+      ? window.screenStartRowOrdinal
+      : window.firstRowOrdinal + screenStartOffset,
     hasPrevious: offset > 0,
     hasNext: offset < screenStartOffset,
     frame: slicedFrame,
