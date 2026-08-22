@@ -11,13 +11,15 @@ test('top-level release tags publish only the semantic terminal web package', as
   assert.match(workflow, /push:\s*\n\s+tags:\s*\n\s+- "v\*\.\*\.\*"/);
   assert.match(workflow, /npm-publish-terminal-web:/);
   assert.match(workflow, /npm publish --access public --provenance/);
+  assert.match(workflow, /check_release_version_consistency\.mjs/);
+  assert.match(workflow, /--tag \"\$GITHUB_REF_NAME\"/);
   assert.doesNotMatch(workflow, /beamterm|renderer|wasm-pack/i);
 });
 
-test('semantic-only release publishes terminal-web 0.16.6', async () => {
+test('semantic-only release publishes terminal-web 0.17.0', async () => {
   const manifest = JSON.parse(await readFile(terminalWebPackagePath, 'utf8'));
 
   assert.equal(manifest.name, '@floegence/floeterm-terminal-web');
-  assert.equal(manifest.version, '0.16.6');
+  assert.equal(manifest.version, '0.17.0');
   assert.deepEqual(manifest.dependencies, {});
 });

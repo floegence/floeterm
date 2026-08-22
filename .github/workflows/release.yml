@@ -39,6 +39,13 @@ jobs:
           npm i -g npm@^11.5.1
           npm --version
 
+      - name: Verify Floeterm release version consistency
+        run: node scripts/check_release_version_consistency.mjs
+
+      - name: Verify paired release tags
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/check_release_version_consistency.mjs --tag "$GITHUB_REF_NAME"
+
       - name: Verify tag matches package version
         if: startsWith(github.ref, 'refs/tags/')
         run: |

@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.16.6
+npm install @floegence/floeterm-terminal-web@0.17.0
 ```
 
 ## Exports
