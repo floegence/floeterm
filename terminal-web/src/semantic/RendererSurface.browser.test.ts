@@ -543,6 +543,73 @@ describe('semantic terminal browser surface', () => {
     renderer.dispose();
   });
 
+  it('keeps drag selection continuous when captured pointer updates jump beyond viewport edges', async () => {
+    const originalDpr = Object.getOwnPropertyDescriptor(globalThis, 'devicePixelRatio');
+    Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, value: 1.5 });
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:180px;height:90px;transform-origin:0 0;transform:translate(23px, 11px) scale(0.5)';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+
+    try {
+      renderer.apply(selectionPresentation());
+      await nextPaint();
+
+      const bounds = canvas.getBoundingClientRect();
+      const metrics = renderer.getCellMetrics();
+      const scaleX = bounds.width / canvas.clientWidth;
+      const scaleY = bounds.height / canvas.clientHeight;
+      const point = (column: number, row: number) => ({
+        x: bounds.left + (column + 0.5) * metrics.cellWidthCssPx * scaleX,
+        y: bounds.top + (row + 0.5) * metrics.cellHeightCssPx * scaleY,
+      });
+      const select = (
+        start: Readonly<{ x: number; y: number }>,
+        end: Readonly<{ x: number; y: number }>,
+      ) => {
+        renderer.beginSelection(start.x, start.y);
+        renderer.updateSelection(end.x, end.y);
+        renderer.endSelection(end.x, end.y);
+        return renderer.getSelectionText();
+      };
+
+      expect(select(point(6, 0), { x: bounds.left - 40, y: point(6, 0).y }))
+        .toBe('A中e\u0301👩‍💻B');
+      renderer.clearSelection();
+      expect(select(point(1, 0), { x: bounds.right + 40, y: point(1, 0).y }))
+        .toBe('中e\u0301👩‍💻BC');
+      renderer.clearSelection();
+      expect(select(point(3, 1), { x: point(3, 1).x, y: bounds.top - 40 }))
+        .toBe('e\u0301👩‍💻BC\nDEFG');
+      renderer.clearSelection();
+      expect(select(point(3, 0), { x: point(3, 0).x, y: bounds.bottom + 40 }))
+        .toBe('e\u0301👩‍💻BC\nDEFG');
+      renderer.clearSelection();
+      expect(select(point(4, 1), { x: bounds.left - 40, y: bounds.top - 40 }))
+        .toBe('A中e\u0301👩‍💻BC\nDEFGH');
+
+      renderer.clearSelection();
+      renderer.beginSelection(point(0, 0).x, point(0, 0).y);
+      renderer.updateSelection(bounds.right + 40, point(0, 0).y);
+      renderer.updateSelection(point(2, 0).x, point(2, 0).y);
+      renderer.endSelection(point(2, 0).x, point(2, 0).y);
+      expect(renderer.getSelectionText()).toBe('A中');
+
+      renderer.clearSelection();
+      expect(select(
+        { x: bounds.left - 40, y: point(0, 0).y },
+        point(3, 0),
+      )).toBe('');
+    } finally {
+      renderer.dispose();
+      host.remove();
+      if (originalDpr) Object.defineProperty(globalThis, 'devicePixelRatio', originalDpr);
+      else delete (globalThis as { devicePixelRatio?: number }).devicePixelRatio;
+    }
+  });
+
   it('selects words and rows from repeated clicks in transformed visual coordinates', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px;transform-origin:0 0;transform:translate(23px, 11px) scale(0.35)';

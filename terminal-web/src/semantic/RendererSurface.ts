@@ -322,7 +322,7 @@ export class RendererSurface {
   updateSelection(clientX: number, clientY: number): void {
     const gesture = this.selectionGesture;
     if (!gesture) return;
-    const point = this.pointFromClient(clientX, clientY);
+    const point = this.pointFromClient(clientX, clientY, true);
     if (!point) return;
     if (!gesture.active) {
       const deltaX = clientX - gesture.clientX;
@@ -787,18 +787,29 @@ export class RendererSurface {
     return this.viewportFrame ?? this.latest?.frame ?? null;
   }
 
-  private pointFromClient(clientX: number, clientY: number): { row: number; col: number } | null {
+  private pointFromClient(
+    clientX: number,
+    clientY: number,
+    clampToFrame = false,
+  ): SemanticSelectionPoint | null {
     const frame = this.currentFrame();
     if (!frame) return null;
     const coordinates = this.measureCoordinateSpace();
     if (!coordinates) return null;
     const logicalX = (clientX - coordinates.bounds.left) / coordinates.scaleX;
     const logicalY = (clientY - coordinates.bounds.top) / coordinates.scaleY;
-    if (logicalX < 0 || logicalY < 0
+    if (!Number.isFinite(logicalX) || !Number.isFinite(logicalY)) return null;
+    if (!clampToFrame && (logicalX < 0 || logicalY < 0
       || logicalX >= frame.width * this.cellMetrics.cellWidthCssPx
-      || logicalY >= frame.height * this.cellMetrics.cellHeightCssPx) return null;
-    const col = Math.floor(logicalX / this.cellMetrics.cellWidthCssPx);
-    const row = Math.floor(logicalY / this.cellMetrics.cellHeightCssPx);
+      || logicalY >= frame.height * this.cellMetrics.cellHeightCssPx)) return null;
+    const col = Math.max(0, Math.min(
+      frame.width - 1,
+      Math.floor(logicalX / this.cellMetrics.cellWidthCssPx),
+    ));
+    const row = Math.max(0, Math.min(
+      frame.height - 1,
+      Math.floor(logicalY / this.cellMetrics.cellHeightCssPx),
+    ));
     return { row, col: this.selectionLeadingColumn(frame, row, col) };
   }
 
