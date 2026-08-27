@@ -5,6 +5,7 @@ import {
   decodeActivate,
   decodeInput,
   decodeInputIntent,
+  decodeInteraction,
   decodePasteChunk,
   encodeActivated,
   encodeAttached,
@@ -384,6 +385,42 @@ describe('semantic terminal live transport', () => {
       presentationSequence: 2,
       contentEpoch: 1,
     });
+  });
+
+  it('projects geometry-bound interaction methods through the current attachment', async () => {
+    const stream = new FakeStream();
+    const bundle = createSemanticTerminalLiveTransport({
+      connectionId: 'view',
+      openStream: async () => stream,
+      control: { semanticHistory: vi.fn() },
+    });
+    const attaching = bundle.transport.attachWithPresentation('session', 46, 16);
+    await waitUntil(() => stream.writes.length === 1);
+    stream.push(encodeAttached({
+      presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 3n,
+      cols: 46, rows: 16, isController: false,
+    }));
+    await attaching;
+
+    await bundle.transport.interactInput('session', 120, 40, '中');
+    await bundle.transport.interactInputIntent('session', 120, 40, {
+      kind: 'key', code: 'ArrowLeft', text: '', action: 'press',
+      modifiers: { shift: true, control: false, alt: false, super: false, capsLock: false, numLock: false },
+    });
+    await bundle.transport.interactPaste('session', 120, 40, 'paste');
+
+    expect(decodeInteraction(new TerminalLiveDecoder().push(stream.writes[1]!)[0]!)).toEqual({
+      sequence: 1n, cols: 120, rows: 40, kind: 'bytes', data: new TextEncoder().encode('中'),
+    });
+    expect(decodeInteraction(new TerminalLiveDecoder().push(stream.writes[2]!)[0]!)).toEqual({
+      sequence: 2n, cols: 120, rows: 40, kind: 'key',
+      code: 'ArrowLeft', text: '', action: 'press', modifiers: 1,
+    });
+    expect(decodeInteraction(new TerminalLiveDecoder().push(stream.writes[3]!)[0]!)).toEqual({
+      sequence: 3n, cols: 120, rows: 40, kind: 'paste', start: true, end: true,
+      data: new TextEncoder().encode('paste'),
+    });
+    bundle.transport.dispose();
   });
 
   it('rejects a clear settlement from a superseded transport generation', async () => {

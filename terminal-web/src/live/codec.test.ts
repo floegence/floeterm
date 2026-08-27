@@ -8,6 +8,7 @@ import {
   decodeActivationRejected,
   decodeInput,
   decodeInputIntent,
+  decodeInteraction,
   decodePasteChunk,
   decodePresentation,
   decodeResize,
@@ -16,6 +17,7 @@ import {
   encodeActivationRejected,
   encodeInput,
   encodeInputIntent,
+  encodeInteraction,
   encodePasteChunk,
   encodeResize,
 } from './codec.js';
@@ -67,6 +69,31 @@ describe('semantic terminal live codec', () => {
     const frame = new TerminalLiveDecoder().push(encoded)[0]!;
     frame.payload[9] = 0xff;
     expect(() => decodeInputIntent(frame)).toThrow(/input intent/i);
+  });
+
+  it('round trips geometry-bound text, key, and paste interactions', () => {
+    const decoder = new TerminalLiveDecoder();
+    const frames = [
+      encodeInteraction({ sequence: 1n, cols: 120, rows: 40, kind: 'bytes', data: new TextEncoder().encode('中') }),
+      encodeInteraction({
+        sequence: 2n, cols: 120, rows: 40, kind: 'key', code: 'ArrowUp', text: '', action: 'repeat', modifiers: 3,
+      }),
+      encodeInteraction({
+        sequence: 3n, cols: 120, rows: 40, kind: 'paste', start: true, end: true,
+        data: new TextEncoder().encode('paste'),
+      }),
+    ].flatMap(encoded => decoder.push(encoded));
+    expect(decodeInteraction(frames[0]!)).toEqual({
+      sequence: 1n, cols: 120, rows: 40, kind: 'bytes', data: new TextEncoder().encode('中'),
+    });
+    expect(decodeInteraction(frames[1]!)).toEqual({
+      sequence: 2n, cols: 120, rows: 40, kind: 'key',
+      code: 'ArrowUp', text: '', action: 'repeat', modifiers: 3,
+    });
+    expect(decodeInteraction(frames[2]!)).toEqual({
+      sequence: 3n, cols: 120, rows: 40, kind: 'paste', start: true, end: true,
+      data: new TextEncoder().encode('paste'),
+    });
   });
 
   it('round trips a recoverable stale activation settlement', () => {

@@ -302,23 +302,70 @@ func (s *Session) InteractSemanticView(
 	transportGeneration uint64,
 	input SemanticInput,
 ) error {
+	return s.interactSemanticView(attachmentID, principalID, transportGeneration, 0, 0, false, input)
+}
+
+// InteractSemanticViewAtSize atomically applies the interacting view's current
+// geometry and admits exactly one input. Unlike explicit activation, this path
+// does not depend on a client-observed controller epoch and therefore avoids an
+// acknowledgement round trip before a real user interaction can reach the PTY.
+func (s *Session) InteractSemanticViewAtSize(
+	attachmentID string,
+	principalID string,
+	transportGeneration uint64,
+	cols int,
+	rows int,
+	input SemanticInput,
+) error {
+	return s.interactSemanticView(attachmentID, principalID, transportGeneration, cols, rows, true, input)
+}
+
+func (s *Session) interactSemanticView(
+	attachmentID string,
+	principalID string,
+	transportGeneration uint64,
+	cols int,
+	rows int,
+	explicitSize bool,
+	input SemanticInput,
+) error {
 	if s == nil || attachmentID == "" || principalID == "" || transportGeneration == 0 {
 		return ErrControllerTransport
 	}
 	if err := validateSemanticInput(input); err != nil {
 		return err
 	}
+	if explicitSize {
+		if err := validateTerminalSize(cols, rows); err != nil {
+			return err
+		}
+	}
 
 	// The steady-state controller input path already serializes with PTY output
 	// through the session/actor lock. Enter the heavier PTY resize ownership
-	// window only when this interaction must transfer controller geometry.
+	// window only when this interaction must transfer controller geometry or
+	// apply a newly measured viewport.
 	s.mu.Lock()
 	state, err := s.semanticInteractionStateLocked(attachmentID, principalID, transportGeneration)
 	if err != nil {
 		s.mu.Unlock()
 		return err
 	}
-	if state.AttachmentID == attachmentID && state.TransportGeneration == transportGeneration {
+	connection, exists := s.connections[attachmentID]
+	if !exists {
+		s.mu.Unlock()
+		return ErrControllerTransport
+	}
+	targetCols, targetRows := connection.Cols, connection.Rows
+	if explicitSize {
+		targetCols, targetRows = cols, rows
+	}
+	currentGeometry := s.effectiveGeometryLocked()
+	isCurrentController := state.AttachmentID == attachmentID && state.TransportGeneration == transportGeneration
+	if isCurrentController && currentGeometry.Cols == targetCols && currentGeometry.Rows == targetRows {
+		if explicitSize {
+			connection.Cols, connection.Rows = targetCols, targetRows
+		}
 		_, inputErr := s.applySemanticInputLocked(input)
 		s.mu.Unlock()
 		return inputErr
@@ -340,49 +387,58 @@ func (s *Session) InteractSemanticView(
 	var geometry TerminalGeometry
 	var presentation SemanticPresentation
 	var geometrySubscribers []LiveSubscriber
-	var controllerSubscribers []LiveSubscriber
+	var presentationSubscribers []LiveSubscriber
 	controllerChanged := state.AttachmentID != attachmentID || state.TransportGeneration != transportGeneration
+	connection, exists = s.connections[attachmentID]
+	if !exists {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return ErrControllerTransport
+	}
+	targetCols, targetRows = connection.Cols, connection.Rows
+	if explicitSize {
+		targetCols, targetRows = cols, rows
+	}
+	beforeGeometry := s.effectiveGeometryLocked()
+	mustCapturePresentation := controllerChanged || beforeGeometry.Cols != targetCols || beforeGeometry.Rows != targetRows
+	hasPresentation := false
+	geometry, presentation, hasPresentation, geometrySubscribers, err = s.applySemanticControllerSizeLocked(
+		attachmentID, targetCols, targetRows, controllerChanged,
+	)
+	if err != nil {
+		s.mu.Unlock()
+		s.endPTYResize()
+		return err
+	}
+	if mustCapturePresentation && (!hasPresentation || presentation.Sequence == 0 || presentation.Geometry != geometry) {
+		invariantErr := errors.New("semantic input activation did not produce its canonical Presentation")
+		s.failClosedResizeLocked(invariantErr)
+		s.mu.Unlock()
+		s.endPTYResize()
+		return invariantErr
+	}
 	if controllerChanged {
-		connection, exists := s.connections[attachmentID]
-		if !exists {
-			s.mu.Unlock()
-			s.endPTYResize()
-			return ErrControllerTransport
-		}
-		var hasPresentation bool
-		var err error
-		geometry, presentation, hasPresentation, geometrySubscribers, err = s.applySemanticControllerSizeLocked(
-			attachmentID, connection.Cols, connection.Rows, true,
-		)
-		if err != nil {
-			s.mu.Unlock()
-			s.endPTYResize()
-			return err
-		}
-		if !hasPresentation || presentation.Sequence == 0 || presentation.Geometry != geometry {
-			invariantErr := errors.New("semantic input activation did not produce its canonical Presentation")
-			s.failClosedResizeLocked(invariantErr)
-			s.mu.Unlock()
-			s.endPTYResize()
-			return invariantErr
-		}
 		s.controllerState = ControllerState{
 			AttachmentID: attachmentID, PrincipalID: principalID,
 			TransportGeneration: transportGeneration, Epoch: state.Epoch + 1,
 		}
-		controllerSubscribers = s.liveSubscribersLocked()
+	}
+	if controllerChanged || hasPresentation {
+		presentationSubscribers = s.liveSubscribersLocked()
 	}
 
 	_, inputErr := s.applySemanticInputLocked(input)
 	controller := s.controllerState
 	s.mu.Unlock()
 	s.endPTYResize()
+	if len(geometrySubscribers) > 0 {
+		s.broadcastGeometry(geometry, geometrySubscribers)
+	}
+	if hasPresentation {
+		s.broadcastPresentation(presentation, presentationSubscribers)
+	}
 	if controllerChanged {
-		if len(geometrySubscribers) > 0 {
-			s.broadcastGeometry(geometry, geometrySubscribers)
-		}
-		s.broadcastPresentation(presentation, controllerSubscribers)
-		s.broadcastController(controller, controllerSubscribers)
+		s.broadcastController(controller, presentationSubscribers)
 	}
 	return inputErr
 }

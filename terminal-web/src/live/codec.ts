@@ -15,6 +15,7 @@ export enum TerminalLiveFrameType {
   InputIntent = 0x05,
   Activate = 0x06,
   Paste = 0x07,
+  Interact = 0x08,
   Attached = 0x81,
   ResizeApplied = 0x83,
   SessionClosed = 0x84,
@@ -54,6 +55,21 @@ export type PasteChunk = Readonly<{
   end: boolean;
   data: Uint8Array;
 }>;
+export type Interaction = Readonly<{
+  sequence: bigint;
+  cols: number;
+  rows: number;
+}> & (
+  | Readonly<{ kind: 'bytes'; data: Uint8Array }>
+  | Readonly<{
+    kind: 'key';
+    code: string;
+    text: string;
+    action: InputIntent['action'];
+    modifiers: number;
+  }>
+  | Readonly<{ kind: 'paste'; start: boolean; end: boolean; data: Uint8Array }>
+);
 export type Resize = Readonly<{ sequence: bigint; cols: number; rows: number }>;
 export type Activate = Readonly<{
   sequence: bigint;
@@ -337,6 +353,107 @@ export const decodePasteChunk = (value: TerminalLiveFrame): PasteChunk => {
     end: (value.payload[8]! & 2) !== 0,
     data: value.payload.slice(10),
   };
+};
+
+export const encodeInteraction = (value: Interaction): Uint8Array => {
+  assertPositiveUint64(value.sequence, 'sequence');
+  assertPositiveUint32(value.cols, 'cols');
+  assertPositiveUint32(value.rows, 'rows');
+  let kind = 0;
+  let action = 0;
+  let modifiers = 0;
+  let code = new Uint8Array();
+  let text = new Uint8Array();
+  let body: Uint8Array;
+  switch (value.kind) {
+    case 'bytes':
+      kind = 1;
+      body = value.data;
+      break;
+    case 'key':
+      kind = 2;
+      action = keyActionValue(value.action);
+      modifiers = value.modifiers;
+      code = encoder.encode(value.code);
+      text = encoder.encode(value.text);
+      body = new Uint8Array(code.byteLength + text.byteLength);
+      body.set(code);
+      body.set(text, code.byteLength);
+      break;
+    case 'paste':
+      kind = 3;
+      action = (value.start ? 1 : 0) | (value.end ? 2 : 0);
+      body = value.data;
+      break;
+    default:
+      throw new Error('invalid terminal live interaction kind');
+  }
+  if (body.byteLength === 0 || body.byteLength > MAX_INPUT_BYTES
+    || code.byteLength > MAX_IDENTIFIER_BYTES || text.byteLength > MAX_INPUT_BYTES
+    || (value.kind === 'key' && (code.byteLength === 0 || body.byteLength > MAX_INPUT_BYTES))
+    || !Number.isSafeInteger(modifiers) || modifiers < 0 || (modifiers & ~0x3f) !== 0) {
+    throw new Error('terminal live interaction payload is invalid');
+  }
+  const payload = new Uint8Array(24 + body.byteLength);
+  const view = new DataView(payload.buffer);
+  view.setBigUint64(0, value.sequence, false);
+  view.setUint32(8, value.cols, false);
+  view.setUint32(12, value.rows, false);
+  payload[16] = kind;
+  payload[17] = action;
+  view.setUint16(18, modifiers, false);
+  view.setUint16(20, code.byteLength, false);
+  view.setUint16(22, text.byteLength, false);
+  payload.set(body, 24);
+  return frame(TerminalLiveFrameType.Interact, payload);
+};
+
+export const decodeInteraction = (value: TerminalLiveFrame): Interaction => {
+  if (value.type !== TerminalLiveFrameType.Interact) throw new Error('unexpected terminal live frame type');
+  if (value.payload.byteLength <= 24 || value.payload.byteLength - 24 > MAX_INPUT_BYTES) {
+    throw new Error('invalid terminal live interaction payload');
+  }
+  const view = new DataView(value.payload.buffer, value.payload.byteOffset);
+  const sequence = view.getBigUint64(0, false);
+  const cols = view.getUint32(8, false);
+  const rows = view.getUint32(12, false);
+  const kind = value.payload[16]!;
+  const action = value.payload[17]!;
+  const modifiers = view.getUint16(18, false);
+  const codeLength = view.getUint16(20, false);
+  const textLength = view.getUint16(22, false);
+  const body = value.payload.slice(24);
+  assertPositiveUint64(sequence, 'sequence');
+  assertPositiveUint32(cols, 'cols');
+  assertPositiveUint32(rows, 'rows');
+  if ((modifiers & ~0x3f) !== 0) throw new Error('invalid terminal live interaction payload');
+  const base = { sequence, cols, rows };
+  switch (kind) {
+    case 1:
+      if (action !== 0 || modifiers !== 0 || codeLength !== 0 || textLength !== 0) {
+        throw new Error('invalid terminal live byte interaction payload');
+      }
+      return { ...base, kind: 'bytes', data: body };
+    case 2:
+      if (codeLength === 0 || codeLength > MAX_IDENTIFIER_BYTES || codeLength + textLength !== body.byteLength) {
+        throw new Error('invalid terminal live key interaction payload');
+      }
+      return {
+        ...base,
+        kind: 'key',
+        code: decoder.decode(body.subarray(0, codeLength)),
+        text: decoder.decode(body.subarray(codeLength)),
+        action: decodeKeyAction(action),
+        modifiers,
+      };
+    case 3:
+      if ((action & ~0x03) !== 0 || modifiers !== 0 || codeLength !== 0 || textLength !== 0) {
+        throw new Error('invalid terminal live paste interaction payload');
+      }
+      return { ...base, kind: 'paste', start: (action & 1) !== 0, end: (action & 2) !== 0, data: body };
+    default:
+      throw new Error('invalid terminal live interaction kind');
+  }
 };
 
 export const encodeResize = (value: Resize): Uint8Array => {

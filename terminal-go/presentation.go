@@ -199,9 +199,11 @@ func clonePresentation(in SemanticPresentation) SemanticPresentation {
 // PresentationStore owns the latest immutable Presentation for bootstrap and
 // diagnostics. Live delivery receives the exact value returned by the actor.
 type PresentationStore struct {
-	mu     sync.Mutex
-	latest SemanticPresentation
-	closed bool
+	mu                  sync.Mutex
+	latest              SemanticPresentation
+	encodedSequence     uint64
+	encodedPresentation []byte
+	closed              bool
 }
 
 func NewPresentationStore(_ int) *PresentationStore {
@@ -215,6 +217,10 @@ func (s *PresentationStore) Publish(p SemanticPresentation) error {
 		return errSessionClosed
 	}
 	s.latest = clonePresentation(p)
+	if s.encodedSequence != p.Sequence {
+		s.encodedSequence = 0
+		s.encodedPresentation = nil
+	}
 	return nil
 }
 
@@ -229,6 +235,35 @@ func (s *PresentationStore) Latest() (SemanticPresentation, bool) {
 
 func (s *PresentationStore) Close() { s.mu.Lock(); s.closed = true; s.mu.Unlock() }
 
+// Encode returns the immutable wire representation for a published
+// Presentation. Multiple live attachments share one encoding operation while
+// each caller receives owned bytes that it may queue independently.
+func (s *PresentationStore) Encode(p SemanticPresentation) ([]byte, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, errSessionClosed
+	}
+	if s.latest.Sequence == p.Sequence && s.encodedSequence == p.Sequence && len(s.encodedPresentation) > 0 {
+		data := append([]byte(nil), s.encodedPresentation...)
+		s.mu.Unlock()
+		return data, nil
+	}
+	s.mu.Unlock()
+
+	data, err := EncodeSemanticPresentation(p)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if !s.closed && s.latest.Sequence == p.Sequence {
+		s.encodedSequence = p.Sequence
+		s.encodedPresentation = append(s.encodedPresentation[:0], data...)
+	}
+	s.mu.Unlock()
+	return data, nil
+}
+
 func (s *Session) LatestPresentation() (SemanticPresentation, bool) {
 	if s == nil {
 		return SemanticPresentation{}, false
@@ -240,4 +275,17 @@ func (s *Session) LatestPresentation() (SemanticPresentation, bool) {
 		return SemanticPresentation{}, false
 	}
 	return store.Latest()
+}
+
+func (s *Session) EncodeSemanticPresentation(p SemanticPresentation) ([]byte, error) {
+	if s == nil {
+		return nil, errSessionClosed
+	}
+	s.mu.RLock()
+	store := s.presentationStore
+	s.mu.RUnlock()
+	if store == nil {
+		return nil, errors.New("semantic presentation store is unavailable")
+	}
+	return store.Encode(p)
 }

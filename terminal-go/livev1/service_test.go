@@ -14,6 +14,7 @@ type semanticBackend struct {
 	inputs                []Input
 	intents               []InputIntent
 	pastes                []PasteInput
+	interactions          []Interaction
 	activations           []Activate
 	rejectFirstActivation bool
 }
@@ -33,6 +34,11 @@ func (b *semanticBackend) WriteInputIntent(_ context.Context, _ Attach, input In
 }
 func (b *semanticBackend) WritePaste(_ context.Context, _ Attach, input PasteInput) error {
 	b.pastes = append(b.pastes, input)
+	return nil
+}
+func (b *semanticBackend) Interact(_ context.Context, _ Attach, interaction Interaction) error {
+	interaction.Data = append([]byte(nil), interaction.Data...)
+	b.interactions = append(b.interactions, interaction)
 	return nil
 }
 func (*semanticBackend) Resize(_ context.Context, _ Attach, resize Resize) (EffectiveGeometry, error) {
@@ -190,6 +196,132 @@ func TestServiceReassemblesPasteBeforeOneBackendAdmission(t *testing.T) {
 	}
 	if len(backend.pastes) != 1 || backend.pastes[0].Sequence != 2 || !bytes.Equal(backend.pastes[0].Data, payload) {
 		t.Fatalf("pastes=%+v", backend.pastes)
+	}
+}
+
+func TestServiceAdmitsGeometryBoundInteractionsWithoutWaitingForActivation(t *testing.T) {
+	backend := &semanticBackend{}
+	server, client := net.Pipe()
+	defer client.Close()
+	done := make(chan error, 1)
+	go func() { done <- NewService(backend).Serve(context.Background(), server) }()
+
+	attach, _ := EncodeAttach(Attach{AttachGeneration: 7, Cols: 46, Rows: 16, SessionID: "session", ConnectionID: "workbench"})
+	_, _ = client.Write(attach)
+	if _, err := ReadFrame(client); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := EncodeInteraction(Interaction{Sequence: 1, Cols: 120, Rows: 40, Kind: InteractionBytes, Data: []byte("x")})
+	key, _ := EncodeInteraction(Interaction{
+		Sequence: 2, Cols: 120, Rows: 40, Kind: InteractionKey,
+		Code: "ArrowUp", Action: KeyActionPress, Modifiers: KeyModifierControl,
+	})
+	payload := bytes.Repeat([]byte("p"), MaxInputBytes+17)
+	pasteStart, _ := EncodeInteraction(Interaction{
+		Sequence: 3, Cols: 120, Rows: 40, Kind: InteractionPaste, Start: true, Data: payload[:MaxInputBytes],
+	})
+	pasteEnd, _ := EncodeInteraction(Interaction{
+		Sequence: 4, Cols: 120, Rows: 40, Kind: InteractionPaste, End: true, Data: payload[MaxInputBytes:],
+	})
+	for _, encoded := range [][]byte{text, key, pasteStart, pasteEnd} {
+		if _, err := client.Write(encoded); err != nil {
+			t.Fatal(err)
+		}
+	}
+	detach, _ := EncodeFrame(Frame{Type: FrameDetach})
+	_, _ = client.Write(detach)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("service did not stop")
+	}
+	if len(backend.interactions) != 3 {
+		t.Fatalf("interactions=%+v", backend.interactions)
+	}
+	if got := backend.interactions[0]; got.Kind != InteractionBytes || got.Cols != 120 || got.Rows != 40 || string(got.Data) != "x" {
+		t.Fatalf("text interaction=%+v", got)
+	}
+	if got := backend.interactions[1]; got.Kind != InteractionKey || got.Code != "ArrowUp" || got.Modifiers != KeyModifierControl {
+		t.Fatalf("key interaction=%+v", got)
+	}
+	if got := backend.interactions[2]; got.Kind != InteractionPaste || got.Sequence != 4 || !bytes.Equal(got.Data, payload) {
+		t.Fatalf("paste interaction=%+v", got)
+	}
+}
+
+func TestServiceRejectsIncompleteInteractionPasteWithoutBackendAdmission(t *testing.T) {
+	tests := []struct {
+		name   string
+		frames func() [][]byte
+	}{
+		{
+			name: "missing start",
+			frames: func() [][]byte {
+				frame, _ := EncodeInteraction(Interaction{
+					Sequence: 1, Cols: 120, Rows: 40, Kind: InteractionPaste, End: true, Data: []byte("tail"),
+				})
+				return [][]byte{frame}
+			},
+		},
+		{
+			name: "geometry change",
+			frames: func() [][]byte {
+				first, _ := EncodeInteraction(Interaction{
+					Sequence: 1, Cols: 120, Rows: 40, Kind: InteractionPaste, Start: true, Data: []byte("first"),
+				})
+				second, _ := EncodeInteraction(Interaction{
+					Sequence: 2, Cols: 100, Rows: 30, Kind: InteractionPaste, End: true, Data: []byte("second"),
+				})
+				return [][]byte{first, second}
+			},
+		},
+		{
+			name: "interrupted by text interaction",
+			frames: func() [][]byte {
+				first, _ := EncodeInteraction(Interaction{
+					Sequence: 1, Cols: 120, Rows: 40, Kind: InteractionPaste, Start: true, Data: []byte("first"),
+				})
+				second, _ := EncodeInteraction(Interaction{
+					Sequence: 2, Cols: 120, Rows: 40, Kind: InteractionBytes, Data: []byte("x"),
+				})
+				return [][]byte{first, second}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &semanticBackend{}
+			server, client := net.Pipe()
+			defer client.Close()
+			done := make(chan error, 1)
+			go func() { done <- NewService(backend).Serve(context.Background(), server) }()
+			attach, _ := EncodeAttach(Attach{AttachGeneration: 7, Cols: 46, Rows: 16, SessionID: "session", ConnectionID: "workbench"})
+			_, _ = client.Write(attach)
+			if _, err := ReadFrame(client); err != nil {
+				t.Fatal(err)
+			}
+			for _, frame := range test.frames() {
+				_, _ = client.Write(frame)
+			}
+			if frame, err := ReadFrame(client); err != nil || frame.Type != FrameError {
+				t.Fatalf("protocol error frame=%+v err=%v", frame, err)
+			}
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrProtocolViolation) {
+					t.Fatalf("service error=%v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("service did not stop")
+			}
+			if len(backend.interactions) != 0 {
+				t.Fatalf("partial interaction reached backend: %+v", backend.interactions)
+			}
+		})
 	}
 }
 

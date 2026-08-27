@@ -56,6 +56,13 @@ capacity-one latest Presentation slot. It never sends raw PTY bytes to a browser
 Resize settlement is emitted only after the actor has applied canonical geometry and
 captured a matching Presentation.
 
+`terminal/live_v1` also accepts an explicit geometry-bound interaction for text,
+structured keys, and bounded paste transactions. The SessionActor validates the live
+attachment, transfers same-principal controller ownership, applies the interaction's
+viewport, captures the matching Presentation, and encodes/writes input in one ordering
+window. The client does not wait for an activation acknowledgement before the input can
+reach the PTY; stale transports and cross-principal interactions still fail closed.
+
 ## Command lifecycle shell integration
 
 Hosts can enable OSC 633 prompt, command, exit-status, and working-directory markers without maintaining product-specific shell scripts:

@@ -396,8 +396,20 @@ const SemanticTerminalViewport = (props: {
       .catch(error => setPresentationError(error instanceof Error ? error.message : String(error)))
       .finally(() => { activationPending = false; });
   };
+  const interactInput = (data: string) => {
+    const dimensions = measure();
+    void props.transport.interactInput(mountedSessionId, dimensions.cols, dimensions.rows, data);
+  };
+  const interactInputIntent = (intent: TerminalKeyInputIntent) => {
+    const dimensions = measure();
+    void props.transport.interactInputIntent(mountedSessionId, dimensions.cols, dimensions.rows, intent);
+  };
+  const interactPaste = (data: string) => {
+    const dimensions = measure();
+    void props.transport.interactPaste(mountedSessionId, dimensions.cols, dimensions.rows, data);
+  };
   const handle: SemanticViewportHandle = {
-    sendInput: data => { void props.transport.sendInput(mountedSessionId, data); },
+    sendInput: interactInput,
     clear: () => {
       void props.transport.clearSemanticContent(mountedSessionId).catch(error => {
         setPresentationError(error instanceof Error ? error.message : String(error));
@@ -513,9 +525,9 @@ const SemanticTerminalViewport = (props: {
         onInputController={controller => { inputController = controller ?? undefined; }}
         renderer={() => renderer}
         activate={activateView}
-        sendInput={value => { void props.transport.sendInput(mountedSessionId, value); }}
-        sendInputIntent={value => { void props.transport.sendInputIntent(mountedSessionId, value); }}
-        sendPaste={value => { void props.transport.sendPaste(mountedSessionId, value); }}
+        sendInput={interactInput}
+        sendInputIntent={interactInputIntent}
+        sendPaste={interactPaste}
       />
       <Show when={presentationError()}>
         {message => (
@@ -620,7 +632,10 @@ const SingleTerminalPane = (props: {
     perfParams.get('perf') === '1' || perfParams.get('perf_probe') === '1'
   )
     ? {
-      sendInput: data => { void props.transport.sendInput(props.sessionId, data); },
+      sendInput: data => {
+        const dimensions = measuredDimensions();
+        void props.transport.interactInput(props.sessionId, dimensions.cols, dimensions.rows, data);
+      },
       clear: () => {
         void props.transport.clearSemanticContent(props.sessionId).catch(error => {
           setPresentationError(error instanceof Error ? error.message : String(error));
@@ -685,6 +700,18 @@ const SingleTerminalPane = (props: {
     void props.transport.activate(props.sessionId, dimensions.cols, dimensions.rows)
       .catch(error => setPresentationError(error instanceof Error ? error.message : String(error)))
       .finally(() => { activationPending = false; });
+  };
+  const interactInput = (data: string) => {
+    const dimensions = measuredDimensions();
+    void props.transport.interactInput(props.sessionId, dimensions.cols, dimensions.rows, data);
+  };
+  const interactInputIntent = (intent: TerminalKeyInputIntent) => {
+    const dimensions = measuredDimensions();
+    void props.transport.interactInputIntent(props.sessionId, dimensions.cols, dimensions.rows, intent);
+  };
+  const interactPaste = (data: string) => {
+    const dimensions = measuredDimensions();
+    void props.transport.interactPaste(props.sessionId, dimensions.cols, dimensions.rows, data);
   };
 
 	const showLatestPresentation = () => {
@@ -849,9 +876,9 @@ const SingleTerminalPane = (props: {
             onInputController={controller => { inputController = controller ?? undefined; }}
             renderer={() => semanticRenderer}
             activate={activateView}
-            sendInput={value => { void props.transport.sendInput(props.sessionId, value); }}
-            sendInputIntent={value => { void props.transport.sendInputIntent(props.sessionId, value); }}
-            sendPaste={value => { void props.transport.sendPaste(props.sessionId, value); }}
+            sendInput={interactInput}
+            sendInputIntent={interactInputIntent}
+            sendPaste={interactPaste}
           />
 		  <div
 			class="semanticHistoryRail"

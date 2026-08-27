@@ -71,7 +71,7 @@ describe('reference app resize ownership', () => {
     expect(stylesSource).toMatch(/\.semanticTerminalSurface\s*\{[^}]*pointer-events:\s*auto;/);
   });
 
-  it('settles explicit view activation before focus can emit terminal input', () => {
+  it('queues explicit view activation before focus while input remains geometry-bound', () => {
     const pointerDown = appSource.slice(
       appSource.indexOf('onPointerDown={event => {'),
       appSource.indexOf('onPointerMove={event => {'),
@@ -80,5 +80,12 @@ describe('reference app resize ownership', () => {
     expect(pointerDown.indexOf('props.activate?.();')).toBeLessThan(pointerDown.indexOf('inputController?.focus();'));
     expect(appSource).toContain('props.transport.activate(mountedSessionId, dimensions.cols, dimensions.rows)');
     expect(appSource).toContain('if (activationPending || !connected()) return;');
+  });
+
+  it('binds user input to the latest measured viewport without waiting for activation settlement', () => {
+    expect(appSource).toContain('props.transport.interactInput(mountedSessionId, dimensions.cols, dimensions.rows, data)');
+    expect(appSource).toContain('props.transport.interactInputIntent(mountedSessionId, dimensions.cols, dimensions.rows, intent)');
+    expect(appSource).toContain('props.transport.interactPaste(mountedSessionId, dimensions.cols, dimensions.rows, data)');
+    expect(appSource).toContain('props.transport.interactInput(props.sessionId, dimensions.cols, dimensions.rows, data)');
   });
 });

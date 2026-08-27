@@ -55,6 +55,10 @@ type PasteInputBackend interface {
 	WritePaste(ctx context.Context, attachment Attach, input PasteInput) error
 }
 
+type InteractionBackend interface {
+	Interact(ctx context.Context, attachment Attach, interaction Interaction) error
+}
+
 type ActivationBackend interface {
 	Activate(ctx context.Context, attachment Attach, activate Activate) (Activated, error)
 }
@@ -239,6 +243,7 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 	var lastResizeSequence uint64
 	var lastActivationSequence uint64
 	var pasteBuffer []byte
+	var interactionPaste *Interaction
 	for {
 		frame, readErr := ReadFrame(stream)
 		if readErr != nil {
@@ -256,6 +261,9 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 		}
 		if pasteBuffer != nil && frame.Type != FramePaste {
 			return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "paste input was interrupted", ErrProtocolViolation)
+		}
+		if interactionPaste != nil && frame.Type != FrameInteract {
+			return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "interaction paste was interrupted", ErrProtocolViolation)
 		}
 		switch frame.Type {
 		case FrameInput:
@@ -310,6 +318,55 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 				pasteBuffer = nil
 				if err := backend.WritePaste(ctx, attachment, input); err != nil {
 					return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal paste input failed", err)
+				}
+			}
+		case FrameInteract:
+			interaction, decodeErr := DecodeInteraction(frame)
+			if decodeErr != nil || interaction.Sequence <= lastInputSequence {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "invalid interaction sequence", ErrProtocolViolation)
+			}
+			backend, ok := s.backend.(InteractionBackend)
+			if !ok {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal interaction is unavailable", ErrActivationFailed)
+			}
+			if interaction.Kind != InteractionPaste {
+				if interactionPaste != nil {
+					return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "interaction paste was interrupted", ErrProtocolViolation)
+				}
+				if err := backend.Interact(ctx, attachment, interaction); err != nil {
+					return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal interaction failed", err)
+				}
+				lastInputSequence = interaction.Sequence
+				break
+			}
+			if interactionPaste != nil && interaction.Sequence != lastInputSequence+1 {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "non-contiguous interaction paste sequence", ErrProtocolViolation)
+			}
+			if interaction.Start {
+				if interactionPaste != nil {
+					return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "duplicate interaction paste start", ErrProtocolViolation)
+				}
+				interactionPaste = &Interaction{
+					Sequence: interaction.Sequence, Cols: interaction.Cols, Rows: interaction.Rows, Kind: InteractionPaste,
+					Data: make([]byte, 0, min(len(interaction.Data), MaxPasteBytes)),
+				}
+			} else if interactionPaste == nil {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "interaction paste continuation has no start", ErrProtocolViolation)
+			}
+			if interactionPaste.Cols != interaction.Cols || interactionPaste.Rows != interaction.Rows {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "interaction paste geometry changed", ErrProtocolViolation)
+			}
+			if len(interaction.Data) > MaxPasteBytes-len(interactionPaste.Data) {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "interaction paste exceeds limit", ErrProtocolViolation)
+			}
+			interactionPaste.Data = append(interactionPaste.Data, interaction.Data...)
+			interactionPaste.Sequence = interaction.Sequence
+			lastInputSequence = interaction.Sequence
+			if interaction.End {
+				complete := *interactionPaste
+				interactionPaste = nil
+				if err := backend.Interact(ctx, attachment, complete); err != nil {
+					return s.protocolFailureLocked(stream, &writeMu, ErrorCodeInternal, "terminal paste interaction failed", err)
 				}
 			}
 		case FrameResize:

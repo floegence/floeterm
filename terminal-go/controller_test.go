@@ -477,6 +477,66 @@ func TestSemanticViewInputActivatesRecordedViewportBeforePTYWrite(t *testing.T) 
 	}
 }
 
+func TestSemanticViewInteractionAppliesExplicitViewportBeforePTYWrite(t *testing.T) {
+	engine := &fakeSemanticEngine{frame: SemanticFrame{Width: 80, Height: 24}}
+	session, presentations, _ := newSemanticResizeTestSession(t, engine)
+	if err := session.AttachSemanticView("activity", "person", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachSemanticView("workbench", "person", 7); err != nil {
+		t.Fatal(err)
+	}
+	session.EnsureSemanticController("activity", "person", 1)
+	session.RegisterSemanticView("activity", 80, 24)
+	session.RegisterSemanticView("workbench", 46, 16)
+	engine.calls = nil
+	var writes []string
+	var writeGeometries [][2]int
+	session.writePTY = func(data []byte) (int, error) {
+		writes = append(writes, string(data))
+		writeGeometries = append(writeGeometries, [2]int{engine.frame.Width, engine.frame.Height})
+		return len(data), nil
+	}
+
+	if err := session.InteractSemanticViewAtSize(
+		"workbench", "person", 7, 132, 43, SemanticInput{Kind: "bytes", Data: []byte("x")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(writes) != 1 || writes[0] != "x" || writeGeometries[0] != [2]int{132, 43} {
+		t.Fatalf("writes=%q geometries=%v", writes, writeGeometries)
+	}
+	if got := engine.calls; len(got) < 3 || got[0] != "resize" || got[1] != "capture" || got[2] != "input" {
+		t.Fatalf("actor order=%v", got)
+	}
+	controller := session.Controller()
+	if controller.AttachmentID != "workbench" || controller.TransportGeneration != 7 || controller.Epoch != 2 {
+		t.Fatalf("controller=%+v", controller)
+	}
+	if cols, rows, err := session.SemanticViewSize("workbench", 7); err != nil || cols != 132 || rows != 43 {
+		t.Fatalf("view size=%dx%d err=%v", cols, rows, err)
+	}
+	if len(*presentations) != 1 || (*presentations)[0].Geometry.Cols != 132 || (*presentations)[0].Geometry.Rows != 43 {
+		t.Fatalf("presentations=%+v", *presentations)
+	}
+
+	engine.calls = nil
+	if err := session.InteractSemanticViewAtSize(
+		"workbench", "person", 7, 100, 30, SemanticInput{Kind: "bytes", Data: []byte("y")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(writes) != 2 || writes[1] != "y" || writeGeometries[1] != [2]int{100, 30} {
+		t.Fatalf("writes=%q geometries=%v", writes, writeGeometries)
+	}
+	if got := engine.calls; len(got) < 3 || got[0] != "resize" || got[1] != "capture" || got[2] != "input" {
+		t.Fatalf("same-controller actor order=%v", got)
+	}
+	if got := session.Controller().Epoch; got != controller.Epoch {
+		t.Fatalf("same-controller interaction changed epoch: got=%d want=%d", got, controller.Epoch)
+	}
+}
+
 func TestSemanticHistorySerializesWithPTYOutput(t *testing.T) {
 	engine := &blockingSemanticHistoryEngine{
 		fakeSemanticHistoryEngine: fakeSemanticHistoryEngine{totalRows: 8},

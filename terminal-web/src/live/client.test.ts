@@ -6,6 +6,7 @@ import {
   MAX_INPUT_BYTES,
   decodeInput,
   decodeInputIntent,
+  decodeInteraction,
   decodePasteChunk,
   decodeActivate,
   decodeResize,
@@ -141,12 +142,16 @@ describe('semantic terminal live client', () => {
     }));
     const connection = await connecting;
     const activating = connection.activateWithEffectiveGeometry(120, 40);
+    let activationSettled = false;
+    void activating.then(() => { activationSettled = true; });
     const input = connection.sendInput(new TextEncoder().encode('x'));
     await waitUntil(() => stream.writes.length === 3);
     const activate = decodeActivate(new TerminalLiveDecoder().push(stream.writes[1]!)[0]!);
     const writtenInput = decodeInput(new TerminalLiveDecoder().push(stream.writes[2]!)[0]!);
     expect(activate).toEqual({ sequence: 1n, controllerEpoch: 3n, cols: 120, rows: 40 });
     expect(new TextDecoder().decode(writtenInput.data)).toBe('x');
+    await input;
+    expect(activationSettled).toBe(false);
 
     stream.push(encodeControllerChanged({ epoch: 4n, isController: true }));
     stream.push(encodeActivated({
@@ -157,11 +162,43 @@ describe('semantic terminal live client', () => {
       effective: { generation: 2, presentationSequence: 5, cols: 120, rows: 40 },
       controller: { epoch: 4, isController: true },
     });
-    await input;
     expect(controllers).toEqual([
       { epoch: 3, isController: false },
       { epoch: 4, isController: true },
     ]);
+  });
+
+  it('sends geometry-bound interactions without waiting for an activation acknowledgement', async () => {
+    const stream = new FakeStream();
+    const connecting = connectTerminalLive({
+      openStream: async () => stream,
+      attach: { sessionId: 's', connectionId: 'workbench', attachGeneration: 7, cols: 46, rows: 16 },
+    });
+    await waitUntil(() => stream.writes.length === 1);
+    stream.push(encodeAttached({
+      presentationSequence: 4n, geometryGeneration: 1n, controllerEpoch: 3n,
+      cols: 46, rows: 16, isController: false,
+    }));
+    const connection = await connecting;
+
+    await connection.interactInput(120, 40, new TextEncoder().encode('x'));
+    await connection.interactInputIntent(120, 40, {
+      code: 'ArrowUp', text: '', action: 'press', modifiers: 2,
+    });
+    await connection.interactPaste(120, 40, new TextEncoder().encode('paste'));
+
+    expect(stream.writes).toHaveLength(4);
+    expect(decodeInteraction(new TerminalLiveDecoder().push(stream.writes[1]!)[0]!)).toEqual({
+      sequence: 1n, cols: 120, rows: 40, kind: 'bytes', data: new TextEncoder().encode('x'),
+    });
+    expect(decodeInteraction(new TerminalLiveDecoder().push(stream.writes[2]!)[0]!)).toEqual({
+      sequence: 2n, cols: 120, rows: 40, kind: 'key',
+      code: 'ArrowUp', text: '', action: 'press', modifiers: 2,
+    });
+    expect(decodeInteraction(new TerminalLiveDecoder().push(stream.writes[3]!)[0]!)).toEqual({
+      sequence: 3n, cols: 120, rows: 40, kind: 'paste', start: true, end: true,
+      data: new TextEncoder().encode('paste'),
+    });
   });
 
   it('retries a stale activation epoch without closing or reattaching the stream', async () => {

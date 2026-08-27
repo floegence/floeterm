@@ -45,6 +45,9 @@ Key contracts:
   reassembles every chunk before atomically projecting a complete viewport.
 - Only the current controller changes PTY geometry or sends input; observers remain
   render-only.
+- A real interaction may bind its measured viewport and input in one ordered actor
+  admission. This transfers same-principal control, applies canonical geometry, and
+  writes the input exactly once without waiting for a separate activation round trip.
 - Resize acknowledgements mean canonical geometry was actually applied.
 - IME composition commits Unicode input exactly once and anchors to the semantic
   cursor without applying device-pixel ratio twice.

@@ -146,6 +146,14 @@ export type SemanticTerminalLiveTransport = Readonly<{
   sendInput(sessionId: TerminalID, input: string): Promise<void>;
   sendInputIntent(sessionId: TerminalID, input: TerminalKeyInputIntent): Promise<void>;
   sendPaste(sessionId: TerminalID, input: string): Promise<void>;
+  interactInput(sessionId: TerminalID, cols: number, rows: number, input: string): Promise<void>;
+  interactInputIntent(
+    sessionId: TerminalID,
+    cols: number,
+    rows: number,
+    input: TerminalKeyInputIntent,
+  ): Promise<void>;
+  interactPaste(sessionId: TerminalID, cols: number, rows: number, input: string): Promise<void>;
   semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryViewport>;
   clearSemanticContent?(sessionId: TerminalID): Promise<TerminalSemanticClearResult>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
@@ -342,6 +350,38 @@ export const createSemanticTerminalLiveTransport = (
         throw new Error('terminal live session is not attached');
       }
       await entry.connection.sendPaste(textEncoder.encode(String(input ?? '')));
+    },
+    interactInput: async (sessionId, cols, rows, input) => {
+      const entry = entries.get(sessionId);
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+        throw new Error('terminal live session is not attached');
+      }
+      await entry.connection.interactInput(cols, rows, textEncoder.encode(String(input ?? '')));
+    },
+    interactInputIntent: async (sessionId, cols, rows, input) => {
+      const entry = entries.get(sessionId);
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+        throw new Error('terminal live session is not attached');
+      }
+      const modifiers = (input.modifiers.shift ? 1 : 0)
+        | (input.modifiers.control ? 2 : 0)
+        | (input.modifiers.alt ? 4 : 0)
+        | (input.modifiers.super ? 8 : 0)
+        | (input.modifiers.capsLock ? 16 : 0)
+        | (input.modifiers.numLock ? 32 : 0);
+      await entry.connection.interactInputIntent(cols, rows, {
+        code: input.code,
+        text: input.text,
+        action: input.action,
+        modifiers,
+      });
+    },
+    interactPaste: async (sessionId, cols, rows, input) => {
+      const entry = entries.get(sessionId);
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) {
+        throw new Error('terminal live session is not attached');
+      }
+      await entry.connection.interactPaste(cols, rows, textEncoder.encode(String(input ?? '')));
     },
     semanticHistory: async (sessionId, request) => {
       const entry = entries.get(sessionId);

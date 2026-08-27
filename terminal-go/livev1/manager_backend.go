@@ -73,7 +73,7 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 				if subscriber.OnPresentation == nil {
 					return true
 				}
-				encoded, err := terminal.EncodeSemanticPresentation(p)
+				encoded, err := session.EncodeSemanticPresentation(p)
 				return err == nil && subscriber.OnPresentation(encoded)
 			},
 			OnController: func(state terminal.ControllerState) bool {
@@ -191,6 +191,33 @@ func (b *ManagerBackend) WritePaste(_ context.Context, attachment Attach, input 
 	return b.writeSemanticInput(attachment, terminal.SemanticInput{Kind: "paste", Data: input.Data})
 }
 
+func (b *ManagerBackend) Interact(_ context.Context, attachment Attach, interaction Interaction) error {
+	var input terminal.SemanticInput
+	switch interaction.Kind {
+	case InteractionBytes:
+		input = terminal.SemanticInput{Kind: "bytes", Data: interaction.Data}
+	case InteractionKey:
+		action := ""
+		switch interaction.Action {
+		case KeyActionPress:
+			action = "press"
+		case KeyActionRepeat:
+			action = "repeat"
+		case KeyActionRelease:
+			action = "release"
+		}
+		input = terminal.SemanticInput{
+			Kind: "key", Code: interaction.Code, Text: interaction.Text,
+			Action: action, Modifiers: uint16(interaction.Modifiers),
+		}
+	case InteractionPaste:
+		input = terminal.SemanticInput{Kind: "paste", Data: interaction.Data}
+	default:
+		return ErrProtocolViolation
+	}
+	return b.interactSemanticInputAtSize(attachment, int(interaction.Cols), int(interaction.Rows), input)
+}
+
 func (b *ManagerBackend) writeSemanticInput(attachment Attach, input terminal.SemanticInput) error {
 	if b == nil || b.manager == nil {
 		return errors.New("terminal manager is required")
@@ -204,6 +231,23 @@ func (b *ManagerBackend) writeSemanticInput(attachment Attach, input terminal.Se
 		return terminal.ErrControllerTransport
 	}
 	return session.InteractSemanticView(attachment.ConnectionID, "local", attachment.AttachGeneration, input)
+}
+
+func (b *ManagerBackend) interactSemanticInputAtSize(attachment Attach, cols, rows int, input terminal.SemanticInput) error {
+	if b == nil || b.manager == nil {
+		return errors.New("terminal manager is required")
+	}
+	session, ok := b.manager.GetSession(attachment.SessionID)
+	if !ok || session == nil {
+		return ErrSessionNotFound
+	}
+	generation, ok := session.SemanticAttachmentGeneration(attachment.ConnectionID)
+	if !ok || generation != attachment.AttachGeneration {
+		return terminal.ErrControllerTransport
+	}
+	return session.InteractSemanticViewAtSize(
+		attachment.ConnectionID, "local", attachment.AttachGeneration, cols, rows, input,
+	)
 }
 
 func (b *ManagerBackend) Resize(_ context.Context, attachment Attach, resize Resize) (EffectiveGeometry, error) {

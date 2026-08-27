@@ -53,6 +53,28 @@ func TestSemanticCodecRoundTrip(t *testing.T) {
 		t.Fatalf("paste chunk = %+v, err = %v", paste, err)
 	}
 
+	for _, interaction := range []Interaction{
+		{Sequence: 4, Cols: 120, Rows: 40, Kind: InteractionBytes, Data: []byte("x")},
+		{Sequence: 5, Cols: 120, Rows: 40, Kind: InteractionKey, Code: "ArrowUp", Text: "中", Action: KeyActionRepeat, Modifiers: KeyModifierAlt},
+		{Sequence: 6, Cols: 120, Rows: 40, Kind: InteractionPaste, Start: true, End: true, Data: []byte("paste")},
+	} {
+		encoded, encodeErr := EncodeInteraction(interaction)
+		if encodeErr != nil {
+			t.Fatal(encodeErr)
+		}
+		interactionFrame, readErr := ReadFrame(bytes.NewReader(encoded))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		decoded, decodeErr := DecodeInteraction(interactionFrame)
+		if decodeErr != nil || decoded.Sequence != interaction.Sequence || decoded.Cols != interaction.Cols ||
+			decoded.Rows != interaction.Rows || decoded.Kind != interaction.Kind || decoded.Code != interaction.Code ||
+			decoded.Text != interaction.Text || decoded.Action != interaction.Action || decoded.Modifiers != interaction.Modifiers ||
+			decoded.Start != interaction.Start || decoded.End != interaction.End || !bytes.Equal(decoded.Data, interaction.Data) {
+			t.Fatalf("interaction = %+v, want %+v, err = %v", decoded, interaction, decodeErr)
+		}
+	}
+
 	attachedBytes, err := EncodeAttached(Attached{PresentationSequence: 9, GeometryGeneration: 3, ControllerEpoch: 4, Cols: 100, Rows: 30, IsController: true})
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +146,7 @@ func TestTerminalLiveV1VectorsMatchCodec(t *testing.T) {
 	encoded["input"], _ = EncodeInput(Input{Sequence: 1, Data: []byte("abc")})
 	encoded["input_intent"], _ = EncodeInputIntent(InputIntent{Sequence: 2, Code: "ArrowUp", Action: KeyActionRepeat, Modifiers: KeyModifierShift | KeyModifierControl})
 	encoded["paste"], _ = EncodePasteChunk(PasteChunk{Sequence: 3, Start: true, End: true, Data: []byte("paste")})
+	encoded["interact"], _ = EncodeInteraction(Interaction{Sequence: 4, Cols: 120, Rows: 40, Kind: InteractionBytes, Data: []byte("x")})
 	encoded["resize"], _ = EncodeResize(Resize{Sequence: 7, Cols: 80, Rows: 24})
 	encoded["activate"], _ = EncodeActivate(Activate{Sequence: 1, ControllerEpoch: 1, Cols: 80, Rows: 24})
 	encoded["attached"], _ = EncodeAttached(Attached{PresentationSequence: 42, GeometryGeneration: 3, ControllerEpoch: 1, Cols: 80, Rows: 24, IsController: true})

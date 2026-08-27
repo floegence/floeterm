@@ -8,6 +8,8 @@ if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
 if (!stateDir) throw new Error('FLOETERM_E2E_STATE_DIR is required');
 const stateArg = stateDir ? ` -state-dir ${JSON.stringify(stateDir)}` : '';
 const goRun = process.env.FLOETERM_E2E_GO_RUN?.trim() || 'go run -tags floeterm_native';
+const serverArgs = process.env.FLOETERM_E2E_SERVER_ARGS?.trim();
+const serverArgsSuffix = serverArgs ? ` ${serverArgs}` : '';
 const headed = process.env.FLOETERM_E2E_HEADED === '1';
 const chromiumArgs = process.env.CI || !headed
   ? ['--enable-unsafe-swiftshader', '--use-angle=swiftshader']
@@ -32,7 +34,7 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: `cd ../app/backend && ${goRun} ./cmd/floeterm -addr 127.0.0.1:${port} -static ../web/dist -log-level warn -performance-diagnostics${stateArg}`,
+    command: `cd ../app/backend && ${goRun} ./cmd/floeterm -addr 127.0.0.1:${port} -static ../web/dist -log-level warn -performance-diagnostics${stateArg}${serverArgsSuffix}`,
     url: `http://127.0.0.1:${port}/`,
     reuseExistingServer: false,
     timeout: 120_000,

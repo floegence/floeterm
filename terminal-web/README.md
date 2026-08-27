@@ -123,6 +123,10 @@ const stop = eventSource.onTerminalPresentation(sessionId, value => {
 
 // Only a real user activation may transfer controller ownership and PTY size.
 await transport.activate(sessionId, desiredCols, desiredRows);
+
+// A real keyboard interaction can atomically apply the latest measured viewport
+// and reach the PTY without waiting for a separate activation acknowledgement.
+await transport.interactInput(sessionId, desiredCols, desiredRows, 'x');
 ```
 
 The transport carries attach, structured input, canonical resize settlement,
@@ -133,6 +137,12 @@ activation validates attachment, principal, transport generation, and controller
 then transfers ownership, applies geometry, and captures the matching Presentation in
 one actor ordering window. A racing stale epoch has zero effect and is resettled a
 bounded number of times without detaching or reconnecting the stream.
+
+Use `interactInput`, `interactInputIntent`, or `interactPaste` when a real user
+interaction must claim a view. Each method keeps terminal state authoritative in the
+server-owned Ghostty actor while removing the extra activation acknowledgement round
+trip from the input path. Ordinary `sendInput` methods remain available for an already
+settled controller.
 
 The transport does not carry raw PTY output. `clearSemanticContent(sessionId)` invokes
 the native SessionActor clear control through the current transport generation and

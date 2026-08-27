@@ -36,6 +36,7 @@ const (
 	FrameInputIntent FrameType = 0x05
 	FrameActivate    FrameType = 0x06
 	FramePaste       FrameType = 0x07
+	FrameInteract    FrameType = 0x08
 
 	FrameAttached           FrameType = 0x81
 	FrameResizeApplied      FrameType = 0x83
@@ -107,6 +108,30 @@ type PasteInput struct {
 	Data     []byte
 }
 
+type InteractionKind uint8
+
+const (
+	InteractionBytes InteractionKind = iota + 1
+	InteractionKey
+	InteractionPaste
+)
+
+// Interaction carries the current view geometry and one input admission in a
+// single ordered frame. Paste interactions may span contiguous frames and are
+// admitted only after the complete bounded transaction is reassembled.
+type Interaction struct {
+	Sequence   uint64
+	Cols       uint32
+	Rows       uint32
+	Kind       InteractionKind
+	Start, End bool
+	Data       []byte
+	Code       string
+	Text       string
+	Action     KeyAction
+	Modifiers  KeyModifiers
+}
+
 type Resize struct {
 	Sequence uint64
 	Cols     uint32
@@ -170,7 +195,7 @@ type ProtocolError struct {
 
 func validFrameType(frameType FrameType) bool {
 	switch frameType {
-	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent, FrameActivate, FramePaste,
+	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent, FrameActivate, FramePaste, FrameInteract,
 		FrameAttached, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation,
 		FrameActivated, FrameControllerChanged, FrameActivationRejected, FrameError:
 		return true
@@ -460,6 +485,116 @@ func DecodePasteChunk(frame Frame) (PasteChunk, error) {
 
 func validKeyAction(action KeyAction) bool {
 	return action == KeyActionPress || action == KeyActionRepeat || action == KeyActionRelease
+}
+
+func EncodeInteraction(value Interaction) ([]byte, error) {
+	if value.Sequence == 0 || value.Cols == 0 || value.Rows == 0 {
+		return nil, ErrInvalidPayload
+	}
+	code := []byte(value.Code)
+	text := []byte(value.Text)
+	var body []byte
+	var action byte
+	var modifiers KeyModifiers
+	switch value.Kind {
+	case InteractionBytes:
+		if value.Start || value.End || len(value.Data) == 0 || len(value.Data) > MaxInputBytes ||
+			len(code) != 0 || len(text) != 0 || value.Action != 0 || value.Modifiers != 0 {
+			return nil, ErrInvalidPayload
+		}
+		body = value.Data
+	case InteractionKey:
+		if value.Start || value.End || len(value.Data) != 0 || len(code) == 0 || len(code) > MaxIdentifierBytes ||
+			!utf8.Valid(code) || len(text) > MaxInputBytes || !utf8.Valid(text) || !validKeyAction(value.Action) ||
+			value.Modifiers&^allKeyModifiers != 0 || len(code)+len(text) > MaxInputBytes {
+			return nil, ErrInvalidPayload
+		}
+		body = append(append(make([]byte, 0, len(code)+len(text)), code...), text...)
+		action = byte(value.Action)
+		modifiers = value.Modifiers
+	case InteractionPaste:
+		if len(value.Data) == 0 || len(value.Data) > MaxInputBytes || len(code) != 0 || len(text) != 0 ||
+			value.Action != 0 || value.Modifiers != 0 {
+			return nil, ErrInvalidPayload
+		}
+		body = value.Data
+		action = interactionPasteFlags(value.Start, value.End)
+	default:
+		return nil, ErrInvalidPayload
+	}
+	payload := make([]byte, 24+len(body))
+	binary.BigEndian.PutUint64(payload[:8], value.Sequence)
+	binary.BigEndian.PutUint32(payload[8:12], value.Cols)
+	binary.BigEndian.PutUint32(payload[12:16], value.Rows)
+	payload[16] = byte(value.Kind)
+	payload[17] = action
+	binary.BigEndian.PutUint16(payload[18:20], uint16(modifiers))
+	binary.BigEndian.PutUint16(payload[20:22], uint16(len(code)))
+	binary.BigEndian.PutUint16(payload[22:24], uint16(len(text)))
+	copy(payload[24:], body)
+	return EncodeFrame(Frame{Type: FrameInteract, Payload: payload})
+}
+
+func DecodeInteraction(frame Frame) (Interaction, error) {
+	if frame.Type != FrameInteract {
+		return Interaction{}, ErrUnexpectedFrameType
+	}
+	if len(frame.Payload) <= 24 || len(frame.Payload)-24 > MaxInputBytes {
+		return Interaction{}, ErrInvalidPayload
+	}
+	value := Interaction{
+		Sequence:  binary.BigEndian.Uint64(frame.Payload[:8]),
+		Cols:      binary.BigEndian.Uint32(frame.Payload[8:12]),
+		Rows:      binary.BigEndian.Uint32(frame.Payload[12:16]),
+		Kind:      InteractionKind(frame.Payload[16]),
+		Action:    KeyAction(frame.Payload[17]),
+		Modifiers: KeyModifiers(binary.BigEndian.Uint16(frame.Payload[18:20])),
+	}
+	if value.Sequence == 0 || value.Cols == 0 || value.Rows == 0 {
+		return Interaction{}, ErrInvalidPayload
+	}
+	codeLength := int(binary.BigEndian.Uint16(frame.Payload[20:22]))
+	textLength := int(binary.BigEndian.Uint16(frame.Payload[22:24]))
+	body := frame.Payload[24:]
+	switch value.Kind {
+	case InteractionBytes:
+		if value.Action != 0 || value.Modifiers != 0 || codeLength != 0 || textLength != 0 {
+			return Interaction{}, ErrInvalidPayload
+		}
+		value.Data = append([]byte(nil), body...)
+	case InteractionKey:
+		if !validKeyAction(value.Action) || value.Modifiers&^allKeyModifiers != 0 || codeLength == 0 ||
+			codeLength > MaxIdentifierBytes || codeLength+textLength != len(body) {
+			return Interaction{}, ErrInvalidPayload
+		}
+		value.Code = string(body[:codeLength])
+		value.Text = string(body[codeLength:])
+		if !utf8.ValidString(value.Code) || !utf8.ValidString(value.Text) {
+			return Interaction{}, ErrInvalidPayload
+		}
+	case InteractionPaste:
+		if value.Action&^KeyAction(3) != 0 || value.Modifiers != 0 || codeLength != 0 || textLength != 0 {
+			return Interaction{}, ErrInvalidPayload
+		}
+		value.Start = value.Action&KeyAction(1) != 0
+		value.End = value.Action&KeyAction(2) != 0
+		value.Action = 0
+		value.Data = append([]byte(nil), body...)
+	default:
+		return Interaction{}, ErrInvalidPayload
+	}
+	return value, nil
+}
+
+func interactionPasteFlags(start, end bool) byte {
+	var flags byte
+	if start {
+		flags |= 1
+	}
+	if end {
+		flags |= 2
+	}
+	return flags
 }
 
 func EncodeResize(value Resize) ([]byte, error) {

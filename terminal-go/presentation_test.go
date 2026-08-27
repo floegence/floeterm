@@ -145,3 +145,42 @@ func TestPresentationStoreDoesNotExposeMutableOwnedBuffers(t *testing.T) {
 		t.Fatalf("store retained caller buffer: %+v", got)
 	}
 }
+
+func TestPresentationStoreSharesOneOwnedEncodingPerSequence(t *testing.T) {
+	store := NewPresentationStore(1)
+	presentation := SemanticPresentation{
+		Sequence: 1,
+		Geometry: TerminalGeometry{Generation: 1, Cols: 1, Rows: 1},
+		State:    TerminalState{Sequence: 1},
+		Frame: SemanticFrame{
+			Width: 1, Height: 1, BufferKind: "normal", Cursor: SemanticCursor{Shape: "block"},
+			Rows: []SemanticRow{{Cells: []SemanticCell{{Text: "x", Width: 1}}}},
+		},
+	}
+	if err := store.Publish(presentation); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Encode(presentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.encodedSequence != 1 || len(store.encodedPresentation) == 0 {
+		t.Fatalf("encoding cache was not populated: sequence=%d bytes=%d", store.encodedSequence, len(store.encodedPresentation))
+	}
+	first[0] = '!'
+	second, err := store.Encode(presentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) == 0 || second[0] == '!' {
+		t.Fatal("cached presentation encoding did not return owned bytes")
+	}
+	presentation.Sequence = 2
+	presentation.State.Sequence = 2
+	if err := store.Publish(presentation); err != nil {
+		t.Fatal(err)
+	}
+	if store.encodedSequence != 0 || len(store.encodedPresentation) != 0 {
+		t.Fatal("publishing a new sequence retained a stale encoding")
+	}
+}
