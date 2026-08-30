@@ -23,6 +23,17 @@ func main() {
 }
 ```
 
+Use `CreateProgramSession` to execute one program with exact arguments and no
+shell parsing or initialization:
+
+```go
+session, _ := manager.CreateProgramSession("container", "", terminal.Program{
+    Executable: "docker",
+    Args:       []string{"exec", "-it", "example", "/bin/sh"},
+})
+_ = manager.ActivateSession(session.ID, 120, 40)
+```
+
 Use `ActivateSessionContext` in request-scoped attach paths. Concurrent callers
 join one session-owned activation. Cancelling one caller stops only that wait;
 `DeleteSession`, `Close`, and `Cleanup` cancel the shared activation and reject

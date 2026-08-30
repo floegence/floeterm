@@ -249,16 +249,26 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 		return errSessionClosed
 	}
 
-	shell, err := resolveShellForActivation(activation.ctx, s.config.shellResolver, s.config.logger)
-	if err != nil {
-		if sessionContextDone(activation.ctx) {
-			return errSessionClosed
+	program := s.config.program
+	executable := ""
+	var err error
+	if program == nil {
+		var shell string
+		shell, err = resolveShellForActivation(activation.ctx, s.config.shellResolver, s.config.logger)
+		if err != nil {
+			if sessionContextDone(activation.ctx) {
+				return errSessionClosed
+			}
+			return fmt.Errorf("failed to resolve shell: %w", err)
 		}
-		return fmt.Errorf("failed to resolve shell: %w", err)
+		executable = shell
+		s.config.logger.Info("Starting terminal", "shell", filepath.Base(executable), "workingDir", filepath.Base(s.WorkingDir))
+	} else {
+		executable = program.Executable
+		s.config.logger.Info("Starting terminal program", "program", filepath.Base(executable), "workingDir", filepath.Base(s.WorkingDir))
 	}
-	s.config.logger.Info("Starting terminal", "shell", filepath.Base(shell), "workingDir", filepath.Base(s.WorkingDir))
 
-	env, pathPrepend, envErr := buildEnvForActivation(activation.ctx, s.config.envProvider, shell, s.WorkingDir)
+	env, pathPrepend, envErr := buildEnvForActivation(activation.ctx, s.config.envProvider, executable, s.WorkingDir)
 	if envErr != nil {
 		if sessionContextDone(activation.ctx) {
 			return errSessionClosed
@@ -270,9 +280,11 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 		env = os.Environ()
 	}
 
-	shouldEnsureShellInit := pathPrepend != ""
-	if requirement, ok := s.config.shellInitWriter.(ShellInitRequirement); ok {
-		shouldEnsureShellInit = requirement.ShouldEnsureShellInit(pathPrepend)
+	shouldEnsureShellInit := program == nil && pathPrepend != ""
+	if program == nil {
+		if requirement, ok := s.config.shellInitWriter.(ShellInitRequirement); ok {
+			shouldEnsureShellInit = requirement.ShouldEnsureShellInit(pathPrepend)
+		}
 	}
 	shellInitReady := false
 	if shouldEnsureShellInit && s.config.shellInitWriter != nil {
@@ -289,13 +301,15 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	var shellArgs, shellEnv []string
 	var bootstrap *shellLifecycleBootstrap
 	var lifecycleNonce string
-	if s.config.shellLifecycleAuthEnabled && !shellInitReady {
+	if program != nil {
+		// Program sessions intentionally bypass shell argument and initialization providers.
+	} else if s.config.shellLifecycleAuthEnabled && !shellInitReady {
 		s.config.logger.Warn("Shell integration initialization failed; using login shell")
 	} else {
 		shellArgs, shellEnv, bootstrap, lifecycleNonce, err = sessionShellArgsForActivation(
 			activation.ctx,
 			s.config.shellArgsProvider,
-			shell,
+			executable,
 			pathPrepend,
 			s.config.shellLifecycleAuthEnabled,
 		)
@@ -320,10 +334,12 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	// Distinguish nil vs empty slice:
 	// - nil means "no opinion" → fall back to a login shell for backwards behaviour.
 	// - empty slice means "run the shell without extra args" (useful for ZDOTDIR-based zsh setup).
-	if shellArgs != nil {
-		cmd = exec.Command(shell, shellArgs...)
+	if program != nil {
+		cmd = exec.Command(executable, program.Args...)
+	} else if shellArgs != nil {
+		cmd = exec.Command(executable, shellArgs...)
 	} else {
-		cmd = exec.Command(shell, "-l")
+		cmd = exec.Command(executable, "-l")
 	}
 
 	cmd.Dir = s.WorkingDir
@@ -342,7 +358,9 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	}
 	s.mu.Unlock()
 
-	env = mergeShellLifecycleEnvironment(env, shellEnv)
+	if program == nil {
+		env = mergeShellLifecycleEnvironment(env, shellEnv)
+	}
 	s.mu.Lock()
 	s.shellLifecycleNonce = ""
 	s.shellLifecycleAuthState = shellLifecycleAuthLegacy

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -42,8 +43,24 @@ func getDirectoryName(path string) string {
 
 // CreateSession creates a dormant logical terminal session.
 func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
+	return m.createSession(name, workingDir, nil)
+}
+
+// CreateProgramSession creates a dormant session that starts one executable
+// with an exact argv. The program is launched directly, without a shell or
+// shell initialization.
+func (m *Manager) CreateProgramSession(name, workingDir string, program Program) (*Session, error) {
+	programCopy, err := program.validatedCopy()
+	if err != nil {
+		return nil, err
+	}
+	return m.createSession(name, workingDir, &programCopy)
+}
+
+func (m *Manager) createSession(name, workingDir string, program *Program) (*Session, error) {
 	sessionID := generateSessionID()
 	sessionCfg := newSessionConfig(m.config)
+	sessionCfg.program = program
 	if name == "" {
 		name = getDirectoryName(workingDir)
 	}
@@ -128,7 +145,11 @@ func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
 	session.eventHandler = handler
 	session.mu.Unlock()
 
-	m.config.Logger.Info("Created dormant terminal session", "sessionID", sessionID, "name", name, "workingDir", workingDir)
+	if program == nil {
+		m.config.Logger.Info("Created dormant terminal session", "sessionID", sessionID, "name", name, "workingDir", workingDir)
+	} else {
+		m.config.Logger.Info("Created dormant terminal program session", "sessionID", sessionID, "name", name, "program", filepath.Base(program.Executable), "workingDir", workingDir)
+	}
 
 	if handler != nil {
 		handler.OnTerminalSessionCreated(session)

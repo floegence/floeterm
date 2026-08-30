@@ -236,6 +236,7 @@ type TerminalSession interface {
 // TerminalManager manages multiple terminal sessions in memory.
 type TerminalManager interface {
 	CreateSession(name, workingDir string) (*Session, error)
+	CreateProgramSession(name, workingDir string, program Program) (*Session, error)
 	GetSession(sessionID string) (*Session, bool)
 	ListSessions() []*Session
 	DeleteSession(sessionID string) error

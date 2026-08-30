@@ -91,6 +91,7 @@ type sessionConfig struct {
 	outputActivityQuietDuration time.Duration
 	terminalEnv                 TerminalEnv
 	shellLifecycleAuthEnabled   bool
+	program                     *Program
 }
 
 func newSessionConfig(cfg ManagerConfig) sessionConfig {

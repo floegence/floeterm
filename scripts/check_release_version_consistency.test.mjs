@@ -10,5 +10,5 @@ test('release metadata keeps terminal-go and terminal-web on one version', async
   const { stdout } = await execFileAsync(process.execPath, ['scripts/check_release_version_consistency.mjs'], {
     cwd: fileURLToPath(new URL('..', import.meta.url)),
   });
-  assert.match(stdout, /0\.18\.0/);
+  assert.match(stdout, /0\.18\.1/);
 });

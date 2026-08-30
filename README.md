@@ -63,8 +63,8 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.18.0
-npm install @floegence/floeterm-terminal-web@0.18.0
+go get github.com/floegence/floeterm/terminal-go@v0.18.1
+npm install @floegence/floeterm-terminal-web@0.18.1
 ```
 
 ## Browser Integration
@@ -147,6 +147,16 @@ if err != nil {
 if err := manager.ActivateSession(session.ID, 120, 40); err != nil {
     return err
 }
+```
+
+Launch a program with an exact argument vector when the session must not use a
+login shell or shell initialization:
+
+```go
+session, err := manager.CreateProgramSession("container", "", terminal.Program{
+    Executable: "docker",
+    Args:       []string{"exec", "-it", "example", "/bin/sh"},
+})
 ```
 
 Use `livev1.NewService` with the manager backend for the bidirectional semantic live
