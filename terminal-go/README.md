@@ -39,6 +39,20 @@ join one session-owned activation. Cancelling one caller stops only that wait;
 `DeleteSession`, `Close`, and `Cleanup` cancel the shared activation and reject
 any late PTY result without blocking on shell preparation.
 
+## Locale environment
+
+PTY sessions preserve `LANG`, `LC_ALL`, `LC_CTYPE`, and category-specific
+`LC_*` values supplied by `ShellEnvProvider`. Floeterm never replaces an
+explicit locale or filters locale diagnostics from PTY output. When the
+effective character locale is absent, activation queries the target host's
+locale catalog and sets only `LC_CTYPE` when `C.UTF-8` or `C.utf8` is actually
+available. A missing, failed, or cancelled probe leaves the environment
+unchanged.
+
+Callers upgrading from v0.18.x should move explicit `TerminalEnv.Lang` or
+`TerminalEnv.LcAll` values into their `ShellEnvProvider`; `TerminalEnv` now
+contains terminal capabilities only.
+
 ## Semantic history
 
 History is owned only by the native Ghostty session actor. Call
@@ -184,7 +198,7 @@ Custom `ShellInitWriter` implementations that also need to run without a PATH pr
 ## Notes
 - Implement `TerminalEventHandler` to receive lifecycle events.
 - `CreateSession` is dormant-first; start the PTY with the real viewport through `ActivateSession` or the caller-cancellable `ActivateSessionContext`.
-- Configure environment and shell lifecycle defaults through `ManagerConfig`. The legacy resize suppression duration fields are deprecated; resize never drops PTY output.
+- Configure process environment through `ShellEnvProvider` and terminal presentation defaults through `ManagerConfig.TerminalEnv`. The legacy resize suppression duration fields are deprecated; resize never drops PTY output.
 - PTYs start at the effective attached viewport, preserve their last size after the final detach, and skip redundant same-size resizes.
 - Working-directory tracking prefers explicit OSC cwd signals (`633;P;Cwd=...`, `1337;CurrentDir=...`, and local `OSC 7 file://...`) and ignores generic title-only OSC updates. Remote OSC 7 paths are display-only execution context.
 - Cwd parsing is stream-safe across PTY read chunks, so fragmented fullscreen/TUI control sequences do not trigger false working-directory parse failures.

@@ -175,8 +175,6 @@ func applyTerminalEnvironment(env []string, terminalEnv TerminalEnv, cols, rows 
 		"TERM",
 		"COLORTERM",
 		"NO_COLOR",
-		"LANG",
-		"LC_ALL",
 		"TERM_PROGRAM",
 		"TERM_PROGRAM_VERSION",
 		"COLUMNS",
@@ -191,8 +189,6 @@ func applyTerminalEnvironment(env []string, terminalEnv TerminalEnv, cols, rows 
 	env = append(env,
 		"TERM="+terminalEnv.Term,
 		"COLORTERM="+terminalEnv.ColorTerm,
-		"LANG="+terminalEnv.Lang,
-		"LC_ALL="+terminalEnv.LcAll,
 		"TERM_PROGRAM="+terminalEnv.TermProgram,
 		"TERM_PROGRAM_VERSION="+terminalEnv.TermProgramVersion,
 		"PROMPT_EOL_MARK=",
@@ -360,6 +356,10 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 
 	if program == nil {
 		env = mergeShellLifecycleEnvironment(env, shellEnv)
+	}
+	env = applyLocaleFallback(activation.ctx, env, discoverLocaleCatalog)
+	if sessionContextDone(activation.ctx) {
+		return errSessionClosed
 	}
 	s.mu.Lock()
 	s.shellLifecycleNonce = ""

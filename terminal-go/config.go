@@ -27,8 +27,6 @@ type TerminalEnv struct {
 	// DisableColor explicitly requests NO_COLOR for applications running in the PTY.
 	// Host process presentation settings are otherwise isolated from terminal sessions.
 	DisableColor       bool
-	Lang               string
-	LcAll              string
 	TermProgram        string
 	TermProgramVersion string
 	Terminfo           string
@@ -40,8 +38,6 @@ func DefaultTerminalEnv() TerminalEnv {
 	return TerminalEnv{
 		Term:               "xterm-256color",
 		ColorTerm:          "truecolor",
-		Lang:               "en_US.UTF-8",
-		LcAll:              "en_US.UTF-8",
 		TermProgram:        "floeterm",
 		TermProgramVersion: "0.4.4",
 		Terminfo:           "/usr/share/terminfo",
