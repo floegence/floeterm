@@ -39,6 +39,14 @@ join one session-owned activation. Cancelling one caller stops only that wait;
 `DeleteSession`, `Close`, and `Cleanup` cancel the shared activation and reject
 any late PTY result without blocking on shell preparation.
 
+## Controller replacement
+
+Controller epochs advance throughout a session's lifetime, including intervals
+with no controller. After the controlling view disconnects, a replacement view
+receives a newer epoch and remaining observers receive that ownership update.
+They can then activate with the current epoch and authoritative geometry without
+reattaching or discarding their terminal state.
+
 ## Locale environment
 
 PTY sessions preserve `LANG`, `LC_ALL`, `LC_CTYPE`, and category-specific

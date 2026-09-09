@@ -626,3 +626,44 @@ func (e *blockingSemanticHistoryEngine) ReadHistory(anchor SemanticHistoryAnchor
 	<-e.release
 	return e.fakeSemanticHistoryEngine.ReadHistory(anchor, limit)
 }
+
+func TestControllerEpochAdvancesWhenAReplacementJoinsAfterControllerDetach(t *testing.T) {
+	session := &Session{}
+	for _, id := range []string{"controller", "observer"} {
+		if err := session.AttachSemanticView(id, "local", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := session.EnsureSemanticController("controller", "local", 1)
+	var notifications []ControllerState
+	observer, err := session.AttachSemanticLiveConnection("observer", 1, 80, 24, LiveSubscriber{
+		OnController: func(state ControllerState) bool {
+			notifications = append(notifications, state)
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Detach()
+	if !session.LogicalDetachSemanticView("controller", 1) {
+		t.Fatal("controller did not detach")
+	}
+	detached := session.Controller()
+	if detached.Epoch <= first.Epoch || detached.AttachmentID != "" {
+		t.Fatalf("detached controller = %+v after %+v", detached, first)
+	}
+	if err := session.AttachSemanticView("replacement", "local", 2); err != nil {
+		t.Fatal(err)
+	}
+	replacement := session.EnsureSemanticController("replacement", "local", 2)
+	if replacement.Epoch != detached.Epoch+1 || replacement.AttachmentID != "replacement" {
+		t.Fatalf("replacement controller = %+v, must advance beyond %+v", replacement, detached)
+	}
+	if len(notifications) != 2 || notifications[0] != detached || notifications[1] != replacement {
+		t.Fatalf("remaining observer notifications = %+v, want detach and replacement", notifications)
+	}
+	if retained := session.EnsureSemanticController("observer", "local", 1); retained != replacement || len(notifications) != 2 {
+		t.Fatalf("observer ensure changed the existing controller: %+v, notifications %+v", retained, notifications)
+	}
+}

@@ -268,3 +268,39 @@ func TestManagerBackendRejectsSupersededInputGenerationWithoutPTYWrite(t *testin
 		t.Fatalf("stale input changed controller: before=%+v after=%+v", before, session.Controller())
 	}
 }
+
+func TestManagerBackendRetainedObserverCanActivateAfterControllerReplacement(t *testing.T) {
+	manager := terminal.NewManager(terminal.ManagerConfig{Logger: terminal.NopLogger{}})
+	t.Cleanup(manager.Cleanup)
+	session, err := manager.CreateSession("controller-replacement", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := NewManagerBackend(manager, ManagerBackendOptions{})
+	attach := func(id string) (Attach, Attached, func()) {
+		request := Attach{AttachGeneration: 1, Cols: 80, Rows: 24, SessionID: session.ID, ConnectionID: id}
+		result, detach, err := backend.Attach(context.Background(), request, Subscriber{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(detach)
+		return request, result, detach
+	}
+	_, first, detachFirst := attach("first")
+	observerRequest, _, _ := attach("observer")
+	detachFirst()
+	detachedEpoch := session.Controller().Epoch
+	_, replacement, _ := attach("replacement")
+	if replacement.ControllerEpoch <= detachedEpoch || detachedEpoch <= first.ControllerEpoch {
+		t.Fatalf("controller epoch regressed: first=%d detached=%d replacement=%d", first.ControllerEpoch, detachedEpoch, replacement.ControllerEpoch)
+	}
+	activated, err := backend.Activate(context.Background(), observerRequest, Activate{
+		Sequence: 1, ControllerEpoch: replacement.ControllerEpoch, Cols: 96, Rows: 30,
+	})
+	if err != nil {
+		t.Fatalf("retained observer cannot regain control: %v", err)
+	}
+	if activated.ControllerEpoch <= replacement.ControllerEpoch || activated.Cols != 96 || activated.Rows != 30 {
+		t.Fatalf("activation did not settle a newer controller and matching geometry: %+v", activated)
+	}
+}
