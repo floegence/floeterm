@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { decodeSemanticFrameWire } from './frameCodec.js';
 
 export type SemanticCell = { text: string; hyperlink?: string; width: number; style?: { foreground?: string; background?: string; bold?: boolean; italic?: boolean; underline?: boolean; inverse?: boolean } };
@@ -316,7 +318,7 @@ async function assembleHistorySnapshot(chunks: readonly SemanticHistoryChunk[]):
     payload.set(chunk.payload, offset);
     offset += chunk.payload.byteLength;
   }
-  const digest = await sha256Hex(payload);
+  const digest = bytesToHex(sha256(payload));
   if (digest !== first.payloadSha256) throw new Error('semantic history snapshot integrity check failed');
   const decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload)) as any;
   if (decoded?.v !== 1) throw new Error('invalid semantic history snapshot wire');
@@ -481,11 +483,4 @@ function validateHistoryIdentity(value: Readonly<{
     || (value.firstRowOrdinal as number) + value.totalRows > Number.MAX_SAFE_INTEGER) {
     throw new Error('invalid semantic history identity');
   }
-}
-
-async function sha256Hex(payload: Uint8Array): Promise<string> {
-  if (!globalThis.crypto?.subtle) throw new Error('SHA-256 is unavailable for semantic history validation');
-  const source = payload.slice().buffer;
-  const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', source));
-  return [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }

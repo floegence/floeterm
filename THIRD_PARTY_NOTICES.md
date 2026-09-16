@@ -20,6 +20,7 @@ For authoritative license texts and copyright notices, refer to each upstream pr
 
 ## npm Packages
 
+- @noble/hashes@2.4.0 (License: MIT; standard SHA-256 for semantic history integrity on HTTP and HTTPS)
 - @asamuzakjp/css-color@3.2.0 (License: MIT)
 - @babel/code-frame@7.28.6 (License: MIT)
 - @babel/compat-data@7.28.6 (License: MIT)

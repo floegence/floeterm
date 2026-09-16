@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.19.1
+npm install @floegence/floeterm-terminal-web@0.19.2
 ```
 
 ## Exports
@@ -174,6 +174,12 @@ Caches account for semantic bytes as well as cells, use a 4 MiB per-view budget 
 
 Normal live output continues to advance in the background while a view browses an
 immutable history frame. Returning to the bottom reveals the latest Presentation.
+
+History snapshots always pass their declared length and SHA-256 checks before
+decoding. Hashing uses `@noble/hashes` and works on ordinary HTTP origins without
+WebCrypto `SubtleCrypto`; unavailable browser secure-context APIs never disable
+integrity validation. HTTP does not authenticate or encrypt network transport;
+the host application remains responsible for its connection security policy.
 Content epoch, geometry, attachment, and transport-generation changes invalidate the
 view-local cache; an observer's scrolling never sends input, resizes the PTY, or takes
 controller ownership.

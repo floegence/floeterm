@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npmCliPath = process.env.npm_execpath;
-const expectedVersion = '0.19.1';
+const expectedVersion = '0.19.2';
 const expectedExports = ['.', './live', './semantic', './sessions'];
 const forbiddenContent = [
   '@floegence/ghostty-web',
@@ -56,7 +56,7 @@ const collectFiles = async directory => {
 try {
   const sourcePackage = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
   assert.equal(sourcePackage.version, expectedVersion);
-  assert.deepEqual(sourcePackage.dependencies, {});
+  assert.deepEqual(sourcePackage.dependencies, { '@noble/hashes': '2.4.0' });
   assert.deepEqual(Object.keys(sourcePackage.exports).sort(), expectedExports);
 
   await runNpm(['run', 'build'], packageRoot);
@@ -75,7 +75,7 @@ try {
   const installedRoot = path.join(installRoot, 'node_modules', '@floegence', 'floeterm-terminal-web');
   const installedPackage = JSON.parse(await readFile(path.join(installedRoot, 'package.json'), 'utf8'));
   assert.equal(installedPackage.version, expectedVersion);
-  assert.deepEqual(installedPackage.dependencies, {});
+  assert.deepEqual(installedPackage.dependencies, { '@noble/hashes': '2.4.0' });
   assert.deepEqual(Object.keys(installedPackage.exports).sort(), expectedExports);
 
   const installedFiles = await collectFiles(installedRoot);

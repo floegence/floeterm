@@ -123,7 +123,7 @@ describe('semantic presentation', () => {
     expect(vi.getTimerCount()).toBe(0);
     renderer.dispose();
   });
-  it('validates and atomically assembles a compact semantic history snapshot', async () => {
+  it.each([true, false])('validates and atomically assembles history with WebCrypto available: %s', async (hasWebCrypto) => {
     const payload = new TextEncoder().encode(JSON.stringify({
       v: 1,
       frame: {
@@ -136,6 +136,7 @@ describe('semantic presentation', () => {
     }));
     const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', payload))]
       .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    if (!hasWebCrypto) vi.stubGlobal('crypto', { subtle: undefined });
     const chunk = validateHistoryChunk({
       snapshotId: 'snapshot', chunkIndex: 0, chunkCount: 1,
       payloadBytes: payload.byteLength, payloadSha256: digest, payload,
@@ -147,6 +148,10 @@ describe('semantic presentation', () => {
     const viewport = await assembleHistoryViewport([chunk]);
     expect(viewport.frame.rows[0]!.cells[0]!.text).toBe('A');
     expect(viewport.frame.height).toBe(1);
+    const tampered = payload.slice();
+    tampered[0] ^= 1;
+    await expect(assembleHistoryViewport([{ ...chunk, payload: tampered }])).rejects.toThrow(/integrity check failed/);
+    await expect(assembleHistoryViewport([{ ...chunk, payloadSha256: '0'.repeat(64) }])).rejects.toThrow(/integrity check failed/);
     expect(() => validateHistoryChunk({ ...chunk, anchor: '' })).toThrow(/anchor/);
     expect(() => validateHistoryChunk({ ...chunk, payload: new Uint8Array(60 * 1024 + 1) })).toThrow(/payload/);
     expect(() => validateHistoryChunk({ ...chunk, payload: 'A'.repeat(Math.ceil((60 * 1024) / 3) * 4 + 1) })).toThrow(/payload/);
