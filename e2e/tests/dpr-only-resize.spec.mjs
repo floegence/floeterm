@@ -48,7 +48,10 @@ test('updates the existing canvas backing for DPR-only changes at fixed CSS geom
       deviceScaleFactor: dpr,
       mobile: false,
     });
+    // CDP metrics alone do not advance a headless compositor frame. Request
+    // one without Playwright screenshot viewport normalization resetting DPR.
     await expect.poll(async () => {
+      await cdp.send('Page.captureScreenshot');
       const state = await readSurface(page);
       return state.dpr === dpr
         && state.backing.width === Math.round(state.css.width * dpr)
