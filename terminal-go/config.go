@@ -7,6 +7,7 @@ import (
 
 // ManagerConfig defines defaults used for all sessions created by a manager.
 type ManagerConfig struct {
+	HistoryRetention            HistoryRetentionLimits
 	Logger                      Logger
 	EnvProvider                 ShellEnvProvider
 	ShellResolver               ShellResolver

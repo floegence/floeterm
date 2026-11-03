@@ -170,6 +170,23 @@ async function settle(controller: HistoryViewportController): Promise<void> {
 }
 
 describe('HistoryViewportController', () => {
+  it('cancels queued wheel work when returning to live input', () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    const renderer = { apply: vi.fn(), project: vi.fn(), getCellMetrics: () => ({ cellWidthCssPx: 9, cellHeightCssPx: 18 }) };
+    const request = vi.fn(() => new Promise<SemanticHistoryViewport>(() => {}));
+    const controller = new HistoryViewportController({ renderer, request,
+      requestAnimationFrame: callback => { frames.set(1, callback); return 1; },
+      cancelAnimationFrame: id => { frames.delete(id); },
+    });
+    controller.apply(presentation());
+    controller.handleWheel(-120, 0);
+    controller.showLatest();
+    for (const callback of frames.values()) callback(0);
+    expect(controller.getState().browsing).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
   it('projects a geometry-stable skeleton in the same turn as a cold scroll', async () => {
     let resolveRequest!: (value: SemanticHistoryViewport) => void;
     const request = vi.fn(() => new Promise<SemanticHistoryViewport>(resolve => {
@@ -1357,4 +1374,20 @@ describe('HistoryViewportController', () => {
     expect(controller.getCacheMetrics().extraBytes).toBe(0);
     controller.dispose();
   });
+});
+
+it('follows committed input only when enabled and ignores key releases', () => {
+ const renderer = { apply: vi.fn(), project: vi.fn(), getCellMetrics: () => ({ cellWidthCssPx: 9, cellHeightCssPx: 18 }) };
+ const controller = new HistoryViewportController({renderer, request: vi.fn()});
+ controller.apply(presentation());
+ const latest = vi.spyOn(controller, 'showLatest');
+ const key = {kind:'key',code:'Enter',text:'',action:'release',modifiers:{shift:false,control:false,alt:false,super:false,capsLock:false,numLock:false}} as const;
+ controller.handleUserInput(key);
+ controller.handleUserInput(undefined, false);
+ expect(latest).not.toHaveBeenCalled();
+ controller.handleUserInput({...key,action:'press'});
+ controller.handleUserInput({...key,action:'repeat'});
+ controller.handleUserInput();
+ expect(latest).toHaveBeenCalledTimes(3);
+ controller.dispose();
 });

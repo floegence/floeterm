@@ -33,7 +33,10 @@ func semanticCellWidth(ghosttyWide int) (uint8, error) {
 	}
 }
 
-type nativeSemanticEngine struct{ engine *nativevt.Engine }
+type nativeSemanticEngine struct {
+	engine            *nativevt.Engine
+	retentionDefaults HistoryRetentionLimits
+}
 
 type nativeSemanticHistoryAnchor struct{ anchor *nativevt.Anchor }
 
@@ -49,7 +52,12 @@ func NewNativeSemanticEngine(cols, rows int) (SemanticEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &nativeSemanticEngine{engine: e}, nil
+	bytes, lines, err := e.Retention()
+	if err != nil {
+		e.Close()
+		return nil, err
+	}
+	return &nativeSemanticEngine{engine: e, retentionDefaults: HistoryRetentionLimits{MaxBytes: bytes, MaxLines: lines}}, nil
 }
 
 func newProductSemanticEngine(cols, rows int) (SemanticEngine, error) {
@@ -189,3 +197,24 @@ func (e *nativeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 	}
 }
 func (e *nativeSemanticEngine) Close() { e.engine.Close() }
+
+func (e *nativeSemanticEngine) HistoryRetentionDefaults() HistoryRetentionLimits {
+	return e.retentionDefaults.Clone()
+}
+func (e *nativeSemanticEngine) HistoryRetention() (HistoryRetentionLimits, error) {
+	b, l, err := e.engine.Retention()
+	return HistoryRetentionLimits{MaxBytes: b, MaxLines: l}, err
+}
+func (e *nativeSemanticEngine) ConfigureHistoryRetention(limits HistoryRetentionLimits) error {
+	if err := limits.Validate(); err != nil {
+		return err
+	}
+	b, l := limits.MaxBytes, limits.MaxLines
+	if b == nil {
+		b = e.retentionDefaults.MaxBytes
+	}
+	if l == nil {
+		l = e.retentionDefaults.MaxLines
+	}
+	return e.engine.SetRetention(b, l)
+}

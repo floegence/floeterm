@@ -70,3 +70,6 @@ export type {
   TerminalThemeDefinition,
   TerminalThemeName,
 } from '../types.js';
+
+export { HistoryScrollbar } from '../semantic/HistoryScrollbar.js';
+export type { HistoryScrollbarOptions } from '../semantic/HistoryScrollbar.js';

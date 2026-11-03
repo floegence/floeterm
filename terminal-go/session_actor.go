@@ -46,6 +46,7 @@ const (
 
 // SessionActor is the single mutable owner of PTY admission and the VT engine.
 type SessionActor struct {
+	retention             HistoryRetentionLimits
 	mu                    sync.Mutex
 	engine                SemanticEngine
 	store                 *PresentationStore

@@ -212,3 +212,21 @@ Custom `ShellInitWriter` implementations that also need to run without a PATH pr
 - Cwd parsing is stream-safe across PTY read chunks, so fragmented fullscreen/TUI control sequences do not trigger false working-directory parse failures.
 - Shell metadata parsing is bounded to 4 KiB of pending data. Program labels use a strict 64-byte ASCII allowlist, and ordinary PTY output publishes only output phase boundaries rather than one metadata update per chunk.
 - `NewStdLogger` colorizes output by level when writing to a TTY (disable via `NO_COLOR=1` or `FLOETERM_LOG_COLOR=0`).
+
+## History retention
+
+ManagerConfig.HistoryRetention and Manager.SetHistoryRetentionDefaults configure
+new sessions. Existing sessions are unchanged. Session.HistoryRetention reports
+configured, effective and engine-default limits; ConfigureHistoryRetention applies
+limits explicitly to one attachment- and principal-bound session without acquiring
+control. HistoryRetentionLimits uses optional max_lines and max_bytes: nil restores
+the corresponding engine default; zero requests a zero history budget. Bytes are
+native storage bytes, not Unicode characters. Both budgets apply together, exclude
+the active screen, and are page-granular; they are not an exact retained-line promise.
+
+Configuration validates before mutation and runs at the actor cut shared with PTY
+output. It preserves the screen, cursor, dimensions and process while invalidating
+history snapshots and publishing the new history epoch. Unexpected mutation errors
+fail the session closed rather than claiming rollback of already-pruned history.
+Hosts persist their own defaults and require explicit confirmation before trimming
+an existing session. Native engine support is required for non-default budgets.

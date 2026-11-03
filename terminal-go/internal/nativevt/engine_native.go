@@ -5,6 +5,8 @@ package nativevt
 /*
 #cgo CFLAGS: -I${SRCDIR}/generated/include -I${SRCDIR}/generated
 #include "generated/adapter.h"
+int floeterm_native_retention_get(NativeEngine *, size_t *, int *, size_t *, int *);
+int floeterm_native_retention_set(NativeEngine *, size_t, int, size_t, int);
 int floeterm_native_history_total_rows(NativeEngine *engine, size_t *rows);
 int floeterm_native_anchor_screen_row(NativeAnchor *anchor, uint32_t *row);
 typedef struct {
@@ -360,4 +362,43 @@ func (e *Engine) ReadHistory(anchor *Anchor, limit uint16) (Frame, AnchorStatus,
 		return Frame{}, AnchorInvalid, err
 	}
 	return frame, AnchorValid, nil
+}
+
+func (e *Engine) Retention() (bytes, lines *uint64, err error) {
+	if e == nil || e.handle == nil {
+		return nil, nil, errors.New("native engine closed")
+	}
+	var b, l C.size_t
+	var hb, hl C.int
+	if C.floeterm_native_retention_get(e.handle, &b, &hb, &l, &hl) == 0 {
+		return nil, nil, errors.New("read native history retention")
+	}
+	if hb != 0 {
+		v := uint64(b)
+		bytes = &v
+	}
+	if hl != 0 {
+		v := uint64(l)
+		lines = &v
+	}
+	return
+}
+func (e *Engine) SetRetention(bytes, lines *uint64) error {
+	if e == nil || e.handle == nil {
+		return errors.New("native engine closed")
+	}
+	var b, l C.size_t
+	var hb, hl C.int
+	if bytes != nil {
+		b = C.size_t(*bytes)
+		hb = 1
+	}
+	if lines != nil {
+		l = C.size_t(*lines)
+		hl = 1
+	}
+	if C.floeterm_native_retention_set(e.handle, b, hb, l, hl) == 0 {
+		return errors.New("set native history retention")
+	}
+	return nil
 }

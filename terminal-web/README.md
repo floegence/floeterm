@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.19.2
+npm install @floegence/floeterm-terminal-web@0.20.0
 ```
 
 ## Exports
@@ -209,3 +209,25 @@ npm run check:package-artifact
 
 The package-artifact check installs the packed tarball into a fresh consumer and
 rejects removed parser, checkpoint, renderer, and WASM contracts.
+
+## History interaction and retention
+
+The host creates one HistoryScrollbar with its track, thumb and existing
+HistoryViewportController. Call scrollbar.update() from the controller's onState
+callback, and dispose it with the view. Supply localized aria-label and aria-controls
+on the track. The component owns pointer capture, grab-point preservation, one
+navigation per animation frame, page clicks, keyboard navigation and ARIA values.
+Its pixel minimum keeps the thumb usable for long histories; it remeasures on resize.
+An optional onPointerComplete returns pointer users to the host input. Keyboard
+scrolling retains focus. Hosts own visual styles, focus rings and coarse-pointer policy.
+
+Call controller.handleUserInput(intent, followEnabled) immediately before accepted
+user input; omit intent for committed text or paste. The default follows live output.
+Releases and disabled follow do not navigate. Do not call it for background PTY output,
+copy, selection, composition-in-progress, or modifier-only browser events. Returning
+to live cancels pending wheel work and invalidates old history results.
+
+The live transport exposes optional historyRetention and configureHistoryRetention
+control-plane adapters. Mutations are bound to the current attachment generation,
+validate safe integer limits and responses, and never retry uncertain effects.
+The host owns authorization, persistence and explicit destructive-action confirmation.

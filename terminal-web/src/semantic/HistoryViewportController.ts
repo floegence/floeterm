@@ -1,3 +1,4 @@
+import type { TerminalKeyInputIntent } from '../core/TerminalInputBridge.js';
 import type { RendererSurface } from './RendererSurface.js';
 import type {
   SemanticHistoryRequest,
@@ -174,8 +175,17 @@ export class HistoryViewportController {
     this.showOffset(0);
   }
 
+  /** Called only for input accepted by the host. Releases never interrupt reading. */
+  handleUserInput(input?: TerminalKeyInputIntent, enabled = true): void {
+    if (!enabled || input?.action === 'release') return;
+    this.showLatest();
+  }
+
   showLatest(): void {
     if (!this.latest || this.disposed) return;
+    if (this.wheelFrame !== null) this.cancelFrame(this.wheelFrame);
+    this.wheelFrame = null;
+    this.wheelResidualRows = 0;
     // Invalidate any history request that was started before returning to the
     // live frontier. Its response must never re-enter the visible surface.
     this.epoch += 1;

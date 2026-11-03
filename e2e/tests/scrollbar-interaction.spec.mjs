@@ -69,10 +69,11 @@ test('uses real mouse, wheel, keyboard, focus, selection, and media preferences'
   await expect.poll(async () => Number(await scrollbar.getAttribute('aria-valuenow'))).toBeLessThan(maximum);
   expect(await page.evaluate(() => window.__floetermRailWheelEvents)).toBe(1);
 
+  const beforePage = Number(await scrollbar.getAttribute('aria-valuenow'));
   await page.mouse.move(rightEdgeX, scrollbarBox.y + 12);
   await page.mouse.down();
   await page.mouse.up();
-  await expect.poll(async () => Number(await scrollbar.getAttribute('aria-valuenow'))).toBeLessThan(maximum / 4);
+  await expect.poll(async () => Number(await scrollbar.getAttribute('aria-valuenow'))).toBeLessThan(beforePage);
 
   await scrollbar.focus();
   await page.keyboard.press('End');
@@ -93,7 +94,7 @@ test('uses real mouse, wheel, keyboard, focus, selection, and media preferences'
   await expect(scrollbar).toHaveAttribute('data-dragging', 'false');
   await expect(scrollbar).toHaveAttribute('data-hovered', 'false');
   await expect(page.locator(':focus')).toHaveAttribute('aria-label', 'Terminal input');
-  await expect(scrollbar).toHaveAttribute('data-visible', 'false', { timeout: 2_000 });
+  await expect(scrollbar).toHaveCSS('opacity', '0', { timeout: 2_000 });
 
   await scrollbar.focus();
   await page.keyboard.press('End');
@@ -115,7 +116,7 @@ test('uses real mouse, wheel, keyboard, focus, selection, and media preferences'
   await expect(scrollbar).toHaveAttribute('data-hovered', 'true');
   await page.mouse.move(surfaceBox.x - 8, surfaceBox.y - 8);
   await expect(scrollbar).toHaveAttribute('data-hovered', 'false');
-  await expect(scrollbar).toHaveAttribute('data-visible', 'false', { timeout: 2_000 });
+  await expect(scrollbar).toHaveCSS('opacity', '0', { timeout: 2_000 });
 
   await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'active' });
   expect(await scrollbar.evaluate(element => getComputedStyle(element).transitionDuration)).toBe('0s');
@@ -182,4 +183,18 @@ test('keeps the right-edge scrollbar transparent to a real touchscreen hit test'
   } finally {
     await context.close();
   }
+});
+
+test('returns to live on committed text and paste but preserves history on modifiers and copy', async ({ page, context }) => {
+ const failures = captureBrowserFailures(page);
+ const {scrollbar, terminal} = await openTerminalWithHistory(page);
+ await context.grantPermissions(['clipboard-read','clipboard-write'], {origin: new URL(page.url()).origin});
+ const browse = async () => { await scrollbar.focus(); await page.keyboard.press('Home'); await expect(scrollbar).toHaveAttribute('aria-valuenow','0'); await terminal.focus(); };
+ const live = async () => { await expect.poll(async()=>Number(await scrollbar.getAttribute('aria-valuenow'))===Number(await scrollbar.getAttribute('aria-valuemax'))).toBe(true); };
+ await browse(); await page.keyboard.press('Shift'); await expect(scrollbar).toHaveAttribute('aria-valuenow','0');
+ await page.keyboard.press('ControlOrMeta+c'); await expect(scrollbar).toHaveAttribute('aria-valuenow','0');
+ await page.keyboard.type('echo INPUT_FOLLOW'); await live(); await page.keyboard.press('Enter');
+ await browse(); await page.evaluate(()=>navigator.clipboard.writeText('echo PASTE_FOLLOW')); await page.keyboard.press('ControlOrMeta+v'); await live(); await page.keyboard.press('Enter');
+ await browse(); await page.keyboard.press('Enter'); await live();
+ expect(failures).toEqual([]);
 });

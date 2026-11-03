@@ -450,6 +450,39 @@ describe('semantic terminal live transport', () => {
     await expect(clearing).rejects.toMatchObject({ name: 'AbortError' });
   });
 
+  it('validates retention and fences a mutation against attachment replacement without retry', async () => {
+    const streams: FakeStream[] = [];
+    const limits = { max_lines: 100, max_bytes: null };
+    const state = { configured: limits, effective: limits, defaults: { max_lines: null, max_bytes: 10000000 } };
+    let settle: ((value: typeof state) => void) | undefined;
+    const configureHistoryRetention = vi.fn(() => new Promise<typeof state>(resolve => { settle = resolve; }));
+    const bundle = createSemanticTerminalLiveTransport({
+      connectionId: 'view',
+      openStream: async () => { const stream = new FakeStream(); streams.push(stream); return stream; },
+      control: { semanticHistory: vi.fn(), configureHistoryRetention,
+        historyRetention: vi.fn(async () => ({ ...state, effective: { ...limits, max_lines: -1 } })) },
+    });
+    await expect(bundle.transport.configureHistoryRetention!('session', limits)).rejects.toThrow('not attached');
+    const attach = async () => {
+      const index = streams.length;
+      const pending = bundle.transport.attachWithPresentation('session', 80, 24);
+      await waitUntil(() => streams[index]?.writes.length === 1);
+      streams[index]!.push(encodeAttached({ presentationSequence: 1n, geometryGeneration: 1n, controllerEpoch: 1n, cols: 80, rows: 24, isController: true }));
+      await pending;
+    };
+    await attach();
+    await expect(bundle.transport.configureHistoryRetention!('session', { ...limits, max_lines: -1 })).rejects.toThrow('invalid');
+    await expect(bundle.transport.historyRetention!('session')).rejects.toThrow('invalid');
+    expect(configureHistoryRetention).not.toHaveBeenCalled();
+    const pending = bundle.transport.configureHistoryRetention!('session', limits);
+    expect(configureHistoryRetention).toHaveBeenCalledWith('session', 'view', 1, limits);
+    await attach();
+    settle?.(state);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(configureHistoryRetention).toHaveBeenCalledTimes(1);
+    bundle.transport.dispose();
+  });
+
   it('activates only the current attachment and publishes controller ownership', async () => {
     const streams: FakeStream[] = [];
     const bundle = createSemanticTerminalLiveTransport({

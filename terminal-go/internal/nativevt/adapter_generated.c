@@ -362,3 +362,30 @@ fail:
   native_bytes_free(output);
   return 0;
 }
+
+// Public native retention options; no engine storage/layout assumptions.
+int floeterm_native_retention_get(NativeEngine *engine, size_t *bytes, int *has_bytes,
+                                 size_t *lines, int *has_lines) {
+  if (!engine) return 0;
+  GhosttyResult b = ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_BYTES, bytes);
+  GhosttyResult l = ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_LINES, lines);
+  *has_bytes = b == GHOSTTY_SUCCESS;
+  *has_lines = l == GHOSTTY_SUCCESS;
+  return (b == GHOSTTY_SUCCESS || b == GHOSTTY_NO_VALUE) && (l == GHOSTTY_SUCCESS || l == GHOSTTY_NO_VALUE);
+}
+int floeterm_native_retention_set(NativeEngine *engine, size_t bytes, int has_bytes,
+                                 size_t lines, int has_lines) {
+  size_t old_bytes = 0, old_lines = 0;
+  int old_has_bytes = 0, old_has_lines = 0;
+  if (!floeterm_native_retention_get(engine, &old_bytes, &old_has_bytes, &old_lines, &old_has_lines)) return 0;
+  bool raise_bytes = !has_bytes || (old_has_bytes && bytes >= old_bytes);
+  bool raise_lines = !has_lines || (old_has_lines && lines >= old_lines);
+  // Raise constraints before lowering either one when switching budgets.
+  for (int pass = 0; pass < 2; pass++) {
+    if (raise_bytes == (pass == 0) && ghostty_terminal_set(engine->terminal,
+        GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, has_bytes ? &bytes : NULL) != GHOSTTY_SUCCESS) return 0;
+    if (raise_lines == (pass == 0) && ghostty_terminal_set(engine->terminal,
+        GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, has_lines ? &lines : NULL) != GHOSTTY_SUCCESS) return 0;
+  }
+  return 1;
+}

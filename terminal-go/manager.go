@@ -59,7 +59,14 @@ func (m *Manager) CreateProgramSession(name, workingDir string, program Program)
 
 func (m *Manager) createSession(name, workingDir string, program *Program) (*Session, error) {
 	sessionID := generateSessionID()
-	sessionCfg := newSessionConfig(m.config)
+	m.mu.RLock()
+	config := m.config
+	config.HistoryRetention = config.HistoryRetention.Clone()
+	m.mu.RUnlock()
+	if err := config.HistoryRetention.Validate(); err != nil {
+		return nil, err
+	}
+	sessionCfg := newSessionConfig(config)
 	sessionCfg.program = program
 	if name == "" {
 		name = getDirectoryName(workingDir)
@@ -115,8 +122,20 @@ func (m *Manager) createSession(name, workingDir string, program *Program) (*Ses
 		config: sessionCfg,
 	}
 	if engine, engineErr := newProductSemanticEngine(80, 24); engineErr == nil {
+		if retention, ok := engine.(SemanticHistoryRetentionEngine); ok {
+			if err := retention.ConfigureHistoryRetention(config.HistoryRetention); err != nil {
+				engine.Close()
+				cancel()
+				return nil, err
+			}
+		} else if config.HistoryRetention.MaxLines != nil || config.HistoryRetention.MaxBytes != nil {
+			engine.Close()
+			cancel()
+			return nil, ErrHistoryRetentionUnavailable
+		}
 		store := NewPresentationStore(64)
 		if actor, actorErr := NewSessionActor(engine, 80, 24, store); actorErr == nil {
+			actor.retention = config.HistoryRetention.Clone()
 			session.semanticActor = actor
 			session.presentationStore = store
 			if publishErr := actor.PublishInitialPresentation(); publishErr == nil {
@@ -127,6 +146,11 @@ func (m *Manager) createSession(name, workingDir string, program *Program) (*Ses
 		} else {
 			engine.Close()
 		}
+	}
+
+	if session.semanticActor == nil && (config.HistoryRetention.MaxLines != nil || config.HistoryRetention.MaxBytes != nil) {
+		cancel()
+		return nil, ErrHistoryRetentionUnavailable
 	}
 
 	// Register the session before starting the PTY so the onExit callback can

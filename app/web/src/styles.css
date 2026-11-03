@@ -497,7 +497,8 @@ body {
   transition: opacity 120ms ease;
 }
 
-.semanticHistoryRail[data-visible='true'],
+.semanticHistoryRail[data-hovered='true'],
+.semanticHistoryRail[data-dragging='true'],
 .semanticHistoryRail:focus-visible {
   opacity: 1;
 }

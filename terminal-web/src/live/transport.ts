@@ -50,11 +50,33 @@ export type SemanticTerminalLiveControlPlane = Readonly<{
     connectionId: string,
     transportGeneration: number,
   ): Promise<TerminalSemanticClearResult>;
+  historyRetention?(sessionId: TerminalID): Promise<TerminalHistoryRetentionState>;
+  configureHistoryRetention?(sessionId: TerminalID, connectionId: string, transportGeneration: number, limits: TerminalHistoryRetentionLimits): Promise<TerminalHistoryRetentionState>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
   createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
   deleteSession?(sessionId: TerminalID): Promise<void>;
   renameSession?(sessionId: TerminalID, newName: string): Promise<void>;
 }>;
+
+export type TerminalHistoryRetentionLimits = Readonly<{ max_lines: number | null; max_bytes: number | null }>;
+export type TerminalHistoryRetentionState = Readonly<{
+  configured: TerminalHistoryRetentionLimits;
+  effective: TerminalHistoryRetentionLimits;
+  defaults: TerminalHistoryRetentionLimits;
+}>;
+
+function validateHistoryRetention(state: TerminalHistoryRetentionState): TerminalHistoryRetentionState {
+  for (const limits of [state?.configured, state?.effective, state?.defaults]) {
+    if (!limits) throw new Error('invalid terminal history retention state');
+    for (const value of [limits.max_lines, limits.max_bytes]) {
+      if (value !== null && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new Error('invalid terminal history retention state');
+      }
+    }
+  }
+  return state;
+}
+
 
 export type TerminalSemanticClearResult = Readonly<{
   presentationSequence: number;
@@ -156,6 +178,8 @@ export type SemanticTerminalLiveTransport = Readonly<{
   interactPaste(sessionId: TerminalID, cols: number, rows: number, input: string): Promise<void>;
   semanticHistory(sessionId: TerminalID, request: SemanticHistoryRequest): Promise<SemanticHistoryViewport>;
   clearSemanticContent?(sessionId: TerminalID): Promise<TerminalSemanticClearResult>;
+  historyRetention?(sessionId: TerminalID): Promise<TerminalHistoryRetentionState>;
+  configureHistoryRetention?(sessionId: TerminalID, limits: TerminalHistoryRetentionLimits): Promise<TerminalHistoryRetentionState>;
   listSessions?(): Promise<TerminalSessionInfo[]>;
   createSession?(name?: string, workingDir?: string, cols?: number, rows?: number): Promise<TerminalSessionInfo>;
   deleteSession?(sessionId: TerminalID): Promise<void>;
@@ -539,6 +563,22 @@ export const createSemanticTerminalLiveTransport = (
         throw new Error('invalid terminal semantic clear settlement');
       }
       return result;
+    } : undefined,
+    historyRetention: options.control.historyRetention ? async sessionId =>
+      validateHistoryRetention(await options.control.historyRetention!(sessionId)) : undefined,
+    configureHistoryRetention: options.control.configureHistoryRetention ? async (sessionId, limits) => {
+      for (const value of [limits.max_lines, limits.max_bytes]) {
+        if (value !== null && (!Number.isSafeInteger(value) || value < 0)) throw new Error('invalid history retention limit');
+      }
+      const entry = entries.get(sessionId);
+      if (!entry || !isCurrentGeneration(sessionId, entry.generation)) throw new Error('terminal live session is not attached');
+      const result = await options.control.configureHistoryRetention!(sessionId, options.connectionId, entry.generation, limits);
+      if (!isCurrentGeneration(sessionId, entry.generation)) {
+        const error = new Error('terminal history retention result was superseded');
+        error.name = 'AbortError';
+        throw error;
+      }
+      return validateHistoryRetention(result);
     } : undefined,
     listSessions: options.control.listSessions,
     createSession: options.control.createSession,

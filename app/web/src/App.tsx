@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import {
   RendererSurface,
   HistoryViewportController,
+  HistoryScrollbar,
   SEMANTIC_CELL_HEIGHT_CSS_PX,
   SEMANTIC_CELL_WIDTH_CSS_PX,
   SEMANTIC_TERMINAL_FONT_FAMILY,
@@ -558,13 +559,16 @@ const SingleTerminalPane = (props: {
 	let semanticCanvas: HTMLCanvasElement | undefined;
 	let semanticRenderer: RendererSurface | undefined;
 	let historyController: HistoryViewportController | undefined;
+	let historyScrollbar: HistoryScrollbar | undefined;
+	let historyTrack: HTMLDivElement | undefined;
+	let historyThumb: HTMLSpanElement | undefined;
 	let inputController: TerminalInputBridge | undefined;
   const [presentationError, setPresentationError] = createSignal('');
 	const [historyError, setHistoryError] = createSignal('');
 	const [historyPage, setHistoryPage] = createSignal<SemanticHistoryViewport | null>(null);
 	const [historyProjected, setHistoryProjected] = createSignal(false);
 	const [historyHovered, setHistoryHovered] = createSignal(false);
-	const [historyDragging, setHistoryDragging] = createSignal(false);
+
 	const [historyBusy, setHistoryBusy] = createSignal(false);
   const [historySummary, setHistorySummary] = createSignal({ totalRows: 0, screenStartOffset: 0 });
   let liveConnected = false;
@@ -702,53 +706,20 @@ const SingleTerminalPane = (props: {
       .finally(() => { activationPending = false; });
   };
   const interactInput = (data: string) => {
+    historyController?.handleUserInput();
     const dimensions = measuredDimensions();
     void props.transport.interactInput(props.sessionId, dimensions.cols, dimensions.rows, data);
   };
   const interactInputIntent = (intent: TerminalKeyInputIntent) => {
+    historyController?.handleUserInput(intent);
     const dimensions = measuredDimensions();
     void props.transport.interactInputIntent(props.sessionId, dimensions.cols, dimensions.rows, intent);
   };
   const interactPaste = (data: string) => {
+    historyController?.handleUserInput();
     const dimensions = measuredDimensions();
     void props.transport.interactPaste(props.sessionId, dimensions.cols, dimensions.rows, data);
   };
-
-	const showLatestPresentation = () => {
-		historyController?.showLatest();
-	};
-
-	const scrollHistory = async (direction: 'forward' | 'backward') => {
-		if (!latestPresentation) return;
-		historyController?.scrollByRows(direction === 'backward'
-			? -latestPresentation.frame.height
-			: latestPresentation.frame.height);
-	};
-
-	const historyMaximum = createMemo(() => Math.max(0, historySummary().screenStartOffset));
-	const historyCurrent = createMemo(() => historyProjected() ? Math.min(historyMaximum(), historyPage()?.offset ?? historyMaximum()) : historyMaximum());
-	const historyThumbSize = createMemo(() => {
-		const totalRows = historySummary().totalRows;
-		const visibleRows = latestPresentation?.frame.height ?? historyPage()?.frame.height ?? 0;
-		if (totalRows <= 0 || visibleRows <= 0) return 100;
-		return Math.max(6, Math.min(100, visibleRows / totalRows * 100));
-	});
-	const historyThumbStart = createMemo(() => {
-		const maximum = historyMaximum();
-		if (maximum === 0) return 0;
-		return Math.min(100 - historyThumbSize(), historyCurrent() / maximum * (100 - historyThumbSize()));
-	});
-	const handleHistoryPointer = (event: PointerEvent) => {
-		if (event.pointerType === 'touch') return;
-		const rail = event.currentTarget as HTMLElement;
-		const bounds = rail.getBoundingClientRect();
-		const ratio = Math.max(0, Math.min(1, (event.clientY - bounds.top) / Math.max(1, bounds.height)));
-		if (ratio >= 0.995) {
-			showLatestPresentation();
-		} else {
-			historyController?.showOffset(Math.round(ratio * historyMaximum()));
-		}
-	};
 
   onMount(() => {
 			if (semanticCanvas) semanticRenderer = new RendererSurface(semanticCanvas, error => {
@@ -764,8 +735,10 @@ const SingleTerminalPane = (props: {
 					setHistoryPage(historyController?.getViewport() ?? null);
 					setHistorySummary({ totalRows: state.totalRows, screenStartOffset: state.screenStartOffset });
 					setHistoryError(state.error?.message ?? '');
+					historyScrollbar?.update();
 				},
 			});
+    if (historyController && historyTrack && historyThumb) historyScrollbar = new HistoryScrollbar({ track: historyTrack, thumb: historyThumb, controller: historyController, onPointerComplete: () => inputController?.focus() });
 		const semanticResizeObserver = semanticCanvas && typeof ResizeObserver !== 'undefined'
 			? new ResizeObserver(() => { void requestResize(); })
 			: undefined;
@@ -815,6 +788,7 @@ const SingleTerminalPane = (props: {
 		semanticResizeObserver?.disconnect();
 		window.removeEventListener('resize', handleWindowResize);
 		semanticResize.dispose();
+			historyScrollbar?.dispose();
 			historyController?.dispose();
 			semanticRenderer?.dispose();
       unsubscribeGeometry?.();
@@ -880,46 +854,12 @@ const SingleTerminalPane = (props: {
             sendInputIntent={interactInputIntent}
             sendPaste={interactPaste}
           />
-		  <div
-			class="semanticHistoryRail"
-			role="scrollbar"
-			aria-label="Terminal scrollback"
-			aria-orientation="vertical"
-			aria-valuemin="0"
-			aria-valuemax={historyMaximum()}
-			aria-valuenow={historyCurrent()}
-			aria-controls="semantic-terminal-surface"
-			tabIndex={0}
-			data-visible={historyHovered() || historyDragging() ? 'true' : 'false'}
-			data-hovered={historyHovered() ? 'true' : 'false'}
-			data-dragging={historyDragging() ? 'true' : 'false'}
-			style={`--semantic-history-start:${historyThumbStart()}%;--semantic-history-size:${historyThumbSize()}%`}
-			onPointerEnter={() => setHistoryHovered(true)}
-			onPointerLeave={() => { setHistoryHovered(false); if (!historyDragging()) setHistoryDragging(false); }}
-			onPointerDown={event => {
-				if (event.pointerType === 'touch') return;
-				event.preventDefault();
-				setHistoryDragging(true);
-				event.currentTarget.setPointerCapture(event.pointerId);
-				handleHistoryPointer(event);
-			}}
-			onPointerMove={event => { if (historyDragging()) handleHistoryPointer(event); }}
-			onPointerUp={event => {
-				if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-				setHistoryDragging(false);
-				inputController?.focus({ preventScroll: true });
-			}}
-			onKeyDown={event => {
-				switch (event.key) {
-					case 'Home': event.preventDefault(); historyController?.showStart(); break;
-					case 'End': event.preventDefault(); showLatestPresentation(); break;
-					case 'PageUp': case 'ArrowUp': event.preventDefault(); void scrollHistory('backward'); break;
-					case 'PageDown': case 'ArrowDown': event.preventDefault(); void scrollHistory('forward'); break;
-				}
-			}}
-		  >
-			<span class="semanticHistoryThumb" data-semantic-history-thumb />
-		  </div>
+          <div ref={historyTrack} class="semanticHistoryRail" role="scrollbar"
+            aria-label="Terminal scrollback" aria-controls="semantic-terminal-surface"
+            onPointerEnter={() => setHistoryHovered(true)} onPointerLeave={() => setHistoryHovered(false)}
+            data-hovered={historyHovered() ? 'true' : 'false'}>
+            <span ref={historyThumb} class="semanticHistoryThumb" data-semantic-history-thumb />
+          </div>
 		  <Show when={historyError()}>
 			{message => <div class="semanticHistoryError" role="status">History unavailable: {message()}</div>}
 		  </Show>

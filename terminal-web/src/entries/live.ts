@@ -83,4 +83,6 @@ export type {
   TerminalControllerEvent,
   TerminalLiveResizeAppliedResult,
   TerminalSemanticClearResult,
+  TerminalHistoryRetentionLimits,
+  TerminalHistoryRetentionState,
 } from '../live/transport.js';
