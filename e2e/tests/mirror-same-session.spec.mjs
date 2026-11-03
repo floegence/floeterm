@@ -535,6 +535,9 @@ test('keeps both views usable through input, reconnect, resize, and session rest
     return harness?.getViews().length === 2
       && harness.getViews().every(view => view.getSnapshot().connection.isConnected && view.getTerminalInfo());
   });
+  // Connectivity predates the resize. Observe the shared Presentation cut
+  // before comparing dimensions from independently delivered live streams.
+  await expectMirrorPresentationConverged(page);
   const resized = await readMirror(page);
   expect(resized.state.connectedCount).toBe(2);
   expect(resized.state.errorCount).toBe(0);
