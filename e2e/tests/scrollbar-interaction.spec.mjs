@@ -187,14 +187,15 @@ test('keeps the right-edge scrollbar transparent to a real touchscreen hit test'
 
 test('returns to live on committed text and paste but preserves history on modifiers and copy', async ({ page, context }) => {
  const failures = captureBrowserFailures(page);
+ const clipboardModifier = process.platform === 'darwin' ? 'Meta' : 'Control+Shift';
  const {scrollbar, terminal} = await openTerminalWithHistory(page);
  await context.grantPermissions(['clipboard-read','clipboard-write'], {origin: new URL(page.url()).origin});
  const browse = async () => { await scrollbar.focus(); await page.keyboard.press('Home'); await expect(scrollbar).toHaveAttribute('aria-valuenow','0'); await terminal.focus(); };
  const live = async () => { await expect.poll(async()=>Number(await scrollbar.getAttribute('aria-valuenow'))===Number(await scrollbar.getAttribute('aria-valuemax'))).toBe(true); };
  await browse(); await page.keyboard.press('Shift'); await expect(scrollbar).toHaveAttribute('aria-valuenow','0');
- await page.keyboard.press('ControlOrMeta+c'); await expect(scrollbar).toHaveAttribute('aria-valuenow','0');
+ await page.keyboard.press(clipboardModifier + '+c'); await expect(scrollbar).toHaveAttribute('aria-valuenow','0');
  await page.keyboard.type('echo INPUT_FOLLOW'); await live(); await page.keyboard.press('Enter');
- await browse(); await page.evaluate(()=>navigator.clipboard.writeText('echo PASTE_FOLLOW')); await page.keyboard.press('ControlOrMeta+v'); await live(); await page.keyboard.press('Enter');
+ await browse(); await page.evaluate(()=>navigator.clipboard.writeText('echo PASTE_FOLLOW')); await page.keyboard.press(clipboardModifier + '+v'); await live(); await page.keyboard.press('Enter');
  await browse(); await page.keyboard.press('Enter'); await live();
  expect(failures).toEqual([]);
 });
