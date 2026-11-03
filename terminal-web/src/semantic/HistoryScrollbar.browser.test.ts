@@ -6,13 +6,26 @@ function fixture(){
  const track=document.createElement('div'),thumb=document.createElement('div');track.append(thumb);document.body.append(track);
  Object.assign(track.style,{position:'absolute',left:'100px',top:'20px',height:'400px',width:'16px'});
  Object.assign(thumb.style,{position:'absolute',left:'2px',right:'2px'});
- let offset=500;const changes:number[]=[];
- const controller={getState:()=>({browsing:offset<1000,busy:false,offset,totalRows:1100,screenStartOffset:1000,error:null}),showOffset:(value:number)=>{offset=Math.max(0,Math.min(1000,value));changes.push(offset)},showLatest:()=>{offset=1000},scrollByRows:vi.fn()};
+ let offset=500;let maximum=1000;const changes:number[]=[];
+ const controller={getState:()=>({browsing:offset<maximum,busy:false,offset,totalRows:maximum+100,screenStartOffset:maximum,error:null}),showOffset:(value:number)=>{offset=Math.max(0,Math.min(maximum,value));changes.push(offset)},showLatest:()=>{offset=1000},scrollByRows:vi.fn()};
  const bar=new HistoryScrollbar({track,thumb,controller});owned.push(bar);
  track.setPointerCapture=vi.fn();track.hasPointerCapture=()=>false;
- return {track,thumb,bar,changes};
+ return {track,thumb,bar,changes,setMaximum:(value:number)=>{maximum=value;bar.update()}};
 }
 describe('HistoryScrollbar',()=>{
+ it('recomputes drag geometry after appended output and cancels on lost capture',async()=>{
+  const {track,thumb,bar,changes,setMaximum}=fixture();
+  const bounds=thumb.getBoundingClientRect();
+  thumb.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,pointerId:4,clientY:bounds.top+10}));
+  setMaximum(2000);
+  track.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:4,clientY:420}));
+  await new Promise(requestAnimationFrame);
+  expect(changes[changes.length-1]).toBe(2000);
+  track.dispatchEvent(new PointerEvent('lostpointercapture',{bubbles:true,pointerId:4}));
+  expect(track.dataset.dragging).toBe('false');
+  setMaximum(0);expect(track.hidden).toBe(true);
+  bar.dispose();
+ });
  it('preserves the grab point and coalesces pointer motion',async()=>{
   const {track,thumb,changes}=fixture();const y=thumb.getBoundingClientRect().top+10;
   thumb.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true,button:0,pointerId:1,clientY:y}));

@@ -12,6 +12,7 @@ import (
 // NewManager creates a terminal manager with the provided configuration.
 func NewManager(cfg ManagerConfig) *Manager {
 	cfg = cfg.applyDefaults()
+	cfg.HistoryRetention = cfg.HistoryRetention.Clone()
 	return &Manager{
 		sessions:     make(map[string]*Session),
 		sessionOrder: make([]string, 0),
