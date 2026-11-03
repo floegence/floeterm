@@ -811,6 +811,9 @@ export class HistoryViewportController {
       Math.max(0, totalRows - rows),
     );
     const windowStart = this.windowStart(target, rows, windowRows, direction);
+    // A boundary-clamped prefetch cannot advance the anchored snapshot.
+    // Sending a zero-distance forward request is invalid on the native actor.
+    if (windowStart === current.offset) return;
     const abort = new AbortController();
     this.prefetchAbort = abort;
     const requestID = `prefetch-${++this.nextRequestID}`;

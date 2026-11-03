@@ -396,6 +396,26 @@ describe('HistoryViewportController', () => {
     controller.dispose();
   });
 
+  it('does not prefetch a zero-distance boundary after browsing a complete window', async () => {
+    vi.useFakeTimers();
+    const totalRows = 300;
+    const request = vi.fn(async (value: SemanticHistoryRequest) => windowForRequest(value, totalRows));
+    const renderer = { apply: vi.fn(), project: vi.fn(), getCellMetrics: () => ({ cellWidthCssPx: 9, cellHeightCssPx: 18 }) };
+    const controller = new HistoryViewportController({ renderer, request });
+    try {
+      controller.apply(presentation(1, totalRows));
+      controller.showOffset(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(controller.getState().busy).toBe(false);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(controller.getState()).toMatchObject({ browsing: true, offset: 0, error: null });
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps the last complete viewport and releases busy when a cache miss fails', async () => {
     let fail = false;
     let anchor = 'frontier';
