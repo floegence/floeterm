@@ -90,7 +90,7 @@ jobs:
         run: go test ./... -run '^TestRealBashCommandLifecyclePreservesPromptCommandAndReportsSilentCommand$' -count=1
 
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:

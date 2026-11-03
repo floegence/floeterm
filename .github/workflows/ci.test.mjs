@@ -4,6 +4,11 @@ import test from 'node:test';
 
 const workflowPath = new URL('./ci.yml', import.meta.url);
 
+test('browser checks use the Ubuntu image supported by the locked Playwright runtime', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  assert.match(workflow, /  check:\n    runs-on: ubuntu-24\.04\n/);
+});
+
 test('native semantic CI covers active macOS and Linux x64 and arm64 runners', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
 
