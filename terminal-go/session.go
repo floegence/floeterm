@@ -356,6 +356,8 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 
 	if program == nil {
 		env = mergeShellLifecycleEnvironment(env, shellEnv)
+	} else if len(program.Env) > 0 {
+		env = mergeShellLifecycleEnvironment(env, program.Env)
 	}
 	env = applyLocaleFallback(activation.ctx, env, discoverLocaleCatalog)
 	if sessionContextDone(activation.ctx) {
@@ -1235,6 +1237,9 @@ func (s *Session) publishPTYDisplayDataAtGeometry(
 		s.geometryGeneration = presentation.Geometry.Generation
 	}
 	s.latestPresentationSequence = presentation.Sequence
+	if s.config.program != nil {
+		s.programWindowTitle = presentation.State.Title
+	}
 	if presentation.Geometry.Cols > 0 && presentation.Geometry.Rows > 0 {
 		s.lastAppliedCols = presentation.Geometry.Cols
 		s.lastAppliedRows = presentation.Geometry.Rows

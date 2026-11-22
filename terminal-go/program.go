@@ -10,6 +10,7 @@ import (
 type Program struct {
 	Executable string
 	Args       []string
+	Env        []string
 }
 
 func (p Program) validatedCopy() (Program, error) {
@@ -22,11 +23,28 @@ func (p Program) validatedCopy() (Program, error) {
 	copyProgram := Program{
 		Executable: p.Executable,
 		Args:       append([]string(nil), p.Args...),
+		Env:        append([]string(nil), p.Env...),
 	}
 	for _, arg := range copyProgram.Args {
 		if strings.ContainsRune(arg, '\x00') {
 			return Program{}, errors.New("program argument contains a NUL byte")
 		}
 	}
+	for _, entry := range copyProgram.Env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == "" || strings.ContainsRune(entry, '\x00') {
+			return Program{}, errors.New("invalid program environment entry")
+		}
+	}
 	return copyProgram, nil
+}
+
+// ProgramObservation returns the live program PID and VT window title without cloning its frame.
+func (s *Session) ProgramObservation() (pid int, title string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.config.program == nil || s.closed || !s.isActive || s.Cmd == nil || s.Cmd.Process == nil || channelClosed(s.procWaitDone) {
+		return 0, ""
+	}
+	return s.Cmd.Process.Pid, s.programWindowTitle
 }

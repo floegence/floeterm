@@ -73,20 +73,26 @@ func TestCreateProgramSessionPreservesExactArgvAndSkipsShellSetup(t *testing.T) 
 	})
 
 	callerArgs := []string{"literal;not-shell", "$HOME", "secret-argument"}
+	callerEnv := []string{"PROBE=literal;$HOME"}
 	session, err := manager.CreateProgramSession("program", t.TempDir(), Program{
 		Executable: "/usr/bin/env",
 		Args:       callerArgs,
+		Env:        callerEnv,
 	})
 	if err != nil {
 		t.Fatalf("CreateProgramSession failed: %v", err)
 	}
 	t.Cleanup(func() { _ = manager.DeleteSession(session.ID) })
 	callerArgs[0] = "mutated-after-create"
+	callerEnv[0] = "PROBE=mutated"
 
 	stop := errors.New("stop after argv inspection")
 	var capturedPath string
 	var capturedArgs []string
 	session.startPTYProcess = func(cmd *exec.Cmd, _ *pty.Winsize) (*os.File, error) {
+		if !strings.Contains("\n"+strings.Join(cmd.Env, "\n")+"\n", "\nPROBE=literal;$HOME\n") {
+			t.Fatal("lost program environment")
+		}
 		capturedPath = cmd.Path
 		capturedArgs = append([]string(nil), cmd.Args...)
 		return nil, stop
@@ -116,6 +122,9 @@ func TestCreateProgramSessionRejectsInvalidProgram(t *testing.T) {
 		{},
 		{Executable: "bad\x00program"},
 		{Executable: "/bin/sh", Args: []string{"bad\x00arg"}},
+		{Executable: "/bin/sh", Env: []string{"missing-equals"}},
+		{Executable: "/bin/sh", Env: []string{"=missing-key"}},
+		{Executable: "/bin/sh", Env: []string{"KEY=bad\x00value"}},
 	}
 	for _, program := range tests {
 		if _, err := manager.CreateProgramSession("invalid", "", program); err == nil {

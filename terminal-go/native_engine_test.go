@@ -8,9 +8,54 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/creack/pty"
 )
+
+func TestObserveProgramInNativePTY(t *testing.T) {
+	manager := NewManager(ManagerConfig{Logger: NopLogger{}})
+	session, err := manager.CreateProgramSession("observe", t.TempDir(), Program{Executable: "/bin/sh", Args: []string{"-c", `printf '\033]0;%s\007' "$LABEL"; read -r label; printf '\033]0;%s\007' "$label"; read -r stop`}, Env: []string{"LABEL=first"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.DeleteSession(session.ID) })
+	if pid, _ := session.ProgramObservation(); pid != 0 {
+		t.Fatal("inactive program has a PID")
+	}
+	if err := manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"first", "second"} {
+		if want == "second" {
+			if err := session.WriteDataWithSource([]byte("second\n"), ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			pid, title := session.ProgramObservation()
+			if pid > 0 && title == want {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("got (%d, %q), want %q", pid, title, want)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if err := session.WriteDataWithSource([]byte("exit\n"), ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-session.procWaitDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("program did not exit")
+	}
+	if pid, _ := session.ProgramObservation(); pid != 0 {
+		t.Fatal("reaped process still observable")
+	}
+}
 
 func TestRealNativePresentationOwnsKittyGraphicsInventory(t *testing.T) {
 	engine, err := NewNativeSemanticEngine(8, 3)

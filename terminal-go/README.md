@@ -23,6 +23,8 @@ func main() {
 }
 ```
 
+`Program.Env` overlays literal environment entries for that child only. `Session.ProgramObservation()` returns the live root program PID and the VT window title, or zero and an empty string when inactive. A window title is application-controlled display text, not a conversation name or evidence of identity.
+
 Use `CreateProgramSession` to execute one program with exact arguments and no
 shell parsing or initialization:
 
