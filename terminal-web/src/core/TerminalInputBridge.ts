@@ -209,6 +209,7 @@ export type TerminalInputBridgeOptions = {
   inputHost: HTMLElement;
   inputElement: HTMLTextAreaElement;
   onData: (data: string) => void;
+  onPreedit?: (text: string) => void;
   onPaste?: (data: string) => void;
   onInputIntent?: (intent: TerminalKeyInputIntent) => void;
   logger?: Logger;
@@ -239,6 +240,7 @@ export class TerminalInputBridge {
   private readonly inputHost: HTMLElement;
   private readonly inputElement: HTMLTextAreaElement;
   private readonly onData: (data: string) => void;
+  private readonly onPreedit: TerminalInputBridgeOptions['onPreedit'];
   private readonly onPaste: (data: string) => void;
   private readonly onInputIntent: ((intent: TerminalKeyInputIntent) => void) | undefined;
   private readonly logger: Logger;
@@ -286,6 +288,21 @@ export class TerminalInputBridge {
     this.handleCompositionEnd(event);
   };
 
+  private readonly compositionUpdateListener = (event: CompositionEvent) => {
+    if (this.isComposing && this.inputElement.ownerDocument.activeElement === this.inputElement) {
+      const privateField = /(?:^|\s)(?:current-password|new-password|one-time-code)(?:\s|$)/i.test(this.inputElement.autocomplete);
+      this.showPreedit(privateField ? '' : event.data);
+    }
+  };
+
+  private showPreedit(text: string): void {
+    try {
+      this.onPreedit?.(text);
+    } catch {
+      // Optional presentation must not interrupt native IME or PTY delivery.
+    }
+  }
+
   private readonly focusListener = () => {
     this.resetCompositionState();
     this.clearInputValue();
@@ -310,6 +327,7 @@ export class TerminalInputBridge {
     this.inputHost = options.inputHost;
     this.inputElement = options.inputElement;
     this.onData = options.onData;
+    this.onPreedit = options.onPreedit;
     this.onPaste = options.onPaste ?? options.onData;
     this.onInputIntent = options.onInputIntent;
     this.logger = options.logger ?? noopLogger;
@@ -337,6 +355,7 @@ export class TerminalInputBridge {
   }
 
   dispose(): void {
+    this.showPreedit('');
     this.clearEphemeralStateResetTimer();
     this.clearInputFocusClaimTimer();
     this.restoreTerminalFocusHost?.();
@@ -349,6 +368,7 @@ export class TerminalInputBridge {
     this.inputElement.removeEventListener('input', this.inputListener);
     this.inputElement.removeEventListener('paste', this.pasteListener);
     this.inputElement.removeEventListener('compositionstart', this.compositionStartListener);
+    this.inputElement.removeEventListener('compositionupdate', this.compositionUpdateListener);
     this.inputElement.removeEventListener('compositionend', this.compositionEndListener as EventListener);
     this.inputElement.removeEventListener('focus', this.focusListener);
     this.inputElement.removeEventListener('blur', this.blurListener);
@@ -366,6 +386,7 @@ export class TerminalInputBridge {
     this.inputElement.addEventListener('input', this.inputListener);
     this.inputElement.addEventListener('paste', this.pasteListener);
     this.inputElement.addEventListener('compositionstart', this.compositionStartListener);
+    this.inputElement.addEventListener('compositionupdate', this.compositionUpdateListener);
     this.inputElement.addEventListener('compositionend', this.compositionEndListener as EventListener);
     this.inputElement.addEventListener('focus', this.focusListener);
     this.inputElement.addEventListener('blur', this.blurListener);
@@ -560,6 +581,7 @@ export class TerminalInputBridge {
   }
 
   private handleCompositionEnd(event: CompositionEvent): void {
+    this.showPreedit('');
     this.syncInputGeometry();
     if (!this.isComposing) {
       this.pendingCompositionCommit = null;
@@ -680,6 +702,7 @@ export class TerminalInputBridge {
   }
 
   private resetCompositionState(): void {
+    this.showPreedit('');
     this.clearEphemeralStateResetTimer();
     this.isComposing = false;
     this.pendingCompositionCommit = null;

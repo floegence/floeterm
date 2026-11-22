@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.21.0
+npm install @floegence/floeterm-terminal-web@0.22.0
 ```
 
 ## Exports
@@ -80,6 +80,7 @@ const bridge = new TerminalInputBridge({
   inputHost,
   inputElement: textarea,
   onData: data => transport.sendInput(sessionId, data),
+  onPreedit: text => renderer.setPreeditText(text),
   onInputIntent: intent => transport.sendInputIntent(sessionId, intent),
   onPaste: data => transport.sendPaste(sessionId, data),
   syncInputGeometry: () => positionTextarea(renderer.getCursorLayoutRect()),
@@ -87,6 +88,11 @@ const bridge = new TerminalInputBridge({
 ```
 
 The textarea must remain editable and positioned in the visible terminal viewport.
+The optional preedit callback is for local display only. The renderer places underlined
+marked text beside its canvas in the same positioned container. Neither the semantic
+frame nor the native candidate anchor changes. Do not forward, log or persist this
+callback. Hosts with a known private input mode must clear/suppress the preview in
+that mode; PTY echo alone is not a reliable password indicator.
 Composition preedit is never sent to the PTY. The final Unicode composition commit is
 sent exactly once across Chrome/Safari event orderings. Non-text keys are emitted as
 structured W3C key intents so the actor-owned native Ghostty encoder, not the browser,

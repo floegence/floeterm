@@ -97,7 +97,17 @@ test('commits IME text exactly once while preedit, cancellation, and candidate E
     `python3 -c "import sys;print('IME_READY',flush=True);print(sys.stdin.buffer.readline().hex(),flush=True)"\r`,
   ));
   await page.waitForFunction(() => window.__floetermPerfHarness.getVisibleLines().join('\n').includes('IME_READY'));
-  await dispatchComposition(page, ['zh', 'zhong'], '中文');
+  const cdp = await page.context().newCDPSession(page);
+  const input = page.locator('textarea[aria-label="Terminal input"]');
+  await input.focus();
+  for (const text of ['zh', 'zhong', 'zhon', 'zhong']) {
+    await cdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
+    await expect(page.locator('[data-floeterm-preedit]')).toHaveText(text);
+    await expect(page.locator('[data-floeterm-preedit]')).toBeVisible();
+    await expect(input).toBeFocused();
+  }
+  await cdp.send('Input.insertText', { text: '中文' });
+  await expect(page.locator('[data-floeterm-preedit]')).toHaveCount(0);
   await page.locator('textarea[aria-label="Terminal input"]').press('Enter');
   await expect.poll(
     async () => (await page.evaluate(() => window.__floetermPerfHarness.getVisibleLines().join('\n'))),

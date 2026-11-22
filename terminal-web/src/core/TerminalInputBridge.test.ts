@@ -319,6 +319,24 @@ describe('TerminalInputBridge', () => {
     expect(textarea.value).toBe('');
   });
 
+  it('keeps explicit private input out of previews and commits even if the preview fails', () => {
+    const input = document.createElement('textarea');
+    document.body.append(input);
+    const onData = vi.fn();
+    const onPreedit = vi.fn(() => { throw new Error('preview unavailable'); });
+    const bridge = new TerminalInputBridge({ inputElement: input, inputHost: input.parentElement!, onData, onPreedit });
+    input.autocomplete = 'current-password';
+    bridge.focus();
+    input.dispatchEvent(new CompositionEvent('compositionstart'));
+    input.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'secret' }));
+    expect(onPreedit.mock.calls.flat()).not.toContain('secret');
+    expect(onData).not.toHaveBeenCalled();
+    input.dispatchEvent(new CompositionEvent('compositionend', { data: 'confirmed' }));
+    expect(onData.mock.calls).toEqual([['confirmed']]);
+    bridge.dispose();
+    input.remove();
+  });
+
   it('keeps IME preedit local and commits the selected Unicode text exactly once', () => {
     const { inputHost, textarea, onData } = setup();
     const forwardedKeys: string[] = [];

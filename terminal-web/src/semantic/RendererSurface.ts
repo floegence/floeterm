@@ -113,8 +113,10 @@ export class RendererSurface {
   private readonly fontSet: FontFaceSet | undefined;
   private disposed = false;
   private viewVisible = true;
+  private preedit: HTMLSpanElement | null = null;
   private readonly graphicBitmaps = new Map<string, ImageBitmap>();
   private readonly visibilityHandler = (): void => {
+    if (this.canvas.ownerDocument.hidden) this.clearPreedit();
     if (this.failed) return;
     this.cursorBlinkPhaseVisible = true;
     this.syncCursorBlinkTimer();
@@ -226,6 +228,51 @@ export class RendererSurface {
   getCellMetrics(): SemanticTerminalCellMetrics {
     return { ...this.cellMetrics };
   }
+  setPreeditText(text: string): void {
+    if (!text || !this.canShowPreedit()) {
+      this.clearPreedit();
+      return;
+    }
+    if (!this.preedit) {
+      const layer = this.canvas.ownerDocument.createElement('span');
+      layer.setAttribute('aria-hidden', 'true');
+      layer.setAttribute('data-floeterm-preedit', '');
+      layer.style.cssText = 'position:absolute;pointer-events:none;user-select:none;overflow:hidden;white-space:pre;width:max-content;text-decoration:underline;text-underline-offset:2px;direction:ltr;unicode-bidi:plaintext';
+      layer.style.zIndex = this.canvas.ownerDocument.defaultView?.getComputedStyle(this.canvas).zIndex ?? 'auto';
+      this.canvas.after(layer);
+      this.preedit = layer;
+    }
+    this.preedit.textContent = text;
+    this.layoutPreedit();
+  }
+  private canShowPreedit(): boolean {
+    return !this.failed && !this.disposed && this.viewVisible && !this.canvas.ownerDocument.hidden
+      && !this.viewportFrame && this.latest !== null;
+  }
+  private clearPreedit(): void {
+    this.preedit?.remove();
+    this.preedit = null;
+  }
+  private layoutPreedit(): void {
+    const layer = this.preedit;
+    if (!layer) return;
+    const rect = this.getCursorLayoutRect();
+    if (!rect || !this.canShowPreedit()) {
+      this.clearPreedit();
+      return;
+    }
+    const style = layer.style;
+    const width = this.canvas.clientWidth;
+    style.font = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
+    style.lineHeight = `${rect.height}px`;
+    style.color = this.palette.foreground;
+    style.backgroundColor = this.palette.background;
+    style.maxWidth = `${width}px`;
+    style.minWidth = `${rect.width}px`;
+    style.top = `${this.canvas.offsetTop + rect.top}px`;
+    style.left = `${this.canvas.offsetLeft + Math.min(rect.left, width - layer.offsetWidth)}px`;
+    layer.scrollLeft = layer.scrollWidth;
+  }
   project(frame: SemanticFrame | null): void {
     this.updateProjection(frame);
     this.scheduleRender();
@@ -251,6 +298,7 @@ export class RendererSurface {
       throw new Error('semantic history frame does not match the current presentation geometry');
     }
     this.viewportFrame = frame;
+    if (frame) this.clearPreedit();
     this.projectionGeneration += 1;
     emitSemanticDebugTrace({
       kind: 'history-project',
@@ -425,6 +473,7 @@ export class RendererSurface {
     if (this.disposed || this.failed) return;
     this.viewVisible = visible;
     if (!visible || !this.latest) {
+      this.clearPreedit();
       this.canvas.style.visibility = 'hidden';
       return;
     }
@@ -439,6 +488,7 @@ export class RendererSurface {
     }
   }
   dispose(): void {
+    this.clearPreedit();
     this.disposed = true;
     this.renderGeneration += 1;
     if (this.animationFrame !== null && typeof globalThis.cancelAnimationFrame === 'function') {
@@ -483,6 +533,7 @@ export class RendererSurface {
     const startedAt = performance.now();
     const viewport = this.measureViewport();
     if (!this.viewVisible || !viewport) {
+      this.clearPreedit();
       this.canvas.style.visibility = 'hidden';
       return;
     }
@@ -530,6 +581,7 @@ export class RendererSurface {
     void this.paintGraphics(context, frame, cellWidth, cellHeight, renderGeneration, palette)
       .catch(error => this.fail(error));
     this.canvas.style.visibility = 'visible';
+    this.layoutPreedit();
     const completedAt = performance.now();
     const metrics: SemanticTerminalRenderMetrics = Object.freeze({
       startedAt,
@@ -693,6 +745,7 @@ export class RendererSurface {
   }
 
   private fail(cause: unknown): void {
+    this.clearPreedit();
     if (this.failed) return;
     this.failed = true;
     this.renderGeneration += 1;

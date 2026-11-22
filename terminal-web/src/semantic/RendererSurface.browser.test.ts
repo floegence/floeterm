@@ -435,7 +435,7 @@ describe('semantic terminal browser surface', () => {
       input.style.height = `${cursor.height}px`;
     };
     const emitted: string[] = [];
-    const bridge = new TerminalInputBridge({ inputHost: host, inputElement: input, onData: data => emitted.push(data), syncInputGeometry });
+    const bridge = new TerminalInputBridge({ inputHost: host, inputElement: input, onData: data => emitted.push(data), onPreedit: text => renderer.setPreeditText(text), syncInputGeometry });
     bridge.focus();
 
     const cursor = renderer.getCursorClientRect();
@@ -448,6 +448,13 @@ describe('semantic terminal browser surface', () => {
     expect(host.querySelectorAll('canvas')).toHaveLength(1);
 
     input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+    input.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'zhong' }));
+    const layer = host.querySelector<HTMLElement>('[data-floeterm-preedit]')!;
+    expect(layer.textContent).toBe('zhong');
+    expect(layer.getBoundingClientRect().width).toBeGreaterThan(anchor.width * 3);
+    expect(layer.getBoundingClientRect().left).toBeCloseTo(anchor.left, 0);
+    expect(getComputedStyle(layer).textDecorationLine).toBe('underline');
+    expect(emitted).toEqual([]);
     input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, data: 'zhong', inputType: 'insertCompositionText', isComposing: true }));
     input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中' }));
     input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: '中', inputType: 'insertText' }));
@@ -455,10 +462,40 @@ describe('semantic terminal browser surface', () => {
     input.dispatchEvent(new InputEvent('input', { bubbles: true, data: '中', inputType: 'insertText' }));
 
     expect(emitted).toEqual(['中']);
+    expect(layer.isConnected).toBe(false);
     expect(input.value).toBe('');
     expect(document.activeElement).toBe(input);
 
     bridge.dispose();
+    renderer.dispose();
+  });
+
+  it('keeps preedit inside the pane even with a software cursor and drops it across history and visibility changes', async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:72px;height:36px';
+    const canvas = document.createElement('canvas');
+    host.append(canvas);
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    const value = structuredClone(selectionPresentation());
+    renderer.apply({ ...value, frame: { ...value.frame, cursor: { ...value.frame.cursor, x: 7, visible: false } } });
+    await nextPaint();
+    const preview = () => host.querySelector<HTMLElement>('[data-floeterm-preedit]');
+    renderer.setPreeditText('nihao'.repeat(12));
+    const long = preview()!;
+    expect(long.getBoundingClientRect().right).toBeLessThanOrEqual(host.getBoundingClientRect().right + 1);
+    expect(long.scrollLeft).toBeGreaterThan(0);
+    renderer.setPalette(getThemeColors('light'));
+    await nextPaint();
+    expect(long.style.backgroundColor).toBe(canvas.style.backgroundColor);
+    renderer.project(value.frame);
+    renderer.setPreeditText('hidden');
+    expect(preview()).toBeNull();
+    renderer.project(null);
+    renderer.setPreeditText('local');
+    renderer.setVisible(false);
+    renderer.setVisible(true);
+    expect(preview()).toBeNull();
     renderer.dispose();
   });
 

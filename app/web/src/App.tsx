@@ -217,6 +217,7 @@ const SemanticTerminalSurface = (props: {
       inputHost: canvas,
       inputElement: input,
       onData: props.sendInput,
+      onPreedit: text => props.renderer()?.setPreeditText(text),
       onInputIntent: props.sendInputIntent,
       onPaste: props.sendPaste,
       syncInputGeometry,
