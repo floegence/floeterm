@@ -6,6 +6,7 @@ export {
 } from '../semantic/RendererSurface.js';
 export { TerminalInputBridge } from '../core/TerminalInputBridge.js';
 export { WheelRouter } from '../semantic/WheelRouter.js';
+export { bindApplicationPointer } from '../semantic/ApplicationPointer.js';
 export { HistoryViewportController } from '../semantic/HistoryViewportController.js';
 export type {
   HistoryViewportCacheMetrics,

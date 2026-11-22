@@ -422,6 +422,14 @@ export class RendererSurface {
     }
     return lines.join('\n').replace(/\n+$/, '');
   }
+  getGridClientRect(): DOMRect | null {
+    const frame = this.currentFrame();
+    const space = this.measureCoordinateSpace();
+    if (!frame || !space) return null;
+    return new DOMRect(space.bounds.left, space.bounds.top,
+      frame.width * this.cellMetrics.cellWidthCssPx * space.scaleX,
+      frame.height * this.cellMetrics.cellHeightCssPx * space.scaleY);
+  }
   getCursorLayoutRect(): SemanticTerminalCursorRect | null {
     const frame = this.latest?.frame;
     if (!frame) return null;

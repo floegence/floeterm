@@ -17,6 +17,7 @@ export enum TerminalLiveFrameType {
   Paste = 0x07,
   Interact = 0x08,
   Wheel = 0x09,
+  Pointer = 0x0a,
   Attached = 0x81,
   ResizeApplied = 0x83,
   SessionClosed = 0x84,
@@ -45,7 +46,17 @@ export type Attach = Readonly<{
 export type Input = Readonly<{ sequence: bigint; data: Uint8Array }>;
 export type WheelIntent = Readonly<{ controllerEpoch: number; generation: number; x: number; y: number; steps: number; modifiers: number }>;
 
+export type PointerIntent = Omit<WheelIntent, 'steps'> & { action: 'press' | 'motion' | 'release' };
+
+export function encodePointer(sequence: bigint, pointer: PointerIntent): Uint8Array {
+  return encodePosition(sequence, { ...pointer, steps: { press: 1, motion: 2, release: 3 }[pointer.action] }, TerminalLiveFrameType.Pointer);
+}
+
 export function encodeWheel(sequence: bigint, wheel: WheelIntent): Uint8Array {
+  return encodePosition(sequence, wheel, TerminalLiveFrameType.Wheel);
+}
+
+function encodePosition(sequence: bigint, wheel: WheelIntent, type: TerminalLiveFrameType): Uint8Array {
   if (!Number.isSafeInteger(wheel.controllerEpoch) || wheel.controllerEpoch <= 0 || !Number.isSafeInteger(wheel.generation) || wheel.generation <= 0 ||
     !Number.isInteger(wheel.steps) || !wheel.steps || Math.abs(wheel.steps) > 32 || !Number.isInteger(wheel.modifiers) || wheel.modifiers < 0 || wheel.modifiers > 15 ||
     !(wheel.x >= 0 && Math.fround(wheel.x) < 65536 && wheel.y >= 0 && Math.fround(wheel.y) < 65536)) throw new Error('invalid wheel intent');
@@ -58,7 +69,7 @@ export function encodeWheel(sequence: bigint, wheel: WheelIntent): Uint8Array {
   view.setFloat32(28, wheel.y);
   view.setInt8(32, wheel.steps);
   view.setUint16(33, wheel.modifiers);
-  return frame(TerminalLiveFrameType.Wheel, payload);
+  return frame(type, payload);
 }
 export type InputIntent = Readonly<{
   sequence: bigint;
@@ -730,7 +741,7 @@ export const decodeProtocolError = (value: TerminalLiveFrame): ProtocolError => 
   return { code, message: decodeUtf8(value.payload.subarray(4)) };
 };
 
-export const decodePresentation = (value: TerminalLiveFrame): unknown => {
+export const decodePresentation = (value: TerminalLiveFrame) => {
   if (value.type !== TerminalLiveFrameType.Presentation) throw new Error('unexpected terminal live presentation frame');
   if (value.payload.byteLength === 0 || value.payload.byteLength > MAX_FRAME_PAYLOAD_BYTES) throw new Error('invalid terminal live presentation payload');
   const wire = JSON.parse(decoder.decode(value.payload)) as any;

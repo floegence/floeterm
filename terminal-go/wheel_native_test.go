@@ -38,6 +38,18 @@ func TestNativeWheelRoutesAndInvalidates(t *testing.T) {
 	input.Steps = 1
 	input.Modifiers = 0
 	check("\x1b[<65;5;3M")
+	input.WheelGeneration = mode("\x1b[?1002h")
+	input.Kind = "pointer"
+	input.Action = "press"
+	check("\x1b[<0;5;3M")
+	input.Action = "motion"
+	input.Y++
+	check("\x1b[<32;5;4M")
+	input.Action = "release"
+	check("\x1b[<0;5;4m")
+	mode("\x1b[?1002l")
+	check("")
+	input.Kind = "wheel"
 	input.WheelGeneration = mode("\x1b[?1000l\x1b[?1007h\x1b[?1h")
 	check("\x1bOB")
 	if mode("\x1b[?1007l") != 0 {

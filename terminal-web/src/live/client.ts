@@ -17,6 +17,8 @@ import {
   encodeInput,
   encodeInputIntent,
   encodeWheel,
+  encodePointer,
+  type PointerIntent,
   type WheelIntent,
   encodeInteraction,
   encodePasteChunk,
@@ -109,6 +111,7 @@ export type TerminalLiveConnection = Readonly<{
   sendInput(data: Uint8Array): Promise<void>;
   sendInputIntent(intent: Omit<InputIntent, 'sequence'>): Promise<void>;
   sendWheel?(wheel: WheelIntent): Promise<void>;
+  sendPointer?(pointer: PointerIntent): Promise<void>;
   sendPaste(data: Uint8Array): Promise<void>;
   interactInput(cols: number, rows: number, data: Uint8Array): Promise<void>;
   interactInputIntent(cols: number, rows: number, intent: Omit<InputIntent, 'sequence'>): Promise<void>;
@@ -256,11 +259,21 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
   }
 
   private wheelWrites = 0;
+  private wheelGeneration = 0;
   async sendWheel(wheel: WheelIntent): Promise<void> {
-    if (this.closed || this.wheelWrites >= 2) return;
-    const encoded = encodeWheel(++this.inputSequence, wheel);
+    return this.sendPosition(wheel, false);
+  }
+  async sendPointer(pointer: PointerIntent): Promise<void> {
+    return this.sendPosition(pointer, pointer.action !== 'motion');
+  }
+  private async sendPosition(intent: WheelIntent | PointerIntent, boundary: boolean): Promise<void> {
+    if (this.closed || (!boundary && this.wheelWrites >= 16)) return;
+    const sequence = ++this.inputSequence;
+    const encoded = 'action' in intent ? encodePointer(sequence, intent) : encodeWheel(sequence, intent);
     this.wheelWrites++;
-    try { await this.enqueueWrite(() => this.stream.write(encoded)); }
+    try { await this.enqueueWrite(async () => {
+      if (!this.closed && this.controllerState.isController && this.controllerState.epoch === intent.controllerEpoch && this.wheelGeneration === intent.generation) await this.stream.write(encoded);
+    }); }
     finally { this.wheelWrites--; }
   }
 
@@ -500,9 +513,12 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
             void this.writeActivation(waiter).catch(waiter.reject);
             break;
           }
-          case TerminalLiveFrameType.Presentation:
-            this.onPresentation?.(decodePresentation(frame));
+          case TerminalLiveFrameType.Presentation: {
+            const presentation = decodePresentation(frame);
+            this.wheelGeneration = presentation.frame.wheelGeneration ?? 0;
+            this.onPresentation?.(presentation);
             break;
+          }
           case TerminalLiveFrameType.GeometryChanged: {
             const geometry = decodeGeometryChanged(frame);
             this.applyGeometry({

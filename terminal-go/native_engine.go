@@ -97,6 +97,7 @@ func (e *nativeSemanticEngine) CaptureFrame() (SemanticFrame, error) {
 	}
 	if mode != "" {
 		frame.WheelGeneration = e.wheelGeneration
+		frame.PointerReporting = mode == "mouse"
 	}
 	frame.History.ScreenStartOffset = totalRows - frame.Height
 	return frame, nil
@@ -189,9 +190,15 @@ func (e *nativeSemanticEngine) Reset() error          { return e.engine.Reset() 
 func (e *nativeSemanticEngine) Resize(c, r int) error { return e.engine.Resize(uint16(c), uint16(r)) }
 func (e *nativeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 	switch i.Kind {
-	case "wheel":
+	case "wheel", "pointer":
 		if i.WheelGeneration != e.wheelGeneration || i.X >= float32(e.wheelCols) || i.Y >= float32(e.wheelRows) || e.engine.WheelMode() != e.wheelMode {
 			return nil, nil
+		}
+		if i.Kind == "pointer" {
+			if e.wheelMode != "mouse" {
+				return nil, nil
+			}
+			return e.engine.EncodePointer(i.X, i.Y, i.Action, i.Modifiers), nil
 		}
 		count := i.Steps
 		up := count < 0

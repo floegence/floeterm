@@ -483,7 +483,7 @@ func (s *Session) InteractSemantic(attachmentID, principalID string, transportGe
 		return ErrControllerTransport
 	}
 	state := s.controllerState
-	if input.Kind == "wheel" && (state.AttachmentID != attachmentID || state.TransportGeneration != transportGeneration) {
+	if (input.Kind == "wheel" || input.Kind == "pointer") && (state.AttachmentID != attachmentID || state.TransportGeneration != transportGeneration) {
 		s.mu.Unlock()
 		return ErrControllerTransport
 	}

@@ -292,8 +292,11 @@ func (a *SessionActor) Input(intent SemanticInput, write func([]byte) error) err
 
 func validateSemanticInput(intent SemanticInput) error {
 	switch intent.Kind {
-	case "wheel":
-		if intent.WheelGeneration == 0 || intent.Steps == 0 || intent.Steps < -32 || intent.Steps > 32 || !(intent.X >= 0 && intent.X < 65536 && intent.Y >= 0 && intent.Y < 65536) || intent.Modifiers&^15 != 0 {
+	case "pointer", "wheel":
+		if intent.Kind == "pointer" && intent.Action != "press" && intent.Action != "motion" && intent.Action != "release" {
+			return errors.New("invalid semantic pointer action")
+		}
+		if intent.WheelGeneration == 0 || (intent.Kind == "wheel" && (intent.Steps == 0 || intent.Steps < -32 || intent.Steps > 32)) || !(intent.X >= 0 && intent.X < 65536 && intent.Y >= 0 && intent.Y < 65536) || intent.Modifiers&^15 != 0 {
 			return errors.New("invalid semantic wheel input")
 		}
 	case "bytes":

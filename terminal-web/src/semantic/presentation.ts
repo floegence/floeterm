@@ -6,6 +6,7 @@ export type SemanticCell = { text: string; hyperlink?: string; width: number; st
 export type SemanticCursorShape = 'bar' | 'block' | 'underline' | 'hollow';
 export type SemanticFrame = {
   wheelGeneration?: number;
+  pointerReporting?: boolean;
   width: number;
   height: number;
   bufferKind: string;

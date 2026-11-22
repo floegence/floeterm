@@ -13,7 +13,7 @@ int floeterm_wheel_mode(NativeEngine *engine) {
       ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_MODE, &scroll) == GHOSTTY_SUCCESS && scroll.value ? 2 : 0;
 }
 
-int floeterm_encode_wheel(NativeEngine *engine, float col, float row, int up, uint16_t mods, NativeBytes *out) {
+int floeterm_encode_mouse(NativeEngine *engine, float col, float row, GhosttyMouseAction action, GhosttyMouseButton button, uint16_t mods, NativeBytes *out) {
   if (!engine || col < 0 || row < 0 || col >= engine->cols || row >= engine->rows) return 0;
   GhosttyMouseEvent event = NULL;
   if (ghostty_mouse_event_new(NULL, &event) != GHOSTTY_SUCCESS) return 0;
@@ -24,8 +24,10 @@ int floeterm_encode_wheel(NativeEngine *engine, float col, float row, int up, ui
   size.screen_height = engine->rows * size.cell_height;
   ghostty_mouse_encoder_setopt_from_terminal(engine->mouse_encoder, engine->terminal);
   ghostty_mouse_encoder_setopt(engine->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
-  ghostty_mouse_event_set_action(event, GHOSTTY_MOUSE_ACTION_PRESS);
-  ghostty_mouse_event_set_button(event, up ? GHOSTTY_MOUSE_BUTTON_FOUR : GHOSTTY_MOUSE_BUTTON_FIVE);
+  bool pressed = action == GHOSTTY_MOUSE_ACTION_MOTION;
+  ghostty_mouse_encoder_setopt(engine->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
+  ghostty_mouse_event_set_action(event, action);
+  ghostty_mouse_event_set_button(event, button);
   ghostty_mouse_event_set_position(event, (GhosttyMousePosition){.x = col * size.cell_width, .y = row * size.cell_height});
   ghostty_mouse_event_set_mods(event, mods);
   out->data = malloc(128);

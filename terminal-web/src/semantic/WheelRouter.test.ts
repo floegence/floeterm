@@ -20,3 +20,19 @@ it('keeps history and views without control local, and discards residuals on mod
   route(2, 3, false, 1e6);
   expect(send.mock.lastCall?.[0].steps).toBe(32);
 });
+
+it.each([false, true])('preserves fast strokes and cancels opposite fractional motion (application=%s)', application => {
+  const router = new WheelRouter();
+  const steps: number[] = [];
+  const frame = { width: 80, height: 24, bufferKind: 'normal', wheelGeneration: application ? 1 : 0 } as SemanticFrame;
+  const route = (delta: number, mode: number) => router.route(frame, false, 1,
+    { left: 0, top: 0, width: 800, height: 480 } as DOMRect, { clientX: 100, clientY: 100 }, delta, mode, 0,
+    intent => steps.push(intent.steps), rows => steps.push(rows));
+  for (const delta of [15, -15, -7]) route(delta, 0);
+  expect(steps).toEqual([]);
+  router.reset();
+  route(-80, 1);
+  expect(steps).toEqual(application ? [-32, -32, -16] : [-80]);
+  route(1, 2);
+  expect(steps[steps.length - 1]).toBe(24);
+});

@@ -10,11 +10,11 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.23.0
+npm install @floegence/floeterm-terminal-web@0.24.0
 ```
 
 `WheelRouter` routes one vertical gesture to either view-local history or the live
-application. A live frame advertises `wheelGeneration` only while mouse reporting
+application. Pass the renderer's `getGridClientRect()` and a history row callback to `WheelRouter.route` so both destinations use the same signed fractional motion. A stroke is bounded to eight 32-step application packets; the live connection checks ownership before writing. `bindApplicationPointer` forwards primary mouse presses, drags and releases only with explicit `pointerReporting`; Shift preserves local selection. A live frame advertises `wheelGeneration` only while mouse reporting
 or alternate scroll is active. Wheel frames carry the observed generation and
 controller epoch, do not activate a view, and are never replayed on reconnect.
 

@@ -5,8 +5,9 @@ package nativevt
 /*
 #cgo CFLAGS: -I${SRCDIR}/generated/include -I${SRCDIR}/generated
 #include "generated/adapter.h"
+#include <ghostty/vt/mouse/event.h>
 int floeterm_wheel_mode(NativeEngine *engine);
-int floeterm_encode_wheel(NativeEngine *, float, float, int, uint16_t, NativeBytes *);
+int floeterm_encode_mouse(NativeEngine *, float, float, GhosttyMouseAction, GhosttyMouseButton, uint16_t, NativeBytes *);
 const char *floeterm_native_window_title(NativeEngine *engine, size_t *length);
 int floeterm_native_retention_get(NativeEngine *, size_t *, int *, size_t *, int *);
 int floeterm_native_retention_set(NativeEngine *, size_t, int, size_t, int);
@@ -185,13 +186,31 @@ func (e *Engine) WheelMode() string {
 }
 
 func (e *Engine) EncodeWheel(col, row float32, up bool, mods uint16) []byte {
-	var output C.NativeBytes
-	var direction C.int
+	button := C.GhosttyMouseButton(C.GHOSTTY_MOUSE_BUTTON_FIVE)
 	if up {
-		direction = 1
+		button = C.GHOSTTY_MOUSE_BUTTON_FOUR
 	}
+	return e.encodeMouse(col, row, C.GHOSTTY_MOUSE_ACTION_PRESS, button, mods)
+}
+
+func (e *Engine) EncodePointer(col, row float32, action string, mods uint16) []byte {
+	kind := C.GhosttyMouseAction(C.GHOSTTY_MOUSE_ACTION_PRESS)
+	switch action {
+	case "motion":
+		kind = C.GHOSTTY_MOUSE_ACTION_MOTION
+	case "release":
+		kind = C.GHOSTTY_MOUSE_ACTION_RELEASE
+	case "press":
+	default:
+		return nil
+	}
+	return e.encodeMouse(col, row, kind, C.GHOSTTY_MOUSE_BUTTON_LEFT, mods)
+}
+
+func (e *Engine) encodeMouse(col, row float32, action C.GhosttyMouseAction, button C.GhosttyMouseButton, mods uint16) []byte {
+	var output C.NativeBytes
 	defer C.native_bytes_free(&output)
-	if C.floeterm_encode_wheel(e.handle, C.float(col), C.float(row), direction, C.uint16_t(mods), &output) == 0 {
+	if C.floeterm_encode_mouse(e.handle, C.float(col), C.float(row), action, button, C.uint16_t(mods), &output) == 0 {
 		return nil
 	}
 	return C.GoBytes(unsafe.Pointer(output.data), C.int(output.len))

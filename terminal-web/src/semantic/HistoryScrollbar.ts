@@ -16,6 +16,7 @@ export class HistoryScrollbar {
   private drag: { id: number; grabFraction: number } | null = null;
   private pending: number | null = null;
   private frame: number | null = null;
+  private fadeTimer: number | undefined;
   private readonly resize: ResizeObserver;
   private readonly win: Window;
   private disposed = false;
@@ -39,6 +40,13 @@ export class HistoryScrollbar {
     this.resize = new ResizeObserver(() => this.update());
     this.resize.observe(track);
     this.update();
+  }
+
+  flash(): void {
+    if (this.disposed || this.options.track.hidden) return;
+    this.options.track.dataset.scrolling = 'true';
+    this.win.clearTimeout(this.fadeTimer);
+    this.fadeTimer = this.win.setTimeout(() => { delete this.options.track.dataset.scrolling; }, 650);
   }
 
   update(): void {
@@ -138,6 +146,8 @@ export class HistoryScrollbar {
   dispose(): void {
     this.cancel();
     this.disposed = true;
+    this.win.clearTimeout(this.fadeTimer);
+    delete this.options.track.dataset.scrolling;
     this.resize.disconnect();
     const { track } = this.options;
     track.removeEventListener('pointerdown', this.down);

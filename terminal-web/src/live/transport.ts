@@ -30,7 +30,7 @@ import {
   type TerminalLiveActivationResult,
   type TerminalLiveResizeResult,
 } from './client.js';
-import { StreamKind, type WheelIntent } from './codec.js';
+import { StreamKind, type PointerIntent, type WheelIntent } from './codec.js';
 
 export type SemanticTerminalLiveControlPlane = Readonly<{
   semanticHistory(
@@ -168,6 +168,7 @@ export type SemanticTerminalLiveTransport = Readonly<{
   sendInput(sessionId: TerminalID, input: string): Promise<void>;
   sendInputIntent(sessionId: TerminalID, input: TerminalKeyInputIntent): Promise<void>;
   sendWheel?(sessionId: TerminalID, wheel: WheelIntent): Promise<void>;
+  sendPointer?(sessionId: TerminalID, pointer: PointerIntent): Promise<void>;
   sendPaste(sessionId: TerminalID, input: string): Promise<void>;
   interactInput(sessionId: TerminalID, cols: number, rows: number, input: string): Promise<void>;
   interactInputIntent(
@@ -372,6 +373,10 @@ export const createSemanticTerminalLiveTransport = (
     sendWheel: async (sessionId, wheel) => {
       const entry = entries.get(sessionId);
       if (entry && isCurrentGeneration(sessionId, entry.generation)) await entry.connection.sendWheel?.(wheel);
+    },
+    sendPointer: async (sessionId, pointer) => {
+      const entry = entries.get(sessionId);
+      if (entry && isCurrentGeneration(sessionId, entry.generation)) await entry.connection.sendPointer?.(pointer);
     },
     sendPaste: async (sessionId, input) => {
       const entry = entries.get(sessionId);

@@ -3,6 +3,7 @@ import {
   RendererSurface,
   HistoryViewportController,
   WheelRouter,
+  bindApplicationPointer,
   HistoryScrollbar,
   SEMANTIC_CELL_HEIGHT_CSS_PX,
   SEMANTIC_CELL_WIDTH_CSS_PX,
@@ -744,6 +745,9 @@ const SingleTerminalPane = (props: {
 				},
 			});
     if (historyController && historyTrack && historyThumb) historyScrollbar = new HistoryScrollbar({ track: historyTrack, thumb: historyThumb, controller: historyController, onPointerComplete: () => inputController?.focus() });
+    if (semanticCanvas && props.transport.sendPointer) onCleanup(bindApplicationPointer(semanticCanvas,
+      () => ({ frame: latestPresentation?.frame, epoch: historyProjected() ? 0 : wheelEpoch, grid: semanticRenderer?.getGridClientRect() }),
+      intent => { void props.transport.sendPointer?.(props.sessionId, intent).catch(() => undefined); }, () => inputController?.focus()));
 		const semanticResizeObserver = semanticCanvas && typeof ResizeObserver !== 'undefined'
 			? new ResizeObserver(() => { void requestResize(); })
 			: undefined;
@@ -848,13 +852,14 @@ const SingleTerminalPane = (props: {
         <div class="terminalPane"
 			  onWheel={event => {
 				if (event.deltaY === 0) return;
-				if (!semanticCanvas) return;
-				const route = wheelRouter.route(latestPresentation?.frame, historyProjected(), wheelEpoch, semanticCanvas.getBoundingClientRect(), event,
+				const grid = semanticRenderer?.getGridClientRect();
+				if (!grid) return;
+				const route = wheelRouter.route(latestPresentation?.frame, historyProjected(), wheelEpoch, grid, event,
 				  event.deltaY, event.deltaMode, Number(event.shiftKey) | Number(event.ctrlKey) << 1 | Number(event.altKey) << 2 | Number(event.metaKey) << 3,
-				  intent => { void props.transport.sendWheel?.(props.sessionId, intent).catch(() => undefined); });
+				  intent => { void props.transport.sendWheel?.(props.sessionId, intent).catch(() => undefined); },
+				  rows => { historyScrollbar?.flash(); historyController?.handleWheel(rows, 1); });
 				if (route !== 'history') { if (route === 'application') event.preventDefault(); return; }
 				if (event.deltaY < 0 || historyProjected()) event.preventDefault();
-				historyController?.handleWheel(event.deltaY, event.deltaMode);
 		  }}>
           <SemanticTerminalSurface
             canvasId="semantic-terminal-surface"

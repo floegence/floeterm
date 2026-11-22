@@ -61,6 +61,9 @@ func semanticFrameWire(frame SemanticFrame) map[string]any {
 	}
 	if frame.WheelGeneration != 0 {
 		wire["wheelGeneration"] = frame.WheelGeneration
+		if frame.PointerReporting {
+			wire["pointerReporting"] = true
+		}
 	}
 	return wire
 }
@@ -102,14 +105,15 @@ type TerminalState struct {
 }
 
 type SemanticFrame struct {
-	WheelGeneration uint64                 `json:"wheelGeneration,omitempty"`
-	Width           int                    `json:"width"`
-	Height          int                    `json:"height"`
-	Rows            []SemanticRow          `json:"rows"`
-	Cursor          SemanticCursor         `json:"cursor"`
-	BufferKind      string                 `json:"bufferKind"`
-	History         SemanticHistorySummary `json:"history"`
-	Graphics        SemanticGraphics       `json:"graphics"`
+	PointerReporting bool                   `json:"pointerReporting,omitempty"`
+	WheelGeneration  uint64                 `json:"wheelGeneration,omitempty"`
+	Width            int                    `json:"width"`
+	Height           int                    `json:"height"`
+	Rows             []SemanticRow          `json:"rows"`
+	Cursor           SemanticCursor         `json:"cursor"`
+	BufferKind       string                 `json:"bufferKind"`
+	History          SemanticHistorySummary `json:"history"`
+	Graphics         SemanticGraphics       `json:"graphics"`
 }
 
 // SemanticHistorySummary is captured from the same engine ownership window as
