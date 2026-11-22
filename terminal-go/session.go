@@ -1237,9 +1237,6 @@ func (s *Session) publishPTYDisplayDataAtGeometry(
 		s.geometryGeneration = presentation.Geometry.Generation
 	}
 	s.latestPresentationSequence = presentation.Sequence
-	if s.config.program != nil {
-		s.programWindowTitle = presentation.State.Title
-	}
 	if presentation.Geometry.Cols > 0 && presentation.Geometry.Rows > 0 {
 		s.lastAppliedCols = presentation.Geometry.Cols
 		s.lastAppliedRows = presentation.Geometry.Rows

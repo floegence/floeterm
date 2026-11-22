@@ -287,7 +287,6 @@ type Session struct {
 	presentationDispatchMu sync.Mutex
 
 	currentWorkingDir             string
-	programWindowTitle            string
 	workdirPending                []byte
 	shellIntegrationPending       []byte
 	shellLifecycleFilterPending   []byte

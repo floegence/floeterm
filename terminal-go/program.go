@@ -42,9 +42,18 @@ func (p Program) validatedCopy() (Program, error) {
 // ProgramObservation returns the live program PID and VT window title without cloning its frame.
 func (s *Session) ProgramObservation() (pid int, title string) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if s.config.program == nil || s.closed || !s.isActive || s.Cmd == nil || s.Cmd.Process == nil || channelClosed(s.procWaitDone) {
+		s.mu.RUnlock()
 		return 0, ""
 	}
-	return s.Cmd.Process.Pid, s.programWindowTitle
+	pid, actor := s.Cmd.Process.Pid, s.semanticActor
+	s.mu.RUnlock()
+	if actor != nil {
+		actor.mu.Lock()
+		defer actor.mu.Unlock()
+		if source, ok := actor.engine.(interface{ windowTitle() string }); ok {
+			return pid, source.windowTitle()
+		}
+	}
+	return pid, ""
 }

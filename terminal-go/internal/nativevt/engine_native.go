@@ -5,6 +5,7 @@ package nativevt
 /*
 #cgo CFLAGS: -I${SRCDIR}/generated/include -I${SRCDIR}/generated
 #include "generated/adapter.h"
+const char *floeterm_native_window_title(NativeEngine *engine, size_t *length);
 int floeterm_native_retention_get(NativeEngine *, size_t *, int *, size_t *, int *);
 int floeterm_native_retention_set(NativeEngine *, size_t, int, size_t, int);
 int floeterm_native_history_total_rows(NativeEngine *engine, size_t *rows);
@@ -89,6 +90,12 @@ type Result struct {
 	Title     string
 	Bells     uint32
 	Responses [][]byte
+}
+
+func (e *Engine) WindowTitle() string {
+	var length C.size_t
+	value := C.floeterm_native_window_title(e.handle, &length)
+	return C.GoStringN(value, C.int(length))
 }
 
 type KeyEvent struct {

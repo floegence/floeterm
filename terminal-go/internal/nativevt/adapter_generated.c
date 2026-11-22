@@ -2,6 +2,13 @@
 
 #include "generated/adapter.c"
 
+const char *floeterm_native_window_title(NativeEngine *engine, size_t *length) {
+  GhosttyString title = {0};
+  if (!engine || ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_TITLE, &title) != GHOSTTY_SUCCESS || title.len > 8192) return NULL;
+  *length = title.len;
+  return (const char *)title.ptr;
+}
+
 // Keep the cursor contract in the same render-state ownership window as the
 // bulk frame capture. The public Ghostty render API is the authority; this
 // wrapper only copies scalar values across the cgo boundary.

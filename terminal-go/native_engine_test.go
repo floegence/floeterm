@@ -36,6 +36,10 @@ func TestObserveProgramInNativePTY(t *testing.T) {
 		for {
 			pid, title := session.ProgramObservation()
 			if pid > 0 && title == want {
+				session.publishPTYDisplayData([]byte("ordinary redraw"))
+				if _, persisted := session.ProgramObservation(); persisted != want {
+					t.Fatalf("redraw lost title %q: %q", want, persisted)
+				}
 				break
 			}
 			if time.Now().After(deadline) {
@@ -43,6 +47,10 @@ func TestObserveProgramInNativePTY(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+	session.publishPTYDisplayData([]byte("\x1b]2;\x07"))
+	if _, cleared := session.ProgramObservation(); cleared != "" {
+		t.Fatalf("explicitly cleared title: %q", cleared)
 	}
 	if err := session.WriteDataWithSource([]byte("exit\n"), ""); err != nil {
 		t.Fatal(err)

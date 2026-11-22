@@ -67,6 +67,7 @@ func (e *nativeSemanticEngine) ApplyOutput(data []byte) (TerminalState, error) {
 	r, err := e.engine.Apply(data)
 	return TerminalState{Title: r.Title, Bell: uint64(r.Bells)}, err
 }
+func (e *nativeSemanticEngine) windowTitle() string { return e.engine.WindowTitle() }
 func (e *nativeSemanticEngine) CaptureFrame() (SemanticFrame, error) {
 	f, err := e.engine.Capture()
 	if err != nil {
