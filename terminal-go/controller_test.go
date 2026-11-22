@@ -68,6 +68,20 @@ func TestStructuredKeyInputUsesActorEncoderAndRejectsStaleTransport(t *testing.T
 	}
 }
 
+func TestWheelCannotActivateObserver(t *testing.T) {
+	session := &Session{PTY: &os.File{}, writePTY: func([]byte) (int, error) { t.Fatal("unexpected wheel write"); return 0, nil }}
+	if err := session.AttachSemanticView("observer", "local", 1); err != nil {
+		t.Fatal(err)
+	}
+	wheel := SemanticInput{Kind: "wheel", Steps: -1, WheelGeneration: 1}
+	for _, controller := range []ControllerState{{}, {AttachmentID: "owner", PrincipalID: "local", TransportGeneration: 1, Epoch: 1}} {
+		session.controllerState = controller
+		if err := session.InteractSemantic("observer", "local", 1, controller.Epoch, wheel); !errors.Is(err, ErrControllerTransport) || session.Controller() != controller {
+			t.Fatalf("wheel changed ownership: %v, %+v", err, session.Controller())
+		}
+	}
+}
+
 func TestStructuredPasteUsesActorEncoderAndRejectsStaleTransport(t *testing.T) {
 	engine := &fakeSemanticEngine{}
 	actor, err := NewSessionActor(engine, 80, 24, NewPresentationStore(1))

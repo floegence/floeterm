@@ -28,6 +28,8 @@ type SemanticResetEngine interface {
 }
 
 type SemanticInput struct {
+	WheelGeneration          uint64
+	Steps                    int
 	Kind, Text, Code, Action string
 	Data                     []byte
 	Modifiers                uint16
@@ -290,6 +292,10 @@ func (a *SessionActor) Input(intent SemanticInput, write func([]byte) error) err
 
 func validateSemanticInput(intent SemanticInput) error {
 	switch intent.Kind {
+	case "wheel":
+		if intent.WheelGeneration == 0 || intent.Steps == 0 || intent.Steps < -32 || intent.Steps > 32 || !(intent.X >= 0 && intent.X < 65536 && intent.Y >= 0 && intent.Y < 65536) || intent.Modifiers&^15 != 0 {
+			return errors.New("invalid semantic wheel input")
+		}
 	case "bytes":
 		if len(intent.Data) == 0 {
 			return errors.New("semantic byte input is empty")

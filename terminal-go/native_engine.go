@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -34,8 +35,12 @@ func semanticCellWidth(ghosttyWide int) (uint8, error) {
 }
 
 type nativeSemanticEngine struct {
-	engine            *nativevt.Engine
-	retentionDefaults HistoryRetentionLimits
+	wheelMode            string
+	wheelBuffer          string
+	wheelCols, wheelRows int
+	wheelGeneration      uint64
+	engine               *nativevt.Engine
+	retentionDefaults    HistoryRetentionLimits
 }
 
 type nativeSemanticHistoryAnchor struct{ anchor *nativevt.Anchor }
@@ -85,6 +90,14 @@ func (e *nativeSemanticEngine) CaptureFrame() (SemanticFrame, error) {
 		return SemanticFrame{}, errors.New("native history row count is smaller than the screen")
 	}
 	frame.History.TotalRows = totalRows
+	mode := e.engine.WheelMode()
+	if e.wheelMode != mode || e.wheelCols != frame.Width || e.wheelRows != frame.Height || e.wheelBuffer != frame.BufferKind {
+		e.wheelGeneration++
+		e.wheelMode, e.wheelCols, e.wheelRows, e.wheelBuffer = mode, frame.Width, frame.Height, frame.BufferKind
+	}
+	if mode != "" {
+		frame.WheelGeneration = e.wheelGeneration
+	}
 	frame.History.ScreenStartOffset = totalRows - frame.Height
 	return frame, nil
 }
@@ -176,6 +189,31 @@ func (e *nativeSemanticEngine) Reset() error          { return e.engine.Reset() 
 func (e *nativeSemanticEngine) Resize(c, r int) error { return e.engine.Resize(uint16(c), uint16(r)) }
 func (e *nativeSemanticEngine) EncodeInput(i SemanticInput) ([]byte, error) {
 	switch i.Kind {
+	case "wheel":
+		if i.WheelGeneration != e.wheelGeneration || i.X >= float32(e.wheelCols) || i.Y >= float32(e.wheelRows) || e.engine.WheelMode() != e.wheelMode {
+			return nil, nil
+		}
+		count := i.Steps
+		up := count < 0
+		if up {
+			count = -count
+		}
+		var unit []byte
+		switch e.wheelMode {
+		case "mouse":
+			unit = e.engine.EncodeWheel(i.X, i.Y, up, i.Modifiers)
+		case "arrows":
+			code := "ArrowDown"
+			if up {
+				code = "ArrowUp"
+			}
+			var err error
+			unit, err = e.engine.EncodeKey(nativevt.KeyEvent{Code: code, Action: 1})
+			if err != nil {
+				return nil, nil
+			}
+		}
+		return bytes.Repeat(unit, count), nil
 	case "bytes":
 		return append([]byte(nil), i.Data...), nil
 	case "text":

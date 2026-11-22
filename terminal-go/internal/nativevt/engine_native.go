@@ -5,6 +5,8 @@ package nativevt
 /*
 #cgo CFLAGS: -I${SRCDIR}/generated/include -I${SRCDIR}/generated
 #include "generated/adapter.h"
+int floeterm_wheel_mode(NativeEngine *engine);
+int floeterm_encode_wheel(NativeEngine *, float, float, int, uint16_t, NativeBytes *);
 const char *floeterm_native_window_title(NativeEngine *engine, size_t *length);
 int floeterm_native_retention_get(NativeEngine *, size_t *, int *, size_t *, int *);
 int floeterm_native_retention_set(NativeEngine *, size_t, int, size_t, int);
@@ -171,6 +173,29 @@ func (e *Engine) Reset() error {
 	return nil
 }
 func (e *Engine) EncodeText(text string) ([]byte, error) { return []byte(text), nil }
+func (e *Engine) WheelMode() string {
+	switch C.floeterm_wheel_mode(e.handle) {
+	case 1:
+		return "mouse"
+	case 2:
+		return "arrows"
+	default:
+		return ""
+	}
+}
+
+func (e *Engine) EncodeWheel(col, row float32, up bool, mods uint16) []byte {
+	var output C.NativeBytes
+	var direction C.int
+	if up {
+		direction = 1
+	}
+	defer C.native_bytes_free(&output)
+	if C.floeterm_encode_wheel(e.handle, C.float(col), C.float(row), direction, C.uint16_t(mods), &output) == 0 {
+		return nil
+	}
+	return C.GoBytes(unsafe.Pointer(output.data), C.int(output.len))
+}
 func (e *Engine) EncodeKey(event KeyEvent) ([]byte, error) {
 	if e == nil || e.handle == nil || event.Code == "" {
 		return nil, errors.New("invalid native key input")

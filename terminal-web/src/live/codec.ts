@@ -16,6 +16,7 @@ export enum TerminalLiveFrameType {
   Activate = 0x06,
   Paste = 0x07,
   Interact = 0x08,
+  Wheel = 0x09,
   Attached = 0x81,
   ResizeApplied = 0x83,
   SessionClosed = 0x84,
@@ -42,6 +43,23 @@ export type Attach = Readonly<{
 }>;
 
 export type Input = Readonly<{ sequence: bigint; data: Uint8Array }>;
+export type WheelIntent = Readonly<{ controllerEpoch: number; generation: number; x: number; y: number; steps: number; modifiers: number }>;
+
+export function encodeWheel(sequence: bigint, wheel: WheelIntent): Uint8Array {
+  if (!Number.isSafeInteger(wheel.controllerEpoch) || wheel.controllerEpoch <= 0 || !Number.isSafeInteger(wheel.generation) || wheel.generation <= 0 ||
+    !Number.isInteger(wheel.steps) || !wheel.steps || Math.abs(wheel.steps) > 32 || !Number.isInteger(wheel.modifiers) || wheel.modifiers < 0 || wheel.modifiers > 15 ||
+    !(wheel.x >= 0 && Math.fround(wheel.x) < 65536 && wheel.y >= 0 && Math.fround(wheel.y) < 65536)) throw new Error('invalid wheel intent');
+  const payload = new Uint8Array(36);
+  const view = new DataView(payload.buffer);
+  view.setBigUint64(0, sequence);
+  view.setBigUint64(8, BigInt(wheel.controllerEpoch));
+  view.setBigUint64(16, BigInt(wheel.generation));
+  view.setFloat32(24, wheel.x);
+  view.setFloat32(28, wheel.y);
+  view.setInt8(32, wheel.steps);
+  view.setUint16(33, wheel.modifiers);
+  return frame(TerminalLiveFrameType.Wheel, payload);
+}
 export type InputIntent = Readonly<{
   sequence: bigint;
   code: string;

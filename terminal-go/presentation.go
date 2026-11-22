@@ -54,11 +54,15 @@ func semanticFrameWire(frame SemanticFrame) map[string]any {
 	if graphics.Placements == nil {
 		graphics.Placements = []SemanticGraphicPlacement{}
 	}
-	return map[string]any{
+	wire := map[string]any{
 		"width": frame.Width, "height": frame.Height, "bufferKind": frame.BufferKind,
 		"cursor": frame.Cursor, "history": frame.History, "graphics": graphics,
 		"styles": styles, "styleInverses": styleInverses, "rows": rows,
 	}
+	if frame.WheelGeneration != 0 {
+		wire["wheelGeneration"] = frame.WheelGeneration
+	}
+	return wire
 }
 
 var semanticRGBPattern = regexp.MustCompile(`^rgb:[0-9a-fA-F]{6}$`)
@@ -98,13 +102,14 @@ type TerminalState struct {
 }
 
 type SemanticFrame struct {
-	Width      int                    `json:"width"`
-	Height     int                    `json:"height"`
-	Rows       []SemanticRow          `json:"rows"`
-	Cursor     SemanticCursor         `json:"cursor"`
-	BufferKind string                 `json:"bufferKind"`
-	History    SemanticHistorySummary `json:"history"`
-	Graphics   SemanticGraphics       `json:"graphics"`
+	WheelGeneration uint64                 `json:"wheelGeneration,omitempty"`
+	Width           int                    `json:"width"`
+	Height          int                    `json:"height"`
+	Rows            []SemanticRow          `json:"rows"`
+	Cursor          SemanticCursor         `json:"cursor"`
+	BufferKind      string                 `json:"bufferKind"`
+	History         SemanticHistorySummary `json:"history"`
+	Graphics        SemanticGraphics       `json:"graphics"`
 }
 
 // SemanticHistorySummary is captured from the same engine ownership window as

@@ -2,6 +2,38 @@
 
 #include "generated/adapter.c"
 
+int floeterm_wheel_mode(NativeEngine *engine) {
+  bool tracking = false;
+  if (!engine || ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking) != GHOSTTY_SUCCESS) return 0;
+  if (tracking) return 1;
+  GhosttyTerminalScreen screen;
+  GhosttyTerminalModeConfig scroll = {.mode = GHOSTTY_MODE_ALT_SCROLL};
+  return ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen) == GHOSTTY_SUCCESS &&
+      screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE &&
+      ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_MODE, &scroll) == GHOSTTY_SUCCESS && scroll.value ? 2 : 0;
+}
+
+int floeterm_encode_wheel(NativeEngine *engine, float col, float row, int up, uint16_t mods, NativeBytes *out) {
+  if (!engine || col < 0 || row < 0 || col >= engine->cols || row >= engine->rows) return 0;
+  GhosttyMouseEvent event = NULL;
+  if (ghostty_mouse_event_new(NULL, &event) != GHOSTTY_SUCCESS) return 0;
+  GhosttyMouseEncoderSize size = GHOSTTY_INIT_SIZED(GhosttyMouseEncoderSize);
+  size.cell_width = engine->cell_width;
+  size.cell_height = engine->cell_height;
+  size.screen_width = engine->cols * size.cell_width;
+  size.screen_height = engine->rows * size.cell_height;
+  ghostty_mouse_encoder_setopt_from_terminal(engine->mouse_encoder, engine->terminal);
+  ghostty_mouse_encoder_setopt(engine->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
+  ghostty_mouse_event_set_action(event, GHOSTTY_MOUSE_ACTION_PRESS);
+  ghostty_mouse_event_set_button(event, up ? GHOSTTY_MOUSE_BUTTON_FOUR : GHOSTTY_MOUSE_BUTTON_FIVE);
+  ghostty_mouse_event_set_position(event, (GhosttyMousePosition){.x = col * size.cell_width, .y = row * size.cell_height});
+  ghostty_mouse_event_set_mods(event, mods);
+  out->data = malloc(128);
+  int ok = out->data && ghostty_mouse_encoder_encode(engine->mouse_encoder, event, (char *)out->data, 128, &out->len) == GHOSTTY_SUCCESS;
+  ghostty_mouse_event_free(event);
+  return ok;
+}
+
 const char *floeterm_native_window_title(NativeEngine *engine, size_t *length) {
   GhosttyString title = {0};
   if (!engine || ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_TITLE, &title) != GHOSTTY_SUCCESS || title.len > 8192) return NULL;

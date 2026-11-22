@@ -10,8 +10,13 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.22.0
+npm install @floegence/floeterm-terminal-web@0.23.0
 ```
+
+`WheelRouter` routes one vertical gesture to either view-local history or the live
+application. A live frame advertises `wheelGeneration` only while mouse reporting
+or alternate scroll is active. Wheel frames carry the observed generation and
+controller epoch, do not activate a view, and are never replayed on reconnect.
 
 ## Exports
 

@@ -16,6 +16,8 @@ import {
   encodeActivate,
   encodeInput,
   encodeInputIntent,
+  encodeWheel,
+  type WheelIntent,
   encodeInteraction,
   encodePasteChunk,
   encodeResize,
@@ -106,6 +108,7 @@ export type TerminalLiveConnection = Readonly<{
   controller: TerminalLiveController;
   sendInput(data: Uint8Array): Promise<void>;
   sendInputIntent(intent: Omit<InputIntent, 'sequence'>): Promise<void>;
+  sendWheel?(wheel: WheelIntent): Promise<void>;
   sendPaste(data: Uint8Array): Promise<void>;
   interactInput(cols: number, rows: number, data: Uint8Array): Promise<void>;
   interactInputIntent(cols: number, rows: number, intent: Omit<InputIntent, 'sequence'>): Promise<void>;
@@ -250,6 +253,15 @@ class TerminalLiveConnectionImpl implements TerminalLiveConnection {
     } finally {
       this.queuedInputBytes -= queuedBytes;
     }
+  }
+
+  private wheelWrites = 0;
+  async sendWheel(wheel: WheelIntent): Promise<void> {
+    if (this.closed || this.wheelWrites >= 2) return;
+    const encoded = encodeWheel(++this.inputSequence, wheel);
+    this.wheelWrites++;
+    try { await this.enqueueWrite(() => this.stream.write(encoded)); }
+    finally { this.wheelWrites--; }
   }
 
   async sendPaste(data: Uint8Array): Promise<void> {

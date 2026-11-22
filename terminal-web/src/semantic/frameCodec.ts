@@ -24,6 +24,7 @@ export function decodeSemanticFrameWire(value: unknown): SemanticFrame {
     width: wire.width,
     height: wire.height,
     bufferKind: wire.bufferKind,
+    ...(Number.isSafeInteger(wire.wheelGeneration) && wire.wheelGeneration > 0 ? { wheelGeneration: wire.wheelGeneration } : {}),
     cursor: wire.cursor,
     history: wire.history,
     graphics: decodeGraphics(wire.graphics),

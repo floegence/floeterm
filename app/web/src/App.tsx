@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import {
   RendererSurface,
   HistoryViewportController,
+  WheelRouter,
   HistoryScrollbar,
   SEMANTIC_CELL_HEIGHT_CSS_PX,
   SEMANTIC_CELL_WIDTH_CSS_PX,
@@ -572,6 +573,8 @@ const SingleTerminalPane = (props: {
 
 	const [historyBusy, setHistoryBusy] = createSignal(false);
   const [historySummary, setHistorySummary] = createSignal({ totalRows: 0, screenStartOffset: 0 });
+  const wheelRouter = new WheelRouter();
+  let wheelEpoch = 0;
   let liveConnected = false;
   let latestPresentation: SemanticPresentation | null = null;
   const resizeDiagnostics: unknown[] = [];
@@ -615,6 +618,7 @@ const SingleTerminalPane = (props: {
       };
       recordResizeDiagnostic({ action: 'attach-applied', geometry });
 	  historyController?.setTransportGeneration(attached.runtimeAttachGeneration);
+      wheelEpoch = attached.isController ? attached.controllerEpoch : 0;
       return geometry;
     },
     resize: async dimensions => {
@@ -767,6 +771,8 @@ const SingleTerminalPane = (props: {
 		const unsubscribeLifecycle = props.eventSource.onTerminalLiveAttachmentLifecycle?.(props.sessionId, event => {
 			if (event.state === 'attached') { semanticResize.handleAttached(); return; }
 			historyController?.setTransportGeneration(null);
+			wheelRouter.reset();
+			wheelEpoch = 0;
 		lifecycleCloseCount += 1;
 		recordResizeDiagnostic({ action: 'lifecycle-closed', reason: event.reason, attachRequestCount, lifecycleCloseCount });
 		semanticResize.handleClosed(event.reason);
@@ -782,6 +788,7 @@ const SingleTerminalPane = (props: {
     });
     const unsubscribeController = props.eventSource.onTerminalController?.(props.sessionId, event => {
       isController = event.isController;
+      wheelEpoch = isController ? event.epoch : 0;
     });
     onCleanup(() => {
 			unsubscribePresentation?.();
@@ -841,6 +848,11 @@ const SingleTerminalPane = (props: {
         <div class="terminalPane"
 			  onWheel={event => {
 				if (event.deltaY === 0) return;
+				if (!semanticCanvas) return;
+				const route = wheelRouter.route(latestPresentation?.frame, historyProjected(), wheelEpoch, semanticCanvas.getBoundingClientRect(), event,
+				  event.deltaY, event.deltaMode, Number(event.shiftKey) | Number(event.ctrlKey) << 1 | Number(event.altKey) << 2 | Number(event.metaKey) << 3,
+				  intent => { void props.transport.sendWheel?.(props.sessionId, intent).catch(() => undefined); });
+				if (route !== 'history') { if (route === 'application') event.preventDefault(); return; }
 				if (event.deltaY < 0 || historyProjected()) event.preventDefault();
 				historyController?.handleWheel(event.deltaY, event.deltaMode);
 		  }}>

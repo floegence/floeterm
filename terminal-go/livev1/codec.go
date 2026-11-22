@@ -37,6 +37,7 @@ const (
 	FrameActivate    FrameType = 0x06
 	FramePaste       FrameType = 0x07
 	FrameInteract    FrameType = 0x08
+	FrameWheel       FrameType = 0x09
 
 	FrameAttached           FrameType = 0x81
 	FrameResizeApplied      FrameType = 0x83
@@ -195,7 +196,7 @@ type ProtocolError struct {
 
 func validFrameType(frameType FrameType) bool {
 	switch frameType {
-	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent, FrameActivate, FramePaste, FrameInteract,
+	case FrameAttach, FrameInput, FrameResize, FrameDetach, FrameInputIntent, FrameActivate, FramePaste, FrameInteract, FrameWheel,
 		FrameAttached, FrameResizeApplied, FrameSessionClosed, FrameGeometryChanged, FramePresentation,
 		FrameActivated, FrameControllerChanged, FrameActivationRejected, FrameError:
 		return true

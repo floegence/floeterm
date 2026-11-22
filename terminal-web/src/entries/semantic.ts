@@ -5,6 +5,7 @@ export {
   SEMANTIC_TERMINAL_FONT_FAMILY,
 } from '../semantic/RendererSurface.js';
 export { TerminalInputBridge } from '../core/TerminalInputBridge.js';
+export { WheelRouter } from '../semantic/WheelRouter.js';
 export { HistoryViewportController } from '../semantic/HistoryViewportController.js';
 export type {
   HistoryViewportCacheMetrics,

@@ -5,6 +5,7 @@ import { decodeSemanticFrameWire } from './frameCodec.js';
 export type SemanticCell = { text: string; hyperlink?: string; width: number; style?: { foreground?: string; background?: string; bold?: boolean; italic?: boolean; underline?: boolean; inverse?: boolean } };
 export type SemanticCursorShape = 'bar' | 'block' | 'underline' | 'hollow';
 export type SemanticFrame = {
+  wheelGeneration?: number;
   width: number;
   height: number;
   bufferKind: string;

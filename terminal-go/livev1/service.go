@@ -266,6 +266,19 @@ func (s *Service) Serve(parent context.Context, stream io.ReadWriteCloser) error
 			return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "interaction paste was interrupted", ErrProtocolViolation)
 		}
 		switch frame.Type {
+		case FrameWheel:
+			wheel, err := decodeWheel(frame)
+			if err != nil || wheel.Sequence <= lastInputSequence {
+				return s.protocolFailureLocked(stream, &writeMu, ErrorCodeProtocolViolation, "invalid wheel input", ErrProtocolViolation)
+			}
+			lastInputSequence = wheel.Sequence
+			if backend, ok := s.backend.(interface {
+				WriteWheel(context.Context, Attach, Wheel) error
+			}); ok {
+				if err := backend.WriteWheel(ctx, attachment, wheel); err != nil {
+					return err
+				}
+			}
 		case FrameInput:
 			input, decodeErr := DecodeInput(frame)
 			if decodeErr != nil || input.Sequence <= lastInputSequence {
