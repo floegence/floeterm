@@ -6,6 +6,10 @@ export function decodeSemanticFrameWire(value: unknown): SemanticFrame {
     throw new Error('invalid semantic frame wire');
   }
   const styleInverses = wire.styleInverses;
+  if (wire.faintStyles !== undefined && (!Array.isArray(wire.faintStyles) || wire.faintStyles.length > wire.styles.length || wire.faintStyles.some((index: number) => !Number.isInteger(index) || index < 0 || index >= wire.styles.length))) {
+    throw new Error('invalid semantic frame faint styles');
+  }
+  const faint = new Set<number>(wire.faintStyles);
   if (styleInverses !== undefined && (!Array.isArray(styleInverses)
     || styleInverses.length !== wire.styles.length
     || styleInverses.some((inverse: unknown) => typeof inverse !== 'boolean'))) {
@@ -17,6 +21,7 @@ export function decodeSemanticFrameWire(value: unknown): SemanticFrame {
     }
     return {
       foreground: style[0], background: style[1], bold: style[2], italic: style[3],
+      ...(faint.has(index) ? { faint: true } : {}),
       underline: style[4], inverse: style[5] ?? styleInverses?.[index] ?? false,
     };
   });

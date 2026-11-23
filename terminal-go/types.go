@@ -257,13 +257,14 @@ type ContextTerminalManager interface {
 
 // Session represents a persistent terminal session backed by a PTY.
 type Session struct {
-	ID         string
-	Name       string
-	WorkingDir string
-	CreatedAt  time.Time
-	LastActive time.Time
-	PTY        *os.File
-	Cmd        *exec.Cmd
+	colorReplyQueue chan string
+	ID              string
+	Name            string
+	WorkingDir      string
+	CreatedAt       time.Time
+	LastActive      time.Time
+	PTY             *os.File
+	Cmd             *exec.Cmd
 
 	isActive        bool
 	closed          bool

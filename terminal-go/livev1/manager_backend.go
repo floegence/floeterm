@@ -9,21 +9,24 @@ import (
 )
 
 type ManagerBackendOptions struct {
-	Authorize func(context.Context, *terminal.Session, Attach) error
-	Activate  func(context.Context, string, int, int) error
+	DefaultColors *terminal.DefaultColors
+	Authorize     func(context.Context, *terminal.Session, Attach) error
+	Activate      func(context.Context, string, int, int) error
 }
 
 type ManagerBackend struct {
-	manager   *terminal.Manager
-	authorize func(context.Context, *terminal.Session, Attach) error
-	activate  func(context.Context, string, int, int) error
+	defaultColors *terminal.DefaultColors
+	manager       *terminal.Manager
+	authorize     func(context.Context, *terminal.Session, Attach) error
+	activate      func(context.Context, string, int, int) error
 }
 
 func NewManagerBackend(manager *terminal.Manager, options ManagerBackendOptions) *ManagerBackend {
 	backend := &ManagerBackend{
-		manager:   manager,
-		authorize: options.Authorize,
-		activate:  options.Activate,
+		defaultColors: options.DefaultColors,
+		manager:       manager,
+		authorize:     options.Authorize,
+		activate:      options.Activate,
 	}
 	if backend.activate == nil && manager != nil {
 		backend.activate = manager.ActivateSessionContext
@@ -51,7 +54,7 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 	if err := session.AttachSemanticView(request.ConnectionID, principalID, request.AttachGeneration); err != nil {
 		return Attached{}, nil, err
 	}
-	session.EnsureSemanticController(request.ConnectionID, principalID, request.AttachGeneration)
+	initialController := session.EnsureSemanticController(request.ConnectionID, principalID, request.AttachGeneration)
 	attachment, err := session.AttachSemanticLiveConnection(
 		request.ConnectionID,
 		request.AttachGeneration,
@@ -97,6 +100,9 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 		}
 		return Attached{}, nil, err
 	}
+	if b.defaultColors != nil {
+		session.SetControllerDefaultColors(request.ConnectionID, request.AttachGeneration, initialController.Epoch, *b.defaultColors)
+	}
 	if err := b.activate(ctx, request.SessionID, int(request.Cols), int(request.Rows)); err != nil {
 		attachment.Detach()
 		session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
@@ -115,16 +121,16 @@ func (b *ManagerBackend) Attach(ctx context.Context, request Attach, subscriber 
 	}
 	controller = session.Controller()
 	return Attached{
-			PresentationSequence: attachment.Geometry.PresentationSequence,
-			GeometryGeneration:   attachment.Geometry.Generation,
-			ControllerEpoch:      controller.Epoch,
-			Cols:                 uint32(attachment.Geometry.Cols),
-			Rows:                 uint32(attachment.Geometry.Rows),
-			IsController:         controller.AttachmentID == request.ConnectionID && controller.TransportGeneration == request.AttachGeneration,
-		}, func() {
-			attachment.Detach()
-			session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
-		}, nil
+		PresentationSequence: attachment.Geometry.PresentationSequence,
+		GeometryGeneration:   attachment.Geometry.Generation,
+		ControllerEpoch:      controller.Epoch,
+		Cols:                 uint32(attachment.Geometry.Cols),
+		Rows:                 uint32(attachment.Geometry.Rows),
+		IsController:         controller.AttachmentID == request.ConnectionID && controller.TransportGeneration == request.AttachGeneration,
+	}, func() {
+		attachment.Detach()
+		session.LogicalDetachSemanticView(request.ConnectionID, request.AttachGeneration)
+	}, nil
 }
 
 func (b *ManagerBackend) Activate(_ context.Context, attachment Attach, activate Activate) (Activated, error) {

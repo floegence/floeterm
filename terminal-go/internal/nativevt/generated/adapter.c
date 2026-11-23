@@ -354,6 +354,24 @@ static void copy_color(GhosttyStyleColor source, int *kind, uint8_t *r,
   }
 }
 
+static int copy_background(GhosttyCell raw, GhosttyStyleColor color, NativeCell *out) {
+  GhosttyCellContentTag tag;
+  if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CONTENT_TAG, &tag) != GHOSTTY_SUCCESS)
+    return 0;
+  if (tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+    color.tag = GHOSTTY_STYLE_COLOR_PALETTE;
+    if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_PALETTE, &color.value.palette) != GHOSTTY_SUCCESS)
+      return 0;
+  } else if (tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+    color.tag = GHOSTTY_STYLE_COLOR_RGB;
+    if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_RGB, &color.value.rgb) != GHOSTTY_SUCCESS)
+      return 0;
+  }
+  copy_color(color, &out->background_kind, &out->background_r, &out->background_g,
+             &out->background_b, &out->background_index);
+  return 1;
+}
+
 static int capture_graphics(NativeEngine *engine, NativeFrame *frame) {
   GhosttyKittyGraphics graphics = NULL;
   GhosttyResult result = ghostty_terminal_get(
@@ -522,8 +540,7 @@ int native_capture_frame(NativeEngine *engine, NativeFrame *frame) {
         goto fail;
       copy_color(style.fg_color, &out->foreground_kind, &out->foreground_r,
                  &out->foreground_g, &out->foreground_b, &out->foreground_index);
-      copy_color(style.bg_color, &out->background_kind, &out->background_r,
-                 &out->background_g, &out->background_b, &out->background_index);
+      if (!copy_background(raw, style.bg_color, out)) goto fail;
       out->underline = style.underline;
       out->bold = style.bold;
       out->italic = style.italic;
@@ -686,9 +703,7 @@ int native_read_history(NativeEngine *engine, NativeAnchor *anchor, uint16_t lim
       copy_color(style.fg_color, &out->foreground_kind, &out->foreground_r,
                  &out->foreground_g, &out->foreground_b,
                  &out->foreground_index);
-      copy_color(style.bg_color, &out->background_kind, &out->background_r,
-                 &out->background_g, &out->background_b,
-                 &out->background_index);
+      if (!copy_background(raw, style.bg_color, out)) goto fail;
       out->underline = style.underline;
       out->bold = style.bold;
       out->italic = style.italic;

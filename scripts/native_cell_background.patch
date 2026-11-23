@@ -1,0 +1,32 @@
+diff --git a/terminal-go/internal/nativevt/generated/adapter.c b/terminal-go/internal/nativevt/generated/adapter.c
+index 011db3a..4ad82ea 100644
+--- a/terminal-go/internal/nativevt/generated/adapter.c
++++ b/terminal-go/internal/nativevt/generated/adapter.c
+@@ -356,0 +357,18 @@ static void copy_color(GhosttyStyleColor source, int *kind, uint8_t *r,
++static int copy_background(GhosttyCell raw, GhosttyStyleColor color, NativeCell *out) {
++  GhosttyCellContentTag tag;
++  if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CONTENT_TAG, &tag) != GHOSTTY_SUCCESS)
++    return 0;
++  if (tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
++    color.tag = GHOSTTY_STYLE_COLOR_PALETTE;
++    if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_PALETTE, &color.value.palette) != GHOSTTY_SUCCESS)
++      return 0;
++  } else if (tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
++    color.tag = GHOSTTY_STYLE_COLOR_RGB;
++    if (ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_RGB, &color.value.rgb) != GHOSTTY_SUCCESS)
++      return 0;
++  }
++  copy_color(color, &out->background_kind, &out->background_r, &out->background_g,
++             &out->background_b, &out->background_index);
++  return 1;
++}
++
+@@ -525,2 +543 @@ int native_capture_frame(NativeEngine *engine, NativeFrame *frame) {
+-      copy_color(style.bg_color, &out->background_kind, &out->background_r,
+-                 &out->background_g, &out->background_b, &out->background_index);
++      if (!copy_background(raw, style.bg_color, out)) goto fail;
+@@ -689,3 +706 @@ int native_read_history(NativeEngine *engine, NativeAnchor *anchor, uint16_t lim
+-      copy_color(style.bg_color, &out->background_kind, &out->background_r,
+-                 &out->background_g, &out->background_b,
+-                 &out->background_index);
++      if (!copy_background(raw, style.bg_color, out)) goto fail;

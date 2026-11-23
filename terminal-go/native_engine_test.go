@@ -158,6 +158,107 @@ func TestRealNativePresentationPreservesInverseCellStyle(t *testing.T) {
 	}
 }
 
+func TestNativeCellBackgroundAndIntensity(t *testing.T) {
+	engine, err := NewNativeSemanticEngine(12, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	_, err = engine.ApplyOutput([]byte("\x1b[48;2;12;34;56m\x1b[2K\x1b[1m>\x1b[22;2m界\x1b[0m\x1b[2;5H\x1b[44m\x1b[K\x1b[3;1H\x1b[2K\x1b[0m\x1b[2K"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := engine.CaptureFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := engine.(SemanticHistoryEngine)
+	anchor, err := history.TrackHistoryCell(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer anchor.Close()
+	page, status, err := history.ReadHistory(anchor, 3)
+	if err != nil || status != AnchorValid {
+		t.Fatal(status, err)
+	}
+	for _, frame := range []SemanticFrame{live, page} {
+		for row, line := range frame.Rows {
+			for col, cell := range line.Cells {
+				want := "default"
+				if row == 0 {
+					want = "rgb:0c2238"
+				} else if row == 1 && col >= 4 {
+					want = "indexed:4"
+				}
+				if cell.Style.Background != want {
+					t.Fatalf("%d,%d: %s want %s", row, col, cell.Style.Background, want)
+				}
+			}
+		}
+		if !frame.Rows[0].Cells[0].Style.Bold || !frame.Rows[0].Cells[1].Style.Faint || frame.Rows[0].Cells[1].Width != 2 {
+			t.Fatal(frame.Rows[0])
+		}
+	}
+}
+
+func TestProgramReadsNativeThemeReply(t *testing.T) {
+	manager := NewManager(ManagerConfig{})
+	program := Program{Executable: "/bin/sh", Args: []string{"-c", `stty raw -echo; printf '\033]11;?\033\\'; dd bs=1 count=25 2>/dev/null | od -An -v -tx1 | tr -d ' \n' > reply; printf '\033]2;done\007'; sleep 10`}}
+	dir := t.TempDir()
+	session, err := manager.CreateProgramSession("colors", dir, program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.DeleteSession(session.ID) })
+	session.SetDefaultColors(0x212223, 0xf9f9f9)
+	if err = manager.ActivateSession(session.ID, 80, 24); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond * 10) {
+		if _, title := session.ProgramObservation(); title != "done" {
+			continue
+		}
+		data, err := os.ReadFile(dir + "/reply")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != fmt.Sprintf("%x", []byte("\x1b]11;rgb:f9f9/f9f9/f9f9\x1b\\")) {
+			t.Fatalf("reply %s", data)
+		}
+		return
+	}
+	t.Fatal("program did not receive its background color reply")
+}
+
+func TestThemeQueriesAreControllerOwnedAndNeverReplayed(t *testing.T) {
+	manager := NewManager(ManagerConfig{})
+	session, err := manager.CreateSession("theme", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.DeleteSession(session.ID)
+	for _, id := range []string{"owner", "observer"} {
+		if err := session.AttachSemanticView(id, "local", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := session.EnsureSemanticController("owner", "local", 1)
+	colors := DefaultColors{Foreground: 0xaabbcc, Background: 0x223344}
+	if session.SetControllerDefaultColors("observer", 1, state.Epoch, colors) || session.SetControllerDefaultColors("owner", 1, state.Epoch+1, colors) || !session.SetControllerDefaultColors("owner", 1, state.Epoch, colors) {
+		t.Fatal("theme ownership mismatch")
+	}
+	var replies string
+	p, err := session.semanticActor.applyPTYOutput([]byte("\x1b[6n\x1b]11;?\x07"), &replies)
+	if err != nil || replies != "\x1b]11;rgb:2222/3333/4444\x07" && replies != "\x1b]11;rgb:2222/3333/4444\x1b\\" {
+		t.Fatalf("unexpected replies %q: %v", replies, err)
+	}
+	latest, _ := session.LatestPresentation()
+	if p.State.colorReplies != "" || latest.State.colorReplies != "" {
+		t.Fatal("reply leaked into a replayable presentation")
+	}
+}
+
 func TestRealNativePresentationKeepsRegionalIndicatorGraphemeTogether(t *testing.T) {
 	engine, err := NewNativeSemanticEngine(16, 3)
 	if err != nil {

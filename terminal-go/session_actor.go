@@ -95,12 +95,20 @@ func (a *SessionActor) PublishInitialPresentation() error {
 }
 
 func (a *SessionActor) ApplyPTYOutput(data []byte) (SemanticPresentation, error) {
+	return a.applyPTYOutput(data, nil)
+}
+
+func (a *SessionActor) applyPTYOutput(data []byte, replies *string) (SemanticPresentation, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	state, err := a.engine.ApplyOutput(data)
 	if err != nil {
 		return SemanticPresentation{}, err
 	}
+	if replies != nil {
+		*replies = state.colorReplies
+	}
+	state.colorReplies = ""
 	frame, err := a.engine.CaptureFrame()
 	if err != nil {
 		return SemanticPresentation{}, err

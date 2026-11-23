@@ -111,6 +111,9 @@ export class RendererSurface {
   private labels: SemanticTerminalLabels = Object.freeze({ historyLoading: 'Loading history...' });
   private dprMediaQuery: MediaQueryList | null = null;
   private backingScale = 1;
+  private regularFont = '';
+  private boldFont = '';
+  private textBold = false;
   private readonly fontSet: FontFaceSet | undefined;
   private disposed = false;
   private viewVisible = true;
@@ -568,7 +571,10 @@ export class RendererSurface {
     // of stretching the shared frame to fit an observer viewport.
     const { cellWidthCssPx: cellWidth, cellHeightCssPx: cellHeight } = this.cellMetrics;
     const searchColors = resolveSearchColors(palette);
-    context.font = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
+    this.regularFont = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
+    this.boldFont = `bold ${this.regularFont}`;
+    context.font = this.regularFont;
+    this.textBold = false;
     context.textBaseline = 'alphabetic';
     if (frame.history.pending) {
       this.paintPendingHistory(context, frame, cellWidth, cellHeight, palette);
@@ -672,6 +678,11 @@ export class RendererSurface {
       return;
     }
     const baseline = (y + 0.82) * cellHeight;
+    const bold = cell.style?.bold === true;
+    if (this.textBold !== bold) {
+      context.font = bold ? this.boldFont : this.regularFont;
+      this.textBold = bold;
+    }
     if (cell.width > 1) {
       const metrics = context.measureText(cell.text);
       const spanWidth = cellWidth * cell.width;
@@ -786,6 +797,7 @@ export class RendererSurface {
   private refreshCellMetrics(): SemanticTerminalCellMetrics {
     const context = this.getContext();
     context.font = `${this.typography.fontSizeCssPx}px ${this.typography.fontFamily}`;
+    this.textBold = false;
     const measuredWidth = typeof context.measureText === 'function'
       ? context.measureText('M').width
       : this.typography.fontSizeCssPx * (SEMANTIC_CELL_WIDTH_CSS_PX / 14);
@@ -1101,16 +1113,15 @@ function resolveCellColors(
   if (decoration) {
     return decoration.active ? searchColors.active : searchColors.ordinary;
   }
-  if (cell?.style?.inverse) {
-    return {
-      background: resolveColor(cell.style.foreground, palette.foreground, palette),
-      foreground: resolveColor(cell.style.background, palette.background, palette),
-    };
+  const fg = resolveColor(cell?.style?.foreground, palette.foreground, palette);
+  const bg = resolveColor(cell?.style?.background, palette.background, palette);
+  const background = cell?.style?.inverse ? fg : bg;
+  const foreground = cell?.style?.inverse ? bg : fg;
+  if (cell?.style?.faint) {
+    const front = parseThemeColor(foreground), back = parseThemeColor(background);
+    if (front && back) return { background, foreground: formatThemeColor(mixRgb(back, front, 0.62)) };
   }
-  return {
-    background: resolveColor(cell?.style?.background, palette.background, palette),
-    foreground: resolveColor(cell?.style?.foreground, palette.foreground, palette),
-  };
+  return { background, foreground };
 }
 
 function resolveSearchColors(palette: SemanticTerminalPalette): Readonly<{

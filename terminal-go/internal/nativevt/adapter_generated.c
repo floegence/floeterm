@@ -2,6 +2,13 @@
 
 #include "generated/adapter.c"
 
+int floeterm_default_colors(NativeEngine *engine, uint32_t foreground, uint32_t background) {
+  GhosttyColorRgb fg = {foreground >> 16, foreground >> 8, foreground};
+  GhosttyColorRgb bg = {background >> 16, background >> 8, background};
+  return ghostty_terminal_set(engine->terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg) == GHOSTTY_SUCCESS &&
+         ghostty_terminal_set(engine->terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg) == GHOSTTY_SUCCESS;
+}
+
 int floeterm_wheel_mode(NativeEngine *engine) {
   bool tracking = false;
   if (!engine || ghostty_terminal_get(engine->terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking) != GHOSTTY_SUCCESS) return 0;

@@ -65,6 +65,34 @@ afterEach(() => {
 });
 
 describe('semantic terminal browser surface', () => {
+  it('paints bold and faint ink independently without changing the terminal grid', async () => {
+    const host = document.body.appendChild(document.createElement('div'));
+    host.style.cssText = 'width:100px;height:36px';
+    const canvas = host.appendChild(document.createElement('canvas'));
+    const renderer = new RendererSurface(canvas);
+    try {
+      const base = presentation();
+      renderer.apply(validatePresentation({ ...base, geometry: { ...base.geometry, cols: 4 }, frame: { ...base.frame, width: 4,
+        rows: [{ cells: [{}, { bold: true }, { faint: true }, {}].map(style => ({ text: 'H', width: 1, style })) }], cursor: { ...base.frame.cursor, visible: false } } }));
+      for (const theme of ['dark', 'light'] as const) {
+        const palette = getThemeColors(theme);
+        renderer.setPalette(palette);
+        await nextPaint();
+        const scale = canvas.width / 100;
+        const energy = (column: number) => {
+          const left = Math.round(column * 9 * scale);
+          const { data } = canvas.getContext('2d')!.getImageData(left, 0, Math.round((column + 1) * 9 * scale) - left, Math.round(18 * scale));
+          const background = hexToRgb(palette.background)[0]!;
+          let total = 0;
+          for (let offset = 0; offset < data.length; offset += 4) total += Math.abs(data[offset]! - background);
+          return total;
+        };
+        expect(energy(1)).toBeGreaterThan(energy(0));
+        expect(energy(2)).toBeLessThan(energy(0));
+        expect(energy(3)).toBe(energy(0));
+      }
+    } finally { renderer.dispose(); }
+  });
   it.each([1, 1.25, 1.5, 2])('joins application rail cells at DPR %s without changing their weight or colors', async dpr => {
     vi.stubGlobal('devicePixelRatio', dpr);
     const host = document.createElement('div');

@@ -32,6 +32,7 @@ type semanticWireStyle [5]any
 func semanticFrameWire(frame SemanticFrame) map[string]any {
 	styles := make([]semanticWireStyle, 0, 16)
 	styleInverses := make([]bool, 0, 16)
+	var faintStyles []int
 	styleIndex := make(map[SemanticStyle]int)
 	rows := make([][]semanticWireCell, len(frame.Rows))
 	for y, row := range frame.Rows {
@@ -43,6 +44,9 @@ func semanticFrameWire(frame SemanticFrame) map[string]any {
 				styleIndex[cell.Style] = index
 				styles = append(styles, semanticWireStyle{cell.Style.Foreground, cell.Style.Background, cell.Style.Bold, cell.Style.Italic, cell.Style.Underline})
 				styleInverses = append(styleInverses, cell.Style.Inverse)
+				if cell.Style.Faint {
+					faintStyles = append(faintStyles, index)
+				}
 			}
 			rows[y][x] = semanticWireCell{cell.Text, cell.Width, index, cell.Hyperlink}
 		}
@@ -64,6 +68,9 @@ func semanticFrameWire(frame SemanticFrame) map[string]any {
 		if frame.PointerReporting {
 			wire["pointerReporting"] = true
 		}
+	}
+	if len(faintStyles) != 0 {
+		wire["faintStyles"] = faintStyles
 	}
 	return wire
 }
@@ -98,6 +105,7 @@ type SemanticPresentation struct {
 }
 
 type TerminalState struct {
+	colorReplies string
 	Sequence     uint64 `json:"sequence"`
 	ContentEpoch uint64 `json:"contentEpoch"`
 	Title        string `json:"title,omitempty"`
@@ -141,6 +149,7 @@ type SemanticStyle struct {
 	Foreground string `json:"foreground"`
 	Background string `json:"background"`
 	Bold       bool   `json:"bold,omitempty"`
+	Faint      bool   `json:"faint,omitempty"`
 	Italic     bool   `json:"italic,omitempty"`
 	Underline  bool   `json:"underline,omitempty"`
 	Inverse    bool   `json:"inverse,omitempty"`

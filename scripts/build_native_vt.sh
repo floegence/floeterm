@@ -53,6 +53,7 @@ for entry in "${TARGETS[@]}"; do
   fi
 done
 install -m 0644 "$SOURCE/gate/native/adapter.c" "$OUT/adapter.c"
+patch "$OUT/adapter.c" < "$ROOT/scripts/native_cell_background.patch"
 install -m 0644 "$SOURCE/LICENSE" "$OUT/GHOSTTY_LICENSE"
 install -m 0644 "$SOURCE/gate/native/adapter.h" "$OUT/adapter.h"
 

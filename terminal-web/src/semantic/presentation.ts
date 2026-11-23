@@ -2,7 +2,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { decodeSemanticFrameWire } from './frameCodec.js';
 
-export type SemanticCell = { text: string; hyperlink?: string; width: number; style?: { foreground?: string; background?: string; bold?: boolean; italic?: boolean; underline?: boolean; inverse?: boolean } };
+export type SemanticCell = { text: string; hyperlink?: string; width: number; style?: { foreground?: string; background?: string; bold?: boolean; faint?: boolean; italic?: boolean; underline?: boolean; inverse?: boolean } };
 export type SemanticCursorShape = 'bar' | 'block' | 'underline' | 'hollow';
 export type SemanticFrame = {
   wheelGeneration?: number;

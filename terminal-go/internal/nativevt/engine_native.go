@@ -7,6 +7,7 @@ package nativevt
 #include "generated/adapter.h"
 #include <ghostty/vt/mouse/event.h>
 int floeterm_wheel_mode(NativeEngine *engine);
+int floeterm_default_colors(NativeEngine *, uint32_t, uint32_t);
 int floeterm_encode_mouse(NativeEngine *, float, float, GhosttyMouseAction, GhosttyMouseButton, uint16_t, NativeBytes *);
 const char *floeterm_native_window_title(NativeEngine *engine, size_t *length);
 int floeterm_native_retention_get(NativeEngine *, size_t *, int *, size_t *, int *);
@@ -42,12 +43,12 @@ import (
 )
 
 type Cell struct {
-	Text, Hyperlink string
-	Width           int
-	Bold, Italic    bool
-	Inverse         bool
-	Foreground      Color
-	Background      Color
+	Text, Hyperlink     string
+	Width               int
+	Bold, Italic, Faint bool
+	Inverse             bool
+	Foreground          Color
+	Background          Color
 }
 type Color struct {
 	Kind         int
@@ -139,6 +140,10 @@ func (e *Engine) Close() {
 		C.native_engine_free(e.handle)
 		e.handle = nil
 	}
+}
+
+func (e *Engine) SetDefaultColors(foreground, background uint32) bool {
+	return e != nil && e.handle != nil && C.floeterm_default_colors(e.handle, C.uint32_t(foreground), C.uint32_t(background)) != 0
 }
 func (e *Engine) Apply(data []byte) (Result, error) {
 	if e == nil || e.handle == nil {
@@ -314,7 +319,7 @@ func frameFromNative(out *C.NativeFrame, cursor *C.FloetermCursorInfo) (Frame, e
 			}
 			f.Rows[y].Cells[x] = Cell{
 				Text: string(data[a:b]), Hyperlink: string(data[ha:hb]), Width: int(s.width),
-				Bold: s.bold != 0, Italic: s.italic != 0, Inverse: s.inverse != 0,
+				Bold: s.bold != 0, Italic: s.italic != 0, Faint: s.faint != 0, Inverse: s.inverse != 0,
 				Foreground: Color{Kind: int(s.foreground_kind), R: uint8(s.foreground_r), G: uint8(s.foreground_g), B: uint8(s.foreground_b), PaletteIndex: uint8(s.foreground_index)},
 				Background: Color{Kind: int(s.background_kind), R: uint8(s.background_r), G: uint8(s.background_g), B: uint8(s.background_b), PaletteIndex: uint8(s.background_index)},
 			}

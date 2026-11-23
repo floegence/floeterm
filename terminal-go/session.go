@@ -1216,7 +1216,11 @@ func (s *Session) publishPTYDisplayDataAtGeometry(
 		}
 		return
 	}
-	presentation, err := semanticActor.ApplyPTYOutput(displayData)
+	var replies string
+	presentation, err := semanticActor.applyPTYOutput(displayData, &replies)
+	if replies != "" {
+		s.enqueueColorReplies(replies)
+	}
 	if err != nil {
 		if onCommitted != nil {
 			onCommitted(err)

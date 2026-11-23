@@ -57,6 +57,7 @@ func NewNativeSemanticEngine(cols, rows int) (SemanticEngine, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.SetDefaultColors(0xc9d1d9, 0x0b0f14)
 	bytes, lines, err := e.Retention()
 	if err != nil {
 		e.Close()
@@ -70,7 +71,17 @@ func newProductSemanticEngine(cols, rows int) (SemanticEngine, error) {
 }
 func (e *nativeSemanticEngine) ApplyOutput(data []byte) (TerminalState, error) {
 	r, err := e.engine.Apply(data)
-	return TerminalState{Title: r.Title, Bell: uint64(r.Bells)}, err
+	state := TerminalState{Title: r.Title, Bell: uint64(r.Bells)}
+	for _, reply := range r.Responses {
+		if len(state.colorReplies)+len(reply) <= 256 && colorReplyPattern.Match(reply) {
+			state.colorReplies += string(reply)
+		}
+	}
+	return state, err
+}
+
+func (e *nativeSemanticEngine) setDefaultColors(foreground, background uint32) {
+	e.engine.SetDefaultColors(foreground, background)
 }
 func (e *nativeSemanticEngine) windowTitle() string { return e.engine.WindowTitle() }
 func (e *nativeSemanticEngine) CaptureFrame() (SemanticFrame, error) {
@@ -141,7 +152,7 @@ func semanticFrameFromNative(f nativevt.Frame) (SemanticFrame, error) {
 			if widthErr != nil {
 				return SemanticFrame{}, widthErr
 			}
-			out.Rows[y].Cells[x] = SemanticCell{Text: c.Text, Hyperlink: c.Hyperlink, Width: width, Style: SemanticStyle{Foreground: semanticColor(c.Foreground), Background: semanticColor(c.Background), Bold: c.Bold, Italic: c.Italic, Inverse: c.Inverse}}
+			out.Rows[y].Cells[x] = SemanticCell{Text: c.Text, Hyperlink: c.Hyperlink, Width: width, Style: SemanticStyle{Foreground: semanticColor(c.Foreground), Background: semanticColor(c.Background), Bold: c.Bold, Faint: c.Faint, Italic: c.Italic, Inverse: c.Inverse}}
 		}
 	}
 	return out, nil

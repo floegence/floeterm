@@ -63,8 +63,8 @@ Key contracts:
 Install the released packages:
 
 ```bash
-go get github.com/floegence/floeterm/terminal-go@v0.24.1
-npm install @floegence/floeterm-terminal-web@0.24.1
+go get github.com/floegence/floeterm/terminal-go@v0.25.0
+npm install @floegence/floeterm-terminal-web@0.25.0
 ```
 
 ## Browser Integration
@@ -191,6 +191,8 @@ The `terminal-go/internal/nativevt/generated` directory contains reproducible st
 archives for Darwin/Linux on amd64/arm64, the thin public-API adapter, Ghostty license,
 and exact source/artifact hashes. Regenerate them with `scripts/build_native_vt.sh`
 from the pinned Ghostty source and toolchain recorded by that script.
+
+The build applies `scripts/native_cell_background.patch` to the pinned adapter, not the engine archives. Live frames and history pages preserve default, indexed, and RGB backgrounds even on erased cells. Hosts may provide 24-bit default colors through `livev1.ManagerBackendOptions.DefaultColors` before PTY activation and update them through `Session.SetControllerDefaultColors` for the current controller epoch. Missing colors never block startup. Only native OSC 10/11 RGB replies are returned to the running PTY, not to attached views or history readers.
 
 ## Repository Layout
 
