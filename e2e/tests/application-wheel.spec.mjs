@@ -1,6 +1,32 @@
 import { expect, test } from '@playwright/test';
 import { waitForInteractiveShell } from '../support/sessionReadiness.mjs';
 
+test('paints a continuous application rail from PTY output', async ({ page }) => {
+  await page.goto('/?mode=single&perf_probe=1');
+  const state = page.getByTestId('demo-runtime-state');
+  await expect(state).toHaveAttribute('data-single-session-id', /.+/);
+  await waitForInteractiveShell(page, await state.getAttribute('data-single-session-id'));
+  const canvas = page.locator('.semanticTerminalSurface');
+  await canvas.click();
+  await page.keyboard.insertText("printf '\\033[2J\\033[H\\033[38;2;11;202;33m│\\r\\n│\\r\\n┃\\r\\n┃\\r\\n█\\r\\n█\\033[0m\\r\\n'");
+  await page.keyboard.press('Enter');
+  await expect.poll(() => canvas.evaluate(element => {
+    const { width, height } = element;
+    const pixels = element.getContext('2d').getImageData(0, 0, width, height).data;
+    const counts = [];
+    for (let row = 0; row < height; row++) {
+      let count = 0;
+      for (let column = 0; column < Math.min(40, width); column++) {
+        const offset = (row * width + column) * 4;
+        if (pixels[offset] === 11 && pixels[offset + 1] === 202 && pixels[offset + 2] === 33) count++;
+      }
+      counts.push(count);
+    }
+    while (counts.length && counts.at(-1) === 0) counts.pop();
+    return counts.length >= 60 && counts.every(count => count > 0) && new Set(counts).size === 3;
+  })).toBe(true);
+});
+
 test('routes a browser wheel to a mouse-reporting alternate screen', async ({ page }) => {
   await page.goto('/?mode=single&perf_probe=1');
   const state = page.getByTestId('demo-runtime-state');

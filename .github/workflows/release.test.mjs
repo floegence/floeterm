@@ -16,10 +16,10 @@ test('top-level release tags publish only the semantic terminal web package', as
   assert.doesNotMatch(workflow, /beamterm|renderer|wasm-pack/i);
 });
 
-test('semantic-only release publishes terminal-web 0.24.0', async () => {
+test('semantic-only release publishes terminal-web 0.24.1', async () => {
   const manifest = JSON.parse(await readFile(terminalWebPackagePath, 'utf8'));
 
   assert.equal(manifest.name, '@floegence/floeterm-terminal-web');
-  assert.equal(manifest.version, '0.24.0');
+  assert.equal(manifest.version, '0.24.1');
   assert.deepEqual(manifest.dependencies, { '@noble/hashes': '2.4.0' });
 });

@@ -65,6 +65,39 @@ afterEach(() => {
 });
 
 describe('semantic terminal browser surface', () => {
+  it.each([1, 1.25, 1.5, 2])('joins application rail cells at DPR %s without changing their weight or colors', async dpr => {
+    vi.stubGlobal('devicePixelRatio', dpr);
+    const host = document.createElement('div');
+    host.style.cssText = 'position:relative;width:160px;height:150px';
+    const canvas = host.appendChild(document.createElement('canvas'));
+    document.body.append(host);
+    const renderer = new RendererSurface(canvas);
+    try {
+      const { cellWidthCssPx: width, cellHeightCssPx: height } = renderer.setTypography({ fontFamily: 'monospace', fontSizeCssPx: 14, lineHeightCssPx: 23 });
+      const base = presentation();
+      const rows = ['│', '│', '┃', '┃', '█', '█'].map(text => ({ cells: [{ text: '', width: 1 }, { text, width: 1 }, { text: '', width: 1 }] }));
+      renderer.apply(validatePresentation({ ...base, geometry: { generation: 1, cols: 3, rows: rows.length }, frame: { ...base.frame,
+        width: 3, height: rows.length, bufferKind: 'alternate', history: { revision: 1, totalRows: rows.length, screenStartOffset: 0 },
+        rows, cursor: { ...base.frame.cursor, visible: false } } }));
+      for (const theme of ['light', 'dark'] as const) {
+        const palette = getThemeColors(theme);
+        renderer.setPalette(palette);
+        await nextPaint();
+        const image = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height);
+        const ink = hexToRgb(palette.foreground);
+        const hasInk = (column: number, row: number) => ink.every((channel, index) => image.data[(row * image.width + column) * 4 + index] === channel);
+        const center = Math.floor(1.5 * width * dpr);
+        const missingRows = Array.from({ length: Math.floor(rows.length * height * dpr) }, (_, row) => row).filter(row => !hasInk(center, row));
+        expect(missingRows).toEqual([]);
+        const inkWidth = (row: number) => Array.from({ length: image.width }, (_, col) => col).filter(col => hasInk(col, Math.floor((row + 0.5) * height * dpr))).length;
+        expect(inkWidth(0)).toBeGreaterThan(0);
+        expect(inkWidth(2)).toBeGreaterThan(inkWidth(0));
+        expect(inkWidth(4)).toBe(Math.round(2 * width * dpr) - Math.round(width * dpr));
+        expect(hasInk(center, Math.ceil(rows.length * height * dpr))).toBe(false);
+      }
+    } finally { renderer.dispose(); vi.unstubAllGlobals(); }
+  });
+
   it('paints every search occurrence and distinguishes the active occurrence', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px';

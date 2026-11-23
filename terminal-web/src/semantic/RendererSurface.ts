@@ -110,6 +110,7 @@ export class RendererSurface {
   private typographyConfigured = false;
   private labels: SemanticTerminalLabels = Object.freeze({ historyLoading: 'Loading history...' });
   private dprMediaQuery: MediaQueryList | null = null;
+  private backingScale = 1;
   private readonly fontSet: FontFaceSet | undefined;
   private disposed = false;
   private viewVisible = true;
@@ -561,6 +562,7 @@ export class RendererSurface {
     context.fillStyle = palette.background;
     context.fillRect(0, 0, this.canvas.width, this.canvas.height);
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.backingScale = dpr;
     // The engine grid is authoritative. A view may be larger or smaller than
     // that grid, so preserve one CSS cell metric and crop/pad locally instead
     // of stretching the shared frame to fit an observer viewport.
@@ -656,6 +658,19 @@ export class RendererSurface {
     color: string,
   ): void {
     context.fillStyle = color;
+    if (cell.width === 1 && (cell.text === '│' || cell.text === '┃' || cell.text === '█')) {
+      const scale = this.backingScale;
+      const left = Math.round(x * cellWidth * scale);
+      const right = Math.round((x + 1) * cellWidth * scale);
+      const top = Math.floor(y * cellHeight * scale);
+      const bottom = Math.floor((y + 1) * cellHeight * scale);
+      const light = Math.max(1, Math.round(cellWidth * scale / 9));
+      const width = cell.text === '█' ? right - left : Math.min(right - left, cell.text === '┃' ? 2 * light : light);
+      const center = Math.floor((x + 0.5) * cellWidth * scale);
+      const start = cell.text === '█' ? left : Math.max(left, Math.min(right - width, center - Math.floor(width / 2)));
+      context.fillRect(start / scale, top / scale, width / scale, (bottom - top) / scale);
+      return;
+    }
     const baseline = (y + 0.82) * cellHeight;
     if (cell.width > 1) {
       const metrics = context.measureText(cell.text);
