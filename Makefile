@@ -36,7 +36,7 @@ terminal-web-prepare:
 	echo "==> terminal-web Chromium runtime"; \
 	(cd terminal-web && npm exec playwright install chromium); \
 	echo "==> terminal-web lint/test/browser/build/package artifact"; \
-	(cd terminal-web && npm run lint && npm test && npm run test:browser && npm run build && npm run check:package-artifact); \
+	(cd terminal-web && npm run lint && npm test && npm run test:browser -- --browser.headless && npm run build && npm run check:package-artifact); \
 	echo "==> terminal-web npm audit"; \
 	(cd terminal-web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low) || \
 	(cd terminal-web && npm audit --registry=https://registry.npmjs.org/ --audit-level=low)
