@@ -355,6 +355,9 @@ func (s *Session) launchPTY(activation *sessionActivation, cols, rows int) error
 	s.mu.Unlock()
 
 	if program == nil {
+		if len(s.config.shellEnv) != 0 {
+			env = mergeShellLifecycleEnvironment(env, s.config.shellEnv)
+		}
 		env = mergeShellLifecycleEnvironment(env, shellEnv)
 	} else if len(program.Env) > 0 {
 		env = mergeShellLifecycleEnvironment(env, program.Env)

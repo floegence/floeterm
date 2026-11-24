@@ -27,6 +27,8 @@ func main() {
 
 `Session.ForegroundProcessGroup()` reads the controlling PTY's current foreground process group on macOS and Linux for either a shell or a directly launched program. It returns zero when unavailable. A group may contain multiple processes. Sample again before applying asynchronous job metadata, and discard it when the foreground changes.
 
+`Manager.CreateShellSessionWithEnv(name, workingDir, env)` preserves normal shell activation and adds environment entries for that session. The manager copies and validates the entries at creation. Shell integration and terminal-owned environment keys retain precedence.
+
 Use `CreateProgramSession` to execute one program with exact arguments and no
 shell parsing or initialization:
 

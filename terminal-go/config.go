@@ -89,6 +89,7 @@ type sessionConfig struct {
 	terminalEnv                 TerminalEnv
 	shellLifecycleAuthEnabled   bool
 	program                     *Program
+	shellEnv                    []string
 }
 
 func newSessionConfig(cfg ManagerConfig) sessionConfig {

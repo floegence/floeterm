@@ -30,13 +30,20 @@ func (p Program) validatedCopy() (Program, error) {
 			return Program{}, errors.New("program argument contains a NUL byte")
 		}
 	}
-	for _, entry := range copyProgram.Env {
-		key, _, ok := strings.Cut(entry, "=")
-		if !ok || key == "" || strings.ContainsRune(entry, '\x00') {
-			return Program{}, errors.New("invalid program environment entry")
-		}
+	if err := validateProgramEnv(copyProgram.Env); err != nil {
+		return Program{}, err
 	}
 	return copyProgram, nil
+}
+
+func validateProgramEnv(env []string) error {
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == "" || strings.ContainsRune(entry, '\x00') {
+			return errors.New("invalid program environment entry")
+		}
+	}
+	return nil
 }
 
 // ProgramObservation returns the live program PID and VT window title without cloning its frame.
