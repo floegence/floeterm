@@ -22,12 +22,17 @@ func ptyForegroundProcessGroup(master *os.File) (int, error) {
 		return 0, os.ErrInvalid
 	}
 	var processGroup int32
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		master.Fd(),
-		syscall.TIOCGPGRP,
-		uintptr(unsafe.Pointer(&processGroup)),
-	)
+	connection, err := master.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var errno syscall.Errno
+	err = connection.Control(func(fd uintptr) {
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&processGroup)))
+	})
+	if err != nil {
+		return 0, err
+	}
 	if errno != 0 {
 		return 0, errno
 	}

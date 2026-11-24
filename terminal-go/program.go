@@ -57,3 +57,13 @@ func (s *Session) ProgramObservation() (pid int, title string) {
 	}
 	return pid, ""
 }
+
+func (s *Session) ForegroundProcessGroup() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed || !s.isActive || s.PTY == nil || channelClosed(s.procWaitDone) {
+		return 0
+	}
+	group, _ := ptyForegroundProcessGroup(s.PTY)
+	return group
+}

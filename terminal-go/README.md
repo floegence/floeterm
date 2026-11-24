@@ -25,6 +25,8 @@ func main() {
 
 `Program.Env` overlays literal environment entries for that child only. `Session.ProgramObservation()` returns the live root program PID and the VT window title, or zero and an empty string when inactive. A window title is application-controlled display text, not a conversation name or evidence of identity.
 
+`Session.ForegroundProcessGroup()` reads the controlling PTY's current foreground process group on macOS and Linux for either a shell or a directly launched program. It returns zero when unavailable. A group may contain multiple processes. Sample again before applying asynchronous job metadata, and discard it when the foreground changes.
+
 Use `CreateProgramSession` to execute one program with exact arguments and no
 shell parsing or initialization:
 
