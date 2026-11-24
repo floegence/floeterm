@@ -19,7 +19,7 @@ const exists = async relativePath => {
 
 test('terminal-web publishes only the semantic terminal surface', async () => {
   const manifest = JSON.parse(await read('terminal-web/package.json'));
-  assert.equal(manifest.version, '0.26.0');
+  assert.equal(manifest.version, '0.27.0');
   assert.deepEqual(manifest.dependencies, { '@noble/hashes': '2.4.0' });
   assert.deepEqual(Object.keys(manifest.exports).sort(), ['.', './live', './semantic', './sessions']);
 

@@ -12,16 +12,17 @@ import (
 
 // TerminalSessionInfo summarizes a terminal session for listing APIs.
 type TerminalSessionInfo struct {
-	ID                string
-	Name              string
-	WorkingDir        string
-	CreatedAt         int64
-	LastActive        int64
-	IsActive          bool
-	ForegroundCommand TerminalForegroundCommandInfo
-	OutputActivity    TerminalOutputActivityInfo
-	ExecutionContext  TerminalExecutionContextInfo
-	WorkState         TerminalWorkStateInfo
+	ID                    string
+	Name                  string
+	WorkingDir            string
+	CreatedAt             int64
+	LastActive            int64
+	IsActive              bool
+	ForegroundCommand     TerminalForegroundCommandInfo
+	ForegroundWindowTitle string
+	OutputActivity        TerminalOutputActivityInfo
+	ExecutionContext      TerminalExecutionContextInfo
+	WorkState             TerminalWorkStateInfo
 }
 
 // TerminalLocationKind describes whether the presentation context is local or remote.
@@ -294,6 +295,8 @@ type Session struct {
 	pendingForegroundProgram      string
 	pendingForegroundSSHTarget    string
 	foregroundCommand             TerminalForegroundCommandInfo
+	foregroundWindowTitle         string
+	windowTitleContextRevision    uint64
 	outputActivity                TerminalOutputActivityInfo
 	outputActivityTimer           *time.Timer
 	outputActivityDeadline        time.Time

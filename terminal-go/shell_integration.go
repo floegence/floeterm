@@ -5,6 +5,8 @@ import (
 	"crypto/subtle"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -290,9 +292,9 @@ func parseShellIntegrationSignalPayload(payload string) (shellIntegrationSignal,
 		kind, nonce, ok := parseFloetermLifecyclePayload(payload)
 		return shellIntegrationSignal{kind: kind, lifecycleNonce: nonce}, "osc_633_lifecycle", !ok, true
 	case strings.HasPrefix(payload, "0;") || strings.HasPrefix(payload, "2;"):
-		title := strings.TrimPrefix(strings.TrimPrefix(payload, "0;"), "2;")
-		_, _, ok := parseTerminalTitleLabel(title)
-		return shellIntegrationSignal{kind: shellIntegrationTitle, title: title}, "osc_title", !ok, true
+		title := payload[2:]
+		invalid := !utf8.ValidString(title) || strings.IndexFunc(title, unicode.IsControl) >= 0
+		return shellIntegrationSignal{kind: shellIntegrationTitle, title: title}, "osc_title", invalid, true
 	case payload == "633;A" || payload == "133;A":
 		return shellIntegrationSignal{kind: shellIntegrationPromptReady}, "", false, true
 	case payload == "633;B" || payload == "133;B":
@@ -445,7 +447,14 @@ func (s *Session) checkShellIntegrationChange(chunk []byte) {
 		case shellIntegrationWork:
 			s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyWorkMarkerLocked(signal.work, now) })
 		case shellIntegrationTitle:
-			s.applyShellIntegrationMetadata(func(now time.Time) bool { return s.applyTitleLocked(signal.title, now) })
+			s.applyShellIntegrationMetadata(func(now time.Time) bool {
+				changed := s.applyTitleLocked(signal.title, now)
+				if s.foregroundCommand.Phase == ForegroundCommandRunning {
+					s.foregroundWindowTitle = signal.title
+					s.windowTitleContextRevision = s.executionContext.Revision
+				}
+				return changed
+			})
 		case shellIntegrationProgram:
 			s.mu.Lock()
 			if !s.closed && s.acceptsShellLifecycleSignalLocked(signal) && normalizeForegroundCommandInfo(s.foregroundCommand).Phase != ForegroundCommandRunning {
@@ -531,6 +540,7 @@ func (s *Session) updateForegroundCommandInternal(signal *shellIntegrationSignal
 	current.Revision++
 	current.UpdatedAt = now.UnixMilli()
 	s.foregroundCommand = current
+	s.foregroundWindowTitle = ""
 	if phase == ForegroundCommandRunning {
 		s.startForegroundContextLocked(displayName, sshTarget, now)
 	} else {

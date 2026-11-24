@@ -192,6 +192,10 @@ location and long-lived application. A foreground `ssh` basename creates a
 inside `ExecutionContext.Location.WorkingDirectory` and never overwrite the
 session's local `WorkingDir` or `Name`. Standard OSC 0/2/7 controls remain in the
 PTY stream for renderer compatibility and do not count as display output.
+`TerminalSessionInfo.ForegroundWindowTitle` is the latest standard OSC 0/2
+display title in the current shell command and execution context. Empty means
+unset or cleared. It is not a session name, command argument or identity and
+does not trigger foreground or context revision changes.
 Local context markers and a pop that would remove the final remote frame are
 also rejected while any active context frame owns a remote location. Nested
 pops that retain a remote parent remain valid. The remote floor is released

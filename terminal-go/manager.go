@@ -387,16 +387,21 @@ func (s *Session) ToSessionInfo() TerminalSessionInfo {
 }
 
 func (s *Session) toSessionInfoLocked() TerminalSessionInfo {
+	var title string
+	if !s.closed && s.foregroundCommand.Phase == ForegroundCommandRunning && s.windowTitleContextRevision == s.executionContext.Revision {
+		title = s.foregroundWindowTitle
+	}
 	return TerminalSessionInfo{
-		ID:                s.ID,
-		Name:              s.Name,
-		WorkingDir:        s.WorkingDir,
-		CreatedAt:         s.CreatedAt.UnixMilli(),
-		LastActive:        s.LastActive.UnixMilli(),
-		IsActive:          s.isActive,
-		ForegroundCommand: normalizeForegroundCommandInfo(s.foregroundCommand),
-		OutputActivity:    normalizeOutputActivityInfo(s.outputActivity),
-		ExecutionContext:  normalizeExecutionContextInfo(s.executionContext),
-		WorkState:         normalizeWorkStateInfo(s.workState),
+		ID:                    s.ID,
+		Name:                  s.Name,
+		WorkingDir:            s.WorkingDir,
+		CreatedAt:             s.CreatedAt.UnixMilli(),
+		LastActive:            s.LastActive.UnixMilli(),
+		IsActive:              s.isActive,
+		ForegroundCommand:     normalizeForegroundCommandInfo(s.foregroundCommand),
+		ForegroundWindowTitle: title,
+		OutputActivity:        normalizeOutputActivityInfo(s.outputActivity),
+		ExecutionContext:      normalizeExecutionContextInfo(s.executionContext),
+		WorkState:             normalizeWorkStateInfo(s.workState),
 	}
 }
