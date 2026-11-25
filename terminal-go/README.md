@@ -29,6 +29,8 @@ func main() {
 
 `Manager.CreateShellSessionWithEnv(name, workingDir, env)` preserves normal shell activation and adds environment entries for that session. The manager copies and validates the entries at creation. Shell integration and terminal-owned environment keys retain precedence.
 
+`InstalledShells(defaultPath)` lists executable shells on this host, one path per name. `Manager.CreateShellSession(name, workingDir, path, env)` snapshots an explicit absolute shell path with normal interactive initialization; an empty path keeps the manager default. Removing an explicit shell makes activation fail, without substitution. `ProgramThroughShell(path, program)` prepares a noninteractive shell invocation for `CreateProgramSession`: POSIX-compatible shells, Fish and Csh/Tcsh replace themselves with the exact executable and argument vector. The observed PID remains the program's PID. Nu and PowerShell program handoff is not supported.
+
 Use `CreateProgramSession` to execute one program with exact arguments and no
 shell parsing or initialization:
 

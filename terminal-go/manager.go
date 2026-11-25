@@ -44,14 +44,21 @@ func getDirectoryName(path string) string {
 
 // CreateSession creates a dormant logical terminal session.
 func (m *Manager) CreateSession(name, workingDir string) (*Session, error) {
-	return m.createSession(name, workingDir, nil, nil)
+	return m.createSession(name, workingDir, nil, "", nil)
 }
 
 func (m *Manager) CreateShellSessionWithEnv(name, workingDir string, env []string) (*Session, error) {
+	return m.CreateShellSession(name, workingDir, "", env)
+}
+
+func (m *Manager) CreateShellSession(name, workingDir, shell string, env []string) (*Session, error) {
+	if shell != "" && !executableShellPath(shell) {
+		return nil, fmt.Errorf("shell unavailable: %q", shell)
+	}
 	if err := validateProgramEnv(env); err != nil {
 		return nil, err
 	}
-	return m.createSession(name, workingDir, nil, append([]string(nil), env...))
+	return m.createSession(name, workingDir, nil, shell, append([]string(nil), env...))
 }
 
 // CreateProgramSession creates a dormant session that starts one executable
@@ -62,10 +69,10 @@ func (m *Manager) CreateProgramSession(name, workingDir string, program Program)
 	if err != nil {
 		return nil, err
 	}
-	return m.createSession(name, workingDir, &programCopy, nil)
+	return m.createSession(name, workingDir, &programCopy, "", nil)
 }
 
-func (m *Manager) createSession(name, workingDir string, program *Program, shellEnv []string) (*Session, error) {
+func (m *Manager) createSession(name, workingDir string, program *Program, shell string, shellEnv []string) (*Session, error) {
 	sessionID := generateSessionID()
 	m.mu.RLock()
 	config := m.config
@@ -75,6 +82,9 @@ func (m *Manager) createSession(name, workingDir string, program *Program, shell
 		return nil, err
 	}
 	sessionCfg := newSessionConfig(config)
+	if shell != "" {
+		sessionCfg.shellResolver = selectedShell(shell)
+	}
 	sessionCfg.program = program
 	sessionCfg.shellEnv = shellEnv
 	if name == "" {
