@@ -664,12 +664,19 @@ export class RendererSurface {
     color: string,
   ): void {
     context.fillStyle = color;
-    if (cell.width === 1 && (cell.text === '│' || cell.text === '┃' || cell.text === '█')) {
+    if (cell.width === 1 && (cell.text === '│' || cell.text === '┃' || cell.text === '█' || cell.text === '▀' || cell.text === '▄')) {
       const scale = this.backingScale;
       const left = Math.round(x * cellWidth * scale);
       const right = Math.round((x + 1) * cellWidth * scale);
       const top = Math.floor(y * cellHeight * scale);
       const bottom = Math.floor((y + 1) * cellHeight * scale);
+      if (cell.text === '▀' || cell.text === '▄') {
+        const middle = Math.floor((top + bottom) / 2);
+        const start = cell.text === '▀' ? top : middle;
+        const end = cell.text === '▀' ? middle : bottom;
+        context.fillRect(left / scale, start / scale, (right - left) / scale, (end - start) / scale);
+        return;
+      }
       const light = Math.max(1, Math.round(cellWidth * scale / 9));
       const width = cell.text === '█' ? right - left : Math.min(right - left, cell.text === '┃' ? 2 * light : light);
       const center = Math.floor((x + 0.5) * cellWidth * scale);

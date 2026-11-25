@@ -126,6 +126,44 @@ describe('semantic terminal browser surface', () => {
     } finally { renderer.dispose(); vi.unstubAllGlobals(); }
   });
 
+  it.each([1, 1.25, 1.5, 2])('tiles upper and lower half blocks without changing neighboring pixels at DPR %s', async dpr => {
+    vi.stubGlobal('devicePixelRatio', dpr);
+    const host = document.body.appendChild(document.createElement('div'));
+    host.style.cssText = 'width:180px;height:90px';
+    const canvas = host.appendChild(document.createElement('canvas'));
+    const renderer = new RendererSurface(canvas);
+    try {
+      const { cellWidthCssPx: width, cellHeightCssPx: height } = renderer.setTypography({ fontFamily: 'monospace', fontSizeCssPx: 14, lineHeightCssPx: 23 });
+      const glyphs = ['A█▀▀█┃', 'B█▄▄█│', 'C▀▀▀▀D'];
+      const base = presentation();
+      const frame = (showBlocks: boolean, sequence: number) => validatePresentation({ ...base, sequence, state: { sequence }, geometry: { generation: 1, cols: 6, rows: 3 },
+        frame: { ...base.frame, width: 6, height: 3, history: { revision: sequence, totalRows: 3, screenStartOffset: 0 }, cursor: { ...base.frame.cursor, visible: false },
+          rows: glyphs.map((row, index) => ({ cells: Array.from(row, text => ({ text: !showBlocks && (text === '▀' || text === '▄') ? '' : text, width: 1, style: { inverse: index === 1 } })) })) } });
+      const context = canvas.getContext('2d')!;
+      const palette = getThemeColors('dark');
+      renderer.setPalette(palette);
+      renderer.apply(frame(false, 1));
+      await nextPaint();
+      const expected = context.getImageData(0, 0, canvas.width, canvas.height);
+      glyphs.forEach((row, rowIndex) => Array.from(row).forEach((glyph, column) => {
+        if (glyph !== '▀' && glyph !== '▄') return;
+        const top = Math.floor(rowIndex * height * dpr);
+        const bottom = Math.floor((rowIndex + 1) * height * dpr);
+        const middle = Math.floor((top + bottom) / 2);
+        const rgba = [...hexToRgb(rowIndex === 1 ? palette.background : palette.foreground), 255];
+        for (let pixelY = glyph === '▀' ? top : middle; pixelY < (glyph === '▀' ? middle : bottom); pixelY++) {
+          for (let pixelX = Math.round(column * width * dpr); pixelX < Math.round((column + 1) * width * dpr); pixelX++) {
+            expected.data.set(rgba, (pixelY * expected.width + pixelX) * 4);
+          }
+        }
+      }));
+      renderer.apply(frame(true, 2));
+      await nextPaint();
+      const actual = context.getImageData(0, 0, canvas.width, canvas.height);
+      expect(actual.data.findIndex((channel, index) => channel !== expected.data[index])).toBe(-1);
+    } finally { renderer.dispose(); vi.unstubAllGlobals(); }
+  });
+
   it('paints every search occurrence and distinguishes the active occurrence', async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:relative;width:180px;height:90px';

@@ -10,7 +10,7 @@ interaction.
 ## Install
 
 ```bash
-npm install @floegence/floeterm-terminal-web@0.28.0
+npm install @floegence/floeterm-terminal-web@0.28.1
 ```
 
 `WheelRouter` routes one vertical gesture to either view-local history or the live
