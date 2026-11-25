@@ -126,6 +126,37 @@ describe('semantic terminal browser surface', () => {
     } finally { renderer.dispose(); vi.unstubAllGlobals(); }
   });
 
+  it.each([1, 1.25, 1.5, 2])('joins a heavy up stroke to the rail and ends level with the upper block at DPR %s', async dpr => {
+    vi.stubGlobal('devicePixelRatio', dpr);
+    const host = document.body.appendChild(document.createElement('div'));
+    host.style.cssText = 'width:120px;height:80px';
+    const canvas = host.appendChild(document.createElement('canvas'));
+    const renderer = new RendererSurface(canvas);
+    try {
+      const { cellWidthCssPx: width, cellHeightCssPx: height } = renderer.setTypography({ fontFamily: 'monospace', fontSizeCssPx: 14, lineHeightCssPx: 23 });
+      const rows = [' ┃█', ' ╹▀', '   '].map(row => ({ cells: Array.from(row, text => ({ text, width: 1 })) }));
+      const base = presentation();
+      renderer.apply(validatePresentation({ ...base, geometry: { ...base.geometry, cols: 3, rows: 3 }, frame: { ...base.frame, width: 3, height: 3,
+        history: { revision: 1, totalRows: 3, screenStartOffset: 0 }, rows, cursor: { ...base.frame.cursor, visible: false } } }));
+      await nextPaint();
+      const context = canvas.getContext('2d')!;
+      const top = Math.floor(height * dpr);
+      const bottom = Math.floor(2 * height * dpr);
+      const middle = Math.floor((top + bottom) / 2);
+      const foreground = hexToRgb(getThemeColors('dark').foreground);
+      const inkColumns = (row: number) => {
+        const { data, width: columns } = context.getImageData(0, row, Math.round(3 * width * dpr), 1);
+        return Array.from({ length: columns }, (_, column) => column).filter(column => foreground.every((channel, index) => data[column * 4 + index] === channel));
+      };
+      const railAndBlock = inkColumns(top - 1);
+      expect(railAndBlock).toContain(Math.floor(1.5 * width * dpr));
+      expect(railAndBlock).toContain(Math.floor(2.5 * width * dpr));
+      for (let row = top; row < bottom; row++) {
+        expect(inkColumns(row), `device row ${row}`).toEqual(row < middle ? railAndBlock : []);
+      }
+    } finally { renderer.dispose(); vi.unstubAllGlobals(); }
+  });
+
   it.each([1, 1.25, 1.5, 2])('tiles upper and lower half blocks without changing neighboring pixels at DPR %s', async dpr => {
     vi.stubGlobal('devicePixelRatio', dpr);
     const host = document.body.appendChild(document.createElement('div'));

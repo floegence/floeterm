@@ -664,7 +664,8 @@ export class RendererSurface {
     color: string,
   ): void {
     context.fillStyle = color;
-    if (cell.width === 1 && (cell.text === '│' || cell.text === '┃' || cell.text === '█' || cell.text === '▀' || cell.text === '▄')) {
+    const heavyRail = cell.text === '┃' || cell.text === '╹';
+    if (cell.width === 1 && (cell.text === '│' || heavyRail || cell.text === '█' || cell.text === '▀' || cell.text === '▄')) {
       const scale = this.backingScale;
       const left = Math.round(x * cellWidth * scale);
       const right = Math.round((x + 1) * cellWidth * scale);
@@ -678,10 +679,11 @@ export class RendererSurface {
         return;
       }
       const light = Math.max(1, Math.round(cellWidth * scale / 9));
-      const width = cell.text === '█' ? right - left : Math.min(right - left, cell.text === '┃' ? 2 * light : light);
+      const width = cell.text === '█' ? right - left : Math.min(right - left, heavyRail ? 2 * light : light);
       const center = Math.floor((x + 0.5) * cellWidth * scale);
       const start = cell.text === '█' ? left : Math.max(left, Math.min(right - width, center - Math.floor(width / 2)));
-      context.fillRect(start / scale, top / scale, width / scale, (bottom - top) / scale);
+      const end = cell.text === '╹' ? Math.floor((top + bottom) / 2) : bottom;
+      context.fillRect(start / scale, top / scale, width / scale, (end - top) / scale);
       return;
     }
     const baseline = (y + 0.82) * cellHeight;
